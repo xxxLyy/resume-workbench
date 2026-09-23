@@ -1,0 +1,17 @@
+node_modules/
+config.json
+applications.json
+materials.json
+docs-meta.json
+docs/
+snapshots/
+pdfs/
+backups/
+logs/
+photos/
+audio/
+.chromium-choice.json
+.chromium-choice.json.probe-lock
+.gstack/
+*.log
+.superpowers/
