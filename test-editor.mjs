@@ -6,7 +6,7 @@ import { chromium } from 'playwright-core';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveChromium } from './chromium.mjs';
+import { resolveChromium, invalidateCache } from './chromium.mjs';
 
 const [base, docId, dataRoot] = process.argv.slice(2);
 if (!base || !docId || !dataRoot) { console.error('用法: node test-editor.mjs <baseURL> <docId> <dataRoot>'); process.exit(2); }
@@ -46,7 +46,20 @@ const JOB_DOC = 'ed-fixture-v2';
   fs.writeFileSync(metaPath, JSON.stringify(meta));
 }
 
-const browser = await chromium.launch({ executablePath: bin });
+let browser;
+try {
+  browser = await chromium.launch({ executablePath: bin });
+} catch (e) {
+  // 缓存的二进制此刻不可启动（设计 §2.2 规则 4）：失效缓存重探一次；仍失败按环境不可用跳过（exit 2），绝不抛未捕获栈。
+  invalidateCache();
+  try {
+    bin = await resolveChromium({ force: true });
+    browser = await chromium.launch({ executablePath: bin });
+  } catch (e2) {
+    console.error('⚠️ Chromium 不可用，跳过浏览器级验证: ' + (e2 && e2.message || e2));
+    process.exit(2);
+  }
+}
 try {
   // ===== 1. 保存期间继续编辑：A 提交，B 期间产生，A 返回后 B 仍未保存 =====
   {

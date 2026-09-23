@@ -2,6 +2,8 @@
 # test-structure.sh — LLM 结构化组装的单元级验证（注入假 llmFn）
 set -e
 cd "$(dirname "$0")"
+# 本套件断言的是未覆盖 RESUME_CHROMIUM 时的探测契约（段 X cacheValid 最后一条），外部导出该变量会误红，统一取消；段 Y 内部自设自删，不受影响。
+unset RESUME_CHROMIUM
 node --input-type=module << 'EOF'
 import { structureText } from './structure.mjs';
 
@@ -278,7 +280,7 @@ for (const d of ['docs', 'snapshots', 'pdfs']) fs.mkdirSync(path.join(tmp, d));
 fs.writeFileSync(path.join(tmp, 'config.json'), '{"active":0,"profiles":[{"name":"t","baseURL":"http://x/v1","apiKey":"k123456","model":"m"}]}');
 // 无缓存 → Chromium 选择应失败且 exit 1，并给修复动作
 let r = execSync(`RESUME_ROOT="${tmp}" node doctor.mjs --json || true`, { shell: '/bin/bash' }).toString();
-let j = JSON.parse(r.slice(r.indexOf('[')));
+let j = JSON.parse(r);   // --json 下 stdout 只有 JSON 数组（人读行走 stderr）
 const chr = j.find(x => x.name === 'Chromium 选择');
 if (!chr || chr.ok !== false || !chr.fix) fail('无缓存时 Chromium 选择应失败并给修复动作');
 // 种缓存 → 全绿 exit 0
@@ -287,7 +289,7 @@ fs.writeFileSync(path.join(tmp, '.chromium-choice.json'), JSON.stringify({ bin, 
 try {
   r = execSync(`RESUME_ROOT="${tmp}" node doctor.mjs --json`, { shell: '/bin/bash' }).toString();
 } catch (e) { fail('种缓存后 doctor 应 exit 0: ' + e.message); }
-j = JSON.parse(r.slice(r.indexOf('[')));
+j = JSON.parse(r);
 for (const n of ['数据目录可写', 'pdftotext', 'pdfinfo', '模型配置字段完整', '无需模型可用能力', '最近备份']) {
   const x = j.find(y => y.name === n);
   if (!x) fail('缺检查项 ' + n);

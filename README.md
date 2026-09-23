@@ -16,7 +16,7 @@
 ## 运维
 
 - 日志：`~/resume/logs/resume-server.log`（轮转 50MB/尾 2MB）
-- 重启服务：`launchctl bootout gui/$(id -u)/com.lhx.resume-server && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lhx.resume-server.plist`
+- 重启服务：先确保日志目录存在 `mkdir -p ~/resume/logs`（launchd 在启动 node 前就打开日志文件，首次 `launchctl bootstrap` 前该目录必须已存在），再 `launchctl bootout gui/$(id -u)/com.lhx.resume-server && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lhx.resume-server.plist`
 - 临时停服：`launchctl bootout gui/$(id -u)/com.lhx.resume-server`（注意 KeepAlive，直接 kill 进程会被自动拉起）
 - 手动冒烟测试：`bash ~/resume/test.sh`
 - 卸载：`launchctl bootout gui/$(id -u)/com.lhx.resume-server && rm ~/Library/LaunchAgents/com.lhx.resume-server.plist`
@@ -49,5 +49,5 @@
 └── config.json                  LLM 配置（私密，勿分享）
 ```
 
-- 升级 playwright-core 时必须同步 render.mjs 里的 chromium_headless_shell 修订号（见其 browsers.json）
+- 升级 playwright-core 时修订号由 chromium.mjs 的 expectedRevision() 从 node_modules/playwright-core/browsers.json 自动读取，无需手改；test-structure.sh 段 X 的 '1223' 断言是故意的升级 tripwire
 - 7890-7892 禁用（Clash 系代理默认端口段，本机 Clash Verge 用 7897）

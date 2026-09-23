@@ -31,6 +31,8 @@ let bk = '无 backups/ 记录';
 try { const ds = fs.readdirSync(path.join(ROOT, 'backups')).sort(); if (ds.length) bk = ds[ds.length - 1]; } catch {}
 add('最近备份', true, bk, '在设置页做一次备份');
 
-for (const x of checks) console.log(`${x.ok === false ? '❌' : x.ok === null ? '⚪' : '✅'} ${x.name}${x.detail ? ' — ' + x.detail : ''}${x.ok === false && x.fix ? '｜修复: ' + x.fix : ''}`);
-if (process.argv.includes('--json')) console.log(JSON.stringify(checks, null, 2));
+// --json 时人读行走 stderr、stdout 只留 JSON 数组，保证 `node doctor.mjs --json | jq` 可解析
+const jsonMode = process.argv.includes('--json');
+for (const x of checks) (jsonMode ? console.error : console.log)(`${x.ok === false ? '❌' : x.ok === null ? '⚪' : '✅'} ${x.name}${x.detail ? ' — ' + x.detail : ''}${x.ok === false && x.fix ? '｜修复: ' + x.fix : ''}`);
+if (jsonMode) console.log(JSON.stringify(checks, null, 2));
 process.exit(checks.some(x => x.ok === false) ? 1 : 0);

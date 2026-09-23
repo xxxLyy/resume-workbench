@@ -16,7 +16,7 @@ import { rotateLogIfNeeded } from './logrotate.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const root = process.env.RESUME_ROOT || APP_ROOT;   // 数据根（docs/snapshots/pdfs/JSON/backups 全在此）
-for (const d of ['docs', 'snapshots', 'pdfs', 'backups']) fs.mkdirSync(path.join(root, d), { recursive: true });
+for (const d of ['docs', 'snapshots', 'pdfs', 'backups', 'logs']) fs.mkdirSync(path.join(root, d), { recursive: true });
 
 // 服务日志由 launchd 写入 RESUME_LOG_FILE：启动时轮转一次，此后每 24h 检查（copytruncate，50MB 触发、留尾部 2MB 到 .1）
 rotateLogIfNeeded(process.env.RESUME_LOG_FILE);
