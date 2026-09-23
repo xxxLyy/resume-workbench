@@ -4,7 +4,7 @@
 
 ## 使用
 
-- 编辑：http://localhost:7766/（开机自动启动）（端口被占时自动顺延 7767/7768，以 /tmp/resume-server.log 为准）
+- 编辑：http://localhost:7766/（开机自动启动）（端口被占时自动顺延 7767/7768，以 ~/resume/logs/resume-server.log 为准）
 - 首页（文档列表/上传 PDF 导入）：http://localhost:7766/
 - 上传导入：有 config.json（参考 config.example.json）时 LLM 结构化灌模板；无配置时降级为纯文本导入
 - 历史版本：页面右上角"🕘 历史版本"，可回滚到任意快照
@@ -15,7 +15,7 @@
 
 ## 运维
 
-- 日志：`/tmp/resume-server.log`
+- 日志：`~/resume/logs/resume-server.log`（轮转 50MB/尾 2MB）
 - 重启服务：`launchctl bootout gui/$(id -u)/com.lhx.resume-server && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lhx.resume-server.plist`
 - 临时停服：`launchctl bootout gui/$(id -u)/com.lhx.resume-server`（注意 KeepAlive，直接 kill 进程会被自动拉起）
 - 手动冒烟测试：`bash ~/resume/test.sh`
