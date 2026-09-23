@@ -20,6 +20,7 @@
 - 临时停服：`launchctl bootout gui/$(id -u)/com.lhx.resume-server`（注意 KeepAlive，直接 kill 进程会被自动拉起）
 - 手动冒烟测试：`bash ~/resume/test.sh`
 - 卸载：`launchctl bootout gui/$(id -u)/com.lhx.resume-server && rm ~/Library/LaunchAgents/com.lhx.resume-server.plist`
+- 隐私门槛：bash privacy-check.sh（建仓/开源前必跑）；日志在 ~/resume/logs/（轮转 50MB/尾 2MB）
 
 ## 结构
 
