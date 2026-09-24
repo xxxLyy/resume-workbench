@@ -297,3 +297,51 @@ for (const n of ['数据目录可写', 'pdftotext', 'pdfinfo', '模型配置字�
 if (j.find(x => x.name === '模型连接').ok !== null) fail('模型连接应为未测试(null)，不伪造');
 console.log('✅ V doctor 输出契约');
 EOF
+
+# —— S1-0：真实数据指纹扩面的负向夹具（隔离 tmp 根，零接触真实数据）——
+# 复现方式：用 sed 从 test.sh 原样提取 real_fp 函数（避免两份实现漂移），REAL_ROOT 指向夹具根；
+# 比对逻辑按 test.sh 段 17 以函数级复现（`[ "$BEFORE" = "$AFTER" ] || fail` → 不一致时 exit≠0），不跑全量。
+S1_FP_DEF=$(sed -n '/^real_fp() {$/,/^}$/p' test.sh)
+[ -n "$S1_FP_DEF" ] || { echo '❌ S1-0 无法从 test.sh 提取 real_fp 定义（函数签名/结束行格式变了？）'; exit 1; }
+eval "$S1_FP_DEF"
+s1_fp() { ( REAL_ROOT="$1"; real_fp ); }                       # 指纹：对指定根求值
+s1_cmp() { [ "$1" = "$2" ] || return 1; }                      # 比对：前后不一致 → 非零退出
+
+S1_TMP=$(mktemp -d /tmp/resume-s1-fp.XXXXXX)
+trap 'rm -rf "$S1_TMP"' EXIT
+mkdir -p "$S1_TMP/docs" "$S1_TMP/snapshots/doc-a" "$S1_TMP/pdfs" "$S1_TMP/backups" "$S1_TMP/logs"
+echo '<html>母版A</html>' > "$S1_TMP/docs/a.html"
+echo '[]' > "$S1_TMP/applications.json"
+echo '[]' > "$S1_TMP/materials.json"
+echo '{}' > "$S1_TMP/docs-meta.json"
+echo '{"active":0}' > "$S1_TMP/config.json"
+echo '<html>快照1</html>' > "$S1_TMP/snapshots/doc-a/1.html"
+echo 'pdf-bytes-1' > "$S1_TMP/pdfs/a.pdf"
+
+S1_BASE=$(s1_fp "$S1_TMP")
+[ -n "$S1_BASE" ] || { echo '❌ S1-0 指纹输出为空'; exit 1; }
+# 正向基线：同一状态两次求值必须一致（指纹确定性），比对逻辑通过
+s1_cmp "$S1_BASE" "$(s1_fp "$S1_TMP")" || { echo '❌ S1-0 同一状态指纹不一致（非确定性）'; exit 1; }
+
+# 负向：每一类被覆盖改动都必须被检出 —— 指纹输出不同，且比对逻辑返回非零
+s1_check_detected() {  # $1=改动描述；检出后滚动基线，继续验证下一类改动
+  local after rc
+  after=$(s1_fp "$S1_TMP")
+  if [ "$S1_BASE" = "$after" ]; then echo "❌ S1-0 指纹未检出改动：$1"; exit 1; fi
+  rc=0; s1_cmp "$S1_BASE" "$after" || rc=$?   # `|| rc=$?` 既捕获退出码又豁免 set -e
+  [ "$rc" -ne 0 ] || { echo "❌ S1-0 比对逻辑在前后不一致时未失败（exit=$rc 应为非零）：$1"; exit 1; }
+  S1_BASE=$after
+}
+echo '<html>母版B</html>' > "$S1_TMP/docs/a.html";                    s1_check_detected 'docs/*.html 内容改动'
+echo '[{"id":"x"}]' > "$S1_TMP/applications.json";                    s1_check_detected 'applications.json 改动'
+echo '<html>快照2</html>' > "$S1_TMP/snapshots/doc-a/2.html";         s1_check_detected 'snapshots/ 新增文件'
+echo '<html>快照2改</html>' > "$S1_TMP/snapshots/doc-a/2.html";       s1_check_detected 'snapshots/ 文件内容改动（md5）'
+rm "$S1_TMP/snapshots/doc-a/1.html";                                  s1_check_detected 'snapshots/ 删除文件'
+echo 'pdf-bytes-2' > "$S1_TMP/pdfs/a.pdf";                            s1_check_detected 'pdfs/ 文件内容改动（md5）'
+echo 'bak' > "$S1_TMP/backups/restore-1";                             s1_check_detected 'backups/ 目录列表变化'
+echo 'log line' > "$S1_TMP/logs/new.log";                             s1_check_detected 'logs/ 目录列表变化'
+echo '{"active":1}' > "$S1_TMP/config.json";                          s1_check_detected 'config.json 内容改动（md5）'
+echo '{"ok":true}' > "$S1_TMP/.chromium-choice.json";                 s1_check_detected '.chromium-choice.json 从无到有（存在性）'
+echo '✅ S1-0 指纹负向夹具（10 类改动全检出；比对逻辑不一致时 exit≠0）'
+rm -rf "$S1_TMP"
+trap - EXIT

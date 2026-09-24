@@ -11,7 +11,7 @@
 - 大模型设置：http://localhost:7766/settings（OpenAI 兼容；火山方舟 baseURL 见 config.example.json）
 - AI 辅助：编辑器里选中文字点"✨ AI 改写"（预览后应用）；右下角 🤖 打开对话整篇调整
 - config.json 含 API key，属于本地私密文件，不要分享/提交
-- 演示/试用：RESUME_ROOT=<空目录> node server.mjs（配合 test.sh 夹具生成虚拟数据；演示模式 UI 见 M2/M3）；环境自检 node doctor.mjs（--probe 才做 Chromium 探针）
+- 演示/试用：RESUME_ROOT=<空目录> node server.mjs（空根起步手动建文档即可试用；演示数据夹具的生成随 M2/M3 提供，演示模式 UI 同见 M2/M3）；环境自检 node doctor.mjs（--probe 才做 Chromium 探针）
 
 ## 运维
 

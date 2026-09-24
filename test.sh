@@ -23,7 +23,21 @@ trap cleanup EXIT
 fail() { echo "❌ $1"; exit 1; }
 
 # ===== 真实数据指纹（前后必须一致）=====
-real_fp() { (cd "$REAL_ROOT" && { md5 -q docs/*.html 2>/dev/null; cat applications.json materials.json docs-meta.json 2>/dev/null; } | md5); }
+# 覆盖面（S1 扩面）：docs/*.html 内容、三个 JSON 内容、snapshots/ 与 pdfs/ 全文件列表+md5、
+# backups/ 与 logs/ 目录列表（只列名不哈希：运行中服务的日志追加/备份属合法变化，不视为测试污染）、
+# config.json 与 .chromium-choice.json 存在性+md5。输出仍为单行 md5。
+# 注意：test-structure.sh 段 S1-0 用 sed 按 `^real_fp() {$` .. `^}$` 原样提取本函数做负向夹具，改签名/缩进需同步。
+real_fp() {
+  (cd "$REAL_ROOT" && {
+    md5 -q docs/*.html 2>/dev/null || true
+    cat applications.json materials.json docs-meta.json 2>/dev/null || true
+    find snapshots pdfs -type f 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do printf '%s %s\n' "$f" "$(md5 -q "$f" 2>/dev/null)"; done
+    find backups logs 2>/dev/null | LC_ALL=C sort
+    for f in config.json .chromium-choice.json; do
+      if [ -f "$f" ]; then printf '%s %s\n' "$f" "$(md5 -q "$f")"; else echo "$f absent"; fi
+    done
+  } | md5)
+}
 REAL_BEFORE=$(real_fp)
 
 # ===== 夹具：JSON + config（虚拟配置指向本地假 LLM）=====
