@@ -345,3 +345,122 @@ echo '{"ok":true}' > "$S1_TMP/.chromium-choice.json";                 s1_check_d
 echo '✅ S1-0 指纹负向夹具（10 类改动全检出；比对逻辑不一致时 exit≠0）'
 rm -rf "$S1_TMP"
 trap - EXIT
+
+# —— S1-A：freeze.mjs 冻结/归一化/渲染标识/完整资源指纹 ——
+# 隔离：本地资源夹具写在 mktemp 根内（经 RESUME_ROOT 解析），零接触真实 docs/snapshots/pdfs。
+node --input-type=module << 'EOF'
+import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
+import { splitDoc, normalizeToCurrent, freezeHtml, resourceFingerprint, staleInfo, sha1 } from './freeze.mjs';
+const fail = m => { console.error('❌ S1-A ' + m); process.exit(1); };
+
+// sha1：完整 40 位十六进制，已知向量核对（禁止截断）
+if (typeof sha1('abc') !== 'string' || !/^[0-9a-f]{40}$/.test(sha1('abc'))) fail('sha1 应为完整 40 位 hex');
+if (sha1('abc') !== 'a9993e364706816aba3e25717850c26c9cd0d89d') fail('sha1 已知向量不符');
+
+// 夹具文档：单 <style> 主样式 + data: 头像 + body 正文
+const DATA_AVATAR = 'data:image/png;base64,' + 'A'.repeat(60);
+const mkDoc = ({ css = '.a{color:red}', body = '<p>正文一</p>', avatar = DATA_AVATAR, typo = null } = {}) =>
+  '<!doctype html>\n<html><head>\n<meta charset="utf-8">\n<style>\n' + css + '\n</style>\n' +
+  (typo !== null ? '<style id="typo-custom">' + typo + '</style>\n' : '') +
+  '</head>\n<body>\n<img class="avatar" src="' + avatar + '" alt="头像">\n' + body + '\n</body></html>\n';
+
+// ① splitDoc 两态：提取 / 无 typo
+const withTypo = mkDoc({ typo: '.x{font-size:15px}' });
+const sp1 = splitDoc(withTypo);
+if (sp1.typo !== '.x{font-size:15px}') fail('splitDoc 应提取 typo 文本');
+if (sp1.html.includes('typo-custom"') || sp1.html.includes('<style id="typo-custom">')) fail('splitDoc 应从 html 剥离 typo-custom 元素');
+if (!sp1.html.includes('.a{color:red}') || !sp1.html.includes('<p>正文一</p>')) fail('splitDoc 不应误伤主样式/正文');
+const sp2 = splitDoc(mkDoc());
+if (sp2.typo !== null) fail('无内联 typo 时应返回 null，实际 ' + JSON.stringify(sp2.typo));
+if (sp2.html !== mkDoc()) fail('无 typo 时 html 应原样');
+
+// ② 归一化 HTML 幂等（完整对象不要求同）：对"有 typo / 无 typo"两态都成立
+for (const h of [withTypo, mkDoc()]) {
+  const n1 = normalizeToCurrent(h);
+  const n2 = normalizeToCurrent(n1.html);
+  if (n2.html !== n1.html) fail('normalizeToCurrent HTML 不幂等');
+}
+const nz = normalizeToCurrent(withTypo);
+if (nz.typo !== '.x{font-size:15px}') fail('normalizeToCurrent 应返回提取的 typo');
+if (normalizeToCurrent(mkDoc()).typo !== '') fail('normalizeToCurrent 无 typo 时应为空串');
+if (nz.styleHash !== sha1('\n.a{color:red}\n')) fail('styleHash 应为主 <style> CSS 文本的 sha1');
+const themed = normalizeToCurrent(mkDoc({ css: '.a{}' }).replace('<style>', '<style data-theme="classic">'));
+if (themed.theme !== 'classic') fail('theme 应取 <style> data-theme 属性');
+
+// ③ freezeHtml 以 meta.typo 为准（html 内旧内联值被覆盖；无"已有就跳过"分支）
+const fz = freezeHtml(withTypo, { typo: '.x{font-size:20px}' });
+if (!fz.html.includes('<style id="typo-custom">.x{font-size:20px}</style>')) fail('freezeHtml 应注入 meta.typo');
+if (fz.html.includes('font-size:15px')) fail('freezeHtml 中旧内联 typo 应被 meta.typo 覆盖');
+const cnt = fz.html.split('<style id="typo-custom">').length - 1;
+if (cnt !== 1) fail('freezeHtml 应恰有一个 typo-custom 块，实际 ' + cnt);
+if (!/<style id="typo-custom">[^<]*<\/style>\s*<\/head>/.test(fz.html)) fail('typo 块应内联在 </head> 前');
+const fzNoTypo = freezeHtml(withTypo, {});
+if (fzNoTypo.html.includes('typo-custom"')) fail('meta 无 typo 时冻结产物不应含 typo-custom（先归一化）');
+
+// ④ renderInputId：随正文/typo/css 变化；随 body 外空白不变；含正文且完整
+for (const k of ['bodyHash', 'cssHash', 'typoHash', 'resourcesHash', 'renderInputId']) {
+  if (!/^[0-9a-f]{40}$/.test(fz[k])) fail(k + ' 应为完整 40 位 hex');
+}
+if (fz.renderInputId !== sha1(fz.bodyHash + ':' + fz.cssHash + ':' + fz.typoHash + ':' + fz.resourcesHash)) fail('renderInputId 组合式不符');
+const baseId = freezeHtml(mkDoc(), { typo: '' }).renderInputId;
+if (freezeHtml(mkDoc({ body: '<p>正文二</p>' }), { typo: '' }).renderInputId === baseId) fail('renderInputId 应随正文变化');
+if (freezeHtml(mkDoc(), { typo: '.q{color:blue}' }).renderInputId === baseId) fail('renderInputId 应随 typo 变化');
+if (freezeHtml(mkDoc({ css: '.a{color:blue}' }), { typo: '' }).renderInputId === baseId) fail('renderInputId 应随 css 变化');
+const wsDoc = mkDoc().replace('</head>\n<body>', '</head>\n\n   \n<body>').replace('</body></html>\n', '</body>\n\n  </html>\n\n\n');
+if (freezeHtml(wsDoc, { typo: '' }).renderInputId !== baseId) fail('renderInputId 不应随 body 外空白变化');
+
+// ⑤ 资源指纹：完整内容哈希（data: 第 70 字符差异可检出）+ 本地文件内容哈希 + http(s) 远程 + 缺失
+const PRE = 'data:image/png;base64,' + 'A'.repeat(47);           // 前缀恰 69 字符
+const d1 = PRE + 'X' + 'B'.repeat(30), d2 = PRE + 'Y' + 'B'.repeat(30);
+if (d1.slice(0, 69) !== d2.slice(0, 69) || d1[69] === d2[69]) fail('夹具构造错误：应仅第 70 字符不同');
+const fp1 = resourceFingerprint(mkDoc({ avatar: d1 }));
+const fp2 = resourceFingerprint(mkDoc({ avatar: d2 }));
+if (fp1.resourcesHash === fp2.resourcesHash) fail('data: 仅第 70 字符不同也必须检出（禁止前缀截断）');
+if (fp1.reproducible !== true || fp1.remote.length !== 0 || fp1.missing.length !== 0) fail('纯 data: 应 reproducible=true');
+
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-s1a-'));
+fs.mkdirSync(path.join(tmpRoot, 'fonts'), { recursive: true });
+const fontFile = path.join(tmpRoot, 'fonts', 'f.woff2');
+fs.writeFileSync(fontFile, 'FONT-CONTENT-V1');
+process.env.RESUME_ROOT = tmpRoot;   // 本地相对路径按文档根（RESUME_ROOT）解析
+const fontDoc = (extraCss = '') => mkDoc({ css: '@font-face{src:url(fonts/f.woff2)}' + extraCss });
+const lf1 = resourceFingerprint(fontDoc());
+if (!lf1.reproducible) fail('可读本地字体应 reproducible=true: ' + JSON.stringify(lf1));
+fs.writeFileSync(fontFile, 'FONT-CONTENT-V2');   // 改 1 字节
+const lf2 = resourceFingerprint(fontDoc());
+if (lf2.resourcesHash === lf1.resourcesHash) fail('本地字体文件内容改 1 字节应改变 resourcesHash');
+const absDoc = mkDoc({ css: '@font-face{src:url(' + fontFile + ')}' });   // 绝对路径同样按内容哈希
+if (resourceFingerprint(absDoc).resourcesHash !== lf2.resourcesHash) fail('绝对路径与相对路径应同为文件内容哈希');
+
+// http(s) 远程 URL：入 remote[] 且 reproducible=false（不在本任务实现 /export 拒绝）
+const rmt = resourceFingerprint(fontDoc('@page{background:url(https://cdn.example.com/bg.png)}')
+  .replace('</head>', '<link rel="stylesheet" href="http://x.example.com/a.css"></head>'));
+if (rmt.remote.length !== 2 || !rmt.remote.includes('https://cdn.example.com/bg.png') || !rmt.remote.includes('http://x.example.com/a.css')) fail('remote 应收集 http(s) URL: ' + JSON.stringify(rmt.remote));
+if (rmt.reproducible !== false) fail('含远程 URL 应 reproducible=false');
+
+// 缺失/不可读本地文件：入 missing[] 且 reproducible=false
+const miss = resourceFingerprint(mkDoc({ css: '@font-face{src:url(fonts/nope.woff2)}' }));
+if (miss.missing.length !== 1 || miss.missing[0] !== 'fonts/nope.woff2') fail('missing 应含缺失引用: ' + JSON.stringify(miss.missing));
+if (miss.reproducible !== false) fail('缺失文件应 reproducible=false');
+delete process.env.RESUME_ROOT;
+fs.rmSync(tmpRoot, { recursive: true, force: true });
+
+// freezeHtml 透传资源三字段
+const fzRemote = freezeHtml(mkDoc({ css: '.a{background:url(https://e.com/x.png)}' }), { typo: '' });
+if (!Array.isArray(fzRemote.remote) || fzRemote.remote.length !== 1 || fzRemote.reproducible !== false || !Array.isArray(fzRemote.missing)) fail('freezeHtml 应透传 remote/missing/reproducible');
+
+// ⑥ staleInfo 三态：fresh / stale / none（mtime 不参与判定）
+const sFresh = staleInfo({ lastRenderInputId: 'a1' }, { renderInputId: 'a1', pdfExists: true });
+const sStale = staleInfo({ lastRenderInputId: 'a1' }, { renderInputId: 'b2', pdfExists: true });
+const sNone = staleInfo({}, { renderInputId: 'b2', pdfExists: false });
+if (sFresh.state !== 'fresh' || sFresh.stale !== false) fail('staleInfo fresh 态: ' + JSON.stringify(sFresh));
+if (sStale.state !== 'stale' || sStale.stale !== true) fail('staleInfo stale 态: ' + JSON.stringify(sStale));
+if (sNone.state !== 'none' || sNone.stale !== true) fail('staleInfo none 态: ' + JSON.stringify(sNone));
+if (staleInfo({ lastRenderInputId: 'a1' }, { renderInputId: 'a1', pdfExists: false }).state !== 'none') fail('无 PDF 时即使标识一致也应 none');
+
+// render.mjs meta-blind 静态确认：不读 docs-meta，入口只有 --src/--out（及 docId 便利模式）
+const renderSrc = fs.readFileSync('render.mjs', 'utf8');
+if (/docs-meta|loadMeta|meta\.typo/.test(renderSrc)) fail('render.mjs 不得引用 docs-meta / meta.typo（铁律二）');
+if (!renderSrc.includes("'--src'") || !renderSrc.includes("'--out'")) fail('render.mjs 应保留 --src/--out 入口');
+console.log('✅ S1-A freeze 六导出：splitDoc 两态/HTML 幂等/meta.typo 覆盖/renderInputId 含正文/完整资源指纹/staleInfo 三态/render meta-blind');
+EOF
