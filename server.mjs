@@ -13,10 +13,12 @@ import { buildRewrite, buildChat, parseChanges, buildReview, buildMatch, parseRe
 import { buildJobPrompt, parseJobOps, pageSuggestions } from './job.mjs';
 import { docToLines, docToText, contentHash, sectionsOf } from './extract.mjs';
 import { rotateLogIfNeeded } from './logrotate.mjs';
+import { freezeHtml, normalizeToCurrent } from './freeze.mjs';
+import { beginTx, commitTx, recoverPending, withDocLock, updateMeta, rootLock, atomicWrite, LockHeld } from './tx.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const root = process.env.RESUME_ROOT || APP_ROOT;   // 数据根（docs/snapshots/pdfs/JSON/backups 全在此）
-for (const d of ['docs', 'snapshots', 'pdfs', 'backups', 'logs']) fs.mkdirSync(path.join(root, d), { recursive: true });
+for (const d of ['docs', 'snapshots', 'pdfs', 'backups', 'logs', '.tx']) fs.mkdirSync(path.join(root, d), { recursive: true });
 
 // 服务日志由 launchd 写入 RESUME_LOG_FILE：启动时轮转一次，此后每 24h 检查（copytruncate，50MB 触发、留尾部 2MB 到 .1）
 rotateLogIfNeeded(process.env.RESUME_LOG_FILE);
@@ -69,7 +71,7 @@ const loadMats = () => { const a = readJson('mats', []); return Array.isArray(a)
 const loadApps = () => { const a = readJson('apps', []); return Array.isArray(a) ? a : []; };
 const saveMats = (mats) => writeJson('mats', mats);
 const saveApps = (apps) => writeJson('apps', apps);
-const saveMeta = (meta) => writeJson('meta', meta);
+// docs-meta.json 无 saveMeta：唯一写入者为 tx.mjs 的 updateMeta（读最新→只 patch 目标文档→原子 rename），见各写路径。
 const corruptBanner = () => corrupt.size
   ? `<div class="card" style="border-color:#f3c2c2;background:#fef2f2;color:#7f1d1d"><b>⚠️ 检测到数据文件损坏，相关写入已停止：</b>${[...corrupt].map((k) => JSON_FILES[k]).join('、')} —— 请先在设置页用备份恢复，或人工修复 JSON 后刷新。</div>`
   : '';
@@ -90,19 +92,53 @@ function protectedSnaps(id) {
   if (base) keep.add(base);
   return keep;
 }
-function snapshot(id) {
-  if (!fs.existsSync(docPath(id))) return;
-  const dir = snapDir(id);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.copyFileSync(docPath(id), path.join(dir, timestamp() + '.html'));
+// 冻结产物伴生 manifest：字段一次写全（快照不强制 resolveChromium → chromium 字段允许 null）。
+function buildManifest(frozen, html, meta) {
+  const norm = normalizeToCurrent(html);   // 主样式来源属性与 styleHash（typo 已分离，不影响主样式）
+  const edVer = (frozen.html.match(/data-editor="([^"]+)"/) || [])[1] || null;
+  return {
+    theme: (meta && meta.theme) || norm.theme || null,
+    styleHash: norm.styleHash || null,
+    typoHash: frozen.typoHash || null,
+    renderInputId: frozen.renderInputId,
+    editorVersion: edVer,
+    chromiumBin: null,
+    browserVersion: null,
+    fonts: [],
+    dpi: null,
+    createdAt: new Date().toISOString()
+  };
+}
+// 冻结点统一出口：freezeHtml（内联 typo、自包含）→ 原子写 <ts>.html + <ts>.manifest.json。返回 frozen 结果。
+function writeFrozenSnapshot(dir, ts, html, meta) {
+  const frozen = freezeHtml(html, meta || {});
+  atomicWrite(path.join(dir, ts + '.html'), frozen.html);
+  atomicWrite(path.join(dir, ts + '.manifest.json'), JSON.stringify(buildManifest(frozen, html, meta || {})));
+  return frozen;
+}
+function pruneSnapshots(id, dir) {
   const htmls = fs.readdirSync(dir).filter((f) => f.endsWith('.html')).sort();
   const overflow = htmls.length - MAX_SNAPSHOTS;
   if (overflow <= 0) return;
   const keep = protectedSnaps(id);
   const removable = htmls.filter((f) => !keep.has(f.replace('.html', '')));
   for (const f of removable.slice(0, overflow)) {
+    const ts = f.replace(/\.html$/, '');
     try { fs.unlinkSync(path.join(dir, f)); } catch {}
+    try { fs.unlinkSync(path.join(dir, ts + '.manifest.json')); } catch {}   // manifest 与冻结 html 成对清理
   }
+}
+// 快照 = 冻结当前文档（freezeHtml）+ manifest；返回冻结 ts（无文档 → ''）。被投递引用/基准快照免配额清理。
+function snapshot(id) {
+  if (!fs.existsSync(docPath(id))) return '';
+  const dir = snapDir(id);
+  fs.mkdirSync(dir, { recursive: true });
+  const html = fs.readFileSync(docPath(id), 'utf8');
+  const meta = loadMeta()[id] || {};
+  const ts = timestamp();
+  writeFrozenSnapshot(dir, ts, html, meta);
+  pruneSnapshots(id, dir);
+  return ts;
 }
 
 // ===== 渲染（原子替换；RETRY=1 次；测试可用 RESUME_RENDER_BIN 注入假渲染器）=====
@@ -406,6 +442,15 @@ function listPage() {
     </script>`, 'docs');
 }
 
+// 备份恢复/回退：把 docs-meta.json 整体替换为 target（成对语义），但一律经 updateMeta 逐文档写（不裸 copyFileSync 覆盖共享文件）。
+// 本地存在而 target 无的文档条目 → 删除；target 的每个条目 → 写入。保证 html 与 meta 成对且不踩其他并发写。
+function applyMetaSnapshot(target) {
+  const t = (target && typeof target === 'object' && !Array.isArray(target)) ? target : {};
+  const cur = loadMeta();
+  for (const k of Object.keys(cur)) if (!Object.prototype.hasOwnProperty.call(t, k)) updateMeta(root, k, () => null);
+  for (const k of Object.keys(t)) updateMeta(root, k, () => t[k]);
+}
+
 async function handler(req, res) {
   const url = new URL(req.url, 'http://localhost');
   const id = url.searchParams.get('id') || 'linghaoxiang';
@@ -418,6 +463,10 @@ async function handler(req, res) {
   const sendJson = (code, obj) => send(code, JSON.stringify(obj), 'application/json; charset=utf-8');
   const redirect = (loc) => { res.writeHead(303, { Location: loc }); res.end(); };
   if (!VALID_ID.test(id)) return send(400, 'invalid id', 'text/plain');
+  // 跨进程排他锁：迁移/保存持有 .migrate.lock（他人新鲜持锁）期间，一切写请求（非 GET/HEAD）一律 503；读不受影响。
+  if (req.method !== 'GET' && req.method !== 'HEAD' && rootLock.isHeld(root)) {
+    return send(503, '迁移/维护进行中（.migrate.lock 被持有），写请求暂不可用，请稍后重试', 'text/plain');
+  }
   try {
     // ===== 静态资源（代码目录，非数据目录）=====
     if (req.method === 'GET' && url.pathname === '/ai-panel.js') {
@@ -481,7 +530,26 @@ async function handler(req, res) {
       if (!VALID_ID.test(to)) return send(400, 'invalid target id', 'text/plain');
       if (!fs.existsSync(docPath(id))) return send(404, 'doc not found', 'text/plain');
       if (fs.existsSync(docPath(to))) return send(409, 'target exists', 'text/plain');
-      fs.copyFileSync(docPath(id), docPath(to));
+      // 冻结点：读源文档 → freezeHtml（自包含内联 typo）→ 归一化为当前格式（禁止把冻结字节直接落成活文档）；meta 继承（rev 重置 1）。
+      try {
+        await withDocLock(root, id, () => {
+          const srcHtml = fs.readFileSync(docPath(id), 'utf8');
+          const srcMeta = loadMeta()[id] || {};
+          const frozen = freezeHtml(srcHtml, srcMeta);
+          const norm = normalizeToCurrent(frozen.html);
+          atomicWrite(docPath(to), norm.html);
+          updateMeta(root, to, () => ({
+            ...(srcMeta || {}),
+            typo: norm.typo,
+            theme: srcMeta.theme || norm.theme || null,
+            styleHash: norm.styleHash,
+            rev: 1
+          }));
+        });
+      } catch (e) {
+        if (e instanceof LockHeld) return sendJson(409, { ok: false, retry: true, error: '该文档正在被处理，请稍后重试' });
+        throw e;
+      }
       return redirect(`/edit?id=${to}`);
     }
     if (req.method === 'POST' && url.pathname === '/delete') {
@@ -508,16 +576,16 @@ async function handler(req, res) {
         return m && m.parent === from && m.company === company && m.role === role && fs.existsSync(docPath(k));
       });
       if (dup) return sendJson(409, { ok: false, existing: dup });
-      // 冻结来源版本（快照），供之后追溯
-      snapshot(from);
-      const srcSnap = fs.existsSync(snapDir(from))
-        ? fs.readdirSync(snapDir(from)).filter((f) => f.endsWith('.html')).sort().pop()?.replace('.html', '') || ''
-        : '';
+      // 冻结来源版本（快照 = freezeHtml + manifest），返回冻结 ts 供之后追溯
+      const srcSnap = snapshot(from);
       let to, n = 2;
       while (fs.existsSync(docPath(`${from}-v${n}`))) n++;
       to = `${from}-v${n}`;
+      // 冻结点：母版 freezeHtml（自包含内联 typo）→ 归一化为当前格式落活文档（禁止直接 copy 冻结字节）
       const srcHtml = fs.readFileSync(docPath(from), 'utf8');
-      fs.copyFileSync(docPath(from), docPath(to));
+      const srcMeta = metaAll[from] || {};
+      const normJob = normalizeToCurrent(freezeHtml(srcHtml, srcMeta).html);
+      atomicWrite(docPath(to), normJob.html);
       // JD：优先文本；给了链接且无文本时尝试读取，失败则记录待补充
       let jd = typeof body.jd === 'string' ? body.jd.trim() : '';
       let jdLink = typeof body.jdLink === 'string' ? body.jdLink.trim() : '';
@@ -534,18 +602,19 @@ async function handler(req, res) {
         } catch (e) { jdError = String(e.message || e); }
       }
       const nowIso = new Date().toISOString();
-      metaAll[to] = {
+      // meta 唯一写入者 updateMeta：只写目标文档 to（不整表覆盖，避免踩并发更新）
+      updateMeta(root, to, () => ({
         parent: from, company, role, jd, jdSource: jd ? (body.jdSource ? String(body.jdSource) : (jdLink ? jdLink : '手动')) : (jdLink || ''),
         createdAt: nowIso,
         tag: (company + '·' + role).slice(0, 20),
+        typo: normJob.typo, theme: srcMeta.theme || normJob.theme || null, styleHash: normJob.styleHash, rev: 1,
         job: {
           status: 'draft', sourceSnap: srcSnap, sourceHash: contentHash(srcHtml),
           materials: Array.isArray(body.materials) ? body.materials.filter((x) => typeof x === 'string') : [],
           changes: [], todos: jdError ? [{ section: '岗位信息', question: 'JD 链接读取失败（' + jdError + '），请粘贴 JD 文本', why: '岗位匹配分析需要 JD', resolved: false }] : [],
           generatedAt: null, deliveredAt: null
         }
-      };
-      saveMeta(metaAll);
+      }));
       if ((req.headers.accept || '').includes('application/json') || (req.headers['content-type'] || '').includes('application/json')) {
         return sendJson(200, { ok: true, id: to, jdError: jdError || null });
       }
@@ -561,21 +630,21 @@ async function handler(req, res) {
       const metaAll = loadMeta();
       const dup = Object.keys(metaAll).find((k) => metaAll[k] && metaAll[k].parent === body.from && metaAll[k].company === body.company.trim() && metaAll[k].role === body.role.trim() && fs.existsSync(docPath(k)));
       if (dup) return sendJson(409, { ok: false, existing: dup, error: '同岗位草稿已存在' });
-      snapshot(body.from);
-      const srcSnap = fs.existsSync(snapDir(body.from))
-        ? fs.readdirSync(snapDir(body.from)).filter((f) => f.endsWith('.html')).sort().pop()?.replace('.html', '') || ''
-        : '';
+      const srcSnap = snapshot(body.from);   // 冻结点：freezeHtml + manifest，返回冻结 ts
       let to = body.to, n = 2;
       if (to) {
         if (!VALID_ID.test(to)) return send(400, 'invalid to', 'text/plain');
         if (fs.existsSync(docPath(to))) return send(409, 'target exists', 'text/plain');
       } else { while (fs.existsSync(docPath(`${body.from}-v${n}`))) n++; to = `${body.from}-v${n}`; }
+      // 冻结点：母版 freezeHtml → 归一化为当前格式落活文档（禁止直接 copy 冻结字节）
       const srcHtml = fs.readFileSync(docPath(body.from), 'utf8');
-      fs.copyFileSync(docPath(body.from), docPath(to));
-      metaAll[to] = { parent: body.from, company: body.company.trim(), role: body.role.trim(), jd: typeof body.jd === 'string' ? body.jd : '',
+      const srcMeta = metaAll[body.from] || {};
+      const normVer = normalizeToCurrent(freezeHtml(srcHtml, srcMeta).html);
+      atomicWrite(docPath(to), normVer.html);
+      updateMeta(root, to, () => ({ parent: body.from, company: body.company.trim(), role: body.role.trim(), jd: typeof body.jd === 'string' ? body.jd : '',
         createdAt: new Date().toISOString(), tag: (body.company.trim() + '·' + body.role.trim()).slice(0, 20),
-        job: { status: 'draft', sourceSnap: srcSnap, sourceHash: contentHash(srcHtml), materials: [], changes: [], todos: [], generatedAt: null, deliveredAt: null } };
-      saveMeta(metaAll);
+        typo: normVer.typo, theme: srcMeta.theme || normVer.theme || null, styleHash: normVer.styleHash, rev: 1,
+        job: { status: 'draft', sourceSnap: srcSnap, sourceHash: contentHash(srcHtml), materials: [], changes: [], todos: [], generatedAt: null, deliveredAt: null } }));
       return redirect(`/edit?id=${to}`);
     }
     // 岗位修改清单读/写（状态持久化；应用动作由前端 DOM 执行后回写状态）
@@ -586,54 +655,65 @@ async function handler(req, res) {
     }
     if (req.method === 'POST' && url.pathname === '/job/changes') {
       const body = JSON.parse(await readBody(req));
-      const metaAll = loadMeta();
-      const m = metaAll[id];
-      if (!m || !m.job) return sendJson(404, { ok: false, error: '该文档不是岗位草稿' });
       const updates = Array.isArray(body.updates) ? body.updates : [];
-      for (const u of updates) {
-        if (!u || typeof u.id !== 'string') continue;
-        const c = m.job.changes.find((x) => x.id === u.id);
-        if (!c) continue;
-        if (typeof u.status === 'string' && ['pending', 'accepted', 'rejected', 'reverted', 'resolved', 'superseded'].includes(u.status)) c.status = u.status;
-        if (typeof u.note === 'string') c.note = u.note;
-        if (u.meta && typeof u.meta === 'object') c.meta = { ...(c.meta || {}), ...u.meta };
-        c.updatedAt = new Date().toISOString();
-      }
-      if (Array.isArray(body.todos)) m.job.todos = body.todos;
-      if (typeof body.status === 'string' && ['draft', 'deliverable', 'delivered'].includes(body.status)) m.job.status = body.status;
-      saveMeta(metaAll);
-      return sendJson(200, { ok: true, job: m.job });
+      let jobOut = null, isJob = false;
+      // docs-meta 唯一写入者 updateMeta：读最新→只改本文档 job 子树→原子写（不整表覆盖）
+      updateMeta(root, id, (m) => {
+        if (!m || !m.job) return m;   // 非岗位草稿：原样返回（下方 404）
+        isJob = true;
+        for (const u of updates) {
+          if (!u || typeof u.id !== 'string') continue;
+          const c = m.job.changes.find((x) => x.id === u.id);
+          if (!c) continue;
+          if (typeof u.status === 'string' && ['pending', 'accepted', 'rejected', 'reverted', 'resolved', 'superseded'].includes(u.status)) c.status = u.status;
+          if (typeof u.note === 'string') c.note = u.note;
+          if (u.meta && typeof u.meta === 'object') c.meta = { ...(c.meta || {}), ...u.meta };
+          c.updatedAt = new Date().toISOString();
+        }
+        if (Array.isArray(body.todos)) m.job.todos = body.todos;
+        if (typeof body.status === 'string' && ['draft', 'deliverable', 'delivered'].includes(body.status)) m.job.status = body.status;
+        jobOut = m.job;
+        return m;
+      });
+      if (!isJob) return sendJson(404, { ok: false, error: '该文档不是岗位草稿' });
+      return sendJson(200, { ok: true, job: jobOut });
     }
     // 生成建议（LLM 可选；失败不影响已有草稿与母版）
     if (req.method === 'POST' && url.pathname === '/job/generate') {
       if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型：草稿仍可手动编辑，配置后可生成建议' });
       const body = JSON.parse(await readBody(req));
-      const metaAll = loadMeta();
-      const m = metaAll[id];
-      if (!m || !m.job) return sendJson(404, { ok: false, error: '该文档不是岗位草稿' });
+      const m0 = loadMeta()[id];
+      if (!m0 || !m0.job) return sendJson(404, { ok: false, error: '该文档不是岗位草稿' });
       if (!fs.existsSync(docPath(id))) return sendJson(404, { ok: false, error: 'doc not found' });
       const docText = docToText(fs.readFileSync(docPath(id), 'utf8'), { includeHidden: false });
-      const confirmedMats = loadMats().filter((x) => x.confirmed === true && m.job.materials.includes(x.id));
-      const p = buildJobPrompt({ docText, jd: m.jd || '', company: m.company || '', role: m.role || '', materials: confirmedMats, twoPage: true });
+      const confirmedMats = loadMats().filter((x) => x.confirmed === true && m0.job.materials.includes(x.id));
+      const p = buildJobPrompt({ docText, jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: confirmedMats, twoPage: true });
       let raw;
       try { raw = await chat(root, p.sys, p.user); }
       catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + (e.message || e) }); }
       const ops = parseJobOps(raw);
       if (!ops) return sendJson(502, { ok: false, error: '模型输出无法解析为修改操作，未应用任何修改' });
-      const gen = (m.job.changes.reduce((mx, c) => Math.max(mx, c.gen || 0), 0)) + 1;
-      // 旧候选未处理的标记为 superseded（不覆盖已接受/已撤销的历史）
-      for (const c of m.job.changes) if (c.status === 'pending') c.status = 'superseded';
-      let ci = 0;
-      for (const c of ops.changes) {
-        ci++;
-        m.job.changes.push({ id: 'g' + gen + '-c' + ci, gen, ...c, status: 'pending', createdAt: new Date().toISOString() });
-      }
-      m.job.todos = (m.job.todos || []).concat(ops.todos.map((t) => ({ ...t, resolved: false })));
-      m.job.generatedAt = new Date().toISOString();
-      m.job.status = 'draft';
-      m.job.summary = ops.summary;
-      saveMeta(metaAll);
-      return sendJson(200, { ok: true, job: m.job, generated: ops.changes.length, todos: ops.todos.length });
+      let jobOut = null, isJob = false;
+      updateMeta(root, id, (m) => {
+        if (!m || !m.job) return m;
+        isJob = true;
+        const gen = (m.job.changes.reduce((mx, c) => Math.max(mx, c.gen || 0), 0)) + 1;
+        // 旧候选未处理的标记为 superseded（不覆盖已接受/已撤销的历史）
+        for (const c of m.job.changes) if (c.status === 'pending') c.status = 'superseded';
+        let ci = 0;
+        for (const c of ops.changes) {
+          ci++;
+          m.job.changes.push({ id: 'g' + gen + '-c' + ci, gen, ...c, status: 'pending', createdAt: new Date().toISOString() });
+        }
+        m.job.todos = (m.job.todos || []).concat(ops.todos.map((t) => ({ ...t, resolved: false })));
+        m.job.generatedAt = new Date().toISOString();
+        m.job.status = 'draft';
+        m.job.summary = ops.summary;
+        jobOut = m.job;
+        return m;
+      });
+      if (!isJob) return sendJson(404, { ok: false, error: '该文档不是岗位草稿' });
+      return sendJson(200, { ok: true, job: jobOut, generated: ops.changes.length, todos: ops.todos.length });
     }
     // ===== 保存（正文与 PDF 分离；revision 冲突检测）=====
     if (req.method === 'POST' && url.pathname === '/save') {
@@ -649,33 +729,64 @@ async function handler(req, res) {
         .replace(/<style[^>]*data-job-panel[^>]*>[\s\S]*?<\/style>/g, '');
       if (!html.trim()) return send(400, 'empty save rejected', 'text/plain');
       if (!fs.existsSync(docPath(id))) return send(404, 'doc not found', 'text/plain');
-      // 多标签保护：客户端带上它最后一次见到的磁盘 mtime；磁盘已被别的写入推进 → 409 冲突
-      const baseMtime = Number(url.searchParams.get('baseMtime') || 0);
-      const force = url.searchParams.get('force') === '1';
-      if (baseMtime > 0 && !force) {
-        const cur = fs.statSync(docPath(id)).mtimeMs;
-        if (cur > baseMtime + 2) return sendJson(409, { ok: false, conflict: true, mtime: cur, error: '磁盘上的文档已被其他窗口更新' });
-      }
-      if (!url.searchParams.get('autosave')) snapshot(id);
-      const prevHash = fs.existsSync(docPath(id)) ? contentHash(fs.readFileSync(docPath(id), 'utf8')) : '';
-      const tmp = docPath(id) + '.' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.tmp';
-      fs.writeFileSync(tmp, html);
-      fs.renameSync(tmp, docPath(id));
-      const newHash = contentHash(html);
-      // 改稿使「可投递」失效（已有投递存档不受影响）
-      if (prevHash && prevHash !== newHash) {
-        try {
-          const metaAll = loadMeta();
-          if (metaAll[id] && metaAll[id].job && metaAll[id].job.status === 'deliverable') {
-            metaAll[id].job.status = 'draft';
-            metaAll[id].job.invalidatedAt = new Date().toISOString();
-            saveMeta(metaAll);
+      // 跨进程排他锁：保存与迁移互斥（被他人持有 → 503）。持锁贯穿整个事务，覆盖两次 rename 之间被杀的窗口。
+      try { rootLock.acquire(root); }
+      catch (e) { if (e instanceof LockHeld) return send(503, '另一保存/迁移正在进行（.migrate.lock），请稍后重试', 'text/plain'); throw e; }
+      let out;
+      try {
+        out = await withDocLock(root, id, async () => {
+          // 多标签保护（文档锁内检查，避免与 /rollback、/duplicate 竞态）：磁盘 mtime 已被别处推进 → 409 冲突
+          const baseMtime = Number(url.searchParams.get('baseMtime') || 0);
+          const force = url.searchParams.get('force') === '1';
+          if (baseMtime > 0 && !force) {
+            const cur = fs.statSync(docPath(id)).mtimeMs;
+            if (cur > baseMtime + 2) return { status: 409, body: { ok: false, conflict: true, mtime: cur, error: '磁盘上的文档已被其他窗口更新' } };
           }
-        } catch (e) { /* meta 损坏不阻塞正文保存 */ }
+          const autosave = !!url.searchParams.get('autosave');
+          const oldHtml = fs.readFileSync(docPath(id), 'utf8');
+          const oldMeta = loadMeta()[id] ?? null;
+          // 当前文档落盘不含 typo：剥离内联 typo-custom，值只存 meta（normalizeToCurrent 幂等）
+          const norm = normalizeToCurrent(html);
+          const newHtml = norm.html;
+          const newTypo = norm.typo;                       // '' 表示无微调（合法历史状态）
+          // 旧版冻结快照（手动保存）：freezeHtml 内联旧 meta.typo + manifest；autosave 免快照（配额）
+          const oldSnapTs = autosave ? '' : snapshot(id);
+          // 写前持久化事务记录（含旧正文副本 + 旧 meta 整份副本），覆盖进程中断
+          const txId = beginTx(root, id, 'save', oldSnapTs);
+          try {
+            atomicWrite(docPath(id), newHtml);              // rename #1：正文
+            const gapMs = Number(process.env.RESUME_TEST_SAVE_GAP_MS || 0);
+            if (gapMs > 0) await new Promise((r) => setTimeout(r, gapMs));   // 测试钩子：模拟两次 rename 之间被杀
+            const prevHash = contentHash(oldHtml), newHash = contentHash(newHtml);
+            updateMeta(root, id, (m) => {                   // rename #2：meta（读最新→只 patch 本文档→原子写）
+              const base = { ...(m || {}) };
+              base.typo = newTypo;
+              base.rev = (Number(base.rev) || 0) + 1;
+              // 改稿使「可投递」失效（已有投递存档不受影响）
+              if (prevHash && prevHash !== newHash && base.job && base.job.status === 'deliverable') {
+                base.job = { ...base.job, status: 'draft', invalidatedAt: new Date().toISOString() };
+              }
+              return base;
+            });
+            commitTx(root, txId);                           // 成功：删事务记录
+          } catch (e2) {
+            // 任一异常：用旧正文 + 旧 meta 副本恢复两者，删事务记录，再抛（外层映射状态码）
+            try { atomicWrite(docPath(id), oldHtml); } catch {}
+            try { updateMeta(root, id, () => oldMeta); } catch {}
+            try { commitTx(root, txId); } catch {}
+            throw e2;
+          }
+          const st = fs.statSync(docPath(id));
+          const pdfStat = fs.existsSync(pdfPath(id)) ? fs.statSync(pdfPath(id)) : null;
+          return { status: 200, body: { ok: true, mtime: st.mtimeMs, hash: contentHash(newHtml), pdfStale: !pdfStat || pdfStat.mtimeMs < st.mtimeMs } };
+        });
+      } catch (e) {
+        if (e instanceof LockHeld) return sendJson(409, { ok: false, retry: true, error: '该文档正在被另一保存/回滚/复制处理，请稍后重试' });
+        throw e;
+      } finally {
+        try { rootLock.release(root); } catch {}
       }
-      const st = fs.statSync(docPath(id));
-      const pdfStat = fs.existsSync(pdfPath(id)) ? fs.statSync(pdfPath(id)) : null;
-      return sendJson(200, { ok: true, mtime: st.mtimeMs, hash: contentHash(html), pdfStale: !pdfStat || pdfStat.mtimeMs < st.mtimeMs });
+      return sendJson(out.status, out.body);
     }
     // 显式渲染 PDF（正文保存不触发渲染，避免自动保存拖渲染进程）
     if (req.method === 'POST' && url.pathname === '/render') {
@@ -696,8 +807,9 @@ async function handler(req, res) {
       const sDir = snapDir(body.docId);
       fs.mkdirSync(sDir, { recursive: true });
       const frozenFile = path.join(sDir, snapTs + '.html');
-      fs.copyFileSync(docPath(body.docId), frozenFile);          // 冻结当时内容
-      const hash = contentHash(fs.readFileSync(frozenFile, 'utf8'));
+      // 冻结点：freezeHtml（内联当时 meta.typo、自包含）+ manifest 全字段；存档 PDF 从冻结内容渲染（铁律二）
+      const frozen = writeFrozenSnapshot(sDir, snapTs, fs.readFileSync(docPath(body.docId), 'utf8'), loadMeta()[body.docId] || {});
+      const hash = contentHash(frozen.html);
       fs.mkdirSync(path.join(root, 'pdfs', 'archive'), { recursive: true });
       const out = archivePath(now);
       const archiveOk = await renderDoc({ src: frozenFile, out });  // 从冻结内容生成，绝不复用旧 PDF
@@ -967,8 +1079,25 @@ async function handler(req, res) {
       const ts = url.searchParams.get('ts') || '';
       const snap = path.join(snapDir(id), path.basename(ts) + '.html');
       if (!fs.existsSync(snap)) return send(404, 'snapshot not found', 'text/plain');
-      snapshot(id);
-      fs.copyFileSync(snap, docPath(id));
+      // 冻结点：回滚先冻结当前版（snapshot），再读冻结快照 → 归一化为当前格式（禁止把冻结字节直接落成活文档）→ 写正文 + meta（typo/theme/styleHash 从冻结解析）→ rev++
+      try {
+        await withDocLock(root, id, () => {
+          snapshot(id);
+          const norm = normalizeToCurrent(fs.readFileSync(snap, 'utf8'));
+          atomicWrite(docPath(id), norm.html);
+          updateMeta(root, id, (m) => {
+            const base = { ...(m || {}) };
+            base.typo = norm.typo;
+            base.styleHash = norm.styleHash;
+            if (norm.theme != null) base.theme = norm.theme;
+            base.rev = (Number(base.rev) || 0) + 1;
+            return base;
+          });
+        });
+      } catch (e) {
+        if (e instanceof LockHeld) return sendJson(409, { ok: false, retry: true, error: '该文档正在被处理，请稍后重试' });
+        throw e;
+      }
       await renderDoc({ docId: id });
       return redirect(`/edit?id=${id}`);
     }
@@ -1475,11 +1604,12 @@ async function handler(req, res) {
       if (typeof body.tag !== 'string') return send(400, 'tag 必填字符串', 'text/plain');
       if (!fs.existsSync(docPath(docId))) return send(404, 'doc not found', 'text/plain');
       const tag = body.tag.trim().slice(0, 20).replace(/['"\\]/g, '');
-      const meta = loadMeta();
-      if (!meta[docId]) meta[docId] = {};
-      if (tag) meta[docId].tag = tag; else delete meta[docId].tag;
-      if (!Object.keys(meta[docId]).length) delete meta[docId];
-      saveMeta(meta);
+      // docs-meta 唯一写入者 updateMeta：只改本文档 tag（空 → 删 tag；条目空 → 删条目）
+      updateMeta(root, docId, (m) => {
+        const next = { ...(m || {}) };
+        if (tag) next.tag = tag; else delete next.tag;
+        return Object.keys(next).length ? next : null;
+      });
       return sendJson(200, { ok: true });
     }
     if (req.method === 'POST' && url.pathname === '/link') {
@@ -1487,14 +1617,13 @@ async function handler(req, res) {
       if (!body.id || !VALID_ID.test(body.id)) return send(400, 'invalid id', 'text/plain');
       if (!['zh', 'en'].includes(body.lang)) return send(400, 'lang 仅 zh|en', 'text/plain');
       if (!fs.existsSync(docPath(body.id))) return send(404, 'doc not found', 'text/plain');
-      const meta = loadMeta();
-      if (!body.linkedTo) { if (meta[body.id]) { delete meta[body.id].linkedTo; delete meta[body.id].lang; } }
-      else {
+      if (!body.linkedTo) {
+        updateMeta(root, body.id, (m) => { if (!m) return m; const next = { ...m }; delete next.linkedTo; delete next.lang; return next; });
+      } else {
         if (!VALID_ID.test(body.linkedTo)) return send(400, 'invalid linkedTo', 'text/plain');
         if (!fs.existsSync(docPath(body.linkedTo))) return send(404, 'linked doc not found', 'text/plain');
-        meta[body.id] = { ...(meta[body.id] || {}), lang: body.lang, linkedTo: body.linkedTo };
+        updateMeta(root, body.id, (m) => ({ ...(m || {}), lang: body.lang, linkedTo: body.linkedTo }));
       }
-      saveMeta(meta);
       return sendJson(200, { ok: true });
     }
     // ===== 复盘 =====
@@ -1623,7 +1752,9 @@ async function handler(req, res) {
             for (const f of fs.readdirSync(path.join(root, d))) fs.rmSync(path.join(root, d, f), { recursive: true, force: true });
             fs.cpSync(src, path.join(root, d), { recursive: true });
           }
-          for (const f of ['docs-meta.json', 'applications.json', 'materials.json']) if (fs.existsSync(path.join(stage, f))) fs.copyFileSync(path.join(stage, f), path.join(root, f));
+          for (const f of ['applications.json', 'materials.json']) if (fs.existsSync(path.join(stage, f))) fs.copyFileSync(path.join(stage, f), path.join(root, f));
+          // docs-meta 成对替换：经 updateMeta 逐文档写（唯一写入者），不裸 copyFileSync 覆盖共享文件
+          if (fs.existsSync(path.join(stage, 'docs-meta.json'))) applyMetaSnapshot(readJsonAt(path.join(stage, 'docs-meta.json')) || {});
         } else {
           // 合并：文档/快照按文件合并（同 id 以备份为准）；JSON 按 id 合并，本地独有保留
           for (const d of ['docs', 'snapshots']) {
@@ -1656,8 +1787,8 @@ async function handler(req, res) {
           const metaStage = path.join(stage, 'docs-meta.json');
           if (fs.existsSync(metaStage)) {
             const bakMeta = readJsonAt(metaStage) || {};
-            const localMeta = loadMeta();
-            saveMeta({ ...localMeta, ...bakMeta });  // 同 id：备份覆盖
+            // 成对合并：同 id 以备份为准，逐文档经 updateMeta 写（本地独有文档保留，不整表覆盖）
+            for (const k of Object.keys(bakMeta)) updateMeta(root, k, () => bakMeta[k]);
           }
         }
       } catch (e) {
@@ -1686,7 +1817,9 @@ async function handler(req, res) {
           fs.rmSync(path.join(root, d), { recursive: true, force: true });
           fs.cpSync(src, path.join(root, d), { recursive: true });
         }
-        for (const f of ['docs-meta.json', 'applications.json', 'materials.json']) if (fs.existsSync(path.join(dir, f))) fs.copyFileSync(path.join(dir, f), path.join(root, f));
+        for (const f of ['applications.json', 'materials.json']) if (fs.existsSync(path.join(dir, f))) fs.copyFileSync(path.join(dir, f), path.join(root, f));
+        // docs-meta 成对回退：经 updateMeta 逐文档写（唯一写入者）
+        if (fs.existsSync(path.join(dir, 'docs-meta.json'))) applyMetaSnapshot(readJsonAt(path.join(dir, 'docs-meta.json')) || {});
       } catch (e) {
         return sendJson(500, { ok: false, error: '回退失败：' + (e.message || e) + '（本次操作前的状态在 ' + safety2 + '）' });
       }
@@ -1847,6 +1980,7 @@ async function handler(req, res) {
     }
     send(404, 'not found', 'text/plain');
   } catch (e) {
+    if (e instanceof LockHeld) return send(409, '另一个写操作正在进行，请稍后重试', 'text/plain');
     send(e instanceof SyntaxError ? 400 : e.message === 'body too large' ? 413 : (e.httpCode || 500),
       e instanceof SyntaxError ? 'bad JSON body' : (e.code === 'CORRUPT' ? e.message : 'server error: ' + e.message), 'text/plain');
   }
@@ -1886,5 +2020,27 @@ function tryListen(i) {
     process.exit(1);
   });
   s.listen(PORTS[i], '127.0.0.1', () => console.log(`简历平台: http://localhost:${PORTS[i]}`));
+}
+// 启动恢复：扫描 .tx/ 未完成事务（进程被杀于两次 rename 之间等），只恢复目标文档的正文与 meta，不覆盖其他文档的并发更新。
+// 必须先于 listen（避免恢复完成前对外提供写服务）。陈旧 .migrate.lock（持有者已死）顺手清除，避免重启后写请求被误 503。
+try {
+  if (fs.existsSync(rootLock.path(root)) && !rootLock.isHeld(root)) rootLock.release(root);
+} catch {}
+try {
+  const recovered = recoverPending(root, { restoreDoc: (rec) => {
+    const { docId, oldSnapTs, oldMeta, oldHtml } = rec;
+    if (typeof oldHtml === 'string') atomicWrite(docPath(docId), oldHtml);            // 首选：事务内旧正文副本（精确旧字节）
+    else if (oldSnapTs) {                                                             // 兜底：归一化旧冻结快照
+      const snapFile = path.join(snapDir(docId), String(oldSnapTs).replace(/[^0-9-]/g, '') + '.html');
+      if (fs.existsSync(snapFile)) atomicWrite(docPath(docId), normalizeToCurrent(fs.readFileSync(snapFile, 'utf8')).html);
+    }
+    updateMeta(root, docId, () => (oldMeta === undefined ? null : oldMeta));          // 只回滚目标文档 meta
+  } });
+  const done = recovered.filter((r) => r.ok);
+  if (done.length) console.error(`[tx] 启动恢复未完成事务 ${done.length} 条：` + done.map((r) => `${r.docId}(${r.phase})`).join('、'));
+  const failed = recovered.filter((r) => !r.ok);
+  for (const r of failed) console.error(`[tx] 恢复失败（记录保留待重试）：${r.docId} — ${r.error}`);
+} catch (e) {
+  console.error('[tx] 启动恢复异常：', e && e.message || e);
 }
 tryListen(0);

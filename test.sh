@@ -140,12 +140,14 @@ CODE=$(curl -s -X POST "$B/save?id=$DOCID" --data-binary '' -o /dev/null -w '%{h
 [ "$CODE" = "400" ] || fail "空正文未拦截（${CODE}）"
 CODE=$(curl -s -X POST "$B/save?id=$DOCID" --data-binary '   ' -o /dev/null -w '%{http_code}')
 [ "$CODE" = "400" ] || fail "空白未拦截（${CODE}）"
-N0=$(ls "$RESUME_ROOT/snapshots/$DOCID" 2>/dev/null | wc -l | tr -d ' ')
+# 快照计数只数冻结 html（*.html）；manifest（*.manifest.json）为伴生记录，不计入"快照数"
+snap_count() { find "$RESUME_ROOT/snapshots/$DOCID" -maxdepth 1 -name '*.html' 2>/dev/null | wc -l | tr -d ' '; }
+N0=$(snap_count)
 curl -s -X POST "$B/save?id=$DOCID&autosave=1" --data-binary "$(cat "$RESUME_ROOT/docs/$DOCID.html")" -o /dev/null
-N1=$(ls "$RESUME_ROOT/snapshots/$DOCID" 2>/dev/null | wc -l | tr -d ' ')
+N1=$(snap_count)
 [ "$N1" = "$N0" ] || fail "autosave 打了快照（$N0→${N1}）"
 curl -s -X POST "$B/save?id=$DOCID" --data-binary "$(cat "$RESUME_ROOT/docs/$DOCID.html")" -o /dev/null
-N2=$(ls "$RESUME_ROOT/snapshots/$DOCID" | wc -l | tr -d ' ')
+N2=$(snap_count)
 [ "$N2" = "$((N1+1))" ] || fail "手动保存未打快照（$N1→${N2}）"
 echo '✅ 保存边界 + 快照策略'
 

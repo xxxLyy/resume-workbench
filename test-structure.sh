@@ -464,3 +464,107 @@ if (/docs-meta|loadMeta|meta\.typo/.test(renderSrc)) fail('render.mjs 不得引�
 if (!renderSrc.includes("'--src'") || !renderSrc.includes("'--out'")) fail('render.mjs 应保留 --src/--out 入口');
 console.log('✅ S1-A freeze 六导出：splitDoc 两态/HTML 幂等/meta.typo 覆盖/renderInputId 含正文/完整资源指纹/staleInfo 三态/render meta-blind');
 EOF
+
+# —— S1-B：tx.mjs 保存事务恢复 + 共享 docs-meta 原子更新（含两进程并发不丢字段）+ 文档锁/根锁 ——
+# 隔离：全部写在 mktemp 根内，零接触真实 docs/snapshots/pdfs/JSON。
+node --input-type=module << 'EOF'
+import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
+import { spawn } from 'node:child_process'; import { pathToFileURL } from 'node:url';
+import { beginTx, commitTx, recoverPending, withDocLock, updateMeta, rootLock, LockHeld } from './tx.mjs';
+const fail = (m) => { console.error('❌ S1-B ' + m); process.exit(1); };
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tx-s1b-'));
+fs.mkdirSync(path.join(tmp, 'docs'), { recursive: true });
+const metaFile = path.join(tmp, 'docs-meta.json');
+const txFile = (id, ext) => path.join(tmp, '.tx', id + ext);
+const readMeta = () => JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+
+// ① beginTx/commitTx 生命周期：写 .json + .meta.json（目标文档旧 meta 整份副本）+ .html（旧正文），commit 清空
+fs.writeFileSync(path.join(tmp, 'docs', 'A.html'), '<html><body>OLD-A</body></html>');
+fs.writeFileSync(metaFile, JSON.stringify({ A: { typo: 'a-typo', rev: 3 }, B: { tag: 'b-tag' } }));
+const txId = beginTx(tmp, 'A', 'save', '2026-01-01-000000');
+if (!fs.existsSync(txFile(txId, '.json'))) fail('beginTx 未写 .tx/<txId>.json');
+if (!fs.existsSync(txFile(txId, '.meta.json'))) fail('beginTx 未写 .tx/<txId>.meta.json');
+if (!fs.existsSync(txFile(txId, '.html'))) fail('beginTx 未备份旧正文到 .tx/<txId>.html');
+const rec0 = JSON.parse(fs.readFileSync(txFile(txId, '.json'), 'utf8'));
+if (rec0.docId !== 'A' || rec0.phase !== 'save' || rec0.oldSnapTs !== '2026-01-01-000000') fail('tx 记录字段不符: ' + JSON.stringify(rec0));
+const backed = JSON.parse(fs.readFileSync(txFile(txId, '.meta.json'), 'utf8'));
+if (!backed || backed.typo !== 'a-typo' || backed.rev !== 3) fail('.meta.json 应为目标文档旧 meta 整份副本: ' + JSON.stringify(backed));
+if (!fs.readFileSync(txFile(txId, '.html'), 'utf8').includes('OLD-A')) fail('.html 应为旧正文副本');
+commitTx(tmp, txId);
+if (fs.existsSync(txFile(txId, '.json')) || fs.existsSync(txFile(txId, '.meta.json')) || fs.existsSync(txFile(txId, '.html'))) fail('commitTx 未清空 tx 记录');
+console.log('✅ S1-B-1 beginTx/commitTx 生命周期（.json/.meta.json/.html 写全并清空）');
+
+// ② recoverPending 只恢复目标文档：A 半程（html 新、meta 新）回滚到旧；A 事务开始后并发更新的 B 不被覆盖
+fs.writeFileSync(path.join(tmp, 'docs', 'A.html'), '<html><body>OLD-A</body></html>');
+fs.writeFileSync(metaFile, JSON.stringify({ A: { typo: 'a-typo', rev: 3 }, B: { tag: 'b-tag' } }));
+const tx2 = beginTx(tmp, 'A', 'save', '');          // 捕获 OLD-A + A.meta(rev3)
+// 模拟中断：rename#1 改了正文、rename#2 改了 A.meta（推进到 rev4），且 B 在 A 事务开始之后并发更新
+fs.writeFileSync(path.join(tmp, 'docs', 'A.html'), '<html><body>NEW-A</body></html>');
+updateMeta(tmp, 'A', () => ({ typo: 'a-typo', rev: 4 }));
+updateMeta(tmp, 'B', (m) => ({ ...(m || {}), tag: 'b-CONCURRENT' }));
+const recovered = recoverPending(tmp, { restoreDoc: (rec) => {
+  if (rec.docId !== 'A') fail('recoverPending 应只处理事务指名文档，实得 ' + rec.docId);
+  if (typeof rec.oldHtml === 'string') fs.writeFileSync(path.join(tmp, 'docs', rec.docId + '.html'), rec.oldHtml);
+  updateMeta(tmp, rec.docId, () => rec.oldMeta);
+} });
+if (recovered.length !== 1) fail('recovered 应含 1 条: ' + recovered.length);
+const afterMeta = readMeta();
+if (afterMeta.A.rev !== 3) fail('A.meta 应回滚到旧值 rev=3: ' + JSON.stringify(afterMeta.A));
+if (afterMeta.B.tag !== 'b-CONCURRENT') fail('B 的并发更新被恢复覆盖（应保留）: ' + JSON.stringify(afterMeta.B));
+if (!fs.readFileSync(path.join(tmp, 'docs', 'A.html'), 'utf8').includes('OLD-A')) fail('A.html 应回滚到旧正文');
+if (fs.readdirSync(path.join(tmp, '.tx')).some((f) => f.endsWith('.json'))) fail('recoverPending 未清空 tx 记录');
+console.log('✅ S1-B-2 recoverPending 只恢复目标文档（B 事务后并发更新不丢）');
+
+// ③ updateMeta 两进程并发交替 patch 不同文档 → 两文档字段都在（无丢失更新）
+fs.writeFileSync(metaFile, JSON.stringify({}));
+const txUrl = pathToFileURL(path.join(process.cwd(), 'tx.mjs')).href;
+const childFile = path.join(tmp, 'child.mjs');
+fs.writeFileSync(childFile, `import { updateMeta } from '${txUrl}';
+const root = process.argv[2], docId = process.argv[3], prefix = process.argv[4], n = Number(process.argv[5]);
+for (let i = 0; i < n; i++) {
+  updateMeta(root, docId, (m) => ({ ...(m || {}), [prefix + i]: i }));
+  const sab = new SharedArrayBuffer(4); Atomics.wait(new Int32Array(sab), 0, 0, 1 + (i % 3)); // 主动让出，制造跨进程读改写交错
+}
+`);
+const runChild = (docId, prefix, n) => new Promise((resolve, reject) => {
+  const c = spawn(process.execPath, [childFile, tmp, docId, prefix, String(n)], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let err = ''; c.stderr.on('data', (d) => err += d);
+  c.on('error', reject); c.on('exit', (code) => code === 0 ? resolve() : reject(new Error('child exit ' + code + ': ' + err)));
+});
+await Promise.all([runChild('docA', 'a', 60), runChild('docB', 'b', 60)]);
+const cm = readMeta();
+if (!cm.docA || !cm.docB) fail('两进程并发后两文档都应存在: ' + JSON.stringify(Object.keys(cm)));
+for (let i = 0; i < 60; i++) {
+  if (cm.docA['a' + i] !== i) fail('docA 丢失字段 a' + i + '（并发丢失更新）');
+  if (cm.docB['b' + i] !== i) fail('docB 丢失字段 b' + i + '（并发丢失更新）');
+}
+console.log('✅ S1-B-3 updateMeta 两进程并发 60×2 交替 patch → 两文档字段全在');
+
+// ④ withDocLock：同文档重入抛 LockHeld；释放后可再用；不同文档不互斥
+if (withDocLock(tmp, 'A', () => 'done-A') !== 'done-A') fail('withDocLock 同步 fn 应返回其值');
+const hold = withDocLock(tmp, 'A', async () => { await new Promise((r) => setTimeout(r, 60)); return 'held'; });
+let threw = false; try { withDocLock(tmp, 'A', () => 'x'); } catch (e) { if (e instanceof LockHeld) threw = true; }
+if (!threw) fail('持锁期间同文档重入应抛 LockHeld');
+if (withDocLock(tmp, 'B', () => 'b-ok') !== 'b-ok') fail('不同文档不应互斥');
+if ((await hold) !== 'held') fail('withDocLock 异步 fn 应返回其值');
+if (withDocLock(tmp, 'A', () => 'again') !== 'again') fail('释放后应可再次持锁');
+console.log('✅ S1-B-4 withDocLock 重入 LockHeld/释放/异文档不互斥');
+
+// ⑤ rootLock：acquire/release/isHeld + 死 pid 陈旧锁自动破除；持锁期间再 acquire 抛 LockHeld
+if (rootLock.isHeld(tmp)) fail('无锁时 isHeld 应 false');
+rootLock.acquire(tmp);
+if (!rootLock.isHeld(tmp)) fail('acquire 后 isHeld 应 true');
+let migThrew = false; try { rootLock.acquire(tmp); } catch (e) { if (e instanceof LockHeld) migThrew = true; }
+if (!migThrew) fail('持锁期间再 acquire 应抛 LockHeld（同 pid 非陈旧）');
+rootLock.release(tmp);
+if (rootLock.isHeld(tmp)) fail('release 后 isHeld 应 false');
+fs.writeFileSync(path.join(tmp, '.migrate.lock'), JSON.stringify({ pid: 999999, host: 'x', startedAt: Date.now() }));  // 死 pid（超 pid_max）
+if (rootLock.isHeld(tmp)) fail('死 pid 锁应视为陈旧（isHeld=false）');
+rootLock.acquire(tmp);                                  // 应破除陈旧锁后成功持有
+if (!rootLock.isHeld(tmp)) fail('破除陈旧锁后应持有');
+rootLock.release(tmp);
+console.log('✅ S1-B-5 rootLock acquire/release/isHeld + 陈旧锁破除');
+
+fs.rmSync(tmp, { recursive: true, force: true });
+console.log('✅ S1-B tx 恢复/updateMeta 并发不丢字段/文档锁/根锁 全部通过');
+EOF
