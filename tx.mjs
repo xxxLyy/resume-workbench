@@ -1,8 +1,10 @@
 // tx.mjs — 保存事务 / 共享 docs-meta 原子更新 / 跨进程锁（S1 Task 3）
 // 契约（供 server.mjs 与后续 T7 迁移消费）：
-//   beginTx(root, docId, phase, oldSnapTs) -> txId   写 .tx/<txId>.json + .tx/<txId>.meta.json（目标文档旧 meta 整份副本）+ .tx/<txId>.html（旧正文副本）
+//   beginTx(root, docId, phase, oldSnapTs) -> txId   写 .tx/<txId>.meta.json（目标文档旧 meta 整份副本）+ .tx/<txId>.html（旧正文副本）+ 最后 .tx/<txId>.json（标记＝提交点）
 //   commitTx(root, txId)                              清空该事务的三份记录
+//   dropSupersededTx(root, docId) -> n                清掉同一文档更早的未完成记录（已被后续成功保存取代，留着会在启动时回滚掉新保存）
 //   recoverPending(root, {restoreDoc}) -> recovered[] 扫描 .tx/，对每条未完成事务调 restoreDoc(rec) 后清理，返回已恢复记录
+//                                                     （标记无载荷＝孤儿 → 清标记不动文档；载荷损坏 → 保留记录、ok:false）
 //   withDocLock(root, docId, fn)                      进程内每文档排他锁；重入抛 LockHeld（server 映射 409）
 //   updateMeta(root, docId, patchFn)                  docs-meta.json 唯一写入者：跨进程锁内 读最新→只 patch 目标文档→唯一临时+原子 rename（同步）
 //   rootLock.{acquire,release,isHeld}                 跨进程排他锁 <root>/.migrate.lock（open 'wx' + 陈旧破除）；server 见锁对写请求 503
@@ -136,7 +138,8 @@ export function updateMeta(root, docId, patchFn) {
 // ===== 保存事务记录（覆盖异常与进程中断）=====
 function newTxId() { return `${Date.now()}-${process.pid}-${Math.floor(Math.random() * 1e6).toString(36)}`; }
 
-// 写前持久化事务记录：.json（元信息）+ .meta.json（目标文档旧 meta 整份副本）+ .html（旧正文整份副本）。
+// 写前持久化事务记录：.meta.json（目标文档旧 meta 整份副本）+ .html（旧正文整份副本）+ 最后 .json（标记）。
+// 标记最后写 = 提交点：载荷未齐就不会有标记，恢复端也就绝不会把"缺失载荷"误读成"事务前无 meta"而删条目。
 // beginTx 在 rename#1 之前调用，故此刻 docs/<docId>.html 仍是旧正文。
 export function beginTx(root, docId, phase, oldSnapTs) {
   const dir = txDir(root);
@@ -152,17 +155,39 @@ export function beginTx(root, docId, phase, oldSnapTs) {
     } catch { oldMeta = null; }
   }
   const rec = { txId, docId, phase: phase || 'save', oldSnapTs: oldSnapTs || '', startedAt: Date.now(), host: HOST, pid: process.pid };
-  atomicWrite(path.join(dir, txId + '.json'), JSON.stringify(rec));
+  const beginGapMs = Number(process.env.RESUME_TEST_TX_META_GAP_MS || 0);
+  if (beginGapMs > 0) sleepSync(beginGapMs);   // 测试钩子：模拟"载荷尚未落盘"窗口内被杀（I-1）
   atomicWrite(path.join(dir, txId + '.meta.json'), JSON.stringify(oldMeta));
   // 旧正文副本（恢复首选源：精确旧字节，无需归一化；autosave 无快照时也能恢复）
   const docFile = path.join(root, 'docs', docId + '.html');
   if (fs.existsSync(docFile)) { try { atomicWrite(path.join(dir, txId + '.html'), fs.readFileSync(docFile, 'utf8')); } catch {} }
+  atomicWrite(path.join(dir, txId + '.json'), JSON.stringify(rec));   // 标记（recoverPending 的扫描入口）最后落盘
   return txId;
 }
 
 export function commitTx(root, txId) {
   const dir = txDir(root);
   for (const ext of ['.json', '.meta.json', '.html']) { try { fs.unlinkSync(path.join(dir, txId + ext)); } catch {} }
+}
+
+// 同一文档更早的未完成记录被"本次成功保存"取代：成功保存意味着正文与 meta 已自洽落盘，
+// 若留着旧记录，下次启动恢复会把文档回滚到更早版本（丢掉后来的成功保存）。返回清理条数。
+// 无竞态前提：/save 全程持 .migrate.lock（rootLock），同一时刻不可能有另一进程在为该文档写记录。
+export function dropSupersededTx(root, docId) {
+  const dir = txDir(root);
+  let files;
+  try { files = fs.readdirSync(dir); } catch { return 0; }
+  let n = 0;
+  for (const f of files) {
+    if (!f.endsWith('.json') || f.endsWith('.meta.json')) continue;
+    const txId = f.slice(0, -'.json'.length);
+    let rec;
+    try { rec = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch { continue; }
+    if (!rec || rec.docId !== docId) continue;
+    for (const ext of ['.json', '.meta.json', '.html']) { try { fs.unlinkSync(path.join(dir, txId + ext)); } catch {} }
+    n++;
+  }
+  return n;
 }
 
 // 启动/重跑恢复：扫描 .tx/ 未完成事务，对每条调 restoreDoc(rec) 恢复"仅目标文档"，成功后清理该事务记录。
@@ -187,8 +212,18 @@ export function recoverPending(root, { restoreDoc } = {}) {
       for (const p of [recPath, metaRecPath, htmlRecPath]) { try { fs.unlinkSync(p); } catch {} }
       continue;
     }
-    let oldMeta = null;
-    try { oldMeta = fs.existsSync(metaRecPath) ? JSON.parse(fs.readFileSync(metaRecPath, 'utf8')) : null; } catch { oldMeta = null; }
+    if (!fs.existsSync(metaRecPath)) {
+      // 标记有、载荷无 = 孤儿（beginTx 现为"标记最后写"，此路径只兜底旧记录/异常）：
+      // 事务尚未改动任何东西，清标记即止，绝不把"缺失载荷"当成 oldMeta=null 去删文档 meta 条目。
+      for (const p of [recPath, htmlRecPath]) { try { fs.unlinkSync(p); } catch {} }
+      continue;
+    }
+    let oldMeta;
+    try { oldMeta = JSON.parse(fs.readFileSync(metaRecPath, 'utf8')); } catch (e) {
+      // 载荷损坏 ≠ 事务前无 meta：保留记录、标 ok:false 待人工（静默按 null 恢复会删掉文档 meta 条目）
+      recovered.push({ ...rec, root, ok: false, error: 'meta 载荷不可解析，保留记录待人工处理：' + String((e && e.message) || e) });
+      continue;
+    }
     let oldHtml;
     try { if (fs.existsSync(htmlRecPath)) oldHtml = fs.readFileSync(htmlRecPath, 'utf8'); } catch { oldHtml = undefined; }
     const full = { ...rec, oldMeta, oldHtml, root };

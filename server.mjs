@@ -14,7 +14,7 @@ import { buildJobPrompt, parseJobOps, pageSuggestions } from './job.mjs';
 import { docToLines, docToText, contentHash, sectionsOf } from './extract.mjs';
 import { rotateLogIfNeeded } from './logrotate.mjs';
 import { freezeHtml, normalizeToCurrent } from './freeze.mjs';
-import { beginTx, commitTx, recoverPending, withDocLock, updateMeta, rootLock, atomicWrite, LockHeld } from './tx.mjs';
+import { beginTx, commitTx, dropSupersededTx, recoverPending, withDocLock, updateMeta, rootLock, atomicWrite, LockHeld } from './tx.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const root = process.env.RESUME_ROOT || APP_ROOT;   // 数据根（docs/snapshots/pdfs/JSON/backups 全在此）
@@ -450,6 +450,16 @@ function applyMetaSnapshot(target) {
   for (const k of Object.keys(cur)) if (!Object.prototype.hasOwnProperty.call(t, k)) updateMeta(root, k, () => null);
   for (const k of Object.keys(t)) updateMeta(root, k, () => t[k]);
 }
+// 读备份包/回退点里的 docs-meta.json：缺失 → null（该备份不含 meta，既有语义）；
+// 存在但不可解析或不是对象 → 显式抛 CORRUPT（500）。绝不退化成 {}：那等于删掉本地全部 meta 条目。
+function readMetaSnapshotAt(f) {
+  if (!fs.existsSync(f)) return null;
+  const bad = (why) => Object.assign(new Error(`备份中的 docs-meta.json ${why}，已拒绝恢复（不覆盖本地 meta）`), { httpCode: 500, code: 'CORRUPT' });
+  let parsed;
+  try { parsed = JSON.parse(fs.readFileSync(f, 'utf8')); } catch { throw bad('损坏'); }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw bad('格式非法（应为对象）');
+  return parsed;
+}
 
 async function handler(req, res) {
   const url = new URL(req.url, 'http://localhost');
@@ -770,12 +780,20 @@ async function handler(req, res) {
             });
             commitTx(root, txId);                           // 成功：删事务记录
           } catch (e2) {
-            // 任一异常：用旧正文 + 旧 meta 副本恢复两者，删事务记录，再抛（外层映射状态码）
-            try { atomicWrite(docPath(id), oldHtml); } catch {}
-            try { updateMeta(root, id, () => oldMeta); } catch {}
-            try { commitTx(root, txId); } catch {}
+            // 任一异常：用旧正文 + 旧 meta 副本恢复两者，再抛（外层映射状态码）。
+            // 只有两次恢复都成功才删事务记录；任一失败 → 保留记录交启动恢复（否则混合态在下次启动已无从恢复）。
+            let htmlBack = false, metaBack = false;
+            try { atomicWrite(docPath(id), oldHtml); htmlBack = true; } catch {}
+            try { updateMeta(root, id, () => oldMeta); metaBack = true; } catch {}
+            if (htmlBack && metaBack) { try { commitTx(root, txId); } catch {} }
             throw e2;
           }
+          // 本次保存成功 → 同文档更早的未完成记录（上一次回滚不全而保留的）已过期：
+          // 留着会在下次启动恢复时把文档回滚到更早版本，丢掉这次成功保存。
+          try {
+            const stale = dropSupersededTx(root, id);
+            if (stale) console.error(`[tx] 同文档过期事务记录已清理 ${stale} 条：${id}`);
+          } catch {}
           const st = fs.statSync(docPath(id));
           const pdfStat = fs.existsSync(pdfPath(id)) ? fs.statSync(pdfPath(id)) : null;
           return { status: 200, body: { ok: true, mtime: st.mtimeMs, hash: contentHash(newHtml), pdfStale: !pdfStat || pdfStat.mtimeMs < st.mtimeMs } };
@@ -1666,7 +1684,7 @@ async function handler(req, res) {
         return send(e.message === 'body too large' ? 413 : 400, JSON.stringify({ ok: false, error: '备份包上传失败：' + e.message }), 'application/json');
       }
       const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-restore-'));
-      const fail = (msg) => { fs.rmSync(stage, { recursive: true, force: true }); fs.rmSync(tmpTar, { force: true }); return sendJson(400, { ok: false, error: msg }); };
+      const fail = (msg, code = 400) => { fs.rmSync(stage, { recursive: true, force: true }); fs.rmSync(tmpTar, { force: true }); return sendJson(code, { ok: false, error: msg }); };
       // 条目校验：类型/路径/大小，防路径穿越
       let list = '';
       try { list = execFileSync('tar', ['tzf', tmpTar], { maxBuffer: 20 * 1024 * 1024 }).toString('utf8'); }
@@ -1721,12 +1739,15 @@ async function handler(req, res) {
         result.keep = [...localIds].filter((x) => !bakIds.has(x));
         return result;
       };
+      let metaPreview = {};                                  // 备份 meta：缺失 → {}；损坏 → { corrupt: true }（apply 前拒绝，不退化成 {} 全删）
+      try { const sm = readMetaSnapshotAt(path.join(stage, 'docs-meta.json')); metaPreview = sm ? { count: Object.keys(sm).length } : {}; }
+      catch { metaPreview = { corrupt: true }; }
       const preview = {
         ok: true,
         docs: compareDocs(),
         apps: compareJson('applications.json'),
         mats: compareJson('materials.json'),
-        meta: fs.existsSync(path.join(stage, 'docs-meta.json')) ? { count: Object.keys(readJsonAt(path.join(stage, 'docs-meta.json')) || {}).length } : {},
+        meta: metaPreview,
         snapshots: entries.filter((l) => l.startsWith('snapshots/') && l.endsWith('.html')).length,
         pdfs: entries.filter((l) => l.startsWith('pdfs/') && l.endsWith('.pdf')).length
       };
@@ -1736,6 +1757,8 @@ async function handler(req, res) {
         fs.rmSync(tmpTar, { force: true });
         return sendJson(200, preview);
       }
+      // 损坏的备份 meta 必须在任何删除/覆盖动作之前拒绝：否则 replace 会先清空本地 docs 再把 meta 当成 {} 全删
+      if (preview.meta.corrupt) return fail('备份中的 docs-meta.json 损坏，拒绝恢复（不覆盖本地 meta）', 500);
       if (preview.apps.corrupt || preview.mats.corrupt) return fail('备份中的 JSON 损坏，拒绝恢复');
       const mode = url.searchParams.get('mode') === 'replace' ? 'replace' : 'merge';
       // 回退点（可操作）：数据根 backups/restore-<ts>/
@@ -1753,8 +1776,9 @@ async function handler(req, res) {
             fs.cpSync(src, path.join(root, d), { recursive: true });
           }
           for (const f of ['applications.json', 'materials.json']) if (fs.existsSync(path.join(stage, f))) fs.copyFileSync(path.join(stage, f), path.join(root, f));
-          // docs-meta 成对替换：经 updateMeta 逐文档写（唯一写入者），不裸 copyFileSync 覆盖共享文件
-          if (fs.existsSync(path.join(stage, 'docs-meta.json'))) applyMetaSnapshot(readJsonAt(path.join(stage, 'docs-meta.json')) || {});
+          // docs-meta 成对替换：经 updateMeta 逐文档写（唯一写入者），不裸 copyFileSync 覆盖共享文件；损坏 → 抛 CORRUPT（500），绝不当成 {}
+          const repMeta = readMetaSnapshotAt(path.join(stage, 'docs-meta.json'));
+          if (repMeta) applyMetaSnapshot(repMeta);
         } else {
           // 合并：文档/快照按文件合并（同 id 以备份为准）；JSON 按 id 合并，本地独有保留
           for (const d of ['docs', 'snapshots']) {
@@ -1785,8 +1809,8 @@ async function handler(req, res) {
           mergeById('applications.json', loadApps, saveApps);
           mergeById('materials.json', loadMats, saveMats);
           const metaStage = path.join(stage, 'docs-meta.json');
-          if (fs.existsSync(metaStage)) {
-            const bakMeta = readJsonAt(metaStage) || {};
+          const bakMeta = readMetaSnapshotAt(metaStage);      // 损坏 → 抛 CORRUPT（500），绝不静默跳过或当成 {}
+          if (bakMeta) {
             // 成对合并：同 id 以备份为准，逐文档经 updateMeta 写（本地独有文档保留，不整表覆盖）
             for (const k of Object.keys(bakMeta)) updateMeta(root, k, () => bakMeta[k]);
           }
@@ -1804,6 +1828,10 @@ async function handler(req, res) {
       if (!/^restore-[0-9]+$/.test(tsParam)) return send(400, 'invalid ts', 'text/plain');
       const dir = path.join(root, 'backups', tsParam, 'data');
       if (!fs.existsSync(dir)) return sendJson(404, { ok: false, error: '回退点不存在' });
+      // 回退点里的 docs-meta 先校验：损坏 → 500 拒绝，且发生在任何删除/覆盖之前（否则会先清空本地再把 meta 当成 {} 全删）
+      let undoMeta;
+      try { undoMeta = readMetaSnapshotAt(path.join(dir, 'docs-meta.json')); }
+      catch (e) { return sendJson(e.httpCode || 500, { ok: false, error: '回退失败：' + (e.message || e) }); }
       // 先把当前状态留一份（回退也可再次回退）
       const ts2 = Date.now();
       const safety2 = path.join(root, 'backups', 'restore-' + ts2);
@@ -1819,7 +1847,7 @@ async function handler(req, res) {
         }
         for (const f of ['applications.json', 'materials.json']) if (fs.existsSync(path.join(dir, f))) fs.copyFileSync(path.join(dir, f), path.join(root, f));
         // docs-meta 成对回退：经 updateMeta 逐文档写（唯一写入者）
-        if (fs.existsSync(path.join(dir, 'docs-meta.json'))) applyMetaSnapshot(readJsonAt(path.join(dir, 'docs-meta.json')) || {});
+        if (undoMeta) applyMetaSnapshot(undoMeta);
       } catch (e) {
         return sendJson(500, { ok: false, error: '回退失败：' + (e.message || e) + '（本次操作前的状态在 ' + safety2 + '）' });
       }
@@ -1994,7 +2022,6 @@ function staleGuard(docId, baseMtime) {
   if (cur > base + 2) return { ok: false, stale: true, mtime: cur, error: '文档有未同步的修改，请先保存再让 AI 分析' };
   return null;
 }
-function readJsonAt(f) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } }
 function countProjects(docFile) {
   try {
     const html = fs.readFileSync(docFile, 'utf8');

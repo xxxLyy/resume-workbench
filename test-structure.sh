@@ -470,7 +470,7 @@ EOF
 node --input-type=module << 'EOF'
 import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
 import { spawn } from 'node:child_process'; import { pathToFileURL } from 'node:url';
-import { beginTx, commitTx, recoverPending, withDocLock, updateMeta, rootLock, LockHeld } from './tx.mjs';
+import { beginTx, commitTx, dropSupersededTx, recoverPending, withDocLock, updateMeta, rootLock, LockHeld } from './tx.mjs';
 const fail = (m) => { console.error('❌ S1-B ' + m); process.exit(1); };
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tx-s1b-'));
 fs.mkdirSync(path.join(tmp, 'docs'), { recursive: true });
@@ -564,6 +564,44 @@ rootLock.acquire(tmp);                                  // 应破除陈旧锁后
 if (!rootLock.isHeld(tmp)) fail('破除陈旧锁后应持有');
 rootLock.release(tmp);
 console.log('✅ S1-B-5 rootLock acquire/release/isHeld + 陈旧锁破除');
+
+// ⑥ I-1：标记（.json）已落盘但载荷（.meta.json）未落盘时被杀 → 恢复视为孤儿：清标记、绝不动文档正文/meta
+fs.writeFileSync(path.join(tmp, 'docs', 'C.html'), '<html><body>OLD-C</body></html>');
+fs.writeFileSync(metaFile, JSON.stringify({ C: { typo: 'c-typo', rev: 9 } }));
+const orphanId = 'orphan-marker-1';
+fs.mkdirSync(path.join(tmp, '.tx'), { recursive: true });
+fs.writeFileSync(txFile(orphanId, '.json'), JSON.stringify({ txId: orphanId, docId: 'C', phase: 'save', oldSnapTs: '', startedAt: Date.now(), host: 'x', pid: process.pid }));
+const r6 = recoverPending(tmp);                       // 内置默认恢复（与 server 版同语义：oldMeta=null → 删条目）
+const m6 = readMeta();
+if (fs.existsSync(txFile(orphanId, '.json'))) fail('I-1 孤儿标记（无载荷）应被清理');
+if (!m6.C || m6.C.typo !== 'c-typo' || m6.C.rev !== 9) fail('I-1 标记无载荷时不得删/改文档 meta 条目: ' + JSON.stringify(m6));
+if (!fs.readFileSync(path.join(tmp, 'docs', 'C.html'), 'utf8').includes('OLD-C')) fail('I-1 孤儿事务不得改动正文');
+if (r6.length) fail('I-1 孤儿事务不应计入 recovered: ' + r6.length);
+console.log('✅ S1-B-6 I-1 标记无载荷 = 孤儿（清标记，文档正文/meta 零改动）');
+
+// ⑦ I-1：载荷损坏（.meta.json 不可解析）→ 不得当成"事务前无 meta"而删条目；保留记录 + ok:false 待人工
+const corruptId = 'corrupt-payload-1';
+fs.writeFileSync(txFile(corruptId, '.json'), JSON.stringify({ txId: corruptId, docId: 'C', phase: 'save', oldSnapTs: '', startedAt: Date.now(), host: 'x', pid: process.pid }));
+fs.writeFileSync(txFile(corruptId, '.meta.json'), '{ "typo": ');      // 半截 JSON
+const r7 = recoverPending(tmp);
+const m7 = readMeta();
+if (!fs.existsSync(txFile(corruptId, '.json')) || !fs.existsSync(txFile(corruptId, '.meta.json'))) fail('I-1 载荷损坏时应保留 tx 记录待重试/人工');
+if (r7.length !== 1 || r7[0].ok !== false) fail('I-1 载荷损坏应返回 ok:false（不得静默按 null 恢复）: ' + JSON.stringify(r7.map((x) => ({ ok: x.ok, e: x.error }))));
+if (!m7.C || m7.C.typo !== 'c-typo' || m7.C.rev !== 9) fail('I-1 载荷损坏不得删/改文档 meta: ' + JSON.stringify(m7));
+if (!fs.readFileSync(path.join(tmp, 'docs', 'C.html'), 'utf8').includes('OLD-C')) fail('I-1 载荷损坏不得改动正文');
+commitTx(tmp, corruptId);
+console.log('✅ S1-B-7 I-1 载荷损坏 → 保留记录 + ok:false，文档零改动');
+
+// ⑧ I-2 尾险：成功保存后 dropSupersededTx 只清"同文档"的旧未完成记录（异文档记录是别人恢复的依据，必须保留）
+const txA8 = beginTx(tmp, 'A', 'save', '');
+const txB8 = beginTx(tmp, 'B', 'save', '');
+const n8 = dropSupersededTx(tmp, 'A');
+if (n8 !== 1) fail('I-2 dropSupersededTx 应清掉同文档 1 条记录，实得 ' + n8);
+if (fs.existsSync(txFile(txA8, '.json')) || fs.existsSync(txFile(txA8, '.meta.json')) || fs.existsSync(txFile(txA8, '.html'))) fail('I-2 同文档旧记录三份都应清掉');
+if (!fs.existsSync(txFile(txB8, '.json')) || !fs.existsSync(txFile(txB8, '.meta.json'))) fail('I-2 异文档记录不得被清（其他文档仍要靠它恢复）');
+if (dropSupersededTx(tmp, 'B') !== 1) fail('I-2 dropSupersededTx 应能清掉 B 的记录');
+if (fs.readdirSync(path.join(tmp, '.tx')).some((f) => f.endsWith('.json'))) fail('I-2 清理后 .tx 不应残留标记');
+console.log('✅ S1-B-8 I-2 dropSupersededTx 只清同文档旧记录（异文档保留）');
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('✅ S1-B tx 恢复/updateMeta 并发不丢字段/文档锁/根锁 全部通过');

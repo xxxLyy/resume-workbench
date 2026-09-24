@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveChromium, invalidateCache } from './chromium.mjs';
 import { updateMeta } from './tx.mjs';
@@ -214,6 +214,152 @@ async function runTxTests() {
           else if (txPost.length) bad('② 恢复后 .tx 应清空', txPost.join(','));
           else ok('② kill -9 于两次 rename 之间 → 重启恢复 → kill-a 无混版（正文+meta 回旧）、B 并发更新不丢、.tx 清空');
         }
+      }
+    }
+
+    // ---------- ROOT4（beginTx 标记/载荷之间被杀）：⑦ I-1 kill -9 → 重启恢复不得误删文档 meta ----------
+    const ROOT4 = path.join(TX_TMP, 'r4');
+    const fr4 = seedRoot(ROOT4, { 'orphan-a': txDoc('orphan-a', 'ORPHAN-V1', '') }, { 'orphan-a': { typo: '/*OA*/body{font-size:11px}', rev: 7 } });
+    const srv4 = await spawnServer(ROOT4, { RESUME_RENDER_BIN: fr4, RESUME_TEST_TX_META_GAP_MS: '4000' });
+    servers.push(srv4.child);
+    const B4 = srv4.base;
+    const readMeta4 = () => JSON.parse(fs.readFileSync(path.join(ROOT4, 'docs-meta.json'), 'utf8'));
+    const readDoc4 = () => fs.readFileSync(path.join(ROOT4, 'docs', 'orphan-a.html'), 'utf8');
+    const txMarkers4 = () => fs.existsSync(path.join(ROOT4, '.tx')) ? fs.readdirSync(path.join(ROOT4, '.tx')).filter((f) => f.endsWith('.json') && !f.endsWith('.meta.json')) : [];
+    {
+      // autosave=1 → oldSnapTs=''（不产生快照），把断言聚焦到"标记无载荷时 meta 是否被误删"
+      const saveP = fetch(B4 + '/save?id=orphan-a&autosave=1', { method: 'POST', headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: txDoc('orphan-a', 'ORPHAN-V2', '') })
+        .then((r) => r.json().then((j) => ({ status: r.status, body: j }), () => ({ status: r.status }))).catch((e) => ({ inflight: String(e) }));
+      const t0 = Date.now();
+      while (!txMarkers4().length && Date.now() - t0 < 1500) await sleep(20);   // 修复前：标记先落盘即刻可见；修复后：标记最后写 → 轮询超时（仍在钩子窗口内）
+      srv4.child.kill('SIGKILL');                                              // kill -9 于"标记/载荷"窗口
+      const res4 = await saveP;
+      const htmlMid = readDoc4();
+      const srv4b = await spawnServer(ROOT4, { RESUME_RENDER_BIN: fr4 });         // 重启：recoverPending 先于 listen
+      servers.push(srv4b.child);
+      const htmlPost = readDoc4();
+      const metaPost = readMeta4();
+      const markersPost = txMarkers4();
+      if (!res4 || !res4.inflight) bad('⑦ 前置失败：保存应在事务窗口内被杀（请求在途）', JSON.stringify(res4));
+      else if (htmlMid.includes('ORPHAN-V2')) bad('⑦ 前置失败：rename#1 不应执行（被杀于 beginTx 内）');
+      else if (htmlPost.includes('ORPHAN-V2') || !htmlPost.includes('ORPHAN-V1')) bad('⑦ 被杀于 beginTx 窗口 → 正文应原封不动', htmlPost.slice(0, 80));
+      else if (!metaPost['orphan-a'] || metaPost['orphan-a'].rev !== 7 || metaPost['orphan-a'].typo !== '/*OA*/body{font-size:11px}') bad('⑦ I-1 恢复不得因"标记无载荷"删/改文档 meta', JSON.stringify(metaPost));
+      else if (markersPost.length) bad('⑦ 重启后 .tx 不应残留标记', markersPost.join(','));
+      else ok('⑦ I-1 kill -9 于 beginTx 标记/载荷之间 → 重启后正文与 meta 零改动、无残留标记');
+    }
+
+    // ---------- ROOT5（rename#2 与 meta 恢复双失败）：⑧ I-2 错误路径不得无条件 commitTx ----------
+    const ROOT5 = path.join(TX_TMP, 'r5');
+    const ERR_META = { 'err-a': { typo: '/*EA*/body{font-size:10px}', rev: 7 } };
+    const fr5 = seedRoot(ROOT5, { 'err-a': txDoc('err-a', 'ERR-V1', '') }, ERR_META);
+    const srv5 = await spawnServer(ROOT5, { RESUME_RENDER_BIN: fr5, RESUME_TEST_SAVE_GAP_MS: '1200' });
+    servers.push(srv5.child);
+    const B5 = srv5.base;
+    const metaFile5 = path.join(ROOT5, 'docs-meta.json');
+    const readMeta5 = () => JSON.parse(fs.readFileSync(metaFile5, 'utf8'));
+    const readDoc5 = () => fs.readFileSync(path.join(ROOT5, 'docs', 'err-a.html'), 'utf8');
+    const txMarkers5 = () => fs.existsSync(path.join(ROOT5, '.tx')) ? fs.readdirSync(path.join(ROOT5, '.tx')).filter((f) => f.endsWith('.json') && !f.endsWith('.meta.json')) : [];
+    const waitDoc5 = (needle, ms) => { const t = Date.now(); return new Promise((res) => { const iv = setInterval(() => { let h = ''; try { h = readDoc5(); } catch {} if (h.includes(needle) || Date.now() - t > ms) { clearInterval(iv); res(h.includes(needle)); } }, 15); }); };
+    {
+      const saveP = fetch(B5 + '/save?id=err-a', { method: 'POST', headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: txDoc('err-a', 'ERR-V2', '/*EA2*/body{font-size:19px}') })
+        .then((r) => r.text().then((t) => ({ status: r.status, text: t }), () => ({ status: r.status }))).catch((e) => ({ inflight: String(e) }));
+      if (!await waitDoc5('ERR-V2', 6000)) bad('⑧ 前置失败：rename#1 未落盘（未命中 gap）');
+      else {
+        fs.writeFileSync(metaFile5, '{ "err-a": ');      // 强制 rename#2 失败：docs-meta 损坏 → updateMeta 抛 CORRUPT（停写不覆盖）
+        const res5 = await saveP;
+        const markers5 = txMarkers5();
+        const htmlAfter = readDoc5();
+        const metaRaw = fs.readFileSync(metaFile5, 'utf8');
+        if (!res5 || res5.status !== 500) bad('⑧ rename#2 失败应 500', JSON.stringify(res5));
+        else if (!htmlAfter.includes('ERR-V1') || htmlAfter.includes('ERR-V2')) bad('⑧ 正文应已回滚到旧版', htmlAfter.slice(0, 80));
+        else if (!metaRaw.includes('{ "err-a": ')) bad('⑧ 损坏的 docs-meta 不应被覆盖写', metaRaw.slice(0, 60));
+        else if (!markers5.length) bad('⑧ I-2 meta 恢复失败时不得 commitTx（记录须留给启动恢复）');
+        else {
+          fs.writeFileSync(metaFile5, JSON.stringify(ERR_META));   // 修好数据文件后重启 → 启动恢复应能据记录完整还原
+          const srv5b = await spawnServer(ROOT5, { RESUME_RENDER_BIN: fr5 });
+          servers.push(srv5b.child);
+          const m5 = readMeta5();
+          if (txMarkers5().length) bad('⑧ 重启后启动恢复应清理 tx 记录', txMarkers5().join(','));
+          else if (!m5['err-a'] || m5['err-a'].rev !== 7 || m5['err-a'].typo !== '/*EA*/body{font-size:10px}') bad('⑧ 启动恢复应把 meta 还原到事务前', JSON.stringify(m5));
+          else if (readDoc5().includes('ERR-V2')) bad('⑧ 启动恢复后正文不应含失败保存的内容');
+          else ok('⑧ I-2 rename#2 + meta 恢复双失败 → 不 commitTx，记录留给启动恢复（重启后完整还原）');
+          // ⑧b I-2 尾险：保留下来的记录一旦被"同文档后续成功保存"取代，就不得在下次启动把文档回滚掉
+          {
+            const B5b = srv5b.base;
+            const save5 = (body) => fetch(B5b + '/save?id=err-a', { method: 'POST', headers: { 'Content-Type': 'text/html; charset=utf-8' }, body })
+              .then((r) => r.text().then((t) => ({ status: r.status, text: t }), () => ({ status: r.status })));
+            fs.writeFileSync(metaFile5, '{ "err-a": ');        // 再制造一次"rename#2 + meta 恢复"双失败 → 记录保留
+            const rf = await save5(txDoc('err-a', 'ERR-V3', ''));
+            const kept = txMarkers5().length;
+            fs.writeFileSync(metaFile5, JSON.stringify(m5));   // 修好数据文件 → 同文档再次保存成功
+            const rs = await save5(txDoc('err-a', 'ERR-V4', ''));
+            const left = txMarkers5();
+            const docBeforeRestart = readDoc5();
+            const srv5c = await spawnServer(ROOT5, { RESUME_RENDER_BIN: fr5 });   // 重启：过期记录不得回滚本次成功保存
+            servers.push(srv5c.child);
+            const m5c = readMeta5();
+            const f5 = failures;
+            if (!rf || rf.status !== 500) bad('⑧b 前置失败：损坏 meta 下保存应 500', JSON.stringify(rf));
+            if (!kept) bad('⑧b 前置失败：双失败后应保留 tx 记录');
+            if (!rs || rs.status !== 200) bad('⑧b 前置失败：修复后保存应 200', JSON.stringify(rs));
+            if (!docBeforeRestart.includes('ERR-V4')) bad('⑧b 前置失败：成功保存应落盘 ERR-V4');
+            if (left.length) bad('⑧b I-2 同文档后续成功保存应取代旧未完成记录', left.join(','));
+            if (!readDoc5().includes('ERR-V4') || readDoc5().includes('ERR-V3')) bad('⑧b I-2 重启后不得把正文回滚（旧记录已过期）', readDoc5().slice(0, 80));
+            if (!m5c['err-a'] || m5c['err-a'].rev !== m5['err-a'].rev + 1) bad('⑧b I-2 重启后 meta 不应被过期记录回滚/删除', JSON.stringify(m5c));
+            if (failures === f5) ok('⑧b I-2 成功保存取代同文档过期记录 → 重启不回滚后续保存');
+          }
+        }
+      }
+    }
+
+    // ---------- ROOT6（备份/回退点 docs-meta 损坏）：⑨ I-3 不得把损坏 meta 当成 {} 全删 ----------
+    const ROOT6 = path.join(TX_TMP, 'r6');
+    const fr6 = seedRoot(ROOT6, { 'rs-a': txDoc('rs-a', 'RS-LOCAL', '') }, { 'rs-a': { typo: '/*RS*/body{font-size:12px}', rev: 4 } });
+    const srv6 = await spawnServer(ROOT6, { RESUME_RENDER_BIN: fr6 });
+    servers.push(srv6.child);
+    const B6 = srv6.base;
+    const readMeta6 = () => JSON.parse(fs.readFileSync(path.join(ROOT6, 'docs-meta.json'), 'utf8'));
+    const readDoc6 = () => fs.readFileSync(path.join(ROOT6, 'docs', 'rs-a.html'), 'utf8');
+    {
+      const bakDir = path.join(TX_TMP, 'bak6');
+      fs.mkdirSync(path.join(bakDir, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(bakDir, 'docs', 'rs-a.html'), txDoc('rs-a', 'RS-BACKUP', ''));
+      fs.writeFileSync(path.join(bakDir, 'docs-meta.json'), '{ "rs-a": ');   // 半截 JSON：不可解析
+      fs.writeFileSync(path.join(bakDir, 'applications.json'), '[]');
+      fs.writeFileSync(path.join(bakDir, 'materials.json'), '[]');
+      const tarFile = path.join(TX_TMP, 'bak6.tar.gz');
+      const tr = spawnSync('tar', ['czf', tarFile, '-C', bakDir, 'docs', 'docs-meta.json', 'applications.json', 'materials.json'], { encoding: 'utf8' });
+      if (tr.status !== 0) bad('⑨ 前置失败：构造备份包失败', String(tr.stderr).slice(0, 200));
+      else {
+        const bytes = fs.readFileSync(tarFile);
+        const post = (u, body) => fetch(B6 + u, { method: 'POST', headers: body ? { 'Content-Type': 'application/gzip' } : {}, body, redirect: 'manual' })
+          .then((r) => r.text().then((t) => ({ status: r.status, text: t }), () => ({ status: r.status }))).catch((e) => ({ inflight: String(e) }));
+        const jbody = (r) => { try { return JSON.parse(r.text); } catch { return null; } };
+        const prev = await post('/restore?apply=0', bytes);
+        const rep = await post('/restore?apply=1&mode=replace', bytes);
+        const metaRep = readMeta6(), docRep = readDoc6();
+        const mer = await post('/restore?apply=1&mode=merge', bytes);
+        const metaMer = readMeta6(), docMer = readDoc6();
+        // 回退点里 docs-meta.json 损坏 → 同样必须拒绝，且在任何删除动作之前
+        const undoDir = path.join(ROOT6, 'backups', 'restore-1234567890', 'data');
+        fs.mkdirSync(path.join(undoDir, 'docs'), { recursive: true });
+        fs.writeFileSync(path.join(undoDir, 'docs', 'rs-a.html'), txDoc('rs-a', 'RS-UNDO', ''));
+        fs.writeFileSync(path.join(undoDir, 'docs-meta.json'), '{ "rs-a": ');
+        const und = await post('/restore/undo?ts=restore-1234567890', '');
+        const metaUnd = readMeta6(), docUnd = readDoc6();
+        const f0 = failures;
+        if (rep.status !== 500) bad('⑨ I-3 替换恢复应 500 拒绝（损坏 meta 不得当成 {}）', String(rep.status));
+        if (!metaRep['rs-a'] || metaRep['rs-a'].rev !== 4 || metaRep['rs-a'].typo !== '/*RS*/body{font-size:12px}') bad('⑨ I-3 替换后本地 meta 被清空（损坏备份 meta 被当成 {}）', JSON.stringify(metaRep));
+        if (!docRep.includes('RS-LOCAL')) bad('⑨ I-3 替换应被拒绝 → 正文不应被备份覆盖', docRep.slice(0, 80));
+        if (mer.status !== 500) bad('⑨ I-3 合并恢复应 500 拒绝', String(mer.status));
+        if (!metaMer['rs-a'] || metaMer['rs-a'].rev !== 4) bad('⑨ I-3 合并后本地 meta 应零改动', JSON.stringify(metaMer));
+        if (!docMer.includes('RS-LOCAL')) bad('⑨ I-3 合并应被拒绝 → 正文不应改动');
+        if (und.status !== 500) bad('⑨ I-3 回退应 500 拒绝', String(und.status));
+        if (!metaUnd['rs-a'] || metaUnd['rs-a'].rev !== 4 || metaUnd['rs-a'].typo !== '/*RS*/body{font-size:12px}') bad('⑨ I-3 回退后本地 meta 被清空', JSON.stringify(metaUnd));
+        if (!docUnd.includes('RS-LOCAL') || docUnd.includes('RS-UNDO')) bad('⑨ I-3 回退应被拒绝 → 正文不应被替换');
+        const pv = jbody(prev);
+        if (!pv || !pv.meta || !pv.meta.corrupt) bad('⑨ I-3 预览应标记备份 meta 损坏', JSON.stringify(pv && pv.meta));
+        if (failures === f0) ok('⑨ I-3 备份/回退点 docs-meta.json 损坏 → 预览标记 + 500 拒绝，本地 meta 零删除');
       }
     }
   } finally {
