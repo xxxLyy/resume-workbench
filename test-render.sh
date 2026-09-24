@@ -1,6 +1,6 @@
 #!/bin/bash
 # test-render.sh — 真实渲染冒烟（playwright + 本机 Chromium）
-# 隔离：独立数据根（mktemp），夹具由 template.html 生成，不接触真实文档与 PDF。
+# 隔离：独立数据根（mktemp），夹具经 template.mjs 装配生成，不接触真实文档与 PDF。
 set -e
 cd "$(dirname "$0")"
 command -v pdftotext >/dev/null || { echo '需要 poppler: brew install poppler'; exit 1; }
@@ -12,7 +12,8 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 node --input-type=module << 'EOF'
 import fs from 'node:fs';
 import path from 'node:path';
-const tpl = fs.readFileSync('template.html', 'utf8');
+import { assembleTemplate } from './template.mjs';
+const tpl = assembleTemplate('classic');   // 夹具经装配生成（themes 唯一源），不直读 template.html
 const out = tpl
   .replaceAll('{{NAME}}', () => '测试候选人')
   .replaceAll('{{CONTACT}}', () => '电话：13800000000')

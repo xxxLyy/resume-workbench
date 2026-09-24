@@ -1,7 +1,6 @@
 // structure.mjs — 简历文本 → LLM 结构化 JSON → 模板 HTML
-import fs from 'node:fs';
-import path from 'node:path';
 import { chat } from './llm.mjs';
+import { assembleTemplate } from './template.mjs';
 
 const SYS = `你是简历结构化助手。把用户给的简历原文提取为 JSON（只输出 JSON，不要任何其它文字）：
 {"name":"","contact":"","intent":"","summary":"","skills":["标签：内容"],"work":[{"title":"公司","role":"职位","date":"起止","bullets":[]}],"projects":[{"title":"","role":"","date":"","bullets":[]}],"education":[{"title":"学校","role":"学历|专业","date":"起止"}]}
@@ -27,7 +26,7 @@ const skillLines = (arr) => (arr || []).map((line) => {
 // 注意：模板中的 {{DOC_ID}} 由 server /edit 在 serve 时注入，本函数不替换
 // replaceAll + 函数替换：防止 LLM 输出含 $& 等模式时被 replace 特殊解释
 export function buildDoc(root, data) {
-  const tpl = fs.readFileSync(path.join(root, 'template.html'), 'utf8');
+  const tpl = assembleTemplate('classic');   // 主题唯一源装配（与数据根无关，永远来自 APP_ROOT）
   return tpl
     .replaceAll('{{NAME}}', () => esc(data.name))
     .replaceAll('{{CONTACT}}', () => esc(data.contact))

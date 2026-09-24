@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { hasLLM, loadConfig } from './llm.mjs';
 import { structureText } from './structure.mjs';
+import { assembleTemplate, themeRegistration } from './template.mjs';
+import { updateMeta } from './tx.mjs';
 
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
@@ -25,7 +27,7 @@ function buildRawDoc(root, text, name, degradeReason) {
   const note = degradeReason === 'failed' ? 'LLM 结构化失败，已降级为原文导入'
     : degradeReason === 'partial' ? 'LLM 配置不完整，已降级为原文导入'
     : '待整理';
-  const tpl = fs.readFileSync(path.join(root, 'template.html'), 'utf8');
+  const tpl = assembleTemplate('classic');   // 主题唯一源装配（与数据根无关，永远来自 APP_ROOT）
   return tpl
     .replaceAll('{{NAME}}', () => esc(String(name).replace(/\.pdf$/i, '')))
     .replaceAll('{{CONTACT}}', () => '')
@@ -49,5 +51,7 @@ export async function importPdfText(root, pdfPath, name) {
     html = buildRawDoc(root, text, name, loadConfig(root) ? 'partial' : null);
   }
   fs.writeFileSync(path.join(root, 'docs', id + '.html'), html);
+  // 新建即登记样式来源（meta 唯一写入者 updateMeta）：theme/styleHash/typo/schemaVersion
+  updateMeta(root, id, (m) => ({ ...(m || {}), ...themeRegistration('classic') }));
   return id;
 }

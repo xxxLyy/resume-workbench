@@ -6,9 +6,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assembleTemplate } from './template.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
-const tpl = fs.readFileSync(path.join(root, 'template.html'), 'utf8');
+const tpl = assembleTemplate('classic');   // 装配唯一入口：marker-only 模板 + themes 内联（编辑器块提取不受影响）
 const TARGET_VERSION = 'v5';
 
 const toolbar = tpl.match(/<div class="edit-toolbar"[^>]*>[\s\S]*?<\/div>/);

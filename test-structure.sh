@@ -744,3 +744,191 @@ try {
   delete process.env.RESUME_ROOT;
 }
 EOF
+
+# —— S1-D：主题唯一源（themes/resume-classic.css）+ template.mjs 装配 + 四条新建路径 meta 登记 ——
+# 隔离：mktemp 根 + 隔离端口服务 + 假渲染器 + 假 LLM（本机 HTTP），零接触真实 docs/snapshots/pdfs/JSON/config。
+command -v pdftotext >/dev/null || { echo '❌ S1-D 需要 poppler: brew install poppler'; exit 1; }
+node --input-type=module << 'EOF'
+import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import http from 'node:http';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+const fail = (m) => { console.error('❌ S1-D ' + m); process.exit(1); };
+const sha1 = (s) => createHash('sha1').update(typeof s === 'string' ? s : Buffer.from(s)).digest('hex');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---------- S1-D-1 装配契约（单元级） ----------
+let assembleTemplate, themeCss, listThemes;
+try { ({ assembleTemplate, themeCss, listThemes } = await import('./template.mjs')); }
+catch (e) { fail('template.mjs 不存在或不可导入: ' + (e && e.message || e)); }
+if (!fs.existsSync('themes/resume-classic.css')) fail('缺 themes/resume-classic.css（主题唯一源）');
+const cssFile = fs.readFileSync('themes/resume-classic.css', 'utf8');
+if (!cssFile.includes('@page') || !cssFile.includes('.sheet')) fail('themes 文件内容可疑（应含 @page/.sheet 等 classic 规则）');
+const asm = assembleTemplate('classic');
+if (asm.includes('<!--THEME-CSS-->')) fail('装配输出不应残留 <!--THEME-CSS--> 标记');
+if (!asm.includes('<style data-theme="classic">')) fail('装配输出应含 <style data-theme="classic">');
+if (!asm.includes(cssFile)) fail('装配输出应逐字包含完整 classic CSS');
+const INLINE_RE = /<style data-theme="classic">([\s\S]*?)<\/style>/;
+const inline = INLINE_RE.exec(asm);
+if (!inline) fail('装配输出中提取不到内联主题块');
+if (sha1(inline[1]) !== sha1(cssFile)) fail('sha1(装配内联块) != sha1(themes 文件)');
+if (!listThemes().includes('classic')) fail('listThemes 应含 classic，实际 ' + JSON.stringify(listThemes()));
+let threw = null;
+try { assembleTemplate('no-such-theme'); } catch (e) { threw = e; }
+if (!threw) fail('未知主题应抛错');
+else if (!threw.message.includes('classic')) fail('未知主题报错应列出可用主题: ' + threw.message);
+// template.html 只留标记，不再内联简历 CSS
+const tplRaw = fs.readFileSync('template.html', 'utf8');
+if (!tplRaw.includes('<!--THEME-CSS-->')) fail('template.html 应保留 <!--THEME-CSS--> 标记');
+if (tplRaw.includes('@page')) fail('template.html 的简历 CSS 应已抽出到 themes（不得再内联）');
+// 调用点唯一入口静态核对：除 template.mjs 外，任何消费方不得再直读 template.html
+for (const f of ['server.mjs', 'structure.mjs', 'importer.mjs', 'migrate-editor.mjs', 'test-editor.mjs', 'test-render.sh']) {
+  const src = fs.readFileSync(f, 'utf8');
+  if (/readFileSync\([^)]*template\.html/.test(src)) fail(f + ' 仍直读 template.html（应经 assembleTemplate）');
+  if (!src.includes('assembleTemplate')) fail(f + ' 未接入 assembleTemplate');
+}
+// migrate-style.mjs 历史一次性工具：必须大声失败并指向 S1/themes，绝不静默操作 marker-only 模板
+let msOut = '', msStatus = 0;
+try { execFileSync(process.execPath, ['migrate-style.mjs'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
+catch (e) { msStatus = e.status; msOut = String(e.stderr || '') + String(e.stdout || ''); }
+if (msStatus === 0) fail('migrate-style.mjs 应报错退出（非 0），不得再执行迁移');
+if (!/S1/.test(msOut) || !/themes/.test(msOut)) fail('migrate-style.mjs 报错应指向 S1 与 themes 唯一源: ' + msOut.slice(0, 300));
+console.log('✅ S1-D-1 assembleTemplate 装配契约（完整 CSS 内联/data-theme/无标记残留/sha1 一致/未知主题抛错/调用点唯一入口/migrate-style 大声失败）');
+
+// ---------- S1-D-2 四条新建路径：/new、importer（降级）、structure（LLM 结构化）、restructure ----------
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 's1d-'));
+// 最小合法 PDF 夹具（程序化计算 xref 偏移；pdftotext 可提取 ASCII 文本）
+function makePdf(text) {
+  const stream = 'BT /F1 12 Tf 72 720 Td (' + text + ') Tj ET';
+  const objs = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+    '<< /Length ' + stream.length + ' >>\nstream\n' + stream + '\nendstream',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'
+  ];
+  let pdf = '%PDF-1.4\n';
+  const offsets = [];
+  objs.forEach((o, i) => { offsets.push(pdf.length); pdf += (i + 1) + ' 0 obj\n' + o + '\nendobj\n'; });
+  const xref = pdf.length;
+  pdf += 'xref\n0 ' + (objs.length + 1) + '\n0000000000 65535 f \n';
+  for (const off of offsets) pdf += String(off).padStart(10, '0') + ' 00000 n \n';
+  pdf += 'trailer\n<< /Size ' + (objs.length + 1) + ' /Root 1 0 R >>\nstartxref\n' + xref + '\n%%EOF\n';
+  return Buffer.from(pdf, 'latin1');
+}
+// 假 LLM（OpenAI 兼容 /chat/completions）：返回固定结构化 JSON
+const LLM_CONTENT = JSON.stringify({
+  name: '结构化员', contact: '电话：12300000000', intent: '测试', summary: 'LLM 结构化摘要。',
+  skills: ['技能一：内容一'], work: [{ title: '某公司', role: '工程师', date: '2020-2024', bullets: ['做了一件事'] }],
+  projects: [], education: []
+});
+const llmSrv = http.createServer((req, res) => {
+  let b = ''; req.on('data', (d) => { b += d; });
+  req.on('end', () => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ message: { content: LLM_CONTENT } }] }));
+  });
+});
+await new Promise((r) => llmSrv.listen(0, '127.0.0.1', r));
+const llmBase = 'http://127.0.0.1:' + llmSrv.address().port + '/v1';
+const seedRoot = (name) => {
+  const r = path.join(tmp, name);
+  for (const d of ['docs', 'snapshots', 'pdfs']) fs.mkdirSync(path.join(r, d), { recursive: true });
+  fs.writeFileSync(path.join(r, 'docs-meta.json'), '{}');
+  fs.writeFileSync(path.join(r, 'applications.json'), '[]');
+  fs.writeFileSync(path.join(r, 'materials.json'), '[]');
+  return r;
+};
+const writeLLMConfig = (r) => fs.writeFileSync(path.join(r, 'config.json'),
+  JSON.stringify({ active: 0, profiles: [{ name: 't', baseURL: llmBase, apiKey: 'k123456', model: 'm' }] }));
+// 断言：文档内联主题块 sha1 == themes 文件 sha1，且 meta 登记 theme/styleHash/typo/schemaVersion
+const checkCreated = (rootDir, id, label, expectTypoEmpty = true) => {
+  const p = path.join(rootDir, 'docs', id + '.html');
+  if (!fs.existsSync(p)) fail(label + ': 未生成文档 ' + p);
+  const html = fs.readFileSync(p, 'utf8');
+  const m = INLINE_RE.exec(html);
+  if (!m) fail(label + ': 文档缺 <style data-theme="classic"> 内联块');
+  if (sha1(m[1]) !== sha1(cssFile)) fail(label + ': 内联块 sha1 ≠ themes 文件 sha1');
+  if (html.includes('<!--THEME-CSS-->')) fail(label + ': 文档残留装配标记');
+  const meta = JSON.parse(fs.readFileSync(path.join(rootDir, 'docs-meta.json'), 'utf8'))[id];
+  if (!meta) fail(label + ': 创建时未登记 meta（docs-meta.json 无该文档）');
+  if (meta.theme !== 'classic') fail(label + ': meta.theme 应为 classic: ' + JSON.stringify(meta));
+  if (meta.styleHash !== sha1(cssFile)) fail(label + ': meta.styleHash ≠ sha1(themes 文件): ' + JSON.stringify(meta));
+  if (meta.schemaVersion !== 1) fail(label + ': meta.schemaVersion 应为 1: ' + JSON.stringify(meta));
+  if (expectTypoEmpty && meta.typo !== '') fail(label + ': meta.typo 应为空串: ' + JSON.stringify(meta));
+  return meta;
+};
+const { importPdfText } = await import('./importer.mjs');
+const pdfFile = path.join(tmp, 's1d-fixture.pdf');
+fs.writeFileSync(pdfFile, makePdf('S1D IMPORT FIXTURE BODY LINE'));
+if (!execFileSync('pdftotext', ['-layout', pdfFile, '-'], { encoding: 'utf8' }).includes('S1D IMPORT FIXTURE')) {
+  fail('PDF 夹具不可提取文本（pdftotext 输出为空）');
+}
+try {
+  // ② importer 降级路径（无 LLM 配置 → 原文导入文档）
+  const rootImp = seedRoot('root-imp');
+  const idImp = await importPdfText(rootImp, pdfFile, 's1d-imp.pdf');
+  if (idImp !== 's1d-imp') fail('importer 应返回 slug id，实际 ' + idImp);
+  const htmlImp = fs.readFileSync(path.join(rootImp, 'docs', idImp + '.html'), 'utf8');
+  if (!htmlImp.includes('以下为 PDF 提取的原文')) fail('importer 降级文档应含原文导入标记');
+  checkCreated(rootImp, idImp, 'importer(降级)');
+
+  // ③ structure 路径（LLM 结构化 → buildDoc 建档）
+  const rootStr = seedRoot('root-str');
+  writeLLMConfig(rootStr);
+  const idStr = await importPdfText(rootStr, pdfFile, 's1d-str.pdf');
+  const htmlStr = fs.readFileSync(path.join(rootStr, 'docs', idStr + '.html'), 'utf8');
+  if (!htmlStr.includes('结构化员') || htmlStr.includes('以下为 PDF 提取的原文')) fail('structure 路径应产出 LLM 结构化文档而非降级文档');
+  checkCreated(rootStr, idStr, 'structure(LLM)');
+
+  // ①④ 服务级：/new 与 /restructure（隔离根 + 假渲染器 + 假 LLM）
+  const rootSrv = seedRoot('root-srv');
+  writeLLMConfig(rootSrv);
+  const fr = path.join(tmp, 'fake-render.sh');
+  fs.writeFileSync(fr, '#!/bin/bash\nshift\nif [ "$1" = "--src" ]; then src="$2"; out="$4"; else src="$RESUME_ROOT/docs/$1.html"; out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\nprintf "%%PDF-1.4 fake\\n" > "$out"\n');
+  fs.chmodSync(fr, 0o755);
+  // 降级夹具文档（/restructure 入口条件：含"以下为 PDF 提取的原文"）
+  const deg = assembleTemplate('classic')
+    .replaceAll('{{NAME}}', () => '降级员').replaceAll('{{CONTACT}}', () => '').replaceAll('{{INTENT}}', () => '')
+    .replaceAll('{{SUMMARY}}', () => '以下为 PDF 提取的原文（待整理）：').replaceAll('{{SKILLS}}', () => '')
+    .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => '<div class="plain-lines"><p style="white-space:pre-wrap">原始文本行</p></div>')
+    .replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => 'deg');
+  fs.writeFileSync(path.join(rootSrv, 'docs', 'deg.html'), deg);
+  const freePort = () => new Promise((resolve, reject) => { const s = http.createServer(); s.once('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
+  const port = await freePort();
+  const srv = (await import('node:child_process')).spawn(process.execPath, ['server.mjs'], {
+    cwd: process.cwd(),
+    env: { ...process.env, RESUME_ROOT: rootSrv, PORT: String(port), RESUME_RENDER_BIN: fr },
+    stdio: ['ignore', 'ignore', 'pipe']
+  });
+  let serr = ''; srv.stderr.on('data', (d) => { serr += d; });
+  const B = 'http://127.0.0.1:' + port;
+  try {
+    let up = false;
+    const t0 = Date.now();
+    while (Date.now() - t0 < 12000) { if (srv.exitCode !== null) break; try { await fetch(B + '/'); up = true; break; } catch {} await sleep(80); }
+    if (!up) fail('S1-D 测试服务启动失败: ' + serr.slice(0, 500));
+    // ① /new
+    const rNew = await fetch(B + '/new', { method: 'POST', redirect: 'manual' });
+    if (![302, 303].includes(rNew.status)) fail('/new 应 3xx 跳转编辑器，实际 ' + rNew.status);
+    const loc = rNew.headers.get('location') || '';
+    const newId = new URLSearchParams(loc.split('?')[1] || '').get('id');
+    if (!newId) fail('/new 未返回文档 id: ' + loc);
+    checkCreated(rootSrv, newId, '/new');
+    // ④ /restructure（既有降级文档整体再生：先快照，再登记 classic 主题 meta）
+    const rRe = await fetch(B + '/restructure?id=deg', { method: 'POST', redirect: 'manual' });
+    if (![302, 303].includes(rRe.status)) fail('/restructure 应 3xx，实际 ' + rRe.status + '（' + (await rRe.text().catch(() => '')).slice(0, 200) + '）');
+    const htmlRe = fs.readFileSync(path.join(rootSrv, 'docs', 'deg.html'), 'utf8');
+    if (htmlRe.includes('以下为 PDF 提取的原文')) fail('/restructure 后不应再是降级文档');
+    if (!htmlRe.includes('结构化员')) fail('/restructure 应写入 LLM 结构化结果');
+    checkCreated(rootSrv, 'deg', '/restructure');
+    if (!fs.existsSync(path.join(rootSrv, 'snapshots', 'deg'))) fail('/restructure 前应留快照');
+  } finally {
+    srv.kill('SIGKILL');
+    await sleep(50);
+  }
+  console.log('✅ S1-D-2 四条新建路径（/new、importer 降级、structure LLM、/restructure）：内联 sha1 == themes sha1 且 meta 登记 theme/styleHash/typo/schemaVersion');
+} finally {
+  llmSrv.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+EOF

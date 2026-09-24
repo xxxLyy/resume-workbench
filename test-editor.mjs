@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { resolveChromium, invalidateCache, readCache } from './chromium.mjs';
 import { updateMeta } from './tx.mjs';
 import { freezeHtml } from './freeze.mjs';
+import { assembleTemplate } from './template.mjs';
 
 const [base, docId, dataRoot] = process.argv.slice(2);
 if (!base || !docId || !dataRoot) { console.error('用法: node test-editor.mjs <baseURL> <docId> <dataRoot>'); process.exit(2); }
@@ -527,7 +528,7 @@ catch (e) { console.error('⚠️ Chromium 不可用，跳过浏览器级验证:
 const ED_DOC = 'ed-fixture';
 const JOB_DOC = 'ed-fixture-v2';
 {
-  let tpl = fs.readFileSync(path.join(APP_ROOT, 'template.html'), 'utf8');
+  let tpl = assembleTemplate('classic');   // 夹具经装配生成（themes 唯一源），不直读 template.html
   const projects = '<div class="entry-head"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024-2025</div></div>\n<ul><li>旧项目描述</li></ul>\n<div class="entry-head"><div class="entry-title">项目B</div><div class="entry-role">开发</div><div class="entry-date">2023</div></div>\n<ul><li>项目B描述</li></ul>';
   tpl = tpl.replaceAll('{{NAME}}', () => '测试员').replaceAll('{{CONTACT}}', () => 'test@example.com')
     .replaceAll('{{INTENT}}', () => '测试').replaceAll('{{SUMMARY}}', () => '摘要文本').replaceAll('{{SKILLS}}', () => '<p>技能一：内容</p>')

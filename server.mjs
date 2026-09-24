@@ -15,6 +15,7 @@ import { docToLines, docToText, contentHash, sectionsOf } from './extract.mjs';
 import { rotateLogIfNeeded } from './logrotate.mjs';
 import { freezeHtml, normalizeToCurrent, splitDoc, staleInfo } from './freeze.mjs';
 import { beginTx, commitTx, dropSupersededTx, recoverPending, withDocLock, updateMeta, rootLock, atomicWrite, LockHeld } from './tx.mjs';
+import { assembleTemplate, themeRegistration } from './template.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const root = process.env.RESUME_ROOT || APP_ROOT;   // 数据根（docs/snapshots/pdfs/JSON/backups 全在此）
@@ -574,7 +575,7 @@ async function handler(req, res) {
     }
     // ===== 文档创建/复制/删除 =====
     if (req.method === 'POST' && url.pathname === '/new') {
-      const tpl = fs.readFileSync(path.join(APP_ROOT, 'template.html'), 'utf8');
+      const tpl = assembleTemplate('classic');   // 主题唯一源装配（template.mjs）；代码/静态资源永远来自 APP_ROOT
       let i = 0, newId;
       do { newId = i === 0 ? 'doc' : 'doc-' + i; i++; } while (fs.existsSync(docPath(newId)));
       const html = tpl
@@ -588,6 +589,8 @@ async function handler(req, res) {
         .replaceAll('{{EDU}}', () => '')
         .replaceAll('{{DOC_ID}}', () => newId);
       fs.writeFileSync(docPath(newId), html);
+      // 新建即登记样式来源（meta 唯一写入者 updateMeta）：theme/styleHash/typo/schemaVersion
+      updateMeta(root, newId, (m) => ({ ...(m || {}), ...themeRegistration('classic') }));
       return redirect(`/edit?id=${newId}`);
     }
     if (req.method === 'POST' && url.pathname === '/duplicate') {
@@ -1639,6 +1642,8 @@ async function handler(req, res) {
       const tmp = docPath(id) + '.' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.tmp';
       fs.writeFileSync(tmp, structured);
       fs.renameSync(tmp, docPath(id));
+      // 再生文档 = 装配产出的全新 classic 文档：重新登记样式来源（旧正文与旧 typo 已在上方快照中冻结）
+      updateMeta(root, id, (m) => ({ ...(m || {}), ...themeRegistration('classic') }));
       await renderCurrent(id);   // 当前文档渲染一律走组装入口
       return redirect(`/edit?id=${id}`);
     }
