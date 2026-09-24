@@ -13,7 +13,7 @@ import { buildRewrite, buildChat, parseChanges, buildReview, buildMatch, parseRe
 import { buildJobPrompt, parseJobOps, pageSuggestions } from './job.mjs';
 import { docToLines, docToText, contentHash, sectionsOf } from './extract.mjs';
 import { rotateLogIfNeeded } from './logrotate.mjs';
-import { freezeHtml, normalizeToCurrent } from './freeze.mjs';
+import { freezeHtml, normalizeToCurrent, splitDoc, staleInfo } from './freeze.mjs';
 import { beginTx, commitTx, dropSupersededTx, recoverPending, withDocLock, updateMeta, rootLock, atomicWrite, LockHeld } from './tx.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -142,20 +142,65 @@ function snapshot(id) {
 }
 
 // ===== 渲染（原子替换；RETRY=1 次；测试可用 RESUME_RENDER_BIN 注入假渲染器）=====
-function renderDoc({ docId, src, out }) {
-  const args = src
-    ? [path.join(APP_ROOT, 'render.mjs'), '--src', src, '--out', out]
-    : [path.join(APP_ROOT, 'render.mjs'), docId];
+// renderDoc 只接受 --src 冻结/组装输入（render.mjs 对文档元数据盲态）；env 透传渲染标识与可复现性（旁车用）。
+function renderDoc({ src, out, env }) {
+  const args = [path.join(APP_ROOT, 'render.mjs'), '--src', src, '--out', out];
   const attempt = () => new Promise((resolve) => {
     const child = spawn(process.env.RESUME_RENDER_BIN || 'node', args, {
       stdio: 'inherit',
-      env: { ...process.env, RESUME_ROOT: root }
+      env: { ...process.env, RESUME_ROOT: root, ...(env || {}) }
     });
     const timer = setTimeout(() => child.kill(), 60000);
     child.on('close', (code) => { clearTimeout(timer); resolve(code === 0); });
     child.on('error', () => { clearTimeout(timer); resolve(false); });
   });
   return attempt().then((ok) => ok || attempt());
+}
+
+// 当前文档陈旧状态单出口（staleInfo）：当前 HTML + 当前 meta 冻结出 renderInputId，
+// 对照 meta.lastRenderInputId 与 PDF 存在性 → none/stale/fresh。mtime 不作正确性依据（仅日志/展示）。
+// 调用方：首页徽章、/save 响应 pdfStale、/pdf、/export。
+function currentRenderState(id) {
+  const html = fs.readFileSync(docPath(id), 'utf8');
+  const meta = loadMeta()[id] || {};
+  const frozen = freezeHtml(html, meta);
+  const pdfExists = fs.existsSync(pdfPath(id));
+  const si = staleInfo(meta, { renderInputId: frozen.renderInputId, pdfExists });
+  let docMtime = null;   // 仅日志参考（判定不看它）
+  try { docMtime = new Date(fs.statSync(docPath(id)).mtimeMs).toISOString(); } catch {}
+  return { frozen, meta, pdfExists, state: si.state, stale: si.stale, docMtime };
+}
+
+// 当前文档渲染唯一入口（铁律一）：freezeHtml(当前 HTML, 当前 meta) → tmp 冻结文件 → render.mjs --src
+// （RESUME_RENDER_INPUT_ID / RESUME_RENDER_REPRODUCIBLE 经 env 传入，供 <pdf>.env.json 旁车记录）
+// → 成功经 updateMeta 记 meta.lastRenderInputId/lastRenderAt（记的是本任务冻结的标识，不是完成时的"当前"标识；
+//   渲染期间又保存 → 下次判定自然 stale，无需 mtime）。
+// POST /render、/export 与 /pdf 的缺失/过期自动重渲、/rollback、/restructure 一律走这里；绝不直渲磁盘 HTML
+// （迁移后当前文档不含内联 typo，直渲会丢排版）。
+async function renderCurrent(id) {
+  const html = fs.readFileSync(docPath(id), 'utf8');
+  const meta = loadMeta()[id] || {};
+  const frozen = freezeHtml(html, meta);   // 任务启动即冻结输入
+  const tmp = path.join(os.tmpdir(), `resume-frozen-${id}-${Date.now()}-${process.pid}.html`);
+  atomicWrite(tmp, frozen.html);
+  let ok = false;
+  try {
+    ok = await renderDoc({
+      src: tmp,
+      out: pdfPath(id),
+      env: { RESUME_RENDER_INPUT_ID: frozen.renderInputId, RESUME_RENDER_REPRODUCIBLE: frozen.reproducible ? '1' : '0' }
+    });
+    ok = ok && fs.existsSync(pdfPath(id));
+    if (ok) {
+      updateMeta(root, id, (m) => ({ ...(m || {}), lastRenderInputId: frozen.renderInputId, lastRenderAt: new Date().toISOString() }));
+      console.error(`[render] 已渲染 id=${id} renderInputId=${frozen.renderInputId} reproducible=${frozen.reproducible}`);
+    } else {
+      console.error(`[render] 渲染失败 id=${id} renderInputId=${frozen.renderInputId}（详见上方渲染输出）`);
+    }
+  } finally {
+    try { fs.unlinkSync(tmp); } catch {}
+  }
+  return { ok, frozen };
 }
 
 function readBody(req, mode = 'text', maxSize = 10 * 1024 * 1024) {
@@ -273,7 +318,7 @@ function jobBlock(id) {
 
 const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-function docInfo(id) {
+function docInfo(id, m) {
   const f = docPath(id);
   if (!fs.existsSync(f)) return null;
   const content = fs.readFileSync(f, 'utf8');
@@ -281,10 +326,11 @@ function docInfo(id) {
   return {
     id,
     title: escHtml((content.match(/<h1>([^<]+)<\/h1>/) || [])[1] || id),
-    mtime: stat.mtime.toLocaleString('zh-CN'),
+    mtime: stat.mtime.toLocaleString('zh-CN'),   // 仅展示（陈旧判定一律走 renderInputId）
     mtimeMs: stat.mtimeMs,
     degraded: content.includes('以下为 PDF 提取的原文'),
-    hash: contentHash(content)
+    hash: contentHash(content),
+    renderInputId: freezeHtml(content, m || {}).renderInputId   // 当前 HTML+当前 meta 的冻结标识（供 staleInfo）
   };
 }
 
@@ -293,12 +339,13 @@ function listPage() {
   const docs = fs.readdirSync(path.join(root, 'docs'))
     .filter((f) => f.endsWith('.html') && !f.startsWith('.'));
   const docInfoMap = new Map();
-  for (const f of docs) docInfoMap.set(f.replace('.html', ''), docInfo(f.replace('.html', '')));
+  for (const f of docs) { const did = f.replace('.html', ''); docInfoMap.set(did, docInfo(did, meta[did])); }
   const infos = [...docInfoMap.values()].filter(Boolean);
   const activeApps = loadApps().filter((a) => !APP_TERMINAL.includes(a.status)).length;
   const { active, profiles } = loadProfiles(root);
   const cfg = profiles[active];
-  const staleCount = infos.filter((d) => fs.existsSync(pdfPath(d.id)) && fs.statSync(pdfPath(d.id)).mtimeMs < d.mtimeMs).length;
+  // 陈旧计数按 staleInfo（渲染标识），mtime 不参与
+  const staleCount = infos.filter((d) => staleInfo(meta[d.id] || {}, { renderInputId: d.renderInputId, pdfExists: fs.existsSync(pdfPath(d.id)) }).state === 'stale').length;
   const degradedCount = infos.filter((d) => d.degraded).length;
   const pdfCount = infos.filter((d) => fs.existsSync(pdfPath(d.id))).length;
   const jobDocs = infos.filter((d) => meta[d.id] && (meta[d.id].parent || meta[d.id].job));
@@ -331,9 +378,10 @@ function listPage() {
     if (!info) return '';
     const tag = m.tag || '';
     const snaps = fs.existsSync(snapDir(id)) ? fs.readdirSync(snapDir(id)).filter((s) => s.endsWith('.html')).length : 0;
-    const pdfTime = fs.existsSync(pdfPath(id)) ? fs.statSync(pdfPath(id)).mtimeMs : 0;
-    const pdfBadge = !pdfTime ? '<span class="badge warn">PDF 未生成</span>'
-      : pdfTime < info.mtimeMs ? '<span class="badge warn">PDF 较旧</span>'
+    // 徽章三态 = staleInfo（渲染标识）：none 未生成｜stale 较旧｜fresh 同步（mtime 不参与判定）
+    const si = staleInfo(m, { renderInputId: info.renderInputId, pdfExists: fs.existsSync(pdfPath(id)) });
+    const pdfBadge = si.state === 'none' ? '<span class="badge warn">PDF 未生成</span>'
+      : si.state === 'stale' ? '<span class="badge warn">PDF 较旧</span>'
       : '<span class="badge ok">PDF 同步</span>';
     return `<li class="card doc-card"><b style="font-size:16px">${info.title}</b>
       <div style="color:var(--mut);font-size:12px;margin:6px 0">${id} · 更新于 ${info.mtime}</div>
@@ -508,6 +556,13 @@ async function handler(req, res) {
         html = html.replace('<button id="histBtn"', `<button id="homeBtn" class="secondary" onclick="location.href='/'">🏠 首页</button><button id="histBtn"`);
       }
       const vm = loadMeta()[id] || {};
+      // 铁律一（编辑入口=渲染组装同款）：落盘文档不含 typo（值在 meta）；serve 前剥离残留内联并注入 meta.typo，
+      // 编辑器所见即渲染所得；保存时按 Task3 路径（normalizeToCurrent）提取回 meta，往返幂等。
+      html = splitDoc(html).html;
+      if (typeof vm.typo === 'string' && vm.typo) {
+        const typoBlock = `<style id="typo-custom">${vm.typo}</style>`;
+        html = /<\/head>/i.test(html) ? html.replace(/<\/head>/i, (mm) => typoBlock + mm) : typoBlock + html;
+      }
       if (vm.parent && !html.includes('id="verBadge"')) {
         html = html.replace('<button id="histBtn"', `<span id="verBadge" class="badge">${escHtml((vm.company || '') + '·' + (vm.role || ''))}</span><button id="histBtn"`);
       }
@@ -569,6 +624,7 @@ async function handler(req, res) {
       if (!fs.existsSync(docPath(id))) return send(404, 'doc not found', 'text/plain');
       fs.unlinkSync(docPath(id));
       if (fs.existsSync(pdfPath(id))) fs.unlinkSync(pdfPath(id));
+      try { fs.unlinkSync(pdfPath(id) + '.env.json'); } catch {}   // 渲染环境旁车与 PDF 成对清理
       return redirect('/');
     }
     // ===== 岗位草稿（独立文档；不依赖模型；同岗位不重复建）=====
@@ -795,8 +851,10 @@ async function handler(req, res) {
             if (stale) console.error(`[tx] 同文档过期事务记录已清理 ${stale} 条：${id}`);
           } catch {}
           const st = fs.statSync(docPath(id));
-          const pdfStat = fs.existsSync(pdfPath(id)) ? fs.statSync(pdfPath(id)) : null;
-          return { status: 200, body: { ok: true, mtime: st.mtimeMs, hash: contentHash(newHtml), pdfStale: !pdfStat || pdfStat.mtimeMs < st.mtimeMs } };
+          // pdfStale 按渲染标识判定（staleInfo），mtime 不作依据：本次落盘正文+typo 冻结出标识，对照 lastRenderInputId。
+          const savedRid = freezeHtml(newHtml, { typo: newTypo }).renderInputId;
+          const saveSi = staleInfo(loadMeta()[id] || {}, { renderInputId: savedRid, pdfExists: fs.existsSync(pdfPath(id)) });
+          return { status: 200, body: { ok: true, mtime: st.mtimeMs, hash: contentHash(newHtml), pdfStale: saveSi.stale } };
         });
       } catch (e) {
         if (e instanceof LockHeld) return sendJson(409, { ok: false, retry: true, error: '该文档正在被另一保存/回滚/复制处理，请稍后重试' });
@@ -806,12 +864,12 @@ async function handler(req, res) {
       }
       return sendJson(out.status, out.body);
     }
-    // 显式渲染 PDF（正文保存不触发渲染，避免自动保存拖渲染进程）
+    // 显式渲染 PDF（正文保存不触发渲染，避免自动保存拖渲染进程）：统一走 renderCurrent 组装，绝不直渲磁盘 HTML
     if (req.method === 'POST' && url.pathname === '/render') {
       if (!fs.existsSync(docPath(id))) return sendJson(404, { ok: false, error: 'doc not found' });
-      const ok = await renderDoc({ docId: id });
+      const r = await renderCurrent(id);
       const exists = fs.existsSync(pdfPath(id));
-      return sendJson(ok && exists ? 200 : 500, { ok: ok && exists, mtime: exists ? fs.statSync(pdfPath(id)).mtimeMs : 0, error: ok && exists ? null : '渲染失败（详见服务日志）' });
+      return sendJson(r.ok && exists ? 200 : 500, { ok: r.ok && exists, mtime: exists ? fs.statSync(pdfPath(id)).mtimeMs : 0, renderInputId: r.frozen.renderInputId, error: r.ok && exists ? null : '渲染失败（详见服务日志）' });
     }
     // ===== 投递：冻结内容 + 从冻结内容生成存档 PDF =====
     if (req.method === 'POST' && url.pathname === '/app/add') {
@@ -1116,7 +1174,7 @@ async function handler(req, res) {
         if (e instanceof LockHeld) return sendJson(409, { ok: false, retry: true, error: '该文档正在被处理，请稍后重试' });
         throw e;
       }
-      await renderDoc({ docId: id });
+      await renderCurrent(id);   // 当前文档渲染一律走组装入口（回滚后的正文+meta）
       return redirect(`/edit?id=${id}`);
     }
     // ===== 差异对比（统一提取；隐藏内容默认不参与，需显式 hidden=1）=====
@@ -1581,7 +1639,7 @@ async function handler(req, res) {
       const tmp = docPath(id) + '.' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.tmp';
       fs.writeFileSync(tmp, structured);
       fs.renameSync(tmp, docPath(id));
-      await renderDoc({ docId: id });
+      await renderCurrent(id);   // 当前文档渲染一律走组装入口
       return redirect(`/edit?id=${id}`);
     }
     if (req.method === 'POST' && url.pathname === '/ai/review') {
@@ -1870,42 +1928,46 @@ async function handler(req, res) {
     }
     if (req.method === 'GET' && url.pathname === '/pdf') {
       if (!fs.existsSync(docPath(id))) return send(404, 'doc not found', 'text/plain');
-      const docStat = fs.statSync(docPath(id));
-      let pdfStat = fs.existsSync(pdfPath(id)) ? fs.statSync(pdfPath(id)) : null;
-      let stale = !pdfStat || pdfStat.mtimeMs < docStat.mtimeMs;
-      if (stale) {
-        const ok = await renderDoc({ docId: id });
-        pdfStat = fs.existsSync(pdfPath(id)) ? fs.statSync(pdfPath(id)) : null;
-        stale = !ok || !pdfStat || pdfStat.mtimeMs < docStat.mtimeMs;
+      // 陈旧判定 = 渲染标识（staleInfo），mtime 仅日志；缺失/过期自动重渲一律走 renderCurrent 冻结组装。
+      // 绝不直渲磁盘 HTML：迁移后当前文档不含内联 typo，直渲会丢排版。
+      let rst = currentRenderState(id);
+      if (rst.stale) {
+        console.error(`[render] /pdf 自动重渲 id=${id} state=${rst.state} renderInputId=${rst.frozen.renderInputId} docMtime=${rst.docMtime}（mtime 仅日志）`);
+        await renderCurrent(id);
+        rst = currentRenderState(id);   // 复判：渲染期间文档可能又被保存（仍按标识，不用 mtime）
       }
-      if (!pdfStat) return send(500, '渲染失败：PDF 未生成，请到导出页重试（详见服务日志）', 'text/plain');
-      const meta = loadMeta()[id] || {};
+      if (!rst.pdfExists) return send(500, '渲染失败：PDF 未生成，请到导出页重试（详见服务日志）', 'text/plain');
+      const meta = rst.meta;
       const docHtml = fs.readFileSync(docPath(id), 'utf8');
       const name = decodeName((docHtml.match(/<h1>([^<]*)<\/h1>/) || [])[1] || id);
       const date = new Date().toISOString().slice(0, 10);
       const parts = meta.parent ? [name, meta.role || '', meta.company || '', date] : [name, id, date];
-      const fileName = sanitizeFileName(parts.filter(Boolean).join('_')) + (stale ? '_旧版本' : '') + '.pdf';
+      const fileName = sanitizeFileName(parts.filter(Boolean).join('_')) + (rst.stale ? '_旧版本' : '') + '.pdf';
+      // 文件名含中文：Node 头仅允许 Latin1 —— ASCII 兜底 + RFC 5987 filename*（既有直写非 ASCII 会 500，随本段修复）
+      const asciiName = fileName.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '');
       res.writeHead(200, {
         'Content-Type': 'application/pdf',
-        'Content-Disposition': `inline; filename="${fileName}"`,
-        'X-PDF-Stale': stale ? '1' : '0'
+        'Content-Disposition': `inline; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+        'X-PDF-Stale': rst.stale ? '1' : '0'
       });
       return fs.createReadStream(pdfPath(id)).on('error', () => res.destroy()).pipe(res);
     }
     if (req.method === 'GET' && url.pathname === '/export') {
       if (!VALID_ID.test(id)) return send(400, 'invalid id', 'text/plain');
       if (!fs.existsSync(docPath(id))) return send(404, 'doc not found', 'text/plain');
-      const docStat = fs.statSync(docPath(id));
-      let pdfStat = fs.existsSync(pdfPath(id)) ? fs.statSync(pdfPath(id)) : null;
+      const docStat = fs.statSync(docPath(id));   // mtime 仅展示/日志，陈旧判定走 staleInfo
+      let rst = currentRenderState(id);
       let renderError = null;
-      if (!pdfStat || pdfStat.mtimeMs < docStat.mtimeMs) {
-        const ok = await renderDoc({ docId: id });
-        pdfStat = fs.existsSync(pdfPath(id)) ? fs.statSync(pdfPath(id)) : null;
-        if (!ok || !pdfStat) renderError = '渲染失败（详见服务日志）';
+      if (rst.stale) {
+        console.error(`[render] /export 自动重渲 id=${id} state=${rst.state} renderInputId=${rst.frozen.renderInputId} docMtime=${rst.docMtime}（mtime 仅日志）`);
+        const r = await renderCurrent(id);   // 组装渲染（当前 HTML+当前 meta），绝不直渲磁盘 HTML
+        rst = currentRenderState(id);
+        if (!r.ok || !rst.pdfExists) renderError = '渲染失败（详见服务日志）';
       }
-      const meta = loadMeta()[id] || {};
+      const meta = rst.meta;
       const job = meta.job || null;
-      const pdfCurrent = pdfStat && !renderError && pdfStat.mtimeMs >= docStat.mtimeMs;
+      const pdfStat = rst.pdfExists ? fs.statSync(pdfPath(id)) : null;
+      const pdfCurrent = rst.state === 'fresh' && !renderError;
       const lines = docToText(fs.readFileSync(docPath(id), 'utf8'), { includeHidden: false }).split('\n');
       const projects = countProjects(docPath(id));
       let pages = 0, rows = [], checksOk = false;
@@ -1951,7 +2013,7 @@ async function handler(req, res) {
       <p>正在导出：<b>${escHtml(id)}</b> ${trackSrc} ${versionLine}</p>
       <p style="font-size:13px;color:var(--mut)">最后编辑 ${docStat.mtime.toLocaleString('zh-CN')}${pdfStat ? ` ｜ PDF 生成于 ${new Date(pdfStat.mtimeMs).toLocaleString('zh-CN')}` : ''}</p>
       ${renderError ? `<p style="color:var(--err)">❌ 重新生成失败：${escHtml(renderError)}。下方数据基于${pdfStat ? '旧版本 PDF' : '无 PDF'}，请修复渲染环境后重试。</p>` : ''}
-      ${!pdfCurrent && pdfStat && !renderError ? `<p style="color:var(--warn)">⚠️ 文档在 PDF 生成后又被修改过，当前 PDF 不是最新内容。</p>` : ''}
+      ${!pdfCurrent && pdfStat && !renderError ? `<p style="color:var(--warn)">⚠️ 文档内容已更新（渲染标识不一致），当前 PDF 不是最新内容。</p>` : ''}
       ${gate}
       ${importantWarn}
       <p>

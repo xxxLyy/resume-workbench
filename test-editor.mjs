@@ -7,10 +7,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
+import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { resolveChromium, invalidateCache } from './chromium.mjs';
+import { resolveChromium, invalidateCache, readCache } from './chromium.mjs';
 import { updateMeta } from './tx.mjs';
+import { freezeHtml } from './freeze.mjs';
 
 const [base, docId, dataRoot] = process.argv.slice(2);
 if (!base || !docId || !dataRoot) { console.error('用法: node test-editor.mjs <baseURL> <docId> <dataRoot>'); process.exit(2); }
@@ -369,6 +371,152 @@ async function runTxTests() {
   }
 }
 await runTxTests();
+
+// ===== S1 Task 4：渲染/编辑入口统一组装 + staleInfo + typo 注入（node 级；自 spawn 隔离根+隔离端口，绝不触碰 base/常驻服务）=====
+async function runS1T4Tests() {
+  const T4_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ed-t4-'));
+  const md5 = (b) => createHash('md5').update(b).digest('hex');
+  const servers = [];
+  try {
+    const ROOT7 = path.join(T4_TMP, 'r7');
+    for (const d of ['docs', 'snapshots', 'pdfs']) fs.mkdirSync(path.join(ROOT7, d), { recursive: true });
+    fs.writeFileSync(path.join(ROOT7, 'docs-meta.json'), '{}');
+    fs.writeFileSync(path.join(ROOT7, 'applications.json'), '[]');
+    fs.writeFileSync(path.join(ROOT7, 'materials.json'), '[]');
+    fs.writeFileSync(path.join(ROOT7, 'docs', 't4.html'), txDoc('t4', 'T4-SEED', ''));
+    // 假渲染器：记录本次渲染输入（.last-src.html）与调用次数（.render-count），供「组装渲染/不重渲/复用」断言
+    const fr7 = path.join(ROOT7, 'fake-render.sh');
+    fs.writeFileSync(fr7, '#!/bin/bash\nshift\nsrc=""; out=""\nif [ "$1" = "--src" ]; then src="$2"; out="$4"; else src="$RESUME_ROOT/docs/$1.html"; out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\ncp "$src" "$RESUME_ROOT/.last-src.html"\nn=$(cat "$RESUME_ROOT/.render-count" 2>/dev/null || echo 0); echo $((n+1)) > "$RESUME_ROOT/.render-count"\nprintf "%%PDF-1.4 fake\\n" > "$out"\n');
+    fs.chmodSync(fr7, 0o755);
+    const srv7 = await spawnServer(ROOT7, { RESUME_RENDER_BIN: fr7 });
+    servers.push(srv7.child);
+    const B7 = srv7.base;
+    const readMeta7 = () => JSON.parse(fs.readFileSync(path.join(ROOT7, 'docs-meta.json'), 'utf8'));
+    const readDoc7 = () => fs.readFileSync(path.join(ROOT7, 'docs', 't4.html'), 'utf8');
+    const renderCount = () => { try { return Number(fs.readFileSync(path.join(ROOT7, '.render-count'), 'utf8').trim()); } catch { return 0; } };
+    const lastSrc = () => { try { return fs.readFileSync(path.join(ROOT7, '.last-src.html'), 'utf8'); } catch { return ''; } };
+    const post = (u, body, ct) => fetch(B7 + u, { method: 'POST', headers: ct ? { 'Content-Type': ct } : {}, body, redirect: 'manual' });
+    const TYPO = '/*T4A*/body{font-size:14.5px}';
+
+    // ① 保存后刷新 GET /edit 仍显示排版：serve 前注入 meta.typo（落盘仍不含 typo-custom；无 typo 文档不注入）
+    {
+      const j = await (await post('/save?id=t4', txDoc('t4', 'T4-V1', TYPO), 'text/html; charset=utf-8')).json();
+      const ed = await (await fetch(B7 + '/edit?id=t4')).text();
+      const cnt = (ed.match(/<style id="typo-custom">/g) || []).length;
+      if (!j.ok) bad('① 保存失败', JSON.stringify(j));
+      else if (/<style\b[^>]*\bid\s*=\s*["']typo-custom["']/i.test(readDoc7())) bad('① 落盘文档不应含 typo-custom 元素');
+      else if (cnt !== 1) bad('① /edit 应恰注入一个 typo-custom 块', String(cnt));
+      else if (!ed.includes('<style id="typo-custom">' + TYPO + '</style>')) bad('① /edit 注入的应是 meta.typo 值');
+      else if (ed.indexOf('<style id="typo-custom">') > ed.indexOf('</head>')) bad('① typo 块应注入在 </head> 前');
+      else ok('① 保存后刷新 GET /edit 仍显示排版（meta.typo 注入；落盘不含 typo-custom）');
+      fs.writeFileSync(path.join(ROOT7, 'docs', 't4b.html'), txDoc('t4b', 'T4B', ''));
+      const ed2 = await (await fetch(B7 + '/edit?id=t4b')).text();
+      if (/<style id="typo-custom">/.test(ed2)) bad('① 无 typo 的文档 /edit 不应注入 typo 块');
+    }
+
+    // ② 删除 pdfs/<id>.pdf 后 GET /pdf 触发组装渲染：渲染输入=freeze 冻结产物（md5 同、含 typo 效果），绝非磁盘 HTML 直渲；成功记 meta 标识
+    {
+      fs.rmSync(path.join(ROOT7, 'pdfs', 't4.pdf'), { force: true });
+      const expected = freezeHtml(readDoc7(), readMeta7().t4 || {});
+      const c0 = renderCount();
+      const r = await fetch(B7 + '/pdf?id=t4');
+      const pdfNow = fs.existsSync(path.join(ROOT7, 'pdfs', 't4.pdf'));
+      const src = lastSrc();
+      const m = readMeta7().t4 || {};
+      if (r.status !== 200) bad('② /pdf 应 200', String(r.status));
+      else if (!pdfNow) bad('② /pdf 未重渲出 PDF');
+      else if (renderCount() !== c0 + 1) bad('② /pdf 应恰好触发一次组装渲染', String(renderCount() - c0));
+      else if (md5(src) !== md5(expected.html)) bad('② 渲染输入应与 freeze 冻结产物 md5 相同（组装渲染）');
+      else if (!src.includes('<style id="typo-custom">' + TYPO + '</style>')) bad('② 渲染输入应含 typo 效果');
+      else if (src === readDoc7()) bad('② 不得直接渲染磁盘 HTML（磁盘无 typo）');
+      else if (m.lastRenderInputId !== expected.renderInputId || !m.lastRenderAt) bad('② 成功渲染应记 lastRenderInputId/lastRenderAt', JSON.stringify(m));
+      else if (r.headers.get('X-PDF-Stale') !== '0') bad('② 渲染后应 fresh（X-PDF-Stale=0）', String(r.headers.get('X-PDF-Stale')));
+      else ok('② 删除 PDF 后 GET /pdf 走组装渲染（输入=freeze 产物含 typo；meta 记该任务标识）');
+    }
+
+    // ③ 仅 mtime 变而输入不变 → 不 stale、不重渲（/pdf 头、/export 文案、/save pdfStale、首页徽章全按渲染标识）
+    {
+      const f = path.join(ROOT7, 'docs', 't4.html');
+      const fut = (Date.now() + 10000) / 1000;
+      fs.utimesSync(f, fut, fut);
+      const c0 = renderCount();
+      const r = await fetch(B7 + '/pdf?id=t4');
+      const ex = await (await fetch(B7 + '/export?id=t4')).text();
+      const edHtml = await (await fetch(B7 + '/edit?id=t4')).text();   // 编辑器真实回传：DOM 含注入 typo + 注入块
+      const sv = await (await post('/save?id=t4', edHtml, 'text/html; charset=utf-8')).json();
+      const home = await (await fetch(B7 + '/')).text();
+      if (renderCount() !== c0) bad('③ 仅 mtime 变不应触发重渲', String(renderCount() - c0));
+      else if (r.headers.get('X-PDF-Stale') !== '0') bad('③ 仅 mtime 变不应判 stale');
+      else if (!ex.includes('PDF 与当前内容一致')) bad('③ 导出页应显示 PDF 与当前内容一致');
+      else if (!sv.ok || sv.pdfStale !== false) bad('③ /save 响应 pdfStale 应 false（typo 经 meta 往返，标识不变）', JSON.stringify(sv));
+      else if ((readMeta7().t4 || {}).typo !== TYPO) bad('③ /edit→/save 往返后 meta.typo 应保持', JSON.stringify((readMeta7().t4 || {}).typo));
+      else if (!home.includes('PDF 同步')) bad('③ 首页徽章应「PDF 同步」');
+      else ok('③ 仅 mtime 变而输入不变 → 不 stale 不重渲（且 /edit→/save 往返 typo 不丢）');
+    }
+
+    // ④a 仅「复用既有不可变文件」路径校验文件哈希：/snapshot/pdf 二次请求不重渲且 md5 不变
+    {
+      const snaps = fs.existsSync(path.join(ROOT7, 'snapshots', 't4')) ? fs.readdirSync(path.join(ROOT7, 'snapshots', 't4')).filter((x) => x.endsWith('.html')).sort() : [];
+      if (!snaps.length) bad('④ 前置失败：手动保存应产生冻结快照');
+      else {
+        const ts = snaps[snaps.length - 1].replace('.html', '');
+        const hist = path.join(ROOT7, 'pdfs', 'history', 't4@' + ts + '.pdf');
+        const c0 = renderCount();
+        const r1 = await fetch(B7 + '/snapshot/pdf?id=t4&ts=' + ts);
+        const h1 = fs.existsSync(hist) ? md5(fs.readFileSync(hist)) : '';
+        const c1 = renderCount();
+        const r2 = await fetch(B7 + '/snapshot/pdf?id=t4&ts=' + ts);
+        const h2 = fs.existsSync(hist) ? md5(fs.readFileSync(hist)) : '';
+        const c2 = renderCount();
+        if (r1.status !== 200 || r2.status !== 200) bad('④ /snapshot/pdf 应 200', r1.status + '/' + r2.status);
+        else if (c1 !== c0 + 1) bad('④ 首次历史渲染应恰好渲一次', String(c1 - c0));
+        else if (c2 !== c1) bad('④ 二次请求应复用既有不可变文件（不再渲染）', String(c2 - c1));
+        else if (!h1 || h1 !== h2) bad('④ 复用文件哈希应不变');
+        else ok('④a 复用既有不可变文件：/snapshot/pdf 二次请求不重渲且文件 md5 不变');
+      }
+    }
+
+    // ④b 重渲验收：冻结输入不变 → 两次真实渲染文本层/页数一致（不要求 PDF md5 相同；视觉门禁见 T6 像素比较）
+    {
+      let bin = null;
+      try { bin = await resolveChromium(); } catch {}
+      const hasTools = (() => { try { return spawnSync('pdftotext', ['-v']).status === 0 && spawnSync('pdfinfo', ['-v']).status === 0; } catch { return false; } })();
+      if (!bin || !hasTools) {
+        console.log('  ⚠️ ④b 跳过重渲验收（Chromium 或 poppler 不可用）');
+      } else {
+        const cache = readCache();   // 种缓存到隔离根：render.mjs 免再探针（不触碰真实根）
+        if (cache) fs.writeFileSync(path.join(ROOT7, '.chromium-choice.json'), JSON.stringify(cache));
+        const frozen = freezeHtml(readDoc7(), readMeta7().t4 || {});
+        const srcF = path.join(T4_TMP, 'frozen.html');
+        fs.writeFileSync(srcF, frozen.html);
+        const doRender = (out) => spawnSync(process.execPath, [path.join(APP_ROOT, 'render.mjs'), '--src', srcF, '--out', out], {
+          env: { ...process.env, RESUME_ROOT: ROOT7, RESUME_RENDER_INPUT_ID: frozen.renderInputId, RESUME_RENDER_REPRODUCIBLE: frozen.reproducible ? '1' : '0' },
+          encoding: 'utf8', timeout: 180000
+        });
+        const o1 = path.join(T4_TMP, 'a.pdf'), o2 = path.join(T4_TMP, 'b.pdf');
+        const g1 = doRender(o1), g2 = doRender(o2);
+        const text = (f) => { try { return spawnSync('pdftotext', [f, '-'], { encoding: 'utf8', timeout: 30000 }).stdout || ''; } catch { return ''; } };
+        const pages = (f) => { try { return (spawnSync('pdfinfo', [f], { encoding: 'utf8', timeout: 30000 }).stdout.match(/Pages:\s*(\d+)/) || [])[1] || ''; } catch { return ''; } };
+        if (g1.status !== 0 || g2.status !== 0) bad('④b 真实渲染失败', String(g1.stderr || g2.stderr || '').slice(0, 300));
+        else {
+          const t1 = text(o1), t2 = text(o2);
+          let side = null;
+          try { side = JSON.parse(fs.readFileSync(o1 + '.env.json', 'utf8')); } catch {}
+          if (!t1.trim() || !t1.includes('T4-V1')) bad('④b 文本层应含正文 T4-V1', t1.slice(0, 120));
+          else if (t1 !== t2) bad('④b 冻结输入不变 → 两次渲染文本层应一致');
+          else if (!pages(o1) || pages(o1) !== pages(o2)) bad('④b 冻结输入不变 → 两次渲染页数应一致', pages(o1) + '/' + pages(o2));
+          else if (!side || side.renderInputId !== frozen.renderInputId || side.dpi !== 150 || side.reproducible !== true) bad('④b 旁车应记该任务标识/dpi=150/reproducible', JSON.stringify(side));
+          else ok('④b 重渲验收：冻结输入不变 → 文本/页数一致 + 旁车标识透传（不断言 PDF md5 相同）');
+        }
+      }
+    }
+  } finally {
+    for (const c of servers) { try { c.kill('SIGKILL'); } catch {} }
+    await sleep(50);
+    try { fs.rmSync(T4_TMP, { recursive: true, force: true }); } catch {}
+  }
+}
+await runS1T4Tests();
 if (failures) { console.error('❌ 事务/锁/冻结点验证失败 ' + failures + ' 项'); process.exit(1); }
 
 let bin;

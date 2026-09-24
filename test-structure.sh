@@ -606,3 +606,141 @@ console.log('✅ S1-B-8 I-2 dropSupersededTx 只清同文档旧记录（异文�
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('✅ S1-B tx 恢复/updateMeta 并发不丢字段/文档锁/根锁 全部通过');
 EOF
+
+# —— S1-C：渲染环境旁车 <out>.env.json（真实 render.mjs）+ staleInfo 三态（服务级：徽章/头部/标识记录；mtime 不作正确性依据）——
+# 隔离：旁车段在 mktemp 根内真实渲染夹具（零接触真实 docs/pdfs）；三态段自 spawn 隔离根 + 隔离端口 + 假渲染器的服务。
+node --input-type=module << 'EOF'
+import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import http from 'node:http';
+import { spawn, spawnSync } from 'node:child_process';
+import { freezeHtml } from './freeze.mjs';
+import { resolveChromium } from './chromium.mjs';
+const fail = (m) => { console.error('❌ S1-C ' + m); process.exit(1); };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const RENDER_MJS = path.join(process.cwd(), 'render.mjs');
+
+// ---------- S1-C-1 旁车字段（bin/browserVersion/fonts/dpi=150/renderInputId/reproducible/at；env 透传，render.mjs meta-blind）----------
+const tmpA = fs.mkdtempSync(path.join(os.tmpdir(), 's1c-env-'));
+const RDATA = path.join(tmpA, 'data');
+fs.mkdirSync(RDATA, { recursive: true });
+process.env.RESUME_ROOT = RDATA;   // chromium 缓存/探针都落在隔离根（段 Y 同款语义）
+try { await resolveChromium({ tmpDir: tmpA }); }
+catch (e) { fail('Chromium 不可用（旁车需真实渲染）: ' + (e && e.message || e)); }
+const srcFile = path.join(tmpA, 'fixture.html');
+fs.writeFileSync(srcFile, '<!doctype html><html><head><meta charset="utf-8"></head><body><p>旁车夹具</p></body></html>');
+const RID = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+const runRender = (out, env) => {
+  const r = spawnSync(process.execPath, [RENDER_MJS, '--src', srcFile, '--out', out], {
+    env: { ...process.env, RESUME_ROOT: RDATA, ...env }, encoding: 'utf8', timeout: 180000
+  });
+  if (r.status !== 0) fail('render.mjs 退出码 ' + r.status + ': ' + String(r.stderr || r.stdout || '').slice(0, 400));
+};
+const readSidecar = (out) => {
+  const f = out + '.env.json';
+  if (!fs.existsSync(f)) fail('未写旁车: ' + f);
+  try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { fail('旁车不可解析: ' + e.message); }
+};
+// ① 完整 env：7 字段全、dpi=150、renderInputId/reproducible 按 env 透传
+const out1 = path.join(tmpA, 'o1.pdf');
+runRender(out1, { RESUME_RENDER_INPUT_ID: RID, RESUME_RENDER_REPRODUCIBLE: '1' });
+if (!fs.existsSync(out1)) fail('PDF 未生成');
+const s1 = readSidecar(out1);
+for (const k of ['bin', 'browserVersion', 'fonts', 'dpi', 'renderInputId', 'reproducible', 'at']) if (!(k in s1)) fail('旁车缺字段 ' + k + ': ' + JSON.stringify(s1));
+if (s1.dpi !== 150) fail('dpi 应为 150，实际 ' + s1.dpi);
+if (s1.renderInputId !== RID) fail('renderInputId 未按 env 透传: ' + s1.renderInputId);
+if (s1.reproducible !== true) fail('RESUME_RENDER_REPRODUCIBLE=1 应记 true: ' + s1.reproducible);
+if (typeof s1.bin !== 'string' || !s1.bin || !fs.existsSync(s1.bin)) fail('bin 应为存在的可执行路径: ' + s1.bin);
+if (typeof s1.browserVersion !== 'string' || !s1.browserVersion) fail('browserVersion 应为非空字符串: ' + JSON.stringify(s1.browserVersion));
+if (!Array.isArray(s1.fonts)) fail('fonts 应为数组: ' + JSON.stringify(s1.fonts));
+if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(String(s1.at))) fail('at 应为 ISO 时间: ' + s1.at);
+// ② reproducible=0 → false（remote/missing 由 freeze 判定，render 只记录）
+const out2 = path.join(tmpA, 'o2.pdf');
+runRender(out2, { RESUME_RENDER_INPUT_ID: RID, RESUME_RENDER_REPRODUCIBLE: '0' });
+if (readSidecar(out2).reproducible !== false) fail('RESUME_RENDER_REPRODUCIBLE=0 应记 false');
+// ③ 未设 env（快照/存档等直调路径）：renderInputId/reproducible 记 null，环境字段照写（不伪造）
+const out3 = path.join(tmpA, 'o3.pdf');
+runRender(out3, {});
+const s3 = readSidecar(out3);
+if (s3.renderInputId !== null || s3.reproducible !== null) fail('未设 env 应记 null（不伪造）: ' + JSON.stringify(s3));
+if (s3.dpi !== 150 || !s3.browserVersion || !Array.isArray(s3.fonts)) fail('未设 env 环境字段仍应写全: ' + JSON.stringify(s3));
+fs.rmSync(tmpA, { recursive: true, force: true });
+console.log('✅ S1-C-1 渲染旁车 <out>.env.json（7 字段/dpi=150/renderInputId+reproducible env 透传/未设记 null）');
+
+// ---------- S1-C-2 staleInfo 三态（服务级）：none/stale/fresh 全按渲染标识；仅 mtime 变不 stale 不重渲 ----------
+const tmpB = fs.mkdtempSync(path.join(os.tmpdir(), 's1c-srv-'));
+const ROOT = path.join(tmpB, 'data');
+for (const d of ['docs', 'snapshots', 'pdfs']) fs.mkdirSync(path.join(ROOT, d), { recursive: true });
+fs.writeFileSync(path.join(ROOT, 'docs-meta.json'), '{}');
+fs.writeFileSync(path.join(ROOT, 'applications.json'), '[]');
+fs.writeFileSync(path.join(ROOT, 'materials.json'), '[]');
+const docFile = path.join(ROOT, 'docs', 'sc1.html');
+const mkHtml = (body) => '<!doctype html><html><head><meta charset="utf-8"><style>.s{color:#111}</style></head><body><h1>夹具</h1><div class="sheet">' + body + "</div><script>var DOC_ID = 'sc1';</script></body></html>";
+fs.writeFileSync(docFile, mkHtml('SC-V1'));
+const fr = path.join(tmpB, 'fake-render.sh');
+fs.writeFileSync(fr, '#!/bin/bash\nshift\nn=$(cat "$RESUME_ROOT/.render-count" 2>/dev/null || echo 0); echo $((n+1)) > "$RESUME_ROOT/.render-count"\nif [ "$1" = "--src" ]; then out="$4"; else out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\nprintf "%%PDF-1.4 fake\\n" > "$out"\n');
+fs.chmodSync(fr, 0o755);
+const freePort = () => new Promise((resolve, reject) => { const s = http.createServer(); s.once('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
+const port = await freePort();
+process.env.RESUME_ROOT = ROOT;
+const srv = spawn(process.execPath, ['server.mjs'], {
+  cwd: process.cwd(),
+  env: { ...process.env, RESUME_ROOT: ROOT, PORT: String(port), RESUME_RENDER_BIN: fr },
+  stdio: ['ignore', 'ignore', 'pipe']
+});
+let serr = ''; srv.stderr.on('data', (d) => { serr += d; });
+const B = 'http://127.0.0.1:' + port;
+const metaOf = () => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'docs-meta.json'), 'utf8'))['sc1'] || {}; } catch { return {}; } };
+const renderCount = () => { try { return Number(fs.readFileSync(path.join(ROOT, '.render-count'), 'utf8').trim()); } catch { return 0; } };
+try {
+  let up = false;
+  const t0 = Date.now();
+  while (Date.now() - t0 < 12000) { if (srv.exitCode !== null) break; try { await fetch(B + '/'); up = true; break; } catch {} await sleep(80); }
+  if (!up) fail('测试服务启动失败: ' + serr.slice(0, 500));
+  // —— none 态：无 PDF → 徽章「PDF 未生成」；GET /pdf 组装渲染 → fresh 并记 meta.lastRenderInputId/lastRenderAt ——
+  const home1 = await (await fetch(B + '/')).text();
+  if (!home1.includes('PDF 未生成')) fail('none 态首页徽章应「PDF 未生成」');
+  const rid1 = freezeHtml(fs.readFileSync(docFile, 'utf8'), {}).renderInputId;
+  const r1 = await fetch(B + '/pdf?id=sc1');
+  if (r1.status !== 200) { const t = await r1.text().catch(() => ''); fail('/pdf 应 200，实际 ' + r1.status + '：' + t.slice(0, 200)); }
+  if (r1.headers.get('X-PDF-Stale') !== '0') fail('渲染成功后 X-PDF-Stale 应为 0');
+  if (!(r1.headers.get('Content-Disposition') || '').includes("filename*=UTF-8''")) fail('中文文件名应走 RFC 5987 filename*（非 ASCII 直写头会 500）: ' + r1.headers.get('Content-Disposition'));
+  if (!fs.existsSync(path.join(ROOT, 'pdfs', 'sc1.pdf'))) fail('/pdf 未生成 PDF');
+  if (renderCount() !== 1) fail('/pdf 应恰好触发一次组装渲染，实际 ' + renderCount());
+  const m1 = metaOf();
+  if (m1.lastRenderInputId !== rid1) fail('成功渲染应记该任务标识 lastRenderInputId: ' + JSON.stringify(m1));
+  if (!m1.lastRenderAt) fail('成功渲染应记 lastRenderAt: ' + JSON.stringify(m1));
+  const home2 = await (await fetch(B + '/')).text();
+  if (!home2.includes('PDF 同步')) fail('fresh 态首页徽章应「PDF 同步」');
+  // —— 仅 mtime 变（输入不变）→ 不 stale、不重渲（mtime 不作正确性依据）——
+  const future = (Date.now() + 10000) / 1000;
+  fs.utimesSync(docFile, future, future);
+  const r2 = await fetch(B + '/pdf?id=sc1');
+  if (r2.headers.get('X-PDF-Stale') !== '0') fail('仅 mtime 变不应判 stale');
+  if (renderCount() !== 1) fail('仅 mtime 变不应触发重渲（' + renderCount() + '）');
+  const home2b = await (await fetch(B + '/')).text();
+  if (!home2b.includes('PDF 同步')) fail('仅 mtime 变徽章仍应「PDF 同步」');
+  // —— stale 态：正文改 → 徽章「PDF 较旧」、/save pdfStale=true；GET /pdf 重渲并更新为该任务标识 ——
+  fs.writeFileSync(docFile, mkHtml('SC-V2'));
+  const home3 = await (await fetch(B + '/')).text();
+  if (!home3.includes('PDF 较旧')) fail('stale 态首页徽章应「PDF 较旧」');
+  const sv1 = await (await fetch(B + '/save?id=sc1', { method: 'POST', headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: mkHtml('SC-V2') })).json();
+  if (!sv1.ok) fail('/save 失败: ' + JSON.stringify(sv1));
+  if (sv1.pdfStale !== true) fail('标识不符时 /save pdfStale 应 true: ' + JSON.stringify(sv1));
+  const r3 = await fetch(B + '/pdf?id=sc1');
+  if (r3.headers.get('X-PDF-Stale') !== '0') fail('stale 重渲后应 fresh');
+  if (renderCount() !== 2) fail('stale 应恰好触发一次重渲（' + renderCount() + '）');
+  const rid2 = freezeHtml(fs.readFileSync(docFile, 'utf8'), metaOf()).renderInputId;
+  if (metaOf().lastRenderInputId !== rid2) fail('重渲后应更新为该任务标识: ' + JSON.stringify(metaOf()));
+  const sv2 = await (await fetch(B + '/save?id=sc1', { method: 'POST', headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: mkHtml('SC-V2') })).json();
+  if (sv2.pdfStale !== false) fail('fresh 时 /save pdfStale 应 false: ' + JSON.stringify(sv2));
+  // —— none 态（删 PDF 后）：标识一致也判 none ——
+  fs.rmSync(path.join(ROOT, 'pdfs', 'sc1.pdf'), { force: true });
+  const home4 = await (await fetch(B + '/')).text();
+  if (!home4.includes('PDF 未生成')) fail('删 PDF 后应回 none 态（未生成）');
+  console.log('✅ S1-C-2 staleInfo 三态服务级（徽章三态/X-PDF-Stale/lastRenderInputId 记录//save pdfStale；仅 mtime 变不 stale 不重渲）');
+} finally {
+  srv.kill('SIGKILL');
+  await sleep(50);
+  fs.rmSync(tmpB, { recursive: true, force: true });
+  delete process.env.RESUME_ROOT;
+}
+EOF

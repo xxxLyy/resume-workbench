@@ -176,12 +176,15 @@ R=$(curl -s -X POST "$B/render?id=$DOCID")
 echo "$R" | grep -q '"ok":false' || fail '渲染失败仍报成功'
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/render?id=$DOCID")
 [ "$CODE" = "500" ] || fail "渲染失败应 500（${CODE}）"
-touch "$RESUME_ROOT/docs/$DOCID.html"   # 让磁盘文档比 PDF 新 → 导出页会尝试重渲并失败
+# 改正文内容（渲染标识变化 → staleInfo 判 stale；mtime 不作正确性依据）→ 导出页会尝试重渲并失败
+node -e "const fs=require('fs');const f='$RESUME_ROOT/docs/$DOCID.html';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('文本B','文本B-导出失败夹具'))"
 EXPORT=$(curl -sf "$B/export?id=$DOCID")
 echo "$EXPORT" | grep -q '重新生成失败' || fail 'export 页未显示失败原因'
 echo "$EXPORT" | grep -q '已为你重新生成' && fail 'export 页出现旧版成功文案'
 echo "$EXPORT" | grep -q '旧版本 PDF' || fail 'export 页未标注旧版 PDF'
 rm -f "$TEST_DIR/render-fail"
+# 还原正文后成功重渲（标识回到原值，后续段仍以 文本B 口径断言）
+node -e "const fs=require('fs');const f='$RESUME_ROOT/docs/$DOCID.html';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('文本B-导出失败夹具','文本B'))"
 curl -s -X POST "$B/render?id=$DOCID" -o /dev/null
 echo '✅ 渲染失败不冒充成功'
 
