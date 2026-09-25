@@ -704,6 +704,28 @@ async function runS1T7Tests() {
       else if (markers9().includes('leg7-dup')) bad('T7④ 复制成功后目标文档残留 tx 记录应被清理', markers9().join(','));
       else ok('T7④ /duplicate 继承已迁移 meta 且清理目标文档被取代 tx 记录');
     }
+    // ⑤ 迁移互斥代码化（I-3）：他人持 .migrate.lock 期间，会 renderCurrent→updateMeta 并覆写 pdfs/ 的 GET /pdf、/export
+    //    同样 503（浏览器标签页不得与迁移三门禁并发写 meta / 抢 Chromium）；纯读 GET 不受影响；释放后恢复。
+    {
+      const lockFile = path.join(ROOT9, '.migrate.lock');
+      const pdf9 = path.join(ROOT9, 'pdfs', 'hand7.pdf');
+      fs.rmSync(pdf9, { force: true });
+      const ridBefore = (readMeta9()['hand7'] || {}).lastRenderInputId || null;
+      fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, host: os.hostname(), startedAt: Date.now() }));  // 外部鲜活 pid（模拟迁移进程持锁）
+      const cPdf = (await fetch(B9 + '/pdf?id=hand7')).status;
+      const cExp = (await fetch(B9 + '/export?id=hand7')).status;
+      const cEdit = (await fetch(B9 + '/edit?id=hand7')).status;   // 纯读路径（不 renderCurrent/不 updateMeta）不得被阻断
+      const wroteDuringLock = fs.existsSync(pdf9) || ((readMeta9()['hand7'] || {}).lastRenderInputId || null) !== ridBefore;
+      fs.rmSync(lockFile, { force: true });
+      const cAfter = (await fetch(B9 + '/pdf?id=hand7')).status;
+      const wroteAfter = fs.existsSync(pdf9) && !!(readMeta9()['hand7'] || {}).lastRenderInputId;
+      if (cPdf !== 503) bad('T7⑤ 他人持锁时 GET /pdf 应 503（它会写 meta 并覆写 PDF）', String(cPdf));
+      else if (cExp !== 503) bad('T7⑤ 他人持锁时 GET /export 应 503', String(cExp));
+      else if (wroteDuringLock) bad('T7⑤ 持锁期间不得写 meta/PDF（与迁移门禁并发会写脏）');
+      else if (cEdit !== 200) bad('T7⑤ 纯读 GET /edit 不应被锁阻断', String(cEdit));
+      else if (cAfter !== 200 || !wroteAfter) bad('T7⑤ 释放锁后 /pdf 应恢复渲染并回写标识', cAfter + '/' + wroteAfter);
+      else ok('T7⑤ 迁移互斥代码化：他人持锁时 GET /pdf、/export 503 且零写；纯读 /edit 200；释放后恢复渲染');
+    }
   } finally {
     for (const c of servers) { try { c.kill('SIGKILL'); } catch {} }
     await sleep(50);

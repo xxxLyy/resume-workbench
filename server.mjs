@@ -27,6 +27,10 @@ setInterval(() => rotateLogIfNeeded(process.env.RESUME_LOG_FILE), 24 * 3600 * 10
 
 const VALID_ID = /^[a-z0-9][a-z0-9-]*$/;
 const MAX_SNAPSHOTS = 50;
+// 迁移互斥（S1-T7 修复轮1 I-3）：这些 GET 名义是读，实际会 renderCurrent → updateMeta(lastRenderInputId/lastRenderAt)
+// 并覆写 pdfs/<id>.pdf、拉起 Chromium；迁移三门禁期间放行它们＝浏览器标签页与迁移并发写 meta / 抢渲染。
+// 故与他人持 .migrate.lock 期间同样 503（纯读 GET 一律不受影响）。新增会写盘的 GET 必须登记到这里。
+const WRITE_ON_GET = new Set(['/pdf', '/export']);
 const APP_STATUSES = ['已投递', '笔试', '面试中', 'offer', '已拒', '搁置'];
 const APP_TERMINAL = ['offer', '已拒', '搁置'];
 const docPath = (id) => path.join(root, 'docs', id + '.html');
@@ -522,9 +526,12 @@ async function handler(req, res) {
   const sendJson = (code, obj) => send(code, JSON.stringify(obj), 'application/json; charset=utf-8');
   const redirect = (loc) => { res.writeHead(303, { Location: loc }); res.end(); };
   if (!VALID_ID.test(id)) return send(400, 'invalid id', 'text/plain');
-  // 跨进程排他锁：迁移/保存持有 .migrate.lock（他人新鲜持锁）期间，一切写请求（非 GET/HEAD）一律 503；读不受影响。
-  if (req.method !== 'GET' && req.method !== 'HEAD' && rootLock.isHeld(root)) {
-    return send(503, '迁移/维护进行中（.migrate.lock 被持有），写请求暂不可用，请稍后重试', 'text/plain');
+  // 跨进程排他锁：迁移/保存持有 .migrate.lock（他人新鲜持锁）期间，一切写请求一律 503；纯读不受影响。
+  // 写请求 = 非 GET/HEAD，外加 WRITE_ON_GET 里"读名义下的写"（GET /pdf、/export 会 renderCurrent→updateMeta 并覆写 PDF）。
+  const mutating = (req.method !== 'GET' && req.method !== 'HEAD')
+    || (req.method === 'GET' && WRITE_ON_GET.has(url.pathname));
+  if (mutating && rootLock.isHeld(root)) {
+    return send(503, '迁移/维护进行中（.migrate.lock 被持有），写请求与渲染类 GET（/pdf、/export）暂不可用，请稍后重试', 'text/plain');
   }
   try {
     // ===== 静态资源（代码目录，非数据目录）=====

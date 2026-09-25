@@ -248,8 +248,9 @@ export function recoverPending(root, { restoreDoc } = {}) {
 }
 
 // 默认恢复：写回旧正文（优先 .tx 副本；否则归一化旧冻结快照），并把目标文档 meta 回滚到旧副本。仅动目标文档。
-// 快照兜底 legacy-safe（T7 承载缺陷，热修 a7eb561 裁决）：oldMeta.typo 未定义 = legacy → 内联排版在迁移前是
-// 权威来源，归一化剥离后必须原值回注（否则兜底恢复把内联 typo 剥丢）；已迁移（meta.typo 定义）→ 写归一化正文。
+// 快照兜底 legacy-safe（T7 承载缺陷，热修 a7eb561 裁决）：oldMeta.typo「未定义或为空串」= 手状态/legacy → 内联排版在
+// 迁移前是权威来源，归一化剥离后必须原值回注（否则兜底恢复把内联 typo 剥丢）；已迁移（meta.typo 定义且非空）→ 写归一化正文。
+// 口径与 freeze.mjs:178、server.mjs:568 完全一致（"定义且非空"），空串绝不当作已迁移。
 function defaultRestoreDoc(rec) {
   const { docId, oldSnapTs, oldMeta, oldHtml, root } = rec;
   const docFile = path.join(root, 'docs', docId + '.html');
@@ -259,12 +260,12 @@ function defaultRestoreDoc(rec) {
     const snapFile = path.join(root, 'snapshots', docId, String(oldSnapTs).replace(/[^0-9-]/g, '') + '.html');
     if (fs.existsSync(snapFile)) {
       const snap = fs.readFileSync(snapFile, 'utf8');
-      // 旧快照为冻结格式（内联 typo）→ 归一化为当前格式后写回；legacy 形态保留内联块
+      // 旧快照为冻结格式（内联 typo）→ 归一化为当前格式后写回；legacy/手状态保留内联块
       let out;
       try {
         const norm = normalizeToCurrent(snap);
         out = norm.html;
-        const legacy = !(oldMeta && typeof oldMeta.typo === 'string');
+        const legacy = !(oldMeta && typeof oldMeta.typo === 'string' && oldMeta.typo !== '');
         if (legacy && norm.typo) {
           const block = `<style id="typo-custom">${norm.typo}</style>`;
           out = /<\/head>/i.test(out) ? out.replace(/<\/head>/i, (mm) => block + mm) : block + out;

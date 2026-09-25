@@ -1122,6 +1122,7 @@ const seedRoot = (name, docs, meta) => {
 const readMeta = (r) => JSON.parse(fs.readFileSync(path.join(r, 'docs-meta.json'), 'utf8'));
 const readDoc = (r, id) => fs.readFileSync(path.join(r, 'docs', id + '.html'), 'utf8');
 const txMarkers = (r) => fs.existsSync(path.join(r, '.tx')) ? fs.readdirSync(path.join(r, '.tx')).filter((f) => f.endsWith('.json') && !f.endsWith('.meta.json')) : [];
+const txDocIds = (r) => txMarkers(r).map((f) => { try { return JSON.parse(fs.readFileSync(path.join(r, '.tx', f), 'utf8')).docId; } catch { return null; } }).filter(Boolean);
 const mockCheckers = (over) => ({
   renderPdf: async (src, out) => { fs.writeFileSync(out, '%PDF-1.4 mock\n'); return true; },
   pdftotext: () => 'MOCK-TEXT-LAYER',
@@ -1289,7 +1290,17 @@ try {
   if (/<style\b[^>]*\bid\s*=\s*["']typo-custom["']/i.test(fb2)) fail('⑥ 已迁移（meta.typo 定义）兜底应写归一化正文（typo 在 meta，不再内联）');
   if ((readMeta(R7).fb || {}).typo !== '/*M*/p{margin:2px}' || (readMeta(R7).fb || {}).rev !== 6) fail('⑥ 已迁移兜底 meta 应整份回滚');
   if (txMarkers(R7).length) fail('⑥ 恢复成功后 tx 记录应清理');
-  console.log('✅ S1-E-⑥ 启动恢复快照兜底 legacy-safe（legacy 保留内联 / 已迁移归一化）');
+  // 手工态（meta.typo 定义但为空串 + 内联存在）：热修 a7eb561 裁决口径是「定义且非空」——空串不是权威来源，
+  // 兜底必须把快照内联排版原值回注（freeze.mjs:178 / server.mjs:568 同款），否则恢复把用户排版剥丢。
+  fs.writeFileSync(path.join(R7, 'docs', 'fb.html'), legDoc('PARTIAL3', null));   // 半程状态：内联已丢
+  mkRec('fb-hand', 'fb', '2026-09-20-000000-000', { rev: 7, typo: '' });
+  recoverPending(R7);
+  const fb3 = readDoc(R7, 'fb');
+  if (!fb3.includes('<style id="typo-custom">' + LEG_TYPO + '</style>')) fail('⑥ 手工态（meta.typo=空串）快照兜底应回注内联排版（空串非权威，同 freeze.mjs:178/server.mjs:568 口径）: ' + fb3.slice(0, 160));
+  if (!fb3.includes('SNAP-BODY')) fail('⑥ 手工态兜底应恢复快照正文');
+  if ((readMeta(R7).fb || {}).typo !== '' || (readMeta(R7).fb || {}).rev !== 7) fail('⑥ 手工态 meta 应整份回滚（typo 仍是空串，不得被写入内联值）');
+  if (txMarkers(R7).length) fail('⑥ 手工态恢复成功后 tx 记录应清理');
+  console.log('✅ S1-E-⑥ 启动恢复快照兜底 legacy-safe（legacy 保留内联 / 已迁移归一化 / 手工态 typo=空串 回注内联）');
 
   // ---------- ⑦ rootLock self-pid 陈旧残锁（pid 复用）：startedAt 早于本进程启动 → 判陈旧；新鲜自锁语义不变 ----------
   const R8 = path.join(tmp, 'r8'); fs.mkdirSync(R8, { recursive: true });
@@ -1303,6 +1314,58 @@ try {
   if (!rootLock.isHeld(R8)) fail('⑦ 新鲜 self-pid 锁仍应视为持有（同步短临界区语义不变）');
   fs.rmSync(lockFile, { force: true });
   console.log('✅ S1-E-⑦ rootLock self-pid 陈旧残锁判陈旧（pid 复用可破除）；新鲜自锁仍视为持有');
+
+  // ---------- ⑧ beginTx 载荷落盘校验：.tx/<txId>.html 静默写失败（tx.mjs:172 的 try{}catch{} 吞掉）→ 硬停整轮 ----------
+  // 迁移传 oldSnapTs:''（无快照兜底），载荷缺失 = 本事务无恢复源；此刻尚未改动任何文档 → 必须停轮（不降级续跑）。
+  const R9 = seedRoot('r9', { pa: legDoc('PA', '/*PA*/p{margin:3px}'), pb: legDoc('PB', null) }, {});
+  const pa0 = readDoc(R9, 'pa'), pb0 = readDoc(R9, 'pb'), meta9Raw = fs.readFileSync(path.join(R9, 'docs-meta.json'), 'utf8');
+  const realWriteFileSync = fs.writeFileSync;
+  fs.writeFileSync = function (p, ...rest) {   // 钩子：只让 .tx/ 里的 .html 载荷写入失败（ENOSPC 形态），标记/meta 载荷照常
+    const s = String(p);
+    if (s.includes(path.sep + '.tx' + path.sep) && /\.html\.[^/\\]+\.tmp$/.test(s)) { const e = new Error('ENOSPC: no space left on device（模拟载荷写入失败）'); e.code = 'ENOSPC'; throw e; }
+    return realWriteFileSync.apply(fs, [p, ...rest]);
+  };
+  let rep9;
+  try { rep9 = await runMigration(R9, { checkers: mockCheckers() }); } finally { fs.writeFileSync = realWriteFileSync; }
+  if (!rep9 || rep9.ok || !rep9.stopped) fail('⑧ 载荷未落盘必须停整轮（不得带着"无恢复源"的事务继续迁移）: ' + JSON.stringify(rep9 && rep9.stopped));
+  if (rep9.stopped.code !== 'TX_PAYLOAD_MISSING') fail('⑧ stopped.code 应 TX_PAYLOAD_MISSING: ' + rep9.stopped.code);
+  if (!/载荷/.test(rep9.stopped.message || '') || !/恢复源/.test(rep9.stopped.message || '')) fail('⑧ 错误信息须说清"载荷未落盘/无恢复源/已停止": ' + rep9.stopped.message);
+  if (readDoc(R9, 'pa') !== pa0 || readDoc(R9, 'pb') !== pb0) fail('⑧ 停轮发生在任何正文改动之前（pa/pb 旧字节不变）');
+  if (fs.readFileSync(path.join(R9, 'docs-meta.json'), 'utf8') !== meta9Raw) fail('⑧ 停轮时不得写 meta（无 schemaVersion/登记字段）: ' + fs.readFileSync(path.join(R9, 'docs-meta.json'), 'utf8'));
+  if (txDocIds(R9).length !== 1) fail('⑧ tx 记录应保留（标记 1 条）交启动恢复/人工，不得静默清理: ' + JSON.stringify(txMarkers(R9)));
+  if (rootLock.isHeld(R9)) fail('⑧ 停轮后 rootLock 应释放（本进程仍持有所有权）');
+  // 非静默形态（beginTx 自身抛错，.tx 路径被普通文件占位）同样停整轮、零改动
+  const R9b = seedRoot('r9b', { ro: legDoc('RO', null) }, {});
+  const ro0 = readDoc(R9b, 'ro'), meta9bRaw = fs.readFileSync(path.join(R9b, 'docs-meta.json'), 'utf8');
+  fs.writeFileSync(path.join(R9b, '.tx'), 'not-a-dir');   // beginTx 的 mkdirSync 确定性抛 EEXIST（与 uid 无关）
+  const rep9b = await runMigration(R9b, { checkers: mockCheckers() });
+  if (!rep9b || rep9b.ok || !rep9b.stopped) fail('⑧b .tx 不可用（beginTx 抛错）也应停整轮: ' + JSON.stringify(rep9b && rep9b.stopped));
+  if (readDoc(R9b, 'ro') !== ro0 || fs.readFileSync(path.join(R9b, 'docs-meta.json'), 'utf8') !== meta9bRaw) fail('⑧b 停轮时不得改动文档/写 meta');
+  console.log('✅ S1-E-⑧ beginTx 载荷落盘校验：.html 载荷静默失败 → TX_PAYLOAD_MISSING 硬停整轮（零文档改动、tx 保留）；.tx 不可用同样停轮');
+
+  // ---------- ⑨ 迁移中途 rootLock 所有权丧失（>30min 被 server 判陈旧破除并接管）→ 不写 schemaVersion=2、tx 保留、不删他人锁 ----------
+  const R10 = seedRoot('r10', { lost: legDoc('LOST', '/*LOST*/p{margin:4px}') }, {});
+  const lost0 = readDoc(R10, 'lost');
+  let sawOwnLockInGates = null;
+  const rep10 = await runMigration(R10, { checkers: mockCheckers({ comparePdfs: () => {
+    sawOwnLockInGates = JSON.parse(fs.readFileSync(rootLock.path(R10), 'utf8')).pid === process.pid;
+    atomicWrite(rootLock.path(R10), JSON.stringify({ pid: 424242, host: 'other-holder', startedAt: Date.now() }));   // 门禁期间锁被他人接管
+    return { pass: true, max: 0, pages: [], dpi: 150, threshold: 0.005, pixFmt: 'rgb24' };
+  } }) });
+  if (sawOwnLockInGates !== true) fail('⑨ 前置失败：门禁期间本进程应持有 .migrate.lock');
+  if (rep10.ok || !rep10.stopped || rep10.stopped.code !== 'LOCK_LOST') fail('⑨ 所有权丧失应以 LOCK_LOST STOP: ' + JSON.stringify(rep10.stopped));
+  const mLost = readMeta(R10).lost || null;
+  if (mLost && (mLost.schemaVersion === 2 || (mLost.migration || {}).state === 'done')) fail('⑨ 所有权丧失后不得写 schemaVersion=2/done（唯一完成判据不能被无锁进程盖章）: ' + JSON.stringify(mLost));
+  if (!txDocIds(R10).includes('lost')) fail('⑨ tx 记录应保留待恢复（不得 commitTx）: ' + JSON.stringify(txMarkers(R10)));
+  const lockNow = JSON.parse(fs.readFileSync(rootLock.path(R10), 'utf8'));
+  if (lockNow.pid !== 424242 || lockNow.host !== 'other-holder') fail('⑨ finally 只在自己仍持有时删锁（不得 unlink 他人锁）: ' + JSON.stringify(lockNow));
+  // 保留的 tx 记录必须是可用恢复源：启动恢复把 html+meta 拉回迁移前旧状态
+  fs.rmSync(rootLock.path(R10), { force: true });
+  const rec10 = recoverPending(R10);
+  if (!rec10.some((r) => r.docId === 'lost' && r.ok)) fail('⑨ 保留记录应可被启动恢复: ' + JSON.stringify(rec10.map((r) => [r.docId, r.ok, r.error])));
+  if (readDoc(R10, 'lost') !== lost0) fail('⑨ 恢复后正文应为迁移前旧字节（内联排版仍在）');
+  if (readMeta(R10).lost) fail('⑨ 恢复后 meta 应回滚（迁移前无条目 → 删除）: ' + JSON.stringify(readMeta(R10).lost));
+  console.log('✅ S1-E-⑨ 迁移中途锁所有权丧失 → 不写 schemaVersion=2、tx 记录保留（可恢复）、不删他人锁');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
@@ -1316,6 +1379,7 @@ command -v pdftotext >/dev/null || { echo '❌ S1-E-2 需要 poppler(pdftotext):
 command -v pdfinfo >/dev/null || { echo '❌ S1-E-2 需要 poppler(pdfinfo): brew install poppler'; exit 1; }
 node --input-type=module << 'EOF'
 import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { assembleTemplate, themeCss } from './template.mjs';
 import { sha1 } from './freeze.mjs';
@@ -1378,6 +1442,23 @@ try {
   if (bks.length !== 1 || !fs.existsSync(path.join(R, 'backups', bks[0], 'docs', 'e2e-legacy.html'))) fail('backups/pre-s1-<ts>/ 全量副本应在');
   const legChk = m['e2e-legacy'].migration.checks;
   console.log('✅ S1-E-2 隔离根端到端（真实门禁不注入）：legacy+classic 三门禁全过（文本 0 差异/页数 ' + legChk.pages.before + '=' + legChk.pages.after + '/视觉 max=' + legChk.visual.max.toFixed(6) + ' ≤0.005 RGB24@150），历史快照 md5 不变');
+
+  // —— S1-E-2b：CLI 级证据（I-2）：事务载荷无法落盘 → 非零退出 + 明确停轮报错 + 零文档改动/零 schemaVersion ——
+  const RC = path.join(tmp, 'cli-payload');
+  for (const d of ['docs', 'snapshots', 'pdfs']) fs.mkdirSync(path.join(RC, d), { recursive: true });
+  fs.writeFileSync(path.join(RC, 'docs', 'cli.html'), legacyHtml);
+  fs.writeFileSync(path.join(RC, 'docs-meta.json'), '{}');
+  fs.writeFileSync(path.join(RC, 'applications.json'), '[]');
+  fs.writeFileSync(path.join(RC, 'materials.json'), '[]');
+  fs.writeFileSync(path.join(RC, '.tx'), 'not-a-dir');   // beginTx 的 mkdirSync 确定性抛错（与 uid/权限无关）
+  const cliDoc0 = fs.readFileSync(path.join(RC, 'docs', 'cli.html'), 'utf8');
+  const cli = spawnSync(process.execPath, ['migrate-meta.mjs'], { cwd: process.cwd(), encoding: 'utf8', timeout: 180000, env: { ...process.env, RESUME_ROOT: RC } });
+  if (cli.status === 0 || cli.status === null) fail('2b 载荷不可落盘时 CLI 不得 exit 0（实际 ' + cli.status + '）');
+  if (!/停止整轮|迁移失败/.test(String(cli.stderr || ''))) fail('2b CLI 应给出明确停轮报错: ' + String(cli.stderr || '').slice(0, 400));
+  if (fs.readFileSync(path.join(RC, 'docs', 'cli.html'), 'utf8') !== cliDoc0) fail('2b CLI 停轮时不得改动文档正文');
+  if (JSON.parse(fs.readFileSync(path.join(RC, 'docs-meta.json'), 'utf8')).cli) fail('2b CLI 停轮时不得写 meta/schemaVersion');
+  if (fs.existsSync(path.join(RC, '.migrate.lock'))) fail('2b CLI 停轮后应释放 .migrate.lock（自己持有 → 可删）');
+  console.log('✅ S1-E-2b CLI 载荷不可落盘 → 非零退出（exit ' + cli.status + '）+ 明确停轮报错 + 零文档改动 + 锁已释放');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }

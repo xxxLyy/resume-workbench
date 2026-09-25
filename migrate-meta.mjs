@@ -12,6 +12,12 @@
 //   → 三门禁（隔离 tmp 内 before/after 真实渲染：pdftotext 文本层 0 差异、pdfinfo 页数相等、comparePdfs RGB24@150 ≤0.5%；
 //     消费规则：任何非零/抛错=STOP；先判 error/pass 再判 max —— 页数不等返回 max:null）
 //   → 全过才 updateMeta schemaVersion=2 + migration={state:'done',at,checks} + commitTx。schemaVersion 是唯一完成判据。
+//   载荷落盘硬校验（T7 修复轮1 I-2）：beginTx 之后立即断言 .tx/<txId>.html 与 .meta.json 都在盘上（beginTx 的 .html 写入
+//     包在 try{}catch{}，而迁移传 oldSnapTs:'' 没有快照兜底 → 载荷缺失就是"无恢复源"）；缺失即 TX_PAYLOAD_MISSING 硬停整轮
+//     （CLI 非零退出），此刻尚未改动任何文档。
+//   锁所有权复核（T7 修复轮1 I-3）：写 schemaVersion=2 前与 commitTx 前各复核 .migrate.lock 仍是本进程本次持有
+//     （pid + startedAt）；不一致 → LOCK_LOST，不盖章、不清 tx 记录（留给启动恢复）、STOP 整轮，且 finally 不删他人锁。
+//     server 侧同时把 GET /pdf、/export（会 renderCurrent→updateMeta 并覆写 PDF）纳入 503 门。
 //   首次 vs 中断：无 tx 且 schemaVersion<2 → 首迁（不回滚历史快照）；有 tx 记录 → recoverPending 先恢复再重做。
 //   任一门禁失败或 CheckerMissingError → 该文档 html+meta 完整恢复（双恢复成功才 commitTx，tx.mjs 语义），STOP 整轮，
 //   其他文档 untouched（无部分 done 态）。
@@ -47,6 +53,26 @@ function gateFail(msg) {
   const e = new Error('门禁失败: ' + msg);
   e.code = 'GATE_FAILED';
   return e;
+}
+
+// ===== 迁移锁所有权复核（I-3：互斥代码化，不只靠流程约定）=====
+// rootLock.acquire 返回 info = { pid, host, startedAt }。整轮若超 staleMs(30min)，server 会把锁判陈旧破除并放行写请求
+// （含 GET /pdf、/export 这类"读名义下的写"），于是 server 与迁移同时写 meta/pdf。故在「写 schemaVersion=2 前」与
+// 「commitTx 前」各复核一次锁文件仍是本进程本次持有；不一致 → 不盖章、不清 tx 记录（留给启动恢复把文档拉回旧状态）、
+// STOP 整轮；finally 也只在自己仍持有时才删锁（否则等于替他人解锁，放第三方进临界区）。
+function lockOwnedBy(root, info) {
+  let cur = null;
+  try { cur = JSON.parse(fs.readFileSync(rootLock.path(root), 'utf8')); } catch { return false; }
+  return !!(info && cur && cur.pid === info.pid && cur.startedAt === info.startedAt);
+}
+function assertLockOwnership(root, info, where) {
+  if (lockOwnedBy(root, info)) return;
+  let holder = '锁文件不可读或已消失';
+  try { const c = JSON.parse(fs.readFileSync(rootLock.path(root), 'utf8')); holder = `pid=${c.pid} startedAt=${c.startedAt}`; } catch {}
+  const e = new Error(`迁移互斥已失效（${where}）：.migrate.lock 现持有者 ${holder}，本进程为 pid=${info && info.pid} startedAt=${info && info.startedAt}。`
+    + '不写 schemaVersion=2、不清 tx 记录（保留交启动恢复），停止整轮；请确认常驻服务已停（launchctl bootout）后重跑。');
+  e.code = 'LOCK_LOST';
+  throw e;
 }
 
 // docs-meta.json 读：容忍缺失（{}），损坏显式抛 CORRUPT（停写不覆盖，与 tx.mjs updateMeta 同款纪律）
@@ -247,7 +273,7 @@ async function runGates(chk, beforeHtml, afterHtml) {
 }
 
 // ===== 单文档迁移事务 =====
-async function migrateDoc(root, docId, chk, backupDir) {
+async function migrateDoc(root, docId, chk, backupDir, lockInfo) {
   return await withDocLock(root, docId, async () => {
     const docFile = path.join(root, 'docs', docId + '.html');
     const oldHtml = fs.readFileSync(docFile, 'utf8');
@@ -266,6 +292,19 @@ async function migrateDoc(root, docId, chk, backupDir) {
 
     // ② beginTx（旧正文精确字节 + 旧 meta 整份副本落 .tx/；中断/失败的恢复依据）
     const txId = beginTx(root, docId, 'migrate', '');
+    // 载荷落盘硬校验（I-2）：beginTx 把 .tx/<txId>.html 的写入包在 try{}catch{}（tx.mjs:172，磁盘满/权限等会静默失败），
+    // 而迁移传 oldSnapTs:''（迁移快照不进 snapshots/，默认恢复寻不到）→ 载荷缺失就等于本事务没有恢复源：此后被杀会把
+    // meta 回滚成 legacy-undefined 而 html 停在归一化态，重跑三门禁 before==after 全过、盖章 schemaVersion=2 而排版已丢。
+    // 此刻尚未改动任何文档 → 硬失败停整轮（CLI 非零退出），绝不降级续跑。
+    const missingPayload = ['.html', '.meta.json'].filter((ext) => !fs.existsSync(path.join(root, '.tx', txId + ext)));
+    if (missingPayload.length) {
+      const e = new Error('事务载荷未落盘: ' + missingPayload.map((ext) => '.tx/' + txId + ext).join('、')
+        + ' 缺失（beginTx 写入被静默吞掉）。本事务没有恢复源，已在改动任何文档之前停止整轮；请检查 '
+        + path.join(root, '.tx') + ' 的磁盘空间/权限后重跑。');
+      e.code = 'TX_PAYLOAD_MISSING';
+      e.restored = true;   // 零改动：文档天然仍是旧状态（tx 记录保留，交启动恢复按孤儿/旧 meta 语义清理）
+      throw e;
+    }
     try {
       // ③ 归一化 + 登记
       const norm = normalizeToCurrent(oldHtml);
@@ -289,11 +328,17 @@ async function migrateDoc(root, docId, chk, backupDir) {
       // ④ 三门禁（before = 迁移前有效渲染输入；after = 迁移后渲染输入；两者 renderInputId 设计上相同，门禁实证）
       const checks = await runGates(chk, frozenPre.html, frozenAfter.html);
 
-      // ⑤ 全过才 done（schemaVersion 唯一完成判据）→ commitTx
+      // ⑤ 全过才 done（schemaVersion 唯一完成判据）→ commitTx。两处写前都复核锁所有权（I-3）：
+      //    所有权已失 → 不盖章、不清记录，交启动恢复；否则会与接管锁的进程同时写 meta。
+      assertLockOwnership(root, lockInfo, '写 schemaVersion=2 前');
       updateMeta(root, docId, (cur) => ({ ...(cur || {}), schemaVersion: SCHEMA_VERSION, migration: { state: 'done', at: new Date().toISOString(), checks } }));
+      assertLockOwnership(root, lockInfo, 'commitTx 前');
       commitTx(root, txId);
       return { docId, action: 'migrated', renderInputId: frozenAfter.renderInputId, checks };
     } catch (e) {
+      // 锁所有权丧失（I-3）：另一进程可能正在写同一批文件，就地恢复会与之互踩 → 不恢复、不 commitTx，
+      // 保留 tx 记录（旧正文精确字节 + 旧 meta 整份副本）交启动恢复，STOP 整轮。
+      if (e && e.code === 'LOCK_LOST') { e.docId = docId; e.restored = false; throw e; }
       // 任一失败：该文档 html+meta 完整恢复；双恢复都成功才 commitTx，否则保留记录交启动恢复（tx.mjs 语义）
       let htmlBack = false, metaBack = false;
       try { atomicWrite(docFile, oldHtml); htmlBack = true; } catch {}
@@ -334,7 +379,7 @@ export async function runMigration(root, opts = {}) {
     makeBackup(root, backupDir);   // 触碰任何东西之前：全量副本
     report.backup = backupRel;
 
-    rootLock.acquire(root);   // 整轮持锁（timeoutMs 0：被占即抛 LockHeld；server 见锁写请求 503）
+    const lockInfo = rootLock.acquire(root);   // 整轮持锁（timeoutMs 0：被占即抛 LockHeld；server 见锁写请求 503）
     try {
       // 中断恢复：有 tx 记录 → 先恢复（legacy-safe 默认恢复）再重做；恢复失败 → 保留记录待人工，STOP 整轮
       const recovered = recoverPending(root);
@@ -350,7 +395,7 @@ export async function runMigration(root, opts = {}) {
         const cur = readMetaAll(root)[id] || null;
         if (schemaOf(cur) >= 2 && !listTxDocIds(root).includes(id)) { report.docs.push({ docId: id, action: 'already-done' }); continue; }
         try {
-          report.docs.push(await migrateDoc(root, id, chk, backupDir));
+          report.docs.push(await migrateDoc(root, id, chk, backupDir, lockInfo));
         } catch (e) {
           report.docs.push({ docId: id, action: 'failed', code: e.code || 'GATE_FAILED', restored: !!e.restored, reason: String(e.message || e) });
           report.stopped = { docId: id, code: e.code || 'GATE_FAILED', message: String(e.message || e), restored: !!e.restored };
@@ -359,7 +404,11 @@ export async function runMigration(root, opts = {}) {
       }
       report.ok = !report.stopped;
       return report;
-    } finally { rootLock.release(root); }
+    } finally {
+      // 只在自己仍持有时删锁（I-3c）：所有权已失 → 该锁文件是别人的，unlink 等于替他人解锁、放第三方进临界区
+      if (lockOwnedBy(root, lockInfo)) rootLock.release(root);
+      else console.error('[migrate] ⚠️ .migrate.lock 所有权已丧失（现持有者非本进程本次），不删除他人锁文件');
+    }
   } finally {
     if (prevRR === undefined) delete process.env.RESUME_ROOT; else process.env.RESUME_ROOT = prevRR;
   }
