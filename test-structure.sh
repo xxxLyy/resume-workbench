@@ -1523,7 +1523,8 @@ try {
     jl2: { job: { status: 'deliverable', changes: [] }, lastRenderInputId: 'seed-not-match' }   // 兼容读夹具（schemaVersion<2、无 flow、无 PDF → 不 stale 判定无关）
   });
   const fr = path.join(tmp, 'fake-render.sh');
-  fs.writeFileSync(fr, '#!/bin/bash\nshift\nif [ "$1" = "--src" ]; then out="$4"; else out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\nprintf "%%PDF-1.4 fake\\n" > "$out"\n');
+  // 旁车 <out>.env.json 透传 RESUME_RENDER_INPUT_ID（与真实 render.mjs 同契约；POST /export 直渲物化依赖它做名实校验）
+  fs.writeFileSync(fr, '#!/bin/bash\nshift\nif [ "$1" = "--src" ]; then out="$4"; else out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\nprintf "%%PDF-1.4 fake\\n" > "$out"\necho \'{"renderInputId":"\'"$RESUME_RENDER_INPUT_ID"\'","reproducible":true,"dpi":150}\' > "$out.env.json"\n');
   fs.chmodSync(fr, 0o755);
   const freePort = () => new Promise((resolve, reject) => { const s = http.createServer(); s.once('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
   const port = await freePort();

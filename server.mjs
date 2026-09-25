@@ -969,18 +969,47 @@ async function handler(req, res) {
       let ex = findEx(frozen.renderInputId);
       if (ex && fs.existsSync(histPathOf(id, frozen.renderInputId))) return respondReuse(ex);
       if (!fs.existsSync(histPathOf(id, frozen.renderInputId))) {
-        const r = await renderCurrent(id);   // 当前文档渲染唯一入口；以任务启动时冻结的身份为准
+        const r = await renderCurrent(id);   // 便利文件 pdfs/<id>.pdf + lastRenderInputId 记账（当前文档渲染唯一入口）
         if (!r.ok) return sendJson(500, { ok: false, error: '渲染失败，未写入导出记录（详见服务日志）' });
         frozen = r.frozen;
         const hf = histPathOf(id, frozen.renderInputId);
         if (!fs.existsSync(hf)) {
-          // 独占物化不可变产物：临时副本 + linkSync（EEXIST → 并发请求已产出同身份产物 → 复用，绝不覆盖）
+          // S1-8 修复轮1 Important-1（remedy ②）：不可变产物由本次冻结输入直渲到 history tmp，再 linkSync 独占物化——
+          // 绝不复制共享 pdfs/<id>.pdf（并发渲染器在渲染与物化之间原子替换共享文件会让产物名实错乱，直渲消除该窗口）。
+          // 名实校验：渲染后读 <tmp>.env.json 旁车，renderInputId 必须 === 本次冻结身份；不匹配/缺失 → 删 tmp、500（可重试）。
+          // linkSync EEXIST → 并发请求已产出同身份产物 → 复用，绝不覆盖。
           fs.mkdirSync(path.dirname(hf), { recursive: true });
+          const srcTmp = path.join(os.tmpdir(), `resume-export-frozen-${id}-${Date.now()}-${process.pid}.html`);
           const tmp = `${hf}.${process.pid}.${Date.now()}.tmp`;
-          fs.copyFileSync(pdfPath(id), tmp);
+          const side = tmp + '.env.json';
+          atomicWrite(srcTmp, frozen.html);
+          let hok = false;
+          try {
+            hok = await renderDoc({
+              src: srcTmp,
+              out: tmp,
+              env: { RESUME_RENDER_INPUT_ID: frozen.renderInputId, RESUME_RENDER_REPRODUCIBLE: frozen.reproducible ? '1' : '0' }
+            });
+            let sideRid = null;
+            try { sideRid = JSON.parse(fs.readFileSync(side, 'utf8')).renderInputId; } catch {}
+            hok = hok && fs.existsSync(tmp) && sideRid === frozen.renderInputId;
+          } finally {
+            try { fs.unlinkSync(srcTmp); } catch {}
+          }
+          if (!hok) {
+            console.error(`[export] 产物名实校验失败 id=${id} renderInputId=${frozen.renderInputId}（渲染失败或旁车标识不匹配），已删 tmp，可重试`);
+            try { fs.unlinkSync(tmp); } catch {}
+            try { fs.unlinkSync(side); } catch {}
+            return sendJson(500, { ok: false, retry: true, error: '导出产物校验失败（渲染失败或 renderInputId 不匹配），未写入产物与记录，可重试' });
+          }
           try { fs.linkSync(tmp, hf); }
-          catch (e) { try { fs.unlinkSync(tmp); } catch {} if (e.code !== 'EEXIST') throw e; }
+          catch (e) {
+            try { fs.unlinkSync(tmp); } catch {}
+            try { fs.unlinkSync(side); } catch {}
+            if (e.code !== 'EEXIST') throw e;
+          }
           try { fs.unlinkSync(tmp); } catch {}
+          try { fs.unlinkSync(side); } catch {}
         }
       }
       // 并发窗口内他人已补记录 → 复用（本路径只补缺失记录，不产生重复）

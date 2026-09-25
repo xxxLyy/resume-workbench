@@ -744,7 +744,10 @@ async function runS1T8Tests() {
     const ROOT10 = path.join(T8_TMP, 'r10');
     const fr10 = seedRoot(ROOT10, { t8: txDoc('t8', 'T8-V1', ''), t8b: txDoc('t8b', 'T8B-V1', ''), t8c: txDoc('t8c', 'T8C-V1', '') }, {});
     // 假渲染器：失败开关（render-fail 控制文件）+ 原子落盘（tmp+mv，并发下无半截产物）+ .last-src.html 记录渲染输入
-    fs.writeFileSync(fr10, '#!/bin/bash\nshift\n[ -f "$RESUME_ROOT/render-fail" ] && exit 1\nsrc=""; out=""\nif [ "$1" = "--src" ]; then src="$2"; out="$4"; else src="$RESUME_ROOT/docs/$1.html"; out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\ncp "$src" "$RESUME_ROOT/.last-src.html"\ntmp="$out.$$.tmp"\nprintf "%%PDF-1.4 fake\\n" > "$tmp"\nmv "$tmp" "$out"\n');
+    //   + <out>.env.json 旁车（renderInputId 透传，与真实 render.mjs 同契约）
+    //   + poison-shared 开关：共享便利文件（pdfs/<id>.pdf）落毒字节——模拟并发渲染器在渲染与物化之间原子替换共享文件（T8⑦A）
+    //   + bad-sidecar 开关：旁车 renderInputId 伪造为不匹配值——服务端应拒绝物化 → 500 零痕迹（T8⑦B）
+    fs.writeFileSync(fr10, '#!/bin/bash\nshift\n[ -f "$RESUME_ROOT/render-fail" ] && exit 1\nsrc=""; out=""\nif [ "$1" = "--src" ]; then src="$2"; out="$4"; else src="$RESUME_ROOT/docs/$1.html"; out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\ncp "$src" "$RESUME_ROOT/.last-src.html"\ntmp="$out.$$.tmp"\nprintf "%%PDF-1.4 fake\\n" > "$tmp"\nif [ -f "$RESUME_ROOT/poison-shared" ] && [ "$(dirname "$out")" = "$RESUME_ROOT/pdfs" ]; then printf "POISON-shared\\n" > "$tmp"; fi\nmv "$tmp" "$out"\nrid="$RESUME_RENDER_INPUT_ID"\nif [ -f "$RESUME_ROOT/bad-sidecar" ]; then rid="ffffffffffffffffffffffffffffffffffffffff"; fi\necho \'{"renderInputId":"\'"$rid"\'","reproducible":true,"dpi":150}\' > "$out.env.json"\n');
     fs.chmodSync(fr10, 0o755);
     const REC_FAIL = path.join(ROOT10, '.record-fail');
     const srv10 = await spawnServer(ROOT10, { RESUME_RENDER_BIN: fr10, RESUME_TEST_EXPORT_RECORD_FAIL_FILE: REC_FAIL });
@@ -896,6 +899,50 @@ async function runS1T8Tests() {
       else if (!home3.includes('/edit?id=t8b')) bad('T8⑥ 取消归档后应恢复默认显示');
       else if (mb.archivedAt !== null) bad('T8⑥ 清除后 meta.archivedAt 应为 null', JSON.stringify(mb.archivedAt));
       else if (failures === f0) ok('T8⑥ POST /archive 置/清 archivedAt；home 默认隐藏 archived、可切换显示');
+    }
+
+    // ⑦ 名实绑定（S1-8 修复轮1 Important-1 负向）：不可变产物必须由本次冻结输入直渲物化——
+    //    A) 并发渲染器在渲染与物化之间把共享 pdfs/<id>.pdf 原子替换成毒字节 → 产物仍=冻结输入渲染（旧 copy 路径会物化毒字节）
+    //    B) 旁车 renderInputId 不匹配 → 500、零痕迹（无产物/无记录/无残留），撤钩子后重试成功（retryable）
+    {
+      const poison = path.join(ROOT10, 'poison-shared');
+      const badSide = path.join(ROOT10, 'bad-sidecar');
+      const goodBytes = '%PDF-1.4 fake\n';
+      const f0 = failures;
+      // A) 共享便利文件被替换为毒字节（介入真实发生），产物字节必须等于冻结输入渲染
+      fs.writeFileSync(poison, '1');
+      const rA = await postExport('t8c');
+      const filesA = histFiles('t8c');
+      const bytesA = filesA.length === 1 ? fs.readFileSync(path.join(histDir, filesA[0]), 'utf8') : '';
+      const sharedA = fs.existsSync(path.join(ROOT10, 'pdfs', 't8c.pdf')) ? fs.readFileSync(path.join(ROOT10, 'pdfs', 't8c.pdf'), 'utf8') : '';
+      const exA = (readMeta10().t8c || {}).exports || [];
+      fs.rmSync(poison, { force: true });
+      if (!rA.body || !rA.body.ok || rA.status !== 200) bad('T8⑦A 共享文件被污染期间 POST /export 应成功', JSON.stringify(rA).slice(0, 200));
+      if (!sharedA.includes('POISON')) bad('T8⑦A 前置失败：共享便利文件应已被替换为毒字节（介入确已发生）', JSON.stringify(sharedA.slice(0, 60)));
+      if (filesA.length !== 1 || !/^t8c@[0-9a-f]{40}\.pdf$/.test(filesA[0])) bad('T8⑦A 应恰 1 个完整 rid 命名的不可变产物', filesA.join(','));
+      else if (bytesA !== goodBytes) bad('T8⑦A 产物字节必须等于冻结输入渲染（不得来自被替换的共享文件）', JSON.stringify(bytesA.slice(0, 60)));
+      else if (exA.length !== 1 || exA[0].renderInputId !== filesA[0].slice(4, -4) || rA.body.renderInputId !== exA[0].renderInputId) bad('T8⑦A 名实绑定：文件名 rid=记录 rid=响应 rid', JSON.stringify(exA[0] && exA[0].renderInputId));
+      if (histAll().some((f) => f.includes('.tmp') || f.endsWith('.env.json'))) bad('T8⑦A 不应残留 tmp/旁车中间文件', histAll().join(','));
+      // B) 旁车标识不匹配 → 500 零痕迹；重试成功
+      const histBefore = histAll().slice().sort().join(',');
+      const exLenBefore = ((readMeta10().t8 || {}).exports || []).length;
+      fs.writeFileSync(badSide, '1');
+      const rB = await postExport('t8');
+      fs.rmSync(badSide, { force: true });
+      const histMid = histAll().slice().sort().join(',');
+      const exLenMid = ((readMeta10().t8 || {}).exports || []).length;
+      if (rB.status !== 500 || (rB.body && rB.body.ok)) bad('T8⑦B 旁车标识不匹配应 500 且不报成功', JSON.stringify(rB).slice(0, 200));
+      if (histMid !== histBefore) bad('T8⑦B 不匹配不得留下产物/残留（history 目录不变）', histBefore + ' → ' + histMid);
+      if (exLenMid !== exLenBefore) bad('T8⑦B 不匹配不得写 exports 记录', String(exLenMid));
+      const rC = await postExport('t8');
+      const filesC = histFiles('t8');
+      const exC = (readMeta10().t8 || {}).exports || [];
+      const ridC = rC.body && rC.body.renderInputId ? String(rC.body.renderInputId) : '';
+      const newFile = ridC ? filesC.find((f) => f === 't8@' + ridC + '.pdf') : null;
+      if (!rC.body || !rC.body.ok) bad('T8⑦B 撤钩子后重试应成功（retryable）', JSON.stringify(rC).slice(0, 200));
+      else if (filesC.length !== 2 || exC.length !== exLenBefore + 1) bad('T8⑦B 重试应产出新产物与新记录', filesC.join(',') + '/' + exC.length);
+      else if (!newFile || fs.readFileSync(path.join(histDir, newFile), 'utf8') !== goodBytes) bad('T8⑦B 重试产物字节应等于冻结输入渲染', String(newFile));
+      if (failures === f0) ok('T8⑦ 名实绑定：共享文件并发替换不可污染不可变产物（直渲冻结输入）；旁车不匹配 → 500 零痕迹、可重试');
     }
   } finally {
     for (const c of servers) { try { c.kill('SIGKILL'); } catch {} }
