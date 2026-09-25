@@ -1065,7 +1065,8 @@ async function handler(req, res) {
       const rel = path.normalize(String(entry.file || ''));
       if (path.isAbsolute(rel) || rel.startsWith('..')) return send(500, '导出记录 file 路径非法（拒绝访问数据根之外）', 'text/plain');
       const f = path.join(root, rel);
-      if (!fs.existsSync(f)) return send(404, '导出记录存在但产物文件缺失：' + rel + '（重新 POST /export 可修复）', 'text/plain');
+      // 缺失产物提示（S1-T9，Task 8 review Minor-2）：重新 POST /export 只有在文档身份（renderInputId）未变时才会命中幂等键修复本记录
+      if (!fs.existsSync(f)) return send(404, '导出记录存在但产物文件缺失：' + rel + '（仅当文档身份 renderInputId 未变时，重新 POST /export 才会复用并修复本记录；身份已变则只会生成新导出，本记录仍缺失）', 'text/plain');
       const name = sanitizeFileName(docId + '_' + String(entry.at || '').slice(0, 10)) + '.pdf';
       res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': 'attachment; ' + dispositionFileName(name) });
       return fs.createReadStream(f).on('error', () => res.destroy()).pipe(res);
@@ -1330,12 +1331,14 @@ async function handler(req, res) {
       const baseline = meta.__baseline || '';
       const apps = loadApps();
       const referenced = new Set(apps.filter((a) => a.docId === id && a.snapTs).map((a) => a.snapTs));
+      // exports[].snapTs 引用的冻结快照同受 protectedSnaps 豁免（S1-T9，Task 8 review Minor-1：展示与清理口径一致）
+      const exportReferenced = new Set(exportsOf(loadMeta()[id] || {}).map((e) => e && e.snapTs).filter(Boolean));
       const items = files.filter((f) => f.endsWith('.html')).map((f) => {
         const ts = f.replace('.html', '');
         const m = meta[ts] || {};
         return `<li class="card" style="margin:6px 0;padding:10px 12px">
           <div style="display:flex;justify-content:space-between;align-items:center">
-            <div><b>${ts}</b>${m.name ? ` <span class="badge">${escHtml(m.name)}</span>` : ''}${ts === baseline ? ' <span class="badge ok">📌 基准</span>' : ''}${referenced.has(ts) ? ' <span class="badge ai">📋 投递引用（不会被清理）</span>' : ''}
+            <div><b>${ts}</b>${m.name ? ` <span class="badge">${escHtml(m.name)}</span>` : ''}${ts === baseline ? ' <span class="badge ok">📌 基准</span>' : ''}${referenced.has(ts) ? ' <span class="badge ai">📋 投递引用（不会被清理）</span>' : ''}${exportReferenced.has(ts) ? ' <span class="badge ai">📦 导出引用（不会被清理）</span>' : ''}
             ${m.note ? `<div style="font-size:12px;color:var(--mut);margin-top:2px">${escHtml(m.note)}</div>` : ''}</div>
             <div style="font-size:12px">
               <a href="/snapshot/view?id=${id}&ts=${ts}">预览</a> ·
@@ -1349,7 +1352,7 @@ async function handler(req, res) {
         </li>`;
       }).join('');
       return send(200, page('历史版本', `<h1>历史版本</h1>
-    <p>快照 = 保存前的旧版本，当前版本不在列表中。被投递引用的快照不会被配额清理。 <a href="/edit?id=${id}">← 返回编辑</a></p>
+    <p>快照 = 保存前的旧版本，当前版本不在列表中。被投递或导出记录引用的快照不会被配额清理。 <a href="/edit?id=${id}">← 返回编辑</a></p>
     <ul class="doclist" style="grid-template-columns:1fr">${items || '<li>暂无快照</li>'}</ul>
     <script>
       function snapNote(id, ts) {

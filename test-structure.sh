@@ -450,6 +450,24 @@ fs.rmSync(tmpRoot, { recursive: true, force: true });
 const fzRemote = freezeHtml(mkDoc({ css: '.a{background:url(https://e.com/x.png)}' }), { typo: '' });
 if (!Array.isArray(fzRemote.remote) || fzRemote.remote.length !== 1 || fzRemote.reproducible !== false || !Array.isArray(fzRemote.missing)) fail('freezeHtml 应透传 remote/missing/reproducible');
 
+// ⑤b 负向（Task 2 review Minor-1 → S1-T9 加固）：属性值含 '>' 时标签不得被截断漏收 src
+//     旧正则 [^>]* 在 <img alt="a > b" src="x.png"> 的引号内 '>' 处截断 → src 漏收 → 误判 reproducible:true（方向错误）
+const gtRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-s1a-gt-'));
+process.env.RESUME_ROOT = gtRoot;   // 相对资源落在隔离根（绝不写真实根）
+const gtDoc = '<!doctype html><html><head></head><body><img alt="a > b" src="pic.png"></body></html>';
+const gt = resourceFingerprint(gtDoc);
+if (gt.missing.length !== 1 || gt.missing[0] !== 'pic.png') fail('属性值含 > 时标签被截断漏收 src（应入 missing）: ' + JSON.stringify(gt.missing));
+if (gt.reproducible !== false) fail('缺失 src 应 reproducible=false');
+const gtRemote = resourceFingerprint('<body><img alt="a > b" src="https://e.com/gt.png"></body>');
+if (gtRemote.remote.length !== 1 || gtRemote.reproducible !== false) fail('属性值含 > 时远程 src 不得漏收（漏收=误判可复现，方向错误）: ' + JSON.stringify(gtRemote));
+fs.writeFileSync(path.join(gtRoot, 'pic.png'), 'PNG-GT');
+const gt2 = resourceFingerprint(gtDoc);
+if (gt2.reproducible !== true || gt2.missing.length !== 0 || gt2.resourcesHash === gt.resourcesHash) fail('src 落盘后应按文件内容哈希且 reproducible=true: ' + JSON.stringify(gt2));
+const gtSingle = resourceFingerprint("<body><img alt='a > b' src='p2.png'></body>");
+if (gtSingle.missing.length !== 1 || gtSingle.missing[0] !== 'p2.png') fail('单引号属性值含 > 同样不得截断: ' + JSON.stringify(gtSingle.missing));
+delete process.env.RESUME_ROOT;
+fs.rmSync(gtRoot, { recursive: true, force: true });
+
 // ⑥ staleInfo 三态：fresh / stale / none（mtime 不参与判定）
 const sFresh = staleInfo({ lastRenderInputId: 'a1' }, { renderInputId: 'a1', pdfExists: true });
 const sStale = staleInfo({ lastRenderInputId: 'a1' }, { renderInputId: 'b2', pdfExists: true });
@@ -463,7 +481,7 @@ if (staleInfo({ lastRenderInputId: 'a1' }, { renderInputId: 'a1', pdfExists: fal
 const renderSrc = fs.readFileSync('render.mjs', 'utf8');
 if (/docs-meta|loadMeta|meta\.typo/.test(renderSrc)) fail('render.mjs 不得引用 docs-meta / meta.typo（铁律二）');
 if (!renderSrc.includes("'--src'") || !renderSrc.includes("'--out'")) fail('render.mjs 应保留 --src/--out 入口');
-console.log('✅ S1-A freeze 六导出：splitDoc 两态/HTML 幂等/meta.typo 覆盖/renderInputId 含正文/完整资源指纹/staleInfo 三态/render meta-blind');
+console.log('✅ S1-A freeze 六导出：splitDoc 两态/HTML 幂等/meta.typo 覆盖/renderInputId 含正文/完整资源指纹（含属性值带 > 不截断）/staleInfo 三态/render meta-blind');
 EOF
 
 # —— S1-HF：热修 — legacy 内联排版优先于空 meta（裁决：effective typo = (meta.typo 定义且非空) ? meta.typo : (内联值 if present else '')）——
@@ -1083,6 +1101,22 @@ try {
   const cpOut = String(cp.stderr || '') + String(cp.stdout || '');
   if (!/pdftoppm/.test(cpOut) || !/brew install poppler/.test(cpOut)) fail('pdftoppm 缺失应指引 brew install poppler: ' + cpOut.slice(0, 300));
   console.log('✅ S1-G-e 检查器缺失（ffmpeg/pdftoppm PATH 遮蔽）→ exit 3 + 修复指引，不降级');
+
+  // ---------- (f) 抖动基线（S1-T9）：同一冻结输入 N=3 次真实渲染 → 两两逐页像素 ratio == 0 ----------
+  // 固定环境视觉基线（Task 4 验收「重渲不要求 PDF md5 相同」所引用的口径）：PDF 字节含元数据/时间戳可不同，
+  // 但 pdftoppm 栅格化确定性 → 像素比较必须全 0。若未来实测非零：必须 <<0.005 并记录进任务报告后再议放宽。
+  const sameHtml = mkHtml('', '');
+  const pdfJ1 = renderPdf('jit1', sameHtml);
+  const pdfJ2 = renderPdf('jit2', sameHtml);
+  const pdfJ3 = renderPdf('jit3', sameHtml);
+  let jitterMax = 0;
+  for (const [x, y] of [[pdfJ1, pdfJ2], [pdfJ1, pdfJ3], [pdfJ2, pdfJ3]]) {
+    const v = comparePdfs(x, y);
+    if (!v || v.pass !== true) fail('抖动基线应 pass: ' + JSON.stringify(v));
+    if (v.max > jitterMax) jitterMax = v.max;
+  }
+  if (jitterMax !== 0) fail('抖动基线：同一输入 3 次渲染两两像素 ratio 应恰为 0，实测 max=' + jitterMax + '（非零须报告并评审）');
+  console.log('✅ S1-G-f 抖动基线：同一冻结输入 3 次真实渲染，两两像素 ratio max=' + jitterMax + '（==0，栅格化确定性成立）');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
@@ -1159,6 +1193,9 @@ try {
   if (readDoc(R1, 'cls') !== clsHtml0) fail('① classic 文档 html 应零改写');
   if (cls1.schemaVersion !== 2 || !cls1.migration || cls1.migration.state !== 'done') fail('① classic 也应完成（schemaVersion=2/done）: ' + JSON.stringify(cls1));
   if (cls1.theme !== 'classic' || cls1.styleHash !== sha1(CSS) || cls1.typo !== '' || cls1.rev !== 1) fail('① classic 样式登记不得被覆盖: ' + JSON.stringify(cls1));
+  // M-7（Task 7 review → S1-T9）：迁移绝不写 meta.lastRenderInputId —— 渲染任务身份只由真实渲染（renderCurrent）写，
+  // 迁移写入会造成"未渲染却 fresh"的假同步（迁移登记的是溯源用 renderInputId 初值，键名不同）。
+  if ('lastRenderInputId' in leg1 || 'lastRenderInputId' in cls1) fail('① 迁移绝不写 meta.lastRenderInputId（假 fresh 防线）: leg=' + JSON.stringify(leg1.lastRenderInputId) + ' cls=' + JSON.stringify(cls1.lastRenderInputId));
   // 备份副本 backups/pre-s1-<ts>/（docs/snapshots/pdfs/三 JSON）+ 迁移冻结快照（先快照，含内联 typo）
   const b1 = backupsOf(R1);
   if (b1.length !== 1) fail('① 应创建 backups/pre-s1-<ts>/ 全量副本: ' + JSON.stringify(b1));
@@ -1428,6 +1465,7 @@ try {
   if (!legHtml.includes('data-style-origin="legacy-inline"') || leg.theme !== 'legacy') fail('legacy 应登记来源属性 + theme=legacy');
   if (!/^[0-9a-f]{40}$/.test(String(leg.styleHash)) || !/^[0-9a-f]{40}$/.test(String(leg.renderInputId))) fail('legacy styleHash/renderInputId 应为完整 40hex');
   if (cls.schemaVersion !== 2 || cls.theme !== 'classic' || cls.typo !== '') fail('classic 应 no-op 提取+门禁+done: ' + JSON.stringify(cls));
+  if ('lastRenderInputId' in leg || 'lastRenderInputId' in cls) fail('端到端迁移绝不写 meta.lastRenderInputId（M-7：渲染任务身份只由真实渲染写）');
   if (fs.readFileSync(path.join(R, 'docs', 'e2e-classic.html'), 'utf8') !== classicHtml) fail('classic html 应零改写');
   for (const id of ['e2e-legacy', 'e2e-classic']) {
     const chk = (m[id] || {}).migration && m[id].migration.checks || {};
@@ -1459,6 +1497,71 @@ try {
   if (JSON.parse(fs.readFileSync(path.join(RC, 'docs-meta.json'), 'utf8')).cli) fail('2b CLI 停轮时不得写 meta/schemaVersion');
   if (fs.existsSync(path.join(RC, '.migrate.lock'))) fail('2b CLI 停轮后应释放 .migrate.lock（自己持有 → 可删）');
   console.log('✅ S1-E-2b CLI 载荷不可落盘 → 非零退出（exit ' + cli.status + '）+ 明确停轮报错 + 零文档改动 + 锁已释放');
+} finally {
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+EOF
+
+# —— S1-E-3：负向真实门禁（S1-T9，plan T9 step 2 精神）：正文被改（font-size bump）的迁移必须被真实像素门禁拒绝 ——
+# ratio > 0.005 → 该文档 html+meta 完整恢复（旧字节）+ STOP 整轮（不写 done）。证明门禁在真实渲染上有牙齿，不只对模拟检查器。
+# 构造：只注入 renderPdf（渲染 after 前给冻结输入追加 font-size bump，模拟"迁移改了正文"）；pdftotext/pdfinfo/comparePdfs
+# 全部真实（poppler+ffmpeg）——bump 不改文本层与页数（前两门先通过），拒绝必须来自第三门（真实 RGB24 像素比较）。
+# 隔离：mktemp 根 + chromium 缓存种入（读真实根缓存仅只读），零接触真实 docs/snapshots/pdfs/JSON。
+command -v ffmpeg >/dev/null || { echo '❌ S1-E-3 需要 ffmpeg: brew install ffmpeg'; exit 1; }
+command -v pdftoppm >/dev/null || { echo '❌ S1-E-3 需要 poppler(pdftoppm): brew install poppler'; exit 1; }
+command -v pdftotext >/dev/null || { echo '❌ S1-E-3 需要 poppler(pdftotext): brew install poppler'; exit 1; }
+command -v pdfinfo >/dev/null || { echo '❌ S1-E-3 需要 poppler(pdfinfo): brew install poppler'; exit 1; }
+node --input-type=module << 'EOF'
+import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
+import { spawnSync, execFileSync } from 'node:child_process';
+import { runMigration } from './migrate-meta.mjs';
+import { comparePdfs } from './tools/pixel-diff.mjs';
+import { readCache } from './chromium.mjs';
+const fail = (m) => { console.error('❌ S1-E-3 ' + m); process.exit(1); };
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 's1e3-'));
+const R = path.join(tmp, 'data');
+for (const d of ['docs', 'snapshots', 'pdfs']) fs.mkdirSync(path.join(R, d), { recursive: true });
+const cache = readCache();   // 种 chromium 缓存到隔离根（真实根只读；render.mjs 免再探针）
+if (cache) fs.writeFileSync(path.join(R, '.chromium-choice.json'), JSON.stringify(cache));
+const CSS = '\n.sheet{color:#111}\n';
+// 8 短行夹具 + 26px bump：实测文本层 0 差异、页数 1=1、像素 ratio≈0.0115（>0.005 阈值 2.3 倍，稳定拒绝）
+const NEG_LINES = Array.from({ length: 8 }, (_, i) => '<p>NEG-' + i + ' 短行</p>').join('');
+const negDoc = '<!doctype html>\n<html><head>\n<meta charset="utf-8">\n<style>' + CSS + '</style>\n</head>\n<body>\n<div class="sheet">' + NEG_LINES + '</div>\n</body></html>\n';
+fs.writeFileSync(path.join(R, 'docs', 'neg.html'), negDoc);
+fs.writeFileSync(path.join(R, 'docs-meta.json'), '{}');
+fs.writeFileSync(path.join(R, 'applications.json'), '[]');
+fs.writeFileSync(path.join(R, 'materials.json'), '[]');
+const doc0 = fs.readFileSync(path.join(R, 'docs', 'neg.html'), 'utf8');
+const meta0Raw = fs.readFileSync(path.join(R, 'docs-meta.json'), 'utf8');
+const RENDER = path.join(process.cwd(), 'render.mjs');
+let renderCalls = 0;
+try {
+  const rep = await runMigration(R, { checkers: {
+    // 真实渲染；runGates 固定先渲 before 再渲 after → 第 2 次调用即 after.html：渲染前注入 font-size bump
+    renderPdf: async (src, out) => {
+      renderCalls++;
+      if (renderCalls === 2) fs.writeFileSync(src, fs.readFileSync(src, 'utf8').replace('</head>', '<style>.sheet p{font-size:26px}</style>\n</head>'));
+      const r = spawnSync(process.execPath, [RENDER, '--src', src, '--out', out], { env: { ...process.env, RESUME_ROOT: R }, encoding: 'utf8', timeout: 180000 });
+      if (r.status !== 0 || !fs.existsSync(out)) throw new Error('渲染失败 exit ' + r.status + ': ' + String(r.stderr || '').slice(0, 200));
+      return true;
+    },
+    pdftotext: (pdf) => execFileSync('pdftotext', [pdf, '-'], { encoding: 'utf8', timeout: 60000, maxBuffer: 64 * 1024 * 1024 }),
+    pdfinfoPages: (pdf) => Number(/Pages:\s*(\d+)/.exec(execFileSync('pdfinfo', [pdf], { encoding: 'utf8', timeout: 30000 }))[1]),
+    comparePdfs: (a, b, o) => comparePdfs(a, b, o)   // 真实 RGB24@150 像素门禁（不模拟）
+  } });
+  if (renderCalls !== 2) fail('前置：before/after 应各真实渲染一次（calls=' + renderCalls + '）');
+  if (!rep || rep.ok || !rep.stopped || rep.stopped.docId !== 'neg') fail('正文被改的迁移必须被真实门禁拒绝并 STOP 整轮: ' + JSON.stringify(rep && rep.stopped));
+  if (rep.stopped.code !== 'GATE_FAILED') fail('stopped.code 应 GATE_FAILED: ' + rep.stopped.code);
+  if (!/视觉门禁未通过/.test(rep.stopped.message || '')) fail('拒绝必须来自真实像素门禁（文本层/页数门应先通过）: ' + rep.stopped.message);
+  const mm = /max ratio ([0-9.eE+-]+)/.exec(rep.stopped.message || '');
+  if (!mm || !(Number(mm[1]) > 0.005)) fail('真实像素 ratio 应 > 0.005（实测 ' + (mm ? mm[1] : 'n/a') + '）');
+  if (rep.stopped.restored !== true) fail('应报告已完整恢复（html+meta 双恢复成功）');
+  if (fs.readFileSync(path.join(R, 'docs', 'neg.html'), 'utf8') !== doc0) fail('失败后文档应完整恢复旧字节（bump 不得残留）');
+  if (fs.readFileSync(path.join(R, 'docs-meta.json'), 'utf8') !== meta0Raw) fail('失败后 docs-meta 应零改动（无 schemaVersion/登记字段）: ' + fs.readFileSync(path.join(R, 'docs-meta.json'), 'utf8'));
+  if (fs.existsSync(path.join(R, '.tx')) && fs.readdirSync(path.join(R, '.tx')).some((f) => f.endsWith('.json'))) fail('双恢复成功 → commitTx，.tx 应干净');
+  const snaps = fs.existsSync(path.join(R, 'snapshots', 'neg')) ? fs.readdirSync(path.join(R, 'snapshots', 'neg')) : [];
+  if (snaps.length) fail('迁移快照归 backups/，snapshots/ 配额目录不得增长: ' + JSON.stringify(snaps));
+  console.log('✅ S1-E-3 负向真实门禁：font-size bump 正文改动 → 真实像素 ratio=' + Number(mm[1]).toFixed(6) + ' > 0.005 被拒（文本/页数门先通过），per-doc 完整恢复 + STOP 整轮');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }

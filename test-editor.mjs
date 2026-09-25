@@ -951,6 +951,145 @@ async function runS1T8Tests() {
   }
 }
 await runS1T8Tests();
+
+// ===== S1 Task 9：跨进程并发导出幂等 / 孤儿快照可清理且 committed 引用幸存 / 远程资源导出拒绝 / snapshots 页导出引用徽章 / history-pdf 缺产物提示（node 级；隔离根+隔离端口，双服务进程同根）=====
+async function runS1T9Tests() {
+  const T9_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ed-t9-'));
+  const servers = [];
+  try {
+    const ROOT11 = path.join(T9_TMP, 'r11');
+    const REMOTE_URL = 'https://cdn.example.com/t9r.png';
+    // t9r：引用 http(s) 远程图的文档（不可复现输入 → POST /export 拒绝；普通渲染允许 + 旁车 reproducible:false）
+    const t9rHtml = txDoc('t9r', 'T9R-V1', '').replace('<div class="sheet"', '<img src="' + REMOTE_URL + '" alt="远程图"><div class="sheet"');
+    const fr11 = seedRoot(ROOT11, { t9: txDoc('t9', 'T9-V1', ''), t9r: t9rHtml }, {});
+    // 假渲染器：原子落盘 + 旁车按 env 回显 reproducible（与真实 render.mjs 同契约：'1'→true '0'→false 未设→null）
+    fs.writeFileSync(fr11, '#!/bin/bash\nshift\nsrc=""; out=""\nif [ "$1" = "--src" ]; then src="$2"; out="$4"; else src="$RESUME_ROOT/docs/$1.html"; out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\ntmp="$out.$$.tmp"\nprintf "%%PDF-1.4 fake\\n" > "$tmp"\nmv "$tmp" "$out"\nif [ "$RESUME_RENDER_REPRODUCIBLE" = "1" ]; then rp=true; elif [ "$RESUME_RENDER_REPRODUCIBLE" = "0" ]; then rp=false; else rp=null; fi\necho \'{"renderInputId":"\'"$RESUME_RENDER_INPUT_ID"\'","reproducible":\'"$rp"\',"dpi":150}\' > "$out.env.json"\n');
+    fs.chmodSync(fr11, 0o755);
+    // 两个独立服务进程、同一数据根（跨进程 updateMeta 锁等价性）
+    const srvA = await spawnServer(ROOT11, { RESUME_RENDER_BIN: fr11 });
+    const srvB = await spawnServer(ROOT11, { RESUME_RENDER_BIN: fr11 });
+    servers.push(srvA.child, srvB.child);
+    const readMeta11 = () => JSON.parse(fs.readFileSync(path.join(ROOT11, 'docs-meta.json'), 'utf8'));
+    const snapDirT9 = path.join(ROOT11, 'snapshots', 't9');
+    const snapTsAll = () => fs.existsSync(snapDirT9) ? fs.readdirSync(snapDirT9).filter((f) => f.endsWith('.html')).map((f) => f.replace('.html', '')).sort() : [];
+    const histDir = path.join(ROOT11, 'pdfs', 'history');
+    const histFiles = (docId) => fs.existsSync(histDir) ? fs.readdirSync(histDir).filter((f) => f.startsWith(docId + '@') && f.endsWith('.pdf')) : [];
+    const postExport = (B, docId) => fetch(B + '/export?id=' + docId, { method: 'POST' })
+      .then((r) => r.json().then((j) => ({ status: r.status, body: j }), () => ({ status: r.status, body: null })));
+
+    // ① 跨进程并发 POST /export（两服务进程同时）→ 恰 1 条 exports 记录 + 恰 1 个 history 不可变文件（updateMeta 锁跨进程等价）
+    let committed = null;
+    {
+      const [ra, rb] = await Promise.all([postExport(srvA.base, 't9'), postExport(srvB.base, 't9')]);
+      const m = readMeta11();
+      const ex = (m.t9 || {}).exports || [];
+      const files = histFiles('t9');
+      if (!ra.body || !ra.body.ok || !rb.body || !rb.body.ok) bad('T9① 跨进程并发 POST /export 应都成功', JSON.stringify([ra, rb]).slice(0, 300));
+      else if (ex.length !== 1) bad('T9① 两进程并发应仅 1 条 exports 记录（跨进程 updateMeta 锁）', String(ex.length));
+      else if (files.length !== 1) bad('T9① 应仅 1 个 history 不可变文件', files.join(','));
+      else if (ra.body.exportId !== rb.body.exportId || ex[0].exportId !== ra.body.exportId) bad('T9① 两进程响应应为同一 exportId', ra.body.exportId + '/' + rb.body.exportId);
+      else if (!/^t9@[0-9a-f]{40}\.pdf$/.test(files[0]) || ex[0].renderInputId !== files[0].slice(3, -4)) bad('T9① 产物名/记录 rid 应一致且完整 40hex', files[0]);
+      else { committed = ex[0]; ok('T9① 跨进程并发 POST /export → 恰 1 条 exports 记录 + 恰 1 个 history 文件（同一 exportId，updateMeta 锁等价）'); }
+    }
+
+    // ② 孤儿快照（并发落败方写入、未被任何 committed 记录引用）：可存在，但绝不被 exports/applications 引用，且可被 prune 清理；
+    //    committed 引用（exports[].snapTs）在 prune 中幸存（protectedSnaps 豁免）
+    {
+      if (!committed) bad('T9② 前置失败：① 未产出 committed 导出记录');
+      else {
+        const all = snapTsAll();
+        const orphans = all.filter((ts) => ts !== committed.snapTs);   // 本根无投递/基准 → 非 committed 引用者即孤儿
+        const metaNow = readMeta11();
+        const appsNow = JSON.parse(fs.readFileSync(path.join(ROOT11, 'applications.json'), 'utf8'));
+        const referencedByRecords = new Set([
+          ...(((metaNow.t9 || {}).exports) || []).map((e) => e && e.snapTs),
+          ...appsNow.filter((a) => a && a.snapTs).map((a) => a.snapTs)
+        ].filter(Boolean));
+        if (!fs.existsSync(path.join(snapDirT9, committed.snapTs + '.html'))) bad('T9② committed 引用的冻结快照应在盘上', committed.snapTs);
+        else if (orphans.some((ts) => referencedByRecords.has(ts))) bad('T9② 孤儿快照绝不被 committed 记录引用', orphans.join(','));
+        else {
+          // 确定性构造：模拟落败并发写者的孤儿（更早 ts）+ 填满配额的未来 ts 填充快照 → 手动保存触发 snapshot+pruneSnapshots
+          const SIM_ORPHAN = '2026-09-24-000000-000';
+          fs.writeFileSync(path.join(snapDirT9, SIM_ORPHAN + '.html'), '<html>loser-orphan</html>');
+          for (let i = 1; i <= 55; i++) fs.writeFileSync(path.join(snapDirT9, '2027-01-01-0000' + String(i).padStart(2, '0') + '.html'), '<html>filler</html>');
+          const before = snapTsAll();
+          if (!before.includes(SIM_ORPHAN) || before.length < 56) bad('T9② 前置失败：孤儿/填充快照未就位', String(before.length));
+          else {
+            const sv = await fetch(srvA.base + '/save?id=t9', { method: 'POST', headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: txDoc('t9', 'T9-V1', '') }).then((r) => r.json());
+            const after = snapTsAll();
+            const fillersLeft = after.filter((ts) => ts.startsWith('2027-')).length;
+            const stillCommitted = (readMeta11().t9 || {}).exports && readMeta11().t9.exports[0].snapTs === committed.snapTs;
+            if (!sv || !sv.ok) bad('T9② 保存失败（prune 未触发）', JSON.stringify(sv));
+            else if (after.includes(SIM_ORPHAN)) bad('T9② 可清理孤儿快照应被 prune 清掉（配额生效）');
+            else if (!after.includes(committed.snapTs)) bad('T9② committed 引用（exports[].snapTs）必须在 prune 中幸存', committed.snapTs);
+            else if (!stillCommitted) bad('T9② prune 不得改动 committed 导出记录');
+            else if (fillersLeft >= 55) bad('T9② 填充快照应被配额清理（55→' + fillersLeft + '）');
+            else ok('T9② 孤儿快照（并发落败方）可存在但绝不被 committed 记录引用；prune 清孤儿、committed 引用幸存（真实孤儿 ' + orphans.length + ' 份）');
+          }
+        }
+      }
+    }
+
+    // ③ /snapshots 页保护徽章包含 exports[].snapTs 引用（Task 8 review Minor-1：展示与 protectedSnaps 清理口径一致）
+    {
+      if (!committed) bad('T9③ 前置失败：无 committed 导出记录');
+      else {
+        const page = await (await fetch(srvA.base + '/snapshots?id=t9')).text();
+        const liOf = (ts) => page.split('<li class="card"').find((s) => s.includes('<b>' + ts + '</b>')) || '';
+        const badgeTxt = '📦 导出引用（不会被清理）';
+        if (!liOf(committed.snapTs)) bad('T9③ /snapshots 应列出 committed 快照', committed.snapTs);
+        else if (!liOf(committed.snapTs).includes(badgeTxt)) bad('T9③ exports[].snapTs 引用的快照应显示导出引用保护徽章（Task 8 Minor-1）');
+        else if (page.includes('📦') && !page.includes(badgeTxt)) bad('T9③ 徽章文案不完整');
+        else ok('T9③ /snapshots 保护徽章含 exports[].snapTs 引用（导出引用快照标注「不会被清理」）');
+      }
+    }
+
+    // ④ /history-pdf 缺失产物提示：重新 POST /export 仅在文档身份（renderInputId）未变时修复本记录（Task 8 review Minor-2）
+    {
+      if (!committed) bad('T9④ 前置失败：无 committed 导出记录');
+      else {
+        const hf = path.join(ROOT11, committed.file);
+        if (!fs.existsSync(hf)) bad('T9④ 前置失败：不可变产物应在盘上', committed.file);
+        else {
+          fs.rmSync(hf);   // 模拟产物缺失
+          const r = await fetch(srvA.base + '/history-pdf?exportId=' + encodeURIComponent(committed.exportId));
+          const txt = await r.text();
+          if (r.status !== 404) bad('T9④ 缺产物应 404', String(r.status));
+          else if (!txt.includes('仅当文档身份 renderInputId 未变时')) bad('T9④ 提示应说明"重新导出仅在文档身份未变时修复"（Task 8 Minor-2）: ' + txt.slice(0, 160));
+          else if (!txt.includes('重新 POST /export')) bad('T9④ 提示应给出可操作修复路径: ' + txt.slice(0, 160));
+          else ok('T9④ /history-pdf 缺产物提示：重新 POST /export 仅在文档身份（renderInputId）未变时修复本记录');
+        }
+      }
+    }
+
+    // ⑤ 远程资源文档：POST /export 409 拒绝（remote 非空 + 可操作提示），零痕迹；普通渲染仍允许且旁车 reproducible:false
+    {
+      const rExp = await postExport(srvA.base, 't9r');
+      const m = readMeta11();
+      if (rExp.status !== 409 || !rExp.body || rExp.body.ok !== false) bad('T9⑤ 远程资源 POST /export 应 409 拒绝', JSON.stringify(rExp).slice(0, 200));
+      else if (!Array.isArray(rExp.body.remote) || !rExp.body.remote.includes(REMOTE_URL)) bad('T9⑤ 拒绝响应应携带非空 remote[]', JSON.stringify(rExp.body.remote));
+      else if (!/本地化/.test(String(rExp.body.error || ''))) bad('T9⑤ 拒绝提示应可操作（先本地化再导出）: ' + rExp.body.error);
+      else if ((m.t9r || {}).exports || histFiles('t9r').length) bad('T9⑤ 拒绝导出不得留下记录/产物痕迹');
+      else {
+        const rRender = await fetch(srvA.base + '/render?id=t9r', { method: 'POST' }).then((r) => r.json());
+        const sideFile = path.join(ROOT11, 'pdfs', 't9r.pdf.env.json');
+        let side = null; try { side = JSON.parse(fs.readFileSync(sideFile, 'utf8')); } catch {}
+        const expected = freezeHtml(fs.readFileSync(path.join(ROOT11, 'docs', 't9r.html'), 'utf8'), readMeta11().t9r || {});
+        if (!rRender || !rRender.ok) bad('T9⑤ 普通渲染应仍被允许（spec §12.1）', JSON.stringify(rRender));
+        else if (!fs.existsSync(path.join(ROOT11, 'pdfs', 't9r.pdf'))) bad('T9⑤ 渲染应产出 PDF');
+        else if (!side || side.reproducible !== false) bad('T9⑤ 旁车应记 reproducible:false（远程资源）', JSON.stringify(side));
+        else if (side.renderInputId !== expected.renderInputId) bad('T9⑤ 旁车标识应为该任务冻结标识', JSON.stringify(side));
+        else if (expected.reproducible !== false || expected.remote.length !== 1) bad('T9⑤ 前置失败：freeze 应判该文档不可复现', JSON.stringify({ r: expected.reproducible, remote: expected.remote }));
+        else ok('T9⑤ 远程资源导出拒绝（409 + remote[] + 先本地化提示，零痕迹）；普通渲染允许且旁车 reproducible:false');
+      }
+    }
+  } finally {
+    for (const c of servers) { try { c.kill('SIGKILL'); } catch {} }
+    await sleep(50);
+    try { fs.rmSync(T9_TMP, { recursive: true, force: true }); } catch {}
+  }
+}
+await runS1T9Tests();
 if (failures) { console.error('❌ 事务/锁/冻结点验证失败 ' + failures + ' 项'); process.exit(1); }
 
 let bin;

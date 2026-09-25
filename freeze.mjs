@@ -80,7 +80,9 @@ function bodyInner(html) {
 
 // —— 资源引用收集 ——
 // 会实际加载资源的标签/属性（<a href> 是导航链接、不加载资源，绝不收集——否则含超链接的简历会被误判不可复现）
-const RES_TAG_RE = /<(?:img|image|script|link|source|embed|iframe|video|audio|input)\b[^>]*>/gi;
+// 标签体允许引号内 '>'（如 <img alt="a > b" src="x.png">）：逐段跳过成对引号，避免在属性值处截断漏收 src
+// （S1-T9 加固，Task 2 review Minor-1）。病态输入（未闭合引号）整标签不匹配 —— 与旧正则同为务实收集，非 HTML 解析器。
+const RES_TAG_RE = /<(?:img|image|script|link|source|embed|iframe|video|audio|input)\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
 const RES_ATTR_RE = /\b(?:src|href|poster|xlink:href|data-src)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 const CSS_URL_RE = /url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"]+?))\s*\)/gi;
 
