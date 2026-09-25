@@ -39,10 +39,16 @@
 - 交付物：`chromium.mjs`（探测/探针/缓存/锁）、`render.mjs`/`test-editor.mjs` 接入、`privacy-check.sh`、`.gitignore`、git 首提交、plist 日志改造。
 - **S0 完成后渲染环境固定，S1 设计才能定视觉回归基线。**
 
-### S1 样式与内容分离（地基）
-- 进入：S0 退出准则全满足。退出：主题层生效；`docs-meta.json` 成为排版微调唯一数据来源；渲染版本标识（主题+排版参数哈希）与快照冻结格式定稿并实现；旧快照/存档仍可独立渲染；视觉回归门禁通过；迁移幂等可回退。
-- 交付物：`themes/resume-classic.css`、注入链路改造、`migrate-editor.mjs` v5→v6、导出记录表 `docs-meta.json.exports[]`、文档状态维度模型（设计文档定：文档类型/流程状态/可投递/已投递关联/归档标记为独立维度，不塞互斥字段）。
-- 数据契约（接口级，S1 设计定稿）：`docs-meta.docs[id] = { theme, typo, renderVersion, regions?, exports? , job? }`；快照 v6 = 自包含 HTML + `frozen/manifest.json`（theme css 哈希、typo、资源清单）。
+### S1 样式与内容分离（地基）（已完成 · 2026-09-26）
+- 进入：S0 退出准则全满足。退出（2026-09-26 S1-T10 真实数据迁移与三门禁验收通过，全部勾选）：
+  - [x] 主题层与样式来源登记生效（`themes/resume-classic.css` 唯一源；legacy 文档补 `data-style-origin="legacy-inline"` + theme/styleHash 登记）；
+  - [x] `docs-meta[id]` 成为排版微调唯一数据来源（当前文档落盘不含 typo）；
+  - [x] **含正文的渲染标识 renderInputId**（bodyHash+cssHash+typoHash+resourcesHash）与冻结契约（快照/存档自包含、永不读当前 meta）定稿并实现；
+  - [x] 旧快照/存档仍可独立渲染（28 份历史快照 md5 迁移前后逐一一致，只读预览/PDF 渲染验证通过）；
+  - [x] 视觉回归门禁通过（文本层 0 差异 + 页数同 + RGB24≤0.5%；真实迁移两文档三项全过、实测 max=0）；
+  - [x] 迁移事务（schemaVersion + .tx 恢复）幂等可回退（schemaVersion 1→2 双文档 done；幂等重跑 no-op；`backups/pre-s1-<ts>/` 全量副本 + 逐文档 pre-image 快照）。
+- 交付物：`themes/resume-classic.css`、`freeze.mjs`（freezeHtml/normalizeToCurrent/renderInputId/staleInfo）、注入链路改造、`.tx/` 事务与文档锁、`migrate-meta.mjs`（**数据格式 schemaVersion 1→2；编辑器版本 data-editor 不变，仍 v5** —— 两者是不同字段）、导出记录表 `docs-meta[id].exports[]`（exportId/snapTs/完整 renderInputId/不可变产物）、文档状态维度模型（**存储字段** kind/flow/archivedAt；**派生自 applications.json 的仅投递关联** deliveredRefs/usedBy；可投递为派生判定）。
+- 数据契约（接口级，S1 设计 v3 定稿）：`docs-meta[id] = { theme, styleHash, typo, schemaVersion, migration, rev, renderInputId 相关(lastRenderInputId/lastRenderAt), kind, flow, archivedAt, job?, exports? }`；快照冻结格式 = 自包含 HTML（内联 typo）+ 伴生 `snapshots/<id>/<ts>.manifest.json`（theme、styleHash、typoHash、renderInputId、editorVersion、chromiumBin 可 null、browserVersion、fonts 记录、dpi、createdAt）；渲染环境旁车 `<pdf>.env.json`。
 
 ### S2 应用层全量换肤
 - 进入：S1 退出。退出：统一设计变量与可读性验收通过；业务能力/路由/数据契约兼容；既有撤销零回归；首页首屏为「继续上次任务/针对岗位生成」+ 会话状态恢复（草稿/编辑位置/缩放/面板）；基础编辑能力（查找替换/格式/项目复制与删除恢复/聚焦/快捷键）接入统一撤销栈。
