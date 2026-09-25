@@ -1087,3 +1087,298 @@ try {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 EOF
+
+# —— S1-E：schemaVersion 迁移事务（三门禁硬闸；单元路径=隔离根+模拟检查器注入）——
+# 隔离：全程 mktemp 根，零接触真实 docs/snapshots/pdfs/JSON/config。opts.checkers 注入模拟检查器；
+# 真实门禁端到端见 S1-E-2（不注入）。附带覆盖两条 T7 承载缺陷：启动恢复快照兜底 legacy-safe、rootLock self-pid 陈旧残锁。
+node --input-type=module << 'EOF'
+import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { sha1, splitDoc, freezeHtml } from './freeze.mjs';
+import { beginTx, updateMeta, rootLock, recoverPending, atomicWrite } from './tx.mjs';
+import { CheckerMissingError } from './tools/pixel-diff.mjs';
+const fail = (m) => { console.error('❌ S1-E ' + m); process.exit(1); };
+const md5File = (f) => createHash('md5').update(fs.readFileSync(f)).digest('hex');
+let runMigration;
+try { ({ runMigration } = await import('./migrate-meta.mjs')); }
+catch (e) { fail('migrate-meta.mjs 不存在或不可导入: ' + (e && e.message || e)); }
+if (typeof runMigration !== 'function') fail('migrate-meta.mjs 应导出 runMigration(root, opts)');
+
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 's1e-'));
+const CSS = '\n.sheet{color:#111}\n';
+const LEG_TYPO = '/*LEG*/.sheet p{line-height:1.62}';
+const legDoc = (body, typo) => '<!doctype html>\n<html><head>\n<meta charset="utf-8">\n<style>' + CSS + '</style>\n'
+  + (typo !== null ? '<style id="typo-custom">' + typo + '</style>\n' : '') + '</head>\n<body>\n<div class="sheet"><p>' + body + '</p></div>\n</body></html>\n';
+const seedRoot = (name, docs, meta) => {
+  const r = path.join(tmp, name);
+  for (const d of ['docs', 'snapshots', 'pdfs']) fs.mkdirSync(path.join(r, d), { recursive: true });
+  fs.writeFileSync(path.join(r, 'docs-meta.json'), JSON.stringify(meta || {}));
+  fs.writeFileSync(path.join(r, 'applications.json'), '[]');
+  fs.writeFileSync(path.join(r, 'materials.json'), '[]');
+  for (const [id, html] of Object.entries(docs)) fs.writeFileSync(path.join(r, 'docs', id + '.html'), html);
+  return r;
+};
+const readMeta = (r) => JSON.parse(fs.readFileSync(path.join(r, 'docs-meta.json'), 'utf8'));
+const readDoc = (r, id) => fs.readFileSync(path.join(r, 'docs', id + '.html'), 'utf8');
+const txMarkers = (r) => fs.existsSync(path.join(r, '.tx')) ? fs.readdirSync(path.join(r, '.tx')).filter((f) => f.endsWith('.json') && !f.endsWith('.meta.json')) : [];
+const mockCheckers = (over) => ({
+  renderPdf: async (src, out) => { fs.writeFileSync(out, '%PDF-1.4 mock\n'); return true; },
+  pdftotext: () => 'MOCK-TEXT-LAYER',
+  pdfinfoPages: () => 1,
+  comparePdfs: () => ({ pass: true, max: 0, pages: [{ page: 1, ratio: 0, diffBytes: 0, totalBytes: 8 }], dpi: 150, threshold: 0.005, pixFmt: 'rgb24' }),
+  ...(over || {})
+});
+const backupsOf = (r) => fs.existsSync(path.join(r, 'backups')) ? fs.readdirSync(path.join(r, 'backups')).filter((d) => d.startsWith('pre-s1-')).sort() : [];
+try {
+  // ---------- ① 首迁成功：legacy 提取+登记+done；classic（T5 新建）no-op 提取+门禁；备份副本；预检计数 ----------
+  const clsDoc = '<!doctype html>\n<html><head>\n<meta charset="utf-8">\n<style data-theme="classic">' + CSS + '</style>\n</head>\n<body>\n<div class="sheet"><p>CLS</p></div>\n</body></html>\n';
+  const R1 = seedRoot('r1', { leg: legDoc('LEG-BODY', LEG_TYPO), cls: clsDoc }, { cls: { theme: 'classic', styleHash: sha1(CSS), typo: '', schemaVersion: 1, rev: 1 } });
+  // 历史快照（typo 预检夹具）：一份含内联 typo、一份不含（其文档 meta.typo 未定义 = legacy）
+  fs.mkdirSync(path.join(R1, 'snapshots', 'leg'), { recursive: true });
+  fs.writeFileSync(path.join(R1, 'snapshots', 'leg', '2026-09-01-000000-000.html'), legDoc('OLD', LEG_TYPO));
+  fs.writeFileSync(path.join(R1, 'snapshots', 'leg', '2026-09-02-000000-000.html'), legDoc('OLD2', null));
+  const legHtml0 = readDoc(R1, 'leg'), clsHtml0 = readDoc(R1, 'cls');
+  const legRid0 = freezeHtml(legHtml0, {}).renderInputId;   // legacy 冻结标识（有效 typo=内联）
+  const rep1 = await runMigration(R1, { checkers: mockCheckers() });
+  if (!rep1.ok || rep1.stopped) fail('① 首迁应成功: ' + JSON.stringify(rep1.stopped));
+  const m1 = readMeta(R1);
+  const leg1 = m1.leg || {}, cls1 = m1.cls || {};
+  if (leg1.schemaVersion !== 2) fail('① leg schemaVersion 应为 2: ' + JSON.stringify(leg1));
+  if (!leg1.migration || leg1.migration.state !== 'done' || !leg1.migration.at || !leg1.migration.checks) fail('① leg migration 应登记 done/at/checks: ' + JSON.stringify(leg1.migration));
+  if (/<style\b[^>]*\bid\s*=\s*["']typo-custom["']/i.test(readDoc(R1, 'leg'))) fail('① 迁移后 html 不应含 typo-custom 元素');
+  if (!readDoc(R1, 'leg').includes('LEG-BODY')) fail('① 正文不得改动');
+  if (leg1.typo !== LEG_TYPO) fail('① meta.typo 应=原内联值: ' + JSON.stringify(leg1.typo));
+  if (!readDoc(R1, 'leg').includes('data-style-origin="legacy-inline"')) fail('① 主 <style> 应补 data-style-origin="legacy-inline"');
+  if (leg1.theme !== 'legacy') fail('① theme 应登记 legacy: ' + JSON.stringify(leg1.theme));
+  if (leg1.styleHash !== sha1(CSS)) fail('① styleHash 应=sha1(实际内联 css): ' + JSON.stringify(leg1.styleHash));
+  if (!/^[0-9a-f]{40}$/.test(String(leg1.renderInputId))) fail('① renderInputId 初值应为完整 40hex: ' + JSON.stringify(leg1.renderInputId));
+  if (freezeHtml(readDoc(R1, 'leg'), leg1).renderInputId !== legRid0) fail('① 迁移后冻结标识应与迁移前一致（不产生假 stale）');
+  // classic（T5 新建形态）：不重登记样式、html 零改写、只 schemaVersion+门禁
+  if (readDoc(R1, 'cls') !== clsHtml0) fail('① classic 文档 html 应零改写');
+  if (cls1.schemaVersion !== 2 || !cls1.migration || cls1.migration.state !== 'done') fail('① classic 也应完成（schemaVersion=2/done）: ' + JSON.stringify(cls1));
+  if (cls1.theme !== 'classic' || cls1.styleHash !== sha1(CSS) || cls1.typo !== '' || cls1.rev !== 1) fail('① classic 样式登记不得被覆盖: ' + JSON.stringify(cls1));
+  // 备份副本 backups/pre-s1-<ts>/（docs/snapshots/pdfs/三 JSON）+ 迁移冻结快照（先快照，含内联 typo）
+  const b1 = backupsOf(R1);
+  if (b1.length !== 1) fail('① 应创建 backups/pre-s1-<ts>/ 全量副本: ' + JSON.stringify(b1));
+  const bDir = path.join(R1, 'backups', b1[0]);
+  for (const f of ['docs/leg.html', 'docs/cls.html', 'docs-meta.json', 'applications.json', 'materials.json', 'snapshots/leg/2026-09-01-000000-000.html']) {
+    if (!fs.existsSync(path.join(bDir, f))) fail('① 备份副本缺 ' + f);
+  }
+  const migSnaps = fs.existsSync(path.join(bDir, 'migration-snapshots')) ? fs.readdirSync(path.join(bDir, 'migration-snapshots')) : [];
+  const legSnap = migSnaps.find((f) => f.startsWith('leg-') && f.endsWith('.html'));
+  if (!legSnap) fail('① 迁移应先快照（冻结 pre-image 落 backups/<pre-s1>/migration-snapshots/）: ' + JSON.stringify(migSnaps));
+  if (!fs.readFileSync(path.join(bDir, 'migration-snapshots', legSnap), 'utf8').includes('<style id="typo-custom">' + LEG_TYPO + '</style>')) fail('① 迁移快照（冻结产物）应含内联 typo');
+  if (!migSnaps.some((f) => f.endsWith('.manifest.json'))) fail('① 迁移快照应伴生 manifest');
+  if (txMarkers(R1).length) fail('① 成功后 .tx 应清空');
+  if (rootLock.isHeld(R1)) fail('① 运行结束后 rootLock 应已释放');
+  // 快照 typo 预检（只读报告，绝不改写快照）：含内联 1 份；legacy 文档缺内联 1 份
+  const au = rep1.snapshotAudit;
+  if (!au || au.total !== 2 || au.withInlineTypo.length !== 1 || au.legacyWithoutTypo.length !== 1) fail('① 快照 typo 预检计数不符: ' + JSON.stringify(au));
+  console.log('✅ S1-E-① 首迁成功（legacy 提取+登记/classic no-op/备份副本/迁移快照/预检计数/锁释放）');
+
+  // ---------- ② 半完成 tx → 重跑先恢复再迁（必须回到精确旧状态重做，而非从半成品续迁） ----------
+  const INT_TYPO = '/*INT*/.sheet p{line-height:1.7}';
+  const R2 = seedRoot('r2', { int: legDoc('INT-BODY', INT_TYPO) }, {});
+  beginTx(R2, 'int', 'migrate', '');                                   // 中断前 tx（旧正文+旧 meta=null 已捕获）
+  atomicWrite(path.join(R2, 'docs', 'int.html'), splitDoc(readDoc(R2, 'int')).html);   // 半成品：html 已归一化
+  updateMeta(R2, 'int', () => ({ typo: '', theme: 'legacy' }));                        // 半成品：meta typo 错误（''）
+  const rep2 = await runMigration(R2, { checkers: mockCheckers() });
+  const m2 = readMeta(R2).int || {};
+  if (!rep2.recovered || !rep2.recovered.some((r) => r.docId === 'int' && r.ok)) fail('② 应先恢复半完成 tx: ' + JSON.stringify(rep2.recovered));
+  if (!rep2.ok) fail('② 恢复后迁移应成功: ' + JSON.stringify(rep2.stopped));
+  if (m2.typo !== INT_TYPO) fail('② 必须以恢复后的旧状态重做（typo=原内联值，而非半成品空串）: ' + JSON.stringify(m2.typo));
+  if (m2.schemaVersion !== 2 || (m2.migration || {}).state !== 'done') fail('② 恢复重做后应 done: ' + JSON.stringify(m2));
+  if (!readDoc(R2, 'int').includes('INT-BODY') || /<style\b[^>]*\bid\s*=\s*["']typo-custom["']/i.test(readDoc(R2, 'int'))) fail('② 重做后正文完整且无内联 typo');
+  if (txMarkers(R2).length) fail('② .tx 应清空');
+  console.log('✅ S1-E-② 半完成 tx → 先恢复再迁（typo=原内联值，done 登记完整）');
+
+  // ---------- ③ 无 tx 且 schemaVersion=1 → 直接迁、快照数不增（历史快照不可变、不触发恢复） ----------
+  const R3 = seedRoot('r3', { leg3: legDoc('L3', LEG_TYPO) }, {});
+  fs.mkdirSync(path.join(R3, 'snapshots', 'leg3'), { recursive: true });
+  const hist = ['2026-08-01-000000-000.html', '2026-08-02-000000-000.html'];
+  for (const h of hist) fs.writeFileSync(path.join(R3, 'snapshots', 'leg3', h), legDoc('HIST-' + h, null));
+  const md5Before = hist.map((h) => md5File(path.join(R3, 'snapshots', 'leg3', h)));
+  if (txMarkers(R3).length) fail('③ 前置：应无 tx 记录');
+  const rep3 = await runMigration(R3, { checkers: mockCheckers() });
+  const sDir3 = path.join(R3, 'snapshots', 'leg3');
+  const afterFiles = fs.readdirSync(sDir3).filter((f) => f.endsWith('.html')).sort();
+  if (!rep3.ok) fail('③ 迁移应成功: ' + JSON.stringify(rep3.stopped));
+  if (afterFiles.length !== hist.length) fail('③ 首迁快照数不应增长（迁移快照归 backups/，不进 snapshots/ 配额目录）: ' + afterFiles.length);
+  hist.forEach((h, i) => { if (md5File(path.join(sDir3, h)) !== md5Before[i]) fail('③ 历史快照不可变（md5 一致）: ' + h); });
+  if ((readMeta(R3).leg3 || {}).schemaVersion !== 2) fail('③ 应直接迁到 schemaVersion=2');
+  if (rep3.recovered.length) fail('③ 无 tx 首迁不应触发恢复: ' + JSON.stringify(rep3.recovered));
+  console.log('✅ S1-E-③ 无 tx 首迁：直接迁、snapshots/ 数不增、历史快照 md5 不变、不触发恢复');
+
+  // ---------- ④ 任一检查失败 → 不写 done、文档完整恢复、STOP 整轮（其他文档 untouched） ----------
+  const R4 = seedRoot('r4', { ga: legDoc('GA', '/*GA*/p{color:#222}'), gb: legDoc('GB', null) }, {});
+  const ga0 = readDoc(R4, 'ga'), gb0 = readDoc(R4, 'gb'), meta0Raw = fs.readFileSync(path.join(R4, 'docs-meta.json'), 'utf8');
+  const rep4 = await runMigration(R4, { checkers: mockCheckers({ comparePdfs: () => ({ pass: false, max: 0.42, threshold: 0.005, pages: [{ page: 1, ratio: 0.42, diffBytes: 42, totalBytes: 100 }], dpi: 150, pixFmt: 'rgb24' }) }) });
+  if (rep4.ok || !rep4.stopped || rep4.stopped.docId !== 'ga') fail('④ 视觉门禁失败应 STOP 整轮: ' + JSON.stringify(rep4.stopped));
+  if (rep4.stopped.code !== 'GATE_FAILED') fail('④ stopped.code 应 GATE_FAILED: ' + rep4.stopped.code);
+  if (rep4.stopped.restored !== true) fail('④ stopped 应报告已完整恢复');
+  if (readDoc(R4, 'ga') !== ga0) fail('④ 失败后 ga html 应完整恢复（旧字节）');
+  if (fs.readFileSync(path.join(R4, 'docs-meta.json'), 'utf8') !== meta0Raw) fail('④ 失败后 docs-meta 应完整恢复（无 schemaVersion/migration/登记字段）');
+  if (readDoc(R4, 'gb') !== gb0 || readMeta(R4).gb) fail('④ STOP 后其他文档 gb 应 untouched');
+  if (txMarkers(R4).length) fail('④ html+meta 双恢复成功 → commitTx（tx.mjs 语义），.tx 应干净');
+  // 页数不等形态：max=null + error —— 消费规则必须先判 error/pass（若先判 max：null<=0.005 为 true 会误放行）
+  const R4b = seedRoot('r4b', { pc: legDoc('PC', null) }, {});
+  const pc0 = readDoc(R4b, 'pc');
+  const rep4b = await runMigration(R4b, { checkers: mockCheckers({ comparePdfs: () => ({ pass: false, pages: [], max: null, dpi: 150, threshold: 0.005, pixFmt: 'rgb24', error: '页数不等: a=1 页, b=2 页（视觉门禁要求页数相同）' }) }) });
+  if (rep4b.ok || !rep4b.stopped) fail('④ 页数不等（max=null+error）必须判失败（先查 error/pass 再查 max）');
+  if (readDoc(R4b, 'pc') !== pc0 || readMeta(R4b).pc) fail('④ 页数不等失败后应完整恢复');
+  // 文本层差异非零形态
+  const R4c = seedRoot('r4c', { tc: legDoc('TC', null) }, {});
+  let nText = 0;
+  const rep4c = await runMigration(R4c, { checkers: mockCheckers({ pdftotext: () => ('TEXT-' + (++nText)) }) });
+  if (rep4c.ok || !rep4c.stopped || !/文本层/.test(rep4c.stopped.message || '')) fail('④ 文本层差异非零应 STOP: ' + JSON.stringify(rep4c.stopped));
+  if (readDoc(R4c, 'tc') !== legDoc('TC', null) || readMeta(R4c).tc) fail('④ 文本层失败后应完整恢复');
+  console.log('✅ S1-E-④ 门禁失败（视觉/页数不等 max=null/文本层）→ 不写 done、完整恢复、STOP 整轮');
+
+  // ---------- ④b 检查器缺失（CheckerMissingError）→ 恢复+STOP；CLI PATH 遮蔽 → 预检 exit 3（备份前零接触） ----------
+  const R5 = seedRoot('r5', { cm: legDoc('CM', '/*CM*/p{margin:0}') }, {});
+  const cm0 = readDoc(R5, 'cm'), cmMeta0 = fs.readFileSync(path.join(R5, 'docs-meta.json'), 'utf8');
+  const rep5 = await runMigration(R5, { checkers: mockCheckers({ comparePdfs: () => { throw new CheckerMissingError('ffmpeg'); } }) });
+  if (rep5.ok || !rep5.stopped || rep5.stopped.code !== 'CHECKER_MISSING') fail('④b 检查器缺失应以 CHECKER_MISSING STOP: ' + JSON.stringify(rep5.stopped));
+  if (readDoc(R5, 'cm') !== cm0 || fs.readFileSync(path.join(R5, 'docs-meta.json'), 'utf8') !== cmMeta0) fail('④b 检查器缺失后应完整恢复（不写 done）');
+  const R5b = seedRoot('r5b', { cm2: legDoc('CM2', null) }, {});
+  const binShadow = path.join(tmp, 'bin-shadow'); fs.mkdirSync(binShadow, { recursive: true });
+  fs.symlinkSync(process.execPath, path.join(binShadow, 'node'));
+  const cli = spawnSync(process.execPath, ['migrate-meta.mjs'], { cwd: process.cwd(), encoding: 'utf8', timeout: 60000, env: { ...process.env, RESUME_ROOT: R5b, PATH: binShadow + ':/usr/bin:/bin' } });
+  if (cli.status !== 3) fail('④b 检查器缺失 CLI 应 exit 3，实际 ' + cli.status + ': ' + String(cli.stdout || cli.stderr || '').slice(0, 300));
+  if (backupsOf(R5b).length) fail('④b 预检失败应发生在备份之前（不产生 pre-s1 副本）');
+  if (readDoc(R5b, 'cm2') !== legDoc('CM2', null)) fail('④b 预检失败不得改动任何文件');
+  console.log('✅ S1-E-④b 检查器缺失 → 进程内恢复+STOP；CLI 预检 exit 3（备份前零接触）');
+
+  // ---------- ⑤ 迁移持 rootLock：同进程对另一文档 B 的 updateMeta 与 A 事务不互踩（两文档字段都落盘） ----------
+  const R6 = seedRoot('r6', { a6: legDoc('A6', '/*A6*/p{margin:1px}') }, { B: { tag: 'b-original' } });
+  let heldDuringGates = null;
+  const rep6 = await runMigration(R6, { checkers: mockCheckers({ comparePdfs: () => {
+    heldDuringGates = rootLock.isHeld(R6);                                       // 门禁期间迁移持有 .migrate.lock
+    updateMeta(R6, 'B', (m) => ({ ...(m || {}), tag: 'during-migration' }));     // 同进程对另一文档 B 的原子更新
+    return { pass: true, max: 0, pages: [], dpi: 150, threshold: 0.005, pixFmt: 'rgb24' };
+  } }) });
+  const m6 = readMeta(R6);
+  if (!rep6.ok) fail('⑤ 迁移应成功: ' + JSON.stringify(rep6.stopped));
+  if (heldDuringGates !== true) fail('⑤ 门禁期间应持有 .migrate.lock（server 写请求 503 已在 T3 测）');
+  if ((m6.a6 || {}).schemaVersion !== 2 || (m6.a6 || {}).typo !== '/*A6*/p{margin:1px}') fail('⑤ A 事务字段应落盘: ' + JSON.stringify(m6.a6));
+  if ((m6.B || {}).tag !== 'during-migration') fail('⑤ B 的更新应落盘（与 A 事务不互踩）: ' + JSON.stringify(m6.B));
+  if (rootLock.isHeld(R6)) fail('⑤ 运行结束后锁应释放');
+  console.log('✅ S1-E-⑤ 迁移持 rootLock；同进程 B 文档 updateMeta 与 A 事务不互踩（两文档字段都落盘）');
+
+  // ---------- ⑥ 启动恢复快照兜底 legacy-safe（热修 a7eb561 裁决；仅 oldHtml 载荷缺失时） ----------
+  const R7 = seedRoot('r7', {}, {});
+  fs.mkdirSync(path.join(R7, 'snapshots', 'fb'), { recursive: true });
+  fs.writeFileSync(path.join(R7, 'snapshots', 'fb', '2026-09-20-000000-000.html'), legDoc('SNAP-BODY', LEG_TYPO));   // 冻结快照含内联 typo
+  fs.writeFileSync(path.join(R7, 'docs', 'fb.html'), legDoc('PARTIAL', null));                                        // 半程状态：内联已丢
+  fs.mkdirSync(path.join(R7, '.tx'), { recursive: true });
+  const mkRec = (txId, docId, oldSnapTs, oldMeta) => {   // tx 记录：只有 .json + .meta.json（oldHtml 载荷缺失 → 走快照兜底）
+    fs.writeFileSync(path.join(R7, '.tx', txId + '.json'), JSON.stringify({ txId, docId, phase: 'save', oldSnapTs, startedAt: Date.now(), host: 'x', pid: 1 }));
+    fs.writeFileSync(path.join(R7, '.tx', txId + '.meta.json'), JSON.stringify(oldMeta));
+  };
+  mkRec('fb-legacy', 'fb', '2026-09-20-000000-000', { rev: 5 });   // oldMeta 无 typo 键 = legacy
+  recoverPending(R7);
+  const fbHtml = readDoc(R7, 'fb');
+  if (!fbHtml.includes('<style id="typo-custom">' + LEG_TYPO + '</style>')) fail('⑥ legacy（meta.typo 未定义）快照兜底应保留内联排版（不得剥丢）: ' + fbHtml.slice(0, 160));
+  if (!fbHtml.includes('SNAP-BODY')) fail('⑥ 兜底应恢复快照正文');
+  if ((readMeta(R7).fb || {}).rev !== 5) fail('⑥ meta 应回滚旧副本');
+  fs.writeFileSync(path.join(R7, 'docs', 'fb.html'), legDoc('PARTIAL2', null));
+  mkRec('fb-migrated', 'fb', '2026-09-20-000000-000', { rev: 6, typo: '/*M*/p{margin:2px}' });   // 已迁移形态：meta.typo 定义
+  recoverPending(R7);
+  const fb2 = readDoc(R7, 'fb');
+  if (/<style\b[^>]*\bid\s*=\s*["']typo-custom["']/i.test(fb2)) fail('⑥ 已迁移（meta.typo 定义）兜底应写归一化正文（typo 在 meta，不再内联）');
+  if ((readMeta(R7).fb || {}).typo !== '/*M*/p{margin:2px}' || (readMeta(R7).fb || {}).rev !== 6) fail('⑥ 已迁移兜底 meta 应整份回滚');
+  if (txMarkers(R7).length) fail('⑥ 恢复成功后 tx 记录应清理');
+  console.log('✅ S1-E-⑥ 启动恢复快照兜底 legacy-safe（legacy 保留内联 / 已迁移归一化）');
+
+  // ---------- ⑦ rootLock self-pid 陈旧残锁（pid 复用）：startedAt 早于本进程启动 → 判陈旧；新鲜自锁语义不变 ----------
+  const R8 = path.join(tmp, 'r8'); fs.mkdirSync(R8, { recursive: true });
+  const lockFile = path.join(R8, '.migrate.lock');
+  fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, host: 'x', startedAt: Date.now() - Math.ceil(process.uptime() * 1000) - 5000 }));
+  if (rootLock.isHeld(R8)) fail('⑦ self-pid 残锁（startedAt 早于本进程启动 = pid 复用前任遗留）应判陈旧（否则启动后写请求 503 直至手删）');
+  rootLock.acquire(R8);   // 应破除陈旧残锁后成功持有
+  if (!rootLock.isHeld(R8)) fail('⑦ 破除残锁后应可持有');
+  rootLock.release(R8);
+  fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, host: 'x', startedAt: Date.now() }));
+  if (!rootLock.isHeld(R8)) fail('⑦ 新鲜 self-pid 锁仍应视为持有（同步短临界区语义不变）');
+  fs.rmSync(lockFile, { force: true });
+  console.log('✅ S1-E-⑦ rootLock self-pid 陈旧残锁判陈旧（pid 复用可破除）；新鲜自锁仍视为持有');
+} finally {
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+EOF
+
+# —— S1-E-2：迁移端到端（隔离根 + 真实门禁：render.mjs 渲染 + pdftotext/pdfinfo + pixel-diff RGB24，不注入模拟）——
+# legacy 夹具（真实内联 css 无来源属性 + 内联 typo-custom + 无 meta 条目）与 classic 夹具（T5+ 新建形态）各一份。
+command -v ffmpeg >/dev/null || { echo '❌ S1-E-2 需要 ffmpeg: brew install ffmpeg'; exit 1; }
+command -v pdftoppm >/dev/null || { echo '❌ S1-E-2 需要 poppler(pdftoppm): brew install poppler'; exit 1; }
+command -v pdftotext >/dev/null || { echo '❌ S1-E-2 需要 poppler(pdftotext): brew install poppler'; exit 1; }
+command -v pdfinfo >/dev/null || { echo '❌ S1-E-2 需要 poppler(pdfinfo): brew install poppler'; exit 1; }
+node --input-type=module << 'EOF'
+import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { assembleTemplate, themeCss } from './template.mjs';
+import { sha1 } from './freeze.mjs';
+import { runMigration } from './migrate-meta.mjs';
+const fail = (m) => { console.error('❌ S1-E-2 ' + m); process.exit(1); };
+const md5File = (f) => createHash('md5').update(fs.readFileSync(f)).digest('hex');
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 's1e2-'));
+const R = path.join(tmp, 'data');
+for (const d of ['docs', 'snapshots', 'pdfs']) fs.mkdirSync(path.join(R, d), { recursive: true });
+const fill = (tpl, id, name) => tpl
+  .replaceAll('{{NAME}}', () => name).replaceAll('{{CONTACT}}', () => '电话：13800000000 ｜ 邮箱：e2e@example.com').replaceAll('{{INTENT}}', () => '意向岗位：后端工程师')
+  .replaceAll('{{SUMMARY}}', () => '五年后端研发经验，主导高并发订单系统与数据链路建设。')
+  .replaceAll('{{SKILLS}}', () => '<p>Node.js / MySQL / Redis / 消息队列</p>')
+  .replaceAll('{{WORK}}', () => '<div class="entry"><div class="entry-title">某科技公司</div><div class="entry-role">后端工程师</div><div class="entry-date">2021-2026</div><p>负责订单核心服务，主导拆单重构与容量治理。</p></div>')
+  .replaceAll('{{PROJECTS}}', () => '<div class="entry"><div class="entry-title">订单系统重构</div><p>单体拆分与链路治理，峰值吞吐提升一倍。</p></div>')
+  .replaceAll('{{EDU}}', () => '<div class="entry"><div class="entry-title">某大学</div><div class="entry-role">本科｜计算机科学与技术</div><div class="entry-date">2016-2020</div></div>')
+  .replaceAll('{{DOC_ID}}', () => id);
+// legacy 夹具：主 <style> 无来源属性（既有文档形态）+ 内联 typo-custom + 无 meta 条目
+const TYPO_CSS = '.sheet p{letter-spacing:0.02em}';
+const legacyHtml = fill(assembleTemplate('classic'), 'e2e-legacy', '遗留员工')
+  .replace('<style data-theme="classic">', '<style>')
+  .replace('</head>', '<style id="typo-custom">' + TYPO_CSS + '</style>\n</head>');
+fs.writeFileSync(path.join(R, 'docs', 'e2e-legacy.html'), legacyHtml);
+// classic 夹具（T5+ 新建形态）：data-theme 属性 + meta 登记齐全、schemaVersion=1
+const classicHtml = fill(assembleTemplate('classic'), 'e2e-classic', '新建员工');
+fs.writeFileSync(path.join(R, 'docs', 'e2e-classic.html'), classicHtml);
+fs.writeFileSync(path.join(R, 'docs-meta.json'), JSON.stringify({ 'e2e-classic': { theme: 'classic', styleHash: sha1(themeCss('classic')), typo: '', schemaVersion: 1, rev: 1 } }));
+fs.writeFileSync(path.join(R, 'applications.json'), '[]');
+fs.writeFileSync(path.join(R, 'materials.json'), '[]');
+// 历史快照（不可变）：一份含内联 typo、一份不含（其文档 meta.typo 未定义）
+fs.mkdirSync(path.join(R, 'snapshots', 'e2e-legacy'), { recursive: true });
+const snapA = path.join(R, 'snapshots', 'e2e-legacy', '2026-09-10-000000-000.html');
+const snapB = path.join(R, 'snapshots', 'e2e-legacy', '2026-09-11-000000-000.html');
+fs.writeFileSync(snapA, legacyHtml);
+fs.writeFileSync(snapB, legacyHtml.replace('<style id="typo-custom">' + TYPO_CSS + '</style>\n', ''));
+const snapMd5Before = [md5File(snapA), md5File(snapB)];
+try {
+  const rep = await runMigration(R);   // 真实门禁：不注入
+  if (!rep.ok) fail('端到端迁移应成功: ' + JSON.stringify(rep.stopped));
+  const m = JSON.parse(fs.readFileSync(path.join(R, 'docs-meta.json'), 'utf8'));
+  const leg = m['e2e-legacy'] || {}, cls = m['e2e-classic'] || {};
+  const legHtml = fs.readFileSync(path.join(R, 'docs', 'e2e-legacy.html'), 'utf8');
+  if (leg.schemaVersion !== 2 || (leg.migration || {}).state !== 'done') fail('legacy 应 done: ' + JSON.stringify(leg));
+  if (leg.typo !== TYPO_CSS) fail('legacy meta.typo 应=原内联 css: ' + JSON.stringify(leg.typo));
+  if (/<style\b[^>]*\bid\s*=\s*["']typo-custom["']/i.test(legHtml)) fail('legacy 迁移后 html 不应含 typo-custom');
+  if (!legHtml.includes('data-style-origin="legacy-inline"') || leg.theme !== 'legacy') fail('legacy 应登记来源属性 + theme=legacy');
+  if (!/^[0-9a-f]{40}$/.test(String(leg.styleHash)) || !/^[0-9a-f]{40}$/.test(String(leg.renderInputId))) fail('legacy styleHash/renderInputId 应为完整 40hex');
+  if (cls.schemaVersion !== 2 || cls.theme !== 'classic' || cls.typo !== '') fail('classic 应 no-op 提取+门禁+done: ' + JSON.stringify(cls));
+  if (fs.readFileSync(path.join(R, 'docs', 'e2e-classic.html'), 'utf8') !== classicHtml) fail('classic html 应零改写');
+  for (const id of ['e2e-legacy', 'e2e-classic']) {
+    const chk = (m[id] || {}).migration && m[id].migration.checks || {};
+    if (!chk.text || chk.text.identical !== true) fail(id + ' 文本层门禁应 0 差异: ' + JSON.stringify(chk.text));
+    if (!chk.pages || chk.pages.before !== chk.pages.after || !(chk.pages.before >= 1)) fail(id + ' 页数门禁应相等: ' + JSON.stringify(chk.pages));
+    if (!chk.visual || chk.visual.pass !== true || !(chk.visual.max <= 0.005) || chk.visual.dpi !== 150 || chk.visual.pixFmt !== 'rgb24') fail(id + ' 视觉门禁应 RGB24@150 ≤0.5% 通过: ' + JSON.stringify(chk.visual));
+  }
+  if (md5File(snapA) !== snapMd5Before[0] || md5File(snapB) !== snapMd5Before[1]) fail('历史快照不可变（md5 前后一致）');
+  const au = rep.snapshotAudit || {};
+  if (au.total !== 2 || au.withInlineTypo.length !== 1 || au.legacyWithoutTypo.length !== 1) fail('快照 typo 预检计数不符: ' + JSON.stringify(au));
+  const bks = fs.existsSync(path.join(R, 'backups')) ? fs.readdirSync(path.join(R, 'backups')).filter((d) => d.startsWith('pre-s1-')) : [];
+  if (bks.length !== 1 || !fs.existsSync(path.join(R, 'backups', bks[0], 'docs', 'e2e-legacy.html'))) fail('backups/pre-s1-<ts>/ 全量副本应在');
+  const legChk = m['e2e-legacy'].migration.checks;
+  console.log('✅ S1-E-2 隔离根端到端（真实门禁不注入）：legacy+classic 三门禁全过（文本 0 差异/页数 ' + legChk.pages.before + '=' + legChk.pages.after + '/视觉 max=' + legChk.visual.max.toFixed(6) + ' ≤0.005 RGB24@150），历史快照 md5 不变');
+} finally {
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+EOF

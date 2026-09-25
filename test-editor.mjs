@@ -621,6 +621,96 @@ async function runS1HotfixTests() {
   }
 }
 await runS1HotfixTests();
+
+// ===== S1 Task 7：迁移后 /edit 走 meta + 手工态守卫 + 已迁移文档回滚/复制（node 级；隔离根+隔离端口；迁移注入模拟检查器，真实门禁在 test-structure S1-E-2）=====
+async function runS1T7Tests() {
+  const T7_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ed-t7-'));
+  const servers = [];
+  try {
+    const { runMigration } = await import('./migrate-meta.mjs');
+    const { beginTx } = await import('./tx.mjs');
+    const ROOT9 = path.join(T7_TMP, 'r9');
+    const LEG = '/*T7LEG*/body{font-size:14.5px}';
+    const HAND = '/*T7HAND*/body{font-size:13px}';
+    const fr9 = seedRoot(ROOT9, {
+      leg7: txDoc('leg7', 'LEG7-V1', LEG),      // legacy：meta 无 typo 键（迁移前形态）
+      hand7: txDoc('hand7', 'HAND7-V1', HAND)   // 手工态：meta.typo='' 且内联存在（/edit 与 freezeHtml 分歧点）
+    }, { leg7: { rev: 2 }, hand7: { typo: '', rev: 1 } });
+    const srv9 = await spawnServer(ROOT9, { RESUME_RENDER_BIN: fr9 });
+    servers.push(srv9.child);
+    const B9 = srv9.base;
+    const readMeta9 = () => JSON.parse(fs.readFileSync(path.join(ROOT9, 'docs-meta.json'), 'utf8'));
+    const readDoc9 = (id) => fs.readFileSync(path.join(ROOT9, 'docs', id + '.html'), 'utf8');
+    const blocks = (h) => (h.match(/<style id="typo-custom">/g) || []).length;
+    const post = (u, body, ct) => fetch(B9 + u, { method: 'POST', headers: ct ? { 'Content-Type': ct } : {}, body, redirect: 'manual' });
+    const markers9 = () => fs.existsSync(path.join(ROOT9, '.tx'))
+      ? fs.readdirSync(path.join(ROOT9, '.tx')).filter((f) => f.endsWith('.json') && !f.endsWith('.meta.json')).map((f) => { try { return JSON.parse(fs.readFileSync(path.join(ROOT9, '.tx', f), 'utf8')).docId; } catch { return null; } }).filter(Boolean)
+      : [];
+
+    // ① 手工态守卫（meta.typo='' 且内联存在）：/edit 回退内联 —— 与 freezeHtml 同款裁决，WYSIWYG 不再分裂
+    {
+      const ed = await (await fetch(B9 + '/edit?id=hand7')).text();
+      if (blocks(ed) !== 1 || !ed.includes('<style id="typo-custom">' + HAND + '</style>')) bad('T7① meta.typo=空+内联存在时 /edit 应回退内联（恰一块）', String(blocks(ed)));
+      else ok('T7① /edit 在 meta.typo=空+内联存在时回退内联（与 freezeHtml 同款，WYSIWYG 不分裂）');
+    }
+    // ② 迁移（注入模拟检查器；真实门禁见 test-structure S1-E-2）→ 迁移后 /edit 排版来自 meta
+    {
+      const mockCheckers = {
+        renderPdf: async (src, out) => { fs.writeFileSync(out, '%PDF-1.4 mock\n'); return true; },
+        pdftotext: () => 'T7-TEXT', pdfinfoPages: () => 1,
+        comparePdfs: () => ({ pass: true, max: 0, pages: [], dpi: 150, threshold: 0.005, pixFmt: 'rgb24' })
+      };
+      const rep9 = await runMigration(ROOT9, { checkers: mockCheckers });
+      if (!rep9.ok) bad('T7② 迁移应成功', JSON.stringify(rep9.stopped));
+      const m = readMeta9();
+      const edLeg = await (await fetch(B9 + '/edit?id=leg7')).text();
+      const edHand = await (await fetch(B9 + '/edit?id=hand7')).text();
+      if ((m.leg7 || {}).schemaVersion !== 2 || (m.leg7 || {}).typo !== LEG) bad('T7② 迁移后 meta 应登记 typo=原内联值 + schemaVersion=2', JSON.stringify(m.leg7));
+      else if (/<style\b[^>]*\bid\s*=\s*["']typo-custom["']/i.test(readDoc9('leg7'))) bad('T7② 迁移后落盘不应含 typo-custom 元素');
+      else if (blocks(edLeg) !== 1 || !edLeg.includes('<style id="typo-custom">' + LEG + '</style>')) bad('T7② 迁移后 /edit 应注入来自 meta 的排版', String(blocks(edLeg)));
+      else if ((m.hand7 || {}).typo !== HAND) bad('T7② 手工态迁移应把内联提取入 meta', JSON.stringify(m.hand7));
+      else if (blocks(edHand) !== 1 || !edHand.includes(HAND)) bad('T7② 手工态迁移后 /edit 仍应显示排版');
+      else ok('T7② 迁移后 /edit 显示来自 meta 的排版（legacy 与手工态都落 meta）');
+    }
+    // ③ 已迁移文档回滚：恢复冻结 html（归一化）并正确重推 meta（typo=冻结内联值；schemaVersion 保持）；残留同文档 tx 被取代清理
+    {
+      await (await post('/save?id=leg7', txDoc('leg7', 'LEG7-V2', '/*T7B*/body{font-size:16px}'), 'text/html; charset=utf-8')).json();   // 快照冻结 LEG7-V1+LEG
+      const snaps = fs.readdirSync(path.join(ROOT9, 'snapshots', 'leg7')).filter((f) => f.endsWith('.html')).sort();
+      if (!snaps.length) bad('T7③ 前置失败：保存应产生冻结快照');
+      else {
+        const ts = snaps[snaps.length - 1].replace('.html', '');
+        const revBefore = readMeta9().leg7.rev;
+        beginTx(ROOT9, 'leg7', 'save', '');   // 残留同文档未完成记录（模拟失败保存保留）：回滚成功后应被取代清理
+        await post('/rollback?id=leg7&ts=' + ts, '');
+        const htmlRb = readDoc9('leg7');
+        const mRb = readMeta9().leg7;
+        if (htmlRb.includes('LEG7-V2') || !htmlRb.includes('LEG7-V1')) bad('T7③ 回滚应恢复冻结正文 LEG7-V1', htmlRb.slice(0, 100));
+        else if (/<style\b[^>]*\bid\s*=\s*["']typo-custom["']/i.test(htmlRb)) bad('T7③ 回滚应归一化（html 不含 typo-custom 元素）');
+        else if (mRb.typo !== LEG) bad('T7③ meta.typo 应=冻结内联值（从冻结 html 重推）', JSON.stringify(mRb.typo));
+        else if (!(mRb.rev > revBefore)) bad('T7③ rev 应递增');
+        else if (mRb.schemaVersion !== 2) bad('T7③ 回滚不应改 schemaVersion=2（完成判据只由迁移事务写）', JSON.stringify(mRb.schemaVersion));
+        else if (!mRb.styleHash) bad('T7③ styleHash 应登记');
+        else if (markers9().includes('leg7')) bad('T7③ 回滚成功后同文档残留 tx 记录应被取代清理', markers9().join(','));
+        else ok('T7③ 已迁移文档回滚：冻结 html 归一化恢复、meta 正确重推（typo=冻结值、schemaVersion 保持）、残留 tx 清理');
+      }
+    }
+    // ④ /duplicate：副本继承已迁移 meta；目标文档被取代的残留 tx 记录清理（复制不经 beginTx 直接落文档）
+    {
+      beginTx(ROOT9, 'leg7-dup', 'save', '');   // 目标 id 的历史残留记录：不清理会在下次启动把副本回滚掉
+      await post('/duplicate?id=leg7&to=leg7-dup', '');
+      const dupMeta = readMeta9()['leg7-dup'];
+      if (!dupMeta || dupMeta.typo !== LEG) bad('T7④ 副本应继承 typo', JSON.stringify(dupMeta));
+      else if (/<style\b[^>]*\bid\s*=\s*["']typo-custom["']/i.test(readDoc9('leg7-dup'))) bad('T7④ 副本 html 不应含 typo-custom');
+      else if (markers9().includes('leg7-dup')) bad('T7④ 复制成功后目标文档残留 tx 记录应被清理', markers9().join(','));
+      else ok('T7④ /duplicate 继承已迁移 meta 且清理目标文档被取代 tx 记录');
+    }
+  } finally {
+    for (const c of servers) { try { c.kill('SIGKILL'); } catch {} }
+    await sleep(50);
+    try { fs.rmSync(T7_TMP, { recursive: true, force: true }); } catch {}
+  }
+}
+await runS1T7Tests();
 if (failures) { console.error('❌ 事务/锁/冻结点验证失败 ' + failures + ' 项'); process.exit(1); }
 
 let bin;

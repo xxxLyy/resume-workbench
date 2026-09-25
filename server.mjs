@@ -558,13 +558,16 @@ async function handler(req, res) {
       }
       const vm = loadMeta()[id] || {};
       // 铁律一（编辑入口=渲染组装同款）+ S1 热修裁决：有效 typo = (meta.typo 定义且非空) ? meta.typo : 内联值。
-      // 已迁移文档（meta.typo 定义）：serve 前剥离残留内联，非空则注入 meta.typo（'' → 不注入），编辑器所见即渲染所得。
+      // 已迁移文档（meta.typo 定义）：serve 前剥离残留内联，非空则注入 meta.typo（'' 且无内联 → 不注入），编辑器所见即渲染所得。
+      // meta.typo='' 且内联存在（手工态）：与 freezeHtml 同款回退内联（T7 承载缺陷修复，消除 WYSIWYG 分裂）。
       // legacy 文档（meta 无 typo 键）：保留内联 typo-custom 原样供编辑器显示；/save 按 Task3 路径
       // （normalizeToCurrent）把内联值抽入 meta，完成单文档迁移，往返幂等。
       if (typeof vm.typo === 'string') {
-        html = splitDoc(html).html;
-        if (vm.typo) {
-          const typoBlock = `<style id="typo-custom">${vm.typo}</style>`;
+        const sp = splitDoc(html);
+        html = sp.html;
+        const effTypo = vm.typo || sp.typo || '';
+        if (effTypo) {
+          const typoBlock = `<style id="typo-custom">${effTypo}</style>`;
           html = /<\/head>/i.test(html) ? html.replace(/<\/head>/i, (mm) => typoBlock + mm) : typoBlock + html;
         }
       }
@@ -617,6 +620,8 @@ async function handler(req, res) {
             styleHash: norm.styleHash,
             rev: 1
           }));
+          // 复制不经 beginTx 直接落新文档：目标 id 若残留历史未完成记录已被取代（T7 承载缺陷；留着会在下次启动恢复时把副本回滚掉）
+          try { const n = dropSupersededTx(root, to); if (n) console.error(`[tx] 同文档过期事务记录已清理 ${n} 条：${to}（/duplicate）`); } catch {}
         });
       } catch (e) {
         if (e instanceof LockHeld) return sendJson(409, { ok: false, retry: true, error: '该文档正在被处理，请稍后重试' });
@@ -1176,6 +1181,8 @@ async function handler(req, res) {
             base.rev = (Number(base.rev) || 0) + 1;
             return base;
           });
+          // 回滚不经 beginTx 直接改文档：成功后同文档残留的未完成记录已被取代（T7 承载缺陷；留着会在下次启动恢复时把文档回滚到更早版本）
+          try { const n = dropSupersededTx(root, id); if (n) console.error(`[tx] 同文档过期事务记录已清理 ${n} 条：${id}（/rollback）`); } catch {}
         });
       } catch (e) {
         if (e instanceof LockHeld) return sendJson(409, { ok: false, retry: true, error: '该文档正在被处理，请稍后重试' });
@@ -2125,15 +2132,9 @@ try {
   if (fs.existsSync(rootLock.path(root)) && !rootLock.isHeld(root)) rootLock.release(root);
 } catch {}
 try {
-  const recovered = recoverPending(root, { restoreDoc: (rec) => {
-    const { docId, oldSnapTs, oldMeta, oldHtml } = rec;
-    if (typeof oldHtml === 'string') atomicWrite(docPath(docId), oldHtml);            // 首选：事务内旧正文副本（精确旧字节）
-    else if (oldSnapTs) {                                                             // 兜底：归一化旧冻结快照
-      const snapFile = path.join(snapDir(docId), String(oldSnapTs).replace(/[^0-9-]/g, '') + '.html');
-      if (fs.existsSync(snapFile)) atomicWrite(docPath(docId), normalizeToCurrent(fs.readFileSync(snapFile, 'utf8')).html);
-    }
-    updateMeta(root, docId, () => (oldMeta === undefined ? null : oldMeta));          // 只回滚目标文档 meta
-  } });
+  // 默认恢复（tx.mjs defaultRestoreDoc）：首选事务内旧正文副本（精确旧字节）；仅 oldHtml 载荷缺失时走快照兜底，
+  // 兜底按热修 a7eb561 裁决 legacy-safe（oldMeta.typo 未定义 → 保留快照内联排版；已迁移 → 归一化正文）。
+  const recovered = recoverPending(root);
   const done = recovered.filter((r) => r.ok);
   if (done.length) console.error(`[tx] 启动恢复未完成事务 ${done.length} 条：` + done.map((r) => `${r.docId}(${r.phase})`).join('、'));
   const failed = recovered.filter((r) => !r.ok);

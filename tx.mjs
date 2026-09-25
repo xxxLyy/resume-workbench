@@ -61,10 +61,19 @@ function lockMtimeAge(lockPath) {
   try { return Date.now() - fs.statSync(lockPath).mtimeMs; } catch { return Infinity; }   // 文件已消失 → 视作很旧（可重建）
 }
 // 陈旧判定：持有者已死、或超过 staleMs（心跳缺失）、或不可读且超过宽限（半截废弃）→ 陈旧可破除。
-// 自己持有的锁永不陈旧；不可读但 mtime 新鲜（正在写入 info 的空窗）→ 不陈旧，等待而非破除（否则两进程同入临界区丢更新）。
+// 不可读但 mtime 新鲜（正在写入 info 的空窗）→ 不陈旧，等待而非破除（否则两进程同入临界区丢更新）。
+// self-pid 不再无条件短路（T7 承载缺陷）：crash-while-holding + pid 复用后，新进程会把前任遗留锁误判为
+// 自己持有 → 启动清除失效、一切写请求 503 直至手删。启动时进程可证不持任何锁：startedAt 早于本进程
+// 启动时间（1s 时钟容差）→ 必为遗留 → 陈旧；或自持超过 staleMs（本模块临界区皆同步毫秒级）→ 陈旧。
 function lockIsStale(lockPath, info, staleMs) {
   if (info && typeof info === 'object') {
-    if (info.pid === process.pid) return false;
+    if (info.pid === process.pid) {
+      if (typeof info.startedAt === 'number') {
+        if (info.startedAt < Date.now() - process.uptime() * 1000 - 1000) return true;
+        if (staleMs && Date.now() - info.startedAt > staleMs) return true;
+      }
+      return false;
+    }
     if (!pidAlive(info.pid)) return true;
     if (staleMs && typeof info.startedAt === 'number' && Date.now() - info.startedAt > staleMs) return true;
     return false;
@@ -239,6 +248,8 @@ export function recoverPending(root, { restoreDoc } = {}) {
 }
 
 // 默认恢复：写回旧正文（优先 .tx 副本；否则归一化旧冻结快照），并把目标文档 meta 回滚到旧副本。仅动目标文档。
+// 快照兜底 legacy-safe（T7 承载缺陷，热修 a7eb561 裁决）：oldMeta.typo 未定义 = legacy → 内联排版在迁移前是
+// 权威来源，归一化剥离后必须原值回注（否则兜底恢复把内联 typo 剥丢）；已迁移（meta.typo 定义）→ 写归一化正文。
 function defaultRestoreDoc(rec) {
   const { docId, oldSnapTs, oldMeta, oldHtml, root } = rec;
   const docFile = path.join(root, 'docs', docId + '.html');
@@ -247,9 +258,18 @@ function defaultRestoreDoc(rec) {
   } else if (oldSnapTs) {
     const snapFile = path.join(root, 'snapshots', docId, String(oldSnapTs).replace(/[^0-9-]/g, '') + '.html');
     if (fs.existsSync(snapFile)) {
-      // 旧快照为冻结格式（内联 typo）→ 归一化为当前格式后写回
+      const snap = fs.readFileSync(snapFile, 'utf8');
+      // 旧快照为冻结格式（内联 typo）→ 归一化为当前格式后写回；legacy 形态保留内联块
       let out;
-      try { out = normalizeToCurrent(fs.readFileSync(snapFile, 'utf8')).html; } catch { out = fs.readFileSync(snapFile, 'utf8'); }
+      try {
+        const norm = normalizeToCurrent(snap);
+        out = norm.html;
+        const legacy = !(oldMeta && typeof oldMeta.typo === 'string');
+        if (legacy && norm.typo) {
+          const block = `<style id="typo-custom">${norm.typo}</style>`;
+          out = /<\/head>/i.test(out) ? out.replace(/<\/head>/i, (mm) => block + mm) : block + out;
+        }
+      } catch { out = snap; }
       atomicWrite(docFile, out);
     }
   }
