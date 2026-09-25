@@ -165,14 +165,17 @@ export function resourceFingerprint(html, root) {
 
 // freezeHtml(html, meta) → 冻结产物与完整标识
 //   { html, bodyHash, cssHash, typoHash, resourcesHash, renderInputId, remote[], missing[], reproducible }
-//   语义：先归一化（剥离 html 内残留的旧内联 typo），再在 </head> 前注入 meta.typo —— 一律以 meta 为准，
-//   不存在"已有 typo 就跳过注入"分支；meta.typo 为空/缺失 → 产物不含 typo-custom 块（合法：当时无微调）。
+//   语义：先归一化（剥离 html 内的内联 typo），再在 </head> 前注入「有效 typo」：
+//   有效 typo = (meta.typo 定义且非空) ? meta.typo : (html 内联 typo if present else '')（S1 热修裁决）。
+//   已迁移文档（meta.typo 定义）一律 meta 为准，不存在"已有 typo 就跳过注入"分支（'' 且无内联 → 产物无
+//   typo-custom 块，合法：当时无微调）；legacy 文档（meta 无 typo 键、内联仍在）在 T7 迁移前回退内联值，
+//   排版不被空 meta 剥掉——首次 /save 会把内联值抽入 meta（Task3 路径），完成单文档迁移。
 //   renderInputId = sha1(bodyHash:cssHash:typoHash:resourcesHash)，含正文。
 //   注：<style> 来源属性（data-theme/data-style-origin）的登记由 T5/T7 负责，本函数不改写主样式属性。
 export function freezeHtml(html, meta) {
   const m = meta || {};
   const norm = normalizeToCurrent(html);
-  const typo = typeof m.typo === 'string' ? m.typo : '';
+  const typo = (typeof m.typo === 'string' && m.typo !== '') ? m.typo : (norm.typo ?? '');
   let out = norm.html;
   if (typo) {
     const block = `<style id="typo-custom">${typo}</style>`;

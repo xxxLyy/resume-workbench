@@ -557,12 +557,16 @@ async function handler(req, res) {
         html = html.replace('<button id="histBtn"', `<button id="homeBtn" class="secondary" onclick="location.href='/'">🏠 首页</button><button id="histBtn"`);
       }
       const vm = loadMeta()[id] || {};
-      // 铁律一（编辑入口=渲染组装同款）：落盘文档不含 typo（值在 meta）；serve 前剥离残留内联并注入 meta.typo，
-      // 编辑器所见即渲染所得；保存时按 Task3 路径（normalizeToCurrent）提取回 meta，往返幂等。
-      html = splitDoc(html).html;
-      if (typeof vm.typo === 'string' && vm.typo) {
-        const typoBlock = `<style id="typo-custom">${vm.typo}</style>`;
-        html = /<\/head>/i.test(html) ? html.replace(/<\/head>/i, (mm) => typoBlock + mm) : typoBlock + html;
+      // 铁律一（编辑入口=渲染组装同款）+ S1 热修裁决：有效 typo = (meta.typo 定义且非空) ? meta.typo : 内联值。
+      // 已迁移文档（meta.typo 定义）：serve 前剥离残留内联，非空则注入 meta.typo（'' → 不注入），编辑器所见即渲染所得。
+      // legacy 文档（meta 无 typo 键）：保留内联 typo-custom 原样供编辑器显示；/save 按 Task3 路径
+      // （normalizeToCurrent）把内联值抽入 meta，完成单文档迁移，往返幂等。
+      if (typeof vm.typo === 'string') {
+        html = splitDoc(html).html;
+        if (vm.typo) {
+          const typoBlock = `<style id="typo-custom">${vm.typo}</style>`;
+          html = /<\/head>/i.test(html) ? html.replace(/<\/head>/i, (mm) => typoBlock + mm) : typoBlock + html;
+        }
       }
       if (vm.parent && !html.includes('id="verBadge"')) {
         html = html.replace('<button id="histBtn"', `<span id="verBadge" class="badge">${escHtml((vm.company || '') + '·' + (vm.role || ''))}</span><button id="histBtn"`);

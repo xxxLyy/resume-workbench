@@ -394,8 +394,9 @@ if (fz.html.includes('font-size:15px')) fail('freezeHtml 中旧内联 typo 应�
 const cnt = fz.html.split('<style id="typo-custom">').length - 1;
 if (cnt !== 1) fail('freezeHtml 应恰有一个 typo-custom 块，实际 ' + cnt);
 if (!/<style id="typo-custom">[^<]*<\/style>\s*<\/head>/.test(fz.html)) fail('typo 块应内联在 </head> 前');
-const fzNoTypo = freezeHtml(withTypo, {});
-if (fzNoTypo.html.includes('typo-custom"')) fail('meta 无 typo 时冻结产物不应含 typo-custom（先归一化）');
+// S1 热修：meta 无 typo（legacy）→ 冻结产物保留内联 typo（不得被空 meta 剥掉；裁决见 S1-HF 节）
+const fzLegacy = freezeHtml(withTypo, {});
+if (!fzLegacy.html.includes('<style id="typo-custom">.x{font-size:15px}</style>')) fail('S1 热修：legacy（meta 无 typo）冻结产物应保留内联 typo');
 
 // ④ renderInputId：随正文/typo/css 变化；随 body 外空白不变；含正文且完整
 for (const k of ['bodyHash', 'cssHash', 'typoHash', 'resourcesHash', 'renderInputId']) {
@@ -463,6 +464,41 @@ const renderSrc = fs.readFileSync('render.mjs', 'utf8');
 if (/docs-meta|loadMeta|meta\.typo/.test(renderSrc)) fail('render.mjs 不得引用 docs-meta / meta.typo（铁律二）');
 if (!renderSrc.includes("'--src'") || !renderSrc.includes("'--out'")) fail('render.mjs 应保留 --src/--out 入口');
 console.log('✅ S1-A freeze 六导出：splitDoc 两态/HTML 幂等/meta.typo 覆盖/renderInputId 含正文/完整资源指纹/staleInfo 三态/render meta-blind');
+EOF
+
+# —— S1-HF：热修 — legacy 内联排版优先于空 meta（裁决：effective typo = (meta.typo 定义且非空) ? meta.typo : (内联值 if present else '')）——
+# 隔离：纯函数，零 IO，绝不触碰真实 docs/snapshots/pdfs。
+node --input-type=module << 'EOF'
+import { freezeHtml, sha1 } from './freeze.mjs';
+const fail = m => { console.error('❌ S1-HF ' + m); process.exit(1); };
+const doc = (typo) => '<!doctype html>\n<html><head>\n<style>.a{color:red}</style>\n'
+  + (typo !== null ? '<style id="typo-custom">' + typo + '</style>\n' : '') + '</head>\n<body><p>正文</p></body></html>\n';
+const INLINE = '.x{font-size:15px}';
+const cnt = (h) => h.split('<style id="typo-custom">').length - 1;
+
+// ① legacy（meta.typo 未定义）：内联值保留进冻结产物（恰一块、</head> 前、typoHash=内联值 sha1）
+const f1 = freezeHtml(doc(INLINE), {});
+if (!f1.html.includes('<style id="typo-custom">' + INLINE + '</style>')) fail('① legacy 冻结产物应保留内联 typo');
+if (cnt(f1.html) !== 1) fail('① 应恰有一个 typo-custom 块，实际 ' + cnt(f1.html));
+if (f1.typoHash !== sha1(INLINE)) fail('① typoHash 应为内联值 sha1');
+if (!/<style id="typo-custom">[^<]*<\/style>\s*<\/head>/.test(f1.html)) fail('① typo 块应内联在 </head> 前');
+// 冻结标识与「内联值已迁进 meta」的形态等价（迁移前后渲染输入一致 → 不触发假 stale）
+if (f1.renderInputId !== freezeHtml(doc(null), { typo: INLINE }).renderInputId) fail('① legacy 冻结标识应等于内联值入 meta 后的标识');
+
+// ② meta.typo=''（定义但空）且内联存在 → 仍回退内联（裁决："undefined or empty" 才回退）
+if (!freezeHtml(doc(INLINE), { typo: '' }).html.includes('<style id="typo-custom">' + INLINE + '</style>')) fail('② meta.typo 空串且内联存在应回退内联');
+
+// ③ 已迁移（meta.typo 非空）：meta 必胜、覆盖旧内联值（现行为不变）
+const f3 = freezeHtml(doc(INLINE), { typo: '.x{font-size:20px}' });
+if (!f3.html.includes('<style id="typo-custom">.x{font-size:20px}</style>')) fail('③ meta.typo 非空应注入 meta 值');
+if (f3.html.includes('font-size:15px')) fail('③ 旧内联值应被 meta.typo 覆盖');
+if (cnt(f3.html) !== 1) fail('③ 应恰有一个 typo-custom 块');
+
+// ④ 已迁移净文档（无内联）：meta.typo='' → 无块；meta 缺失且无内联 → 无块；两者标识一致
+if (cnt(freezeHtml(doc(null), { typo: '' }).html) !== 0) fail('④ meta.typo=空+无内联应无块');
+if (cnt(freezeHtml(doc(null), {}).html) !== 0) fail('④ meta 缺 typo+无内联应无块');
+if (freezeHtml(doc(null), {}).renderInputId !== freezeHtml(doc(null), { typo: '' }).renderInputId) fail('④ 无内联时 meta.typo 缺失与空串标识应一致');
+console.log('✅ S1-HF 热修：effective typo 裁决（legacy 内联保留/空串回退/meta 非空必胜/净文档无块）四组');
 EOF
 
 # —— S1-B：tx.mjs 保存事务恢复 + 共享 docs-meta 原子更新（含两进程并发不丢字段）+ 文档锁/根锁 ——

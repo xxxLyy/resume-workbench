@@ -518,6 +518,109 @@ async function runS1T4Tests() {
   }
 }
 await runS1T4Tests();
+
+// ===== S1 热修：legacy 内联排版优先于空 meta（serve/save 往返；自 spawn 隔离根+隔离端口，绝不触碰真实数据）=====
+async function runS1HotfixTests() {
+  const HF_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ed-hf-'));
+  const md5 = (b) => createHash('md5').update(b).digest('hex');
+  const servers = [];
+  try {
+    const ROOT8 = path.join(HF_TMP, 'r8');
+    for (const d of ['docs', 'snapshots', 'pdfs']) fs.mkdirSync(path.join(ROOT8, d), { recursive: true });
+    const LEG_TYPO = '/*LEG*/body{font-size:14.5px}';
+    const MIG_TYPO = '/*MIG*/body{font-size:17px}';
+    fs.writeFileSync(path.join(ROOT8, 'docs-meta.json'), JSON.stringify({
+      leg: { rev: 3 },                  // legacy：meta 无 typo 键（S1 迁移前状态）
+      mig: { typo: MIG_TYPO, rev: 2 },  // 已迁移：meta.typo 非空
+      mig0: { typo: '', rev: 1 }        // 已迁移：meta.typo=''（无微调）
+    }));
+    fs.writeFileSync(path.join(ROOT8, 'applications.json'), '[]');
+    fs.writeFileSync(path.join(ROOT8, 'materials.json'), '[]');
+    fs.writeFileSync(path.join(ROOT8, 'docs', 'leg.html'), txDoc('leg', 'LEG-V1', LEG_TYPO));
+    fs.writeFileSync(path.join(ROOT8, 'docs', 'mig.html'), txDoc('mig', 'MIG-V1', ''));
+    fs.writeFileSync(path.join(ROOT8, 'docs', 'mig0.html'), txDoc('mig0', 'MIG0-V1', ''));
+    // 假渲染器：记录渲染输入（.last-src.html），供「冻结产物含内联 typo / 冻结 --src 不读 meta」断言
+    const fr8 = path.join(ROOT8, 'fake-render.sh');
+    fs.writeFileSync(fr8, '#!/bin/bash\nshift\nsrc=""; out=""\nif [ "$1" = "--src" ]; then src="$2"; out="$4"; else src="$RESUME_ROOT/docs/$1.html"; out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\ncp "$src" "$RESUME_ROOT/.last-src.html"\nprintf "%%PDF-1.4 fake\\n" > "$out"\n');
+    fs.chmodSync(fr8, 0o755);
+    const srv8 = await spawnServer(ROOT8, { RESUME_RENDER_BIN: fr8 });
+    servers.push(srv8.child);
+    const B8 = srv8.base;
+    const readMeta8 = () => JSON.parse(fs.readFileSync(path.join(ROOT8, 'docs-meta.json'), 'utf8'));
+    const readDoc8 = (id) => fs.readFileSync(path.join(ROOT8, 'docs', id + '.html'), 'utf8');
+    const lastSrc = () => { try { return fs.readFileSync(path.join(ROOT8, '.last-src.html'), 'utf8'); } catch { return ''; } };
+    const post = (u, body, ct) => fetch(B8 + u, { method: 'POST', headers: ct ? { 'Content-Type': ct } : {}, body, redirect: 'manual' });
+    const blocks = (h) => (h.match(/<style id="typo-custom">/g) || []).length;
+
+    // ① legacy：GET /edit 保留文档内联 typo 块（不被空 meta 剥掉）
+    {
+      const ed = await (await fetch(B8 + '/edit?id=leg')).text();
+      if (blocks(ed) !== 1) bad('HF① legacy /edit 应恰含一个内联 typo-custom 块', String(blocks(ed)));
+      else if (!ed.includes('<style id="typo-custom">' + LEG_TYPO + '</style>')) bad('HF① legacy /edit 应保留内联值');
+      else ok('HF① legacy（meta 无 typo）GET /edit 保留内联排版块');
+    }
+    // ② legacy：renderCurrent（/render）冻结产物含内联 typo（渲染输入 = freezeHtml 产物，排版不丢）
+    {
+      const r = await (await post('/render?id=leg', '')).json();
+      const expected = freezeHtml(readDoc8('leg'), readMeta8().leg || {});
+      if (!r.ok) bad('HF② /render 应成功', JSON.stringify(r));
+      else if (!expected.html.includes('<style id="typo-custom">' + LEG_TYPO + '</style>')) bad('HF② freezeHtml(legacy) 应保留内联 typo');
+      else if (!lastSrc().includes('<style id="typo-custom">' + LEG_TYPO + '</style>')) bad('HF② 渲染输入应含内联 typo（legacy 排版不丢）');
+      else if (md5(lastSrc()) !== md5(expected.html)) bad('HF② 渲染输入应与 freezeHtml 冻结产物 md5 相同');
+      else ok('HF② legacy renderCurrent：冻结产物含内联排版（渲染输入 = freeze 产物）');
+    }
+    // ③ legacy：首次 /save 把内联值抽入 meta（typo 变为已定义），落盘不再含内联；此后 /edit 与冻结都走 meta
+    {
+      const ed = await (await fetch(B8 + '/edit?id=leg')).text();   // 编辑器真实往返：serve 什么就 POST 什么
+      const sv = await (await post('/save?id=leg', ed, 'text/html; charset=utf-8')).json();
+      const m = readMeta8().leg || {};
+      const disk = readDoc8('leg');
+      if (!sv.ok) bad('HF③ 保存失败', JSON.stringify(sv));
+      else if (m.typo !== LEG_TYPO) bad('HF③ 保存后 meta.typo 应=原内联值（单文档迁移完成）', JSON.stringify(m.typo));
+      else if (/<style\b[^>]*\bid\s*=\s*["']typo-custom["']/i.test(disk)) bad('HF③ 落盘文档不应再含 typo-custom 元素');
+      else {
+        const ed2 = await (await fetch(B8 + '/edit?id=leg')).text();
+        const r2 = await (await post('/render?id=leg', '')).json();
+        const expected2 = freezeHtml(disk, m);
+        if (blocks(ed2) !== 1 || !ed2.includes('<style id="typo-custom">' + LEG_TYPO + '</style>')) bad('HF③ 迁移后 /edit 应注入 meta.typo', String(blocks(ed2)));
+        else if (!r2.ok || md5(lastSrc()) !== md5(expected2.html) || !lastSrc().includes(LEG_TYPO)) bad('HF③ 二次冻结应使用 meta（渲染输入 = freeze 产物）');
+        else ok('HF③ legacy 首次 /save 内联入 meta（迁移完成）；此后 /edit 与冻结走 meta');
+      }
+    }
+    // ④ 已迁移文档：行为不变 —— meta.typo 非空必胜；meta.typo='' 不产生块
+    {
+      const edMig = await (await fetch(B8 + '/edit?id=mig')).text();
+      const edMig0 = await (await fetch(B8 + '/edit?id=mig0')).text();
+      const frzMig = freezeHtml(readDoc8('mig'), readMeta8().mig || {});
+      if (blocks(edMig) !== 1 || !edMig.includes('<style id="typo-custom">' + MIG_TYPO + '</style>')) bad('HF④ 已迁移 /edit 应注入 meta.typo');
+      else if (blocks(edMig0) !== 0) bad("HF④ meta.typo='' 的 /edit 不应注入块", String(blocks(edMig0)));
+      else if (!frzMig.html.includes('<style id="typo-custom">' + MIG_TYPO + '</style>')) bad('HF④ 已迁移冻结应注入 meta.typo');
+      else ok("HF④ 已迁移文档行为不变（meta 必胜；typo='' 不产生块）");
+    }
+    // ⑤ 铁律二回归护栏：冻结文件（--src）按其内联 typo 渲染，无视任何 meta
+    {
+      const snapDir8 = path.join(ROOT8, 'snapshots', 'frz');
+      fs.mkdirSync(snapDir8, { recursive: true });
+      fs.writeFileSync(path.join(ROOT8, 'docs', 'frz.html'), txDoc('frz', 'FRZ-V1', ''));
+      const FROZEN_TYPO = '/*FROZEN*/body{font-size:13px}';
+      const frozenHtml = '<!doctype html>\n<html><head><style id="typo-custom">' + FROZEN_TYPO + '</style></head>\n<body><p>FRZ-SNAP</p></body></html>\n';
+      const ts = '2026-09-24-000000-000';
+      fs.writeFileSync(path.join(snapDir8, ts + '.html'), frozenHtml);
+      // 故意给 meta 一个不同的 typo 值：冻结 --src 渲染不得读它（render.mjs meta-blind）
+      fs.writeFileSync(path.join(ROOT8, 'docs-meta.json'), JSON.stringify({ ...readMeta8(), frz: { typo: '/*META-WRONG*/body{font-size:99px}' } }));
+      const r = await fetch(B8 + '/snapshot/pdf?id=frz&ts=' + ts);
+      if (r.status !== 200) bad('HF⑤ /snapshot/pdf 应 200', String(r.status));
+      else if (lastSrc() !== frozenHtml) bad('HF⑤ 冻结 --src 渲染输入应为冻结文件原字节');
+      else if (!lastSrc().includes(FROZEN_TYPO) || lastSrc().includes('META-WRONG')) bad('HF⑤ 冻结渲染应用冻结内联排版、不得混入 meta');
+      else ok('HF⑤ 铁律二：冻结 --src 按其内联排版渲染并无视 meta');
+    }
+  } finally {
+    for (const c of servers) { try { c.kill('SIGKILL'); } catch {} }
+    await sleep(50);
+    try { fs.rmSync(HF_TMP, { recursive: true, force: true }); } catch {}
+  }
+}
+await runS1HotfixTests();
 if (failures) { console.error('❌ 事务/锁/冻结点验证失败 ' + failures + ' 项'); process.exit(1); }
 
 let bin;
