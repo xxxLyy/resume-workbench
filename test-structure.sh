@@ -968,3 +968,122 @@ try {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 EOF
+
+# —— S1-G：RGB24 视觉门禁 tools/pixel-diff.mjs（同 PDF=0/改字号失败/仅改颜色>0 证明 RGB 非灰度/页数不等失败/缺检查器 exit 3 不降级）——
+# 隔离：mktemp 根 + 真实渲染管线（assembleTemplate + render.mjs）造 PDF 夹具，零接触真实 docs/snapshots/pdfs/JSON/config。
+command -v ffmpeg >/dev/null || { echo '❌ S1-G 需要 ffmpeg: brew install ffmpeg'; exit 1; }
+command -v pdftoppm >/dev/null || { echo '❌ S1-G 需要 poppler(pdftoppm): brew install poppler'; exit 1; }
+node --input-type=module << 'EOF'
+import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+const fail = (m) => { console.error('❌ S1-G ' + m); process.exit(1); };
+// 门禁本体：编程 API（Task 7/9 进程内调用）+ CheckerMissingError（exit 3 语义的进程内形态）
+let comparePdfs, CheckerMissingError;
+try { ({ comparePdfs, CheckerMissingError } = await import('./tools/pixel-diff.mjs')); }
+catch (e) { fail('tools/pixel-diff.mjs 不存在或不可导入: ' + (e && e.message || e)); }
+if (typeof comparePdfs !== 'function') fail('pixel-diff.mjs 应导出 comparePdfs(a, b, opts)');
+if (typeof CheckerMissingError !== 'function') fail('pixel-diff.mjs 应导出 CheckerMissingError（Task 7 需按 code=CHECKER_MISSING 判 STOP）');
+import { assembleTemplate } from './template.mjs';
+
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 's1g-'));
+const CLI = path.join(process.cwd(), 'tools', 'pixel-diff.mjs');
+const RENDER = path.join(process.cwd(), 'render.mjs');
+const RDATA = path.join(tmp, 'data');
+fs.mkdirSync(path.join(RDATA, 'pdfs'), { recursive: true });
+
+// ---------- 夹具：真实渲染管线（assembleTemplate 填占位符 → render.mjs），不手搓 PDF ----------
+const mkHtml = (extraStyle, workHtml) => assembleTemplate('classic')
+  .replace('</head>', () => (extraStyle ? `<style>${extraStyle}</style></head>` : '</head>'))
+  .replaceAll('{{NAME}}', () => '门禁测试员')
+  .replaceAll('{{CONTACT}}', () => '电话：13800000000 ｜ 邮箱：gate@example.com')
+  .replaceAll('{{INTENT}}', () => '意向岗位：后端工程师')
+  .replaceAll('{{SUMMARY}}', () => '五年后端研发经验，主导高并发订单系统与数据链路建设。')
+  .replaceAll('{{SKILLS}}', () => '<p>Node.js / MySQL / Redis / 消息队列</p><p>分布式系统设计与性能调优</p>')
+  .replaceAll('{{WORK}}', () => workHtml || '<div class="entry"><div class="entry-title">某科技公司</div><div class="entry-role">后端工程师</div><div class="entry-date">2021-2026</div><p>负责订单核心服务，主导拆单重构与容量治理，可用性达 99.99%。</p></div>')
+  .replaceAll('{{PROJECTS}}', () => '<div class="entry"><div class="entry-title">订单系统重构</div><p>单体拆分与链路治理，峰值吞吐提升一倍。</p></div>')
+  .replaceAll('{{EDU}}', () => '<div class="entry"><div class="entry-title">某大学</div><div class="entry-role">本科｜计算机科学与技术</div><div class="entry-date">2016-2020</div></div>')
+  .replaceAll('{{DOC_ID}}', () => 's1g');
+const renderPdf = (name, html) => {
+  const src = path.join(tmp, name + '.html');
+  const out = path.join(RDATA, 'pdfs', name + '.pdf');
+  fs.writeFileSync(src, html);
+  const r = spawnSync(process.execPath, [RENDER, '--src', src, '--out', out], {
+    env: { ...process.env, RESUME_ROOT: RDATA }, encoding: 'utf8', timeout: 180000
+  });
+  if (r.status !== 0) fail('render.mjs 生成夹具 ' + name + ' 失败（exit ' + r.status + '）: ' + String(r.stderr || r.stdout || '').slice(0, 400));
+  if (!fs.existsSync(out)) fail('夹具 PDF 未生成: ' + out);
+  return out;
+};
+// 等亮度色差对（BT.601: 0.299×255≈76=0x4C）：#4c4c4c 与 #ff0000 在灰度管线下逐字节相同，
+// 只有 RGB24 管线能登记差异 —— 这是「证明 RGB 而非灰度」的判别夹具。
+const GRAY_STYLE = '.sheet,.sheet *{color:#4c4c4c !important}';
+const RED_STYLE = '.sheet,.sheet *{color:#ff0000 !important}';
+const BIG_STYLE = '.sheet,.sheet *{font-size:22px !important}';  // 实测 26px+行高会溢出到第 2 页，22px 保持单页且 ratio≫0.005
+const LONG_WORK = Array.from({ length: 70 }, (_, i) => `<p>工作经历第 ${i + 1} 行：负责模块研发与稳定性值班，参与容量评估与压测。</p>`).join('\n');
+const pdfBase = renderPdf('base', mkHtml('', ''));
+const pdfBig = renderPdf('big', mkHtml(BIG_STYLE, ''));
+const pdfGray = renderPdf('gray', mkHtml(GRAY_STYLE, ''));
+const pdfRed = renderPdf('red', mkHtml(RED_STYLE, ''));
+const pdfTwo = renderPdf('two', mkHtml('', LONG_WORK));
+
+try {
+  // ---------- (a) 同 PDF 自比：每页 ratio 0、max 0、pass ----------
+  const ra = comparePdfs(pdfBase, pdfBase);
+  if (!ra || !Array.isArray(ra.pages) || ra.pages.length !== 1) fail('自比应返回 1 页结果: ' + JSON.stringify(ra && ra.pages));
+  if (ra.pages[0].ratio !== 0 || ra.max !== 0) fail('自比 ratio 应为 0: ' + JSON.stringify(ra.pages[0]));
+  if (ra.pass !== true) fail('自比应 pass: ' + JSON.stringify(ra));
+  // CLI 同 PDF → exit 0 + 每页比例 + 总判定
+  const ca = spawnSync(process.execPath, [CLI, pdfBase, pdfBase], { encoding: 'utf8', timeout: 120000 });
+  if (ca.status !== 0) fail('CLI 自比应 exit 0，实际 ' + ca.status + ': ' + String(ca.stderr || '').slice(0, 300));
+  if (!/第 ?1 ?页|page 1/i.test(ca.stdout) || !/ratio/.test(ca.stdout)) fail('CLI 输出应含每页比例: ' + ca.stdout.slice(0, 300));
+  if (!/PASS/.test(ca.stdout)) fail('CLI 输出应含总判定 PASS: ' + ca.stdout.slice(0, 300));
+  console.log('✅ S1-G-a 同 PDF 自比 ratio=0 pass（API + CLI exit 0）');
+
+  // ---------- (b) 字号改变（布局变）→ ratio > 0.005，fail，CLI exit 1 ----------
+  const rb = comparePdfs(pdfBase, pdfBig);
+  if (rb.pass !== false) fail('改字号应 fail: ' + JSON.stringify(rb));
+  if (!(rb.max > 0.005)) fail('改字号 max ratio 应 > 0.005，实际 ' + rb.max);
+  const cb = spawnSync(process.execPath, [CLI, pdfBase, pdfBig], { encoding: 'utf8', timeout: 120000 });
+  if (cb.status !== 1) fail('CLI 改字号应 exit 1，实际 ' + cb.status);
+  if (!/FAIL/.test(cb.stdout)) fail('CLI 改字号应输出 FAIL: ' + cb.stdout.slice(0, 300));
+  console.log('✅ S1-G-b 改字号 max=' + rb.max.toFixed(4) + ' > 0.005 → fail（API + CLI exit 1）');
+
+  // ---------- (c) 仅改颜色（同布局、等亮度色差对）→ ratio > 0，fail（证明 RGB24 而非灰度）----------
+  const rc = comparePdfs(pdfGray, pdfRed);
+  if (!(rc.max > 0)) fail('等亮度色差（#4c4c4c vs #ff0000）ratio 应 > 0（灰度管线会漏报，RGB24 必须登记）: ' + JSON.stringify(rc));
+  if (rc.pass !== false) fail('仅改颜色应 fail: ' + JSON.stringify(rc));
+  if (!(rc.max > 0.005)) fail('仅改颜色 max ratio 应 > 0.005（全文本变色），实际 ' + rc.max);
+  // CLI --threshold 旗标解析：放宽阈值到 0.9 → 同一对 PDF 应 pass（exit 0）
+  const cc = spawnSync(process.execPath, [CLI, pdfGray, pdfRed, '--threshold', '0.9'], { encoding: 'utf8', timeout: 120000 });
+  if (cc.status !== 0) fail('CLI --threshold 0.9 应 exit 0，实际 ' + cc.status + ': ' + String(cc.stdout || cc.stderr || '').slice(0, 300));
+  console.log('✅ S1-G-c 仅改颜色（等亮度 #4c4c4c↔#ff0000）max=' + rc.max.toFixed(4) + ' > 0 → RGB24 判别成立；--threshold 旗标生效');
+
+  // ---------- (d) 页数不等 → 直接 fail（error 指明页数），CLI exit 1 ----------
+  const rd = comparePdfs(pdfBase, pdfTwo);
+  if (rd.pass !== false) fail('页数不等应 fail: ' + JSON.stringify(rd));
+  if (!/页数不等/.test(String(rd.error || ''))) fail('页数不等应给出 error 说明: ' + JSON.stringify(rd));
+  if (!Array.isArray(rd.pages) || rd.pages.length !== 0) fail('页数不等时不应产出逐页比例: ' + JSON.stringify(rd.pages));
+  const cd = spawnSync(process.execPath, [CLI, pdfBase, pdfTwo], { encoding: 'utf8', timeout: 120000 });
+  if (cd.status !== 1) fail('CLI 页数不等应 exit 1，实际 ' + cd.status);
+  console.log('✅ S1-G-d 页数不等（1 vs 2）直接 fail（API + CLI exit 1）');
+
+  // ---------- (e) 检查器缺失（PATH 遮蔽）→ CLI exit 3 + 可操作修复指引，绝不降级 ----------
+  const whichOf = (tool) => spawnSync('/bin/bash', ['-c', 'command -v ' + tool], { encoding: 'utf8' }).stdout.trim();
+  const binNoFfmpeg = path.join(tmp, 'bin-no-ffmpeg'); fs.mkdirSync(binNoFfmpeg);
+  fs.symlinkSync(process.execPath, path.join(binNoFfmpeg, 'node'));
+  fs.symlinkSync(whichOf('pdftoppm'), path.join(binNoFfmpeg, 'pdftoppm'));
+  const ce = spawnSync(process.execPath, [CLI, pdfBase, pdfBase], { encoding: 'utf8', timeout: 60000, env: { ...process.env, PATH: binNoFfmpeg + ':/usr/bin:/bin' } });
+  if (ce.status !== 3) fail('ffmpeg 遮蔽应 exit 3（停止不降级），实际 ' + ce.status + ': ' + String(ce.stdout || ce.stderr || '').slice(0, 300));
+  const ceOut = String(ce.stderr || '') + String(ce.stdout || '');
+  if (!/ffmpeg/.test(ceOut) || !/brew install ffmpeg/.test(ceOut)) fail('exit 3 应给出可操作修复指引（brew install ffmpeg）: ' + ceOut.slice(0, 300));
+  const binNoPoppler = path.join(tmp, 'bin-no-pdftoppm'); fs.mkdirSync(binNoPoppler);
+  fs.symlinkSync(process.execPath, path.join(binNoPoppler, 'node'));
+  const cp = spawnSync(process.execPath, [CLI, pdfBase, pdfBase], { encoding: 'utf8', timeout: 60000, env: { ...process.env, PATH: binNoPoppler + ':/usr/bin:/bin' } });
+  if (cp.status !== 3) fail('pdftoppm 遮蔽应 exit 3，实际 ' + cp.status);
+  const cpOut = String(cp.stderr || '') + String(cp.stdout || '');
+  if (!/pdftoppm/.test(cpOut) || !/brew install poppler/.test(cpOut)) fail('pdftoppm 缺失应指引 brew install poppler: ' + cpOut.slice(0, 300));
+  console.log('✅ S1-G-e 检查器缺失（ffmpeg/pdftoppm PATH 遮蔽）→ exit 3 + 修复指引，不降级');
+} finally {
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+EOF

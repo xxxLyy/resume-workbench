@@ -18,10 +18,12 @@ if (process.argv.includes('--probe')) {
   try { add('Chromium 探针', true, await resolveChromium()); }
   catch (e) { add('Chromium 探针', false, String(e.message).split('\n')[0], '见 dev-docs/2026-09-23-s0-design.md §2.2'); }
 }
-for (const t of ['pdftotext', 'pdfinfo']) {
+for (const t of ['pdftotext', 'pdfinfo', 'pdftoppm']) {
   let ok = false; try { execSync(`command -v ${t}`, { shell: '/bin/bash' }); ok = true; } catch {}
   add(t, ok, '', 'brew install poppler');
 }
+{ let ok = false; try { execSync('command -v ffmpeg', { shell: '/bin/bash' }); ok = true; } catch {}
+  add('ffmpeg', ok, '视觉门禁 RGB24 比较依赖（tools/pixel-diff.mjs）', 'brew install ffmpeg'); }
 let cfg = null; try { cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8')); } catch {}
 const p = cfg && cfg.profiles && cfg.profiles[cfg.active || 0];
 add('模型配置字段完整', !!(p && p.baseURL && p.apiKey && p.model), p ? `profile=${p.name}` : '无 config.json', '参考 config.example.json；无需模型也能编辑/保存/导出/投递记录');

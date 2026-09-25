@@ -2,11 +2,13 @@
 # test.sh — 全隔离回归测试
 # 纪律：独立数据根（RESUME_ROOT）+ 独立端口 + 虚拟配置 + 生成夹具 + 假渲染器 + 本地假 LLM。
 # 全程不接触真实 docs/snapshots/pdfs/JSON/config；测试前后对真实数据做指纹比对。
-# 需要 pdftotext（poppler）。浏览器级保存语义见 test-editor.mjs（由本脚本按可用性调用）。
+# 需要 pdftotext（poppler）与 ffmpeg（RGB24 视觉门禁 tools/pixel-diff.mjs 的系统检查器）。
+# 浏览器级保存语义见 test-editor.mjs（由本脚本按可用性调用）。
 set -e
 cd "$(dirname "$0")"
 REAL_ROOT=$(pwd)
 command -v pdftotext >/dev/null || { echo '需要 poppler: brew install poppler'; exit 1; }
+command -v ffmpeg >/dev/null || { echo '需要 ffmpeg（视觉门禁不降级）: brew install ffmpeg'; exit 1; }
 
 TEST_DIR=$(mktemp -d /tmp/resume-isolated-test.XXXXXX)
 export RESUME_ROOT="$TEST_DIR/data"
