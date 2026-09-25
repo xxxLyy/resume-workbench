@@ -321,9 +321,26 @@ async function migrateDoc(root, docId, chk, backupDir, lockInfo) {
         reg.styleHash = norm2.styleHash;
       }
       const frozenAfter = freezeHtml(newHtml, { ...m, ...reg });
-      reg.renderInputId = frozenAfter.renderInputId;   // 初值登记（≠ lastRenderInputId：后者只由真实渲染任务写，避免假 fresh）
+      reg.renderInputId = frozenAfter.renderInputId;   // 迁移时点的初始身份（仅溯源）：当前身份一律由 freezeHtml 实时重算，渲染任务身份只存 meta.lastRenderInputId
+      // ===== T8 状态维度映射（spec §7）：job.status → kind/flow（存储单源），随后删除 job.status =====
+      // 'draft'→'draft'（job.changes 有 pending → 'reviewing'）；'deliverable'/'delivered'→'reviewed'（投递历史改由 applications.json 派生）；
+      // 无 job 的母版 → kind 'master' + flow 'draft'。迁移前新代码已显式写过的 flow 不被旧映射覆盖；archivedAt 初始化为 null（独立标记）。
+      const FLOWS = ['draft', 'reviewing', 'reviewed'];
+      const jb = m.job;
+      reg.kind = jb ? 'job' : 'master';
+      if (FLOWS.includes(m.flow)) reg.flow = m.flow;
+      else if (!jb) reg.flow = 'draft';
+      else if (jb.status === 'deliverable' || jb.status === 'delivered') reg.flow = 'reviewed';
+      else if (jb.status === 'draft' && Array.isArray(jb.changes) && jb.changes.some((c) => c && c.status === 'pending')) reg.flow = 'reviewing';
+      else reg.flow = 'draft';
+      if (m.archivedAt === undefined) reg.archivedAt = null;
       if (newHtml !== oldHtml) atomicWrite(docFile, newHtml);
-      updateMeta(root, docId, (cur) => ({ ...(cur || {}), ...reg }));
+      updateMeta(root, docId, (cur) => {
+        const next = { ...(cur || {}), ...reg };
+        // 删除旧状态单源（迁移完成后 flow 是唯一状态维度，避免新旧两套被不同页面读写）；job 其余字段保留
+        if (next.job && typeof next.job === 'object') { next.job = { ...next.job }; delete next.job.status; }
+        return next;
+      });
 
       // ④ 三门禁（before = 迁移前有效渲染输入；after = 迁移后渲染输入；两者 renderInputId 设计上相同，门禁实证）
       const checks = await runGates(chk, frozenPre.html, frozenAfter.html);

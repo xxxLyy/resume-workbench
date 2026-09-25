@@ -4,6 +4,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { importPdfText } from './importer.mjs';
@@ -81,6 +82,43 @@ const corruptBanner = () => corrupt.size
   ? `<div class="card" style="border-color:#f3c2c2;background:#fef2f2;color:#7f1d1d"><b>⚠️ 检测到数据文件损坏，相关写入已停止：</b>${[...corrupt].map((k) => JSON_FILES[k]).join('、')} —— 请先在设置页用备份恢复，或人工修复 JSON 后刷新。</div>`
   : '';
 
+// ===== 状态维度与派生关联（S1-T8，spec §7/§8，binding）=====
+// 存储字段仅 kind('master'|'job') / flow('draft'|'reviewing'|'reviewed') / archivedAt(null|ts)。
+// 可投递、deliveredRefs、exports[].usedBy 一律派生、绝不存储：投递关联权威来源 = applications.json，读取时计算、不写回。
+const FLOW_VALUES = ['draft', 'reviewing', 'reviewed'];
+// flow 单源读取：显式写入的 meta.flow 优先；未迁移旧数据（schemaVersion<2）从 job.status 即时推导
+// （'deliverable'/'delivered'→'reviewed'；'draft'+存在 pending 修改→'reviewing'），兼容读绝不写回——
+// 写回只发生在 migrate-meta.mjs（映射后删除 job.status，flow 成为唯一状态源）。
+function flowOf(m) {
+  const mm = m || {};
+  if (FLOW_VALUES.includes(mm.flow)) return mm.flow;
+  const j = mm.job;
+  if (j) {
+    if (j.status === 'deliverable' || j.status === 'delivered') return 'reviewed';
+    if (j.status === 'draft' && Array.isArray(j.changes) && j.changes.some((c) => c && c.status === 'pending')) return 'reviewing';
+  }
+  return 'draft';
+}
+const kindOf = (m) => ((m && (m.kind === 'job' || (!m.kind && m.job))) ? 'job' : 'master');
+// 兼容视图（旧词汇，仅供 API 响应展示）：reviewed→'deliverable'，其余→'draft'；投递历史由 deliveredRefs 派生，不再有存储的 'delivered'
+const legacyFlowStatus = (m) => (flowOf(m) === 'reviewed' ? 'deliverable' : 'draft');
+const exportsOf = (m) => (Array.isArray(m && m.exports) ? m.exports : []);
+const deliveredRefs = (docId) => loadApps().filter((a) => a && a.docId === docId);                     // 该文档全部投递引用（每条 = 一次投递）
+const usedByExport = (exportId) => loadApps().filter((a) => a && a.exportId && a.exportId === exportId); // 使用某导出的投递
+const pendingConflictsOf = (m) => {
+  const j = m && m.job;
+  return (j && Array.isArray(j.changes)) ? j.changes.filter((c) => c && c.level === 'conflict' && c.status === 'pending') : [];
+};
+// 可投递 = 派生（三条件同时成立）：flow==='reviewed' && 无 pending 事实冲突 && !staleInfo(…).stale
+function deliverableNow(id, m, info) {
+  if (!info || !info.renderInputId) return false;
+  if (flowOf(m) !== 'reviewed') return false;
+  if (pendingConflictsOf(m).length) return false;
+  return !staleInfo(m || {}, { renderInputId: info.renderInputId, pdfExists: fs.existsSync(pdfPath(id)) }).stale;
+}
+// 不可变导出产物路径（完整 renderInputId 命名，禁止截断；存在即复用、绝不覆盖）
+const histPathOf = (docId, rid) => path.join(root, 'pdfs', 'history', `${docId}@${rid}.pdf`);
+
 // ===== 快照（被投递引用的快照与基准快照免配额清理）=====
 const snapMetaPath = (docId) => path.join(snapDir(docId), 'meta.json');
 const loadSnapMeta = (docId) => { try { return JSON.parse(fs.readFileSync(snapMetaPath(docId), 'utf8')) || {}; } catch { return {}; } };
@@ -93,6 +131,9 @@ const saveSnapMeta = (docId, meta) => {
 function protectedSnaps(id) {
   const keep = new Set();
   for (const a of loadApps()) if (a.docId === id && a.snapTs) keep.add(a.snapTs);
+  // exports[].snapTs 引用的冻结快照豁免配额（S1-T8，spec §8）：manifest 与 html 成对清理（pruneSnapshots），随之同豁免。
+  // pdfs/history 不可变产物不经任何清理器（无配额），天然豁免。
+  for (const e of exportsOf(loadMeta()[id] || {})) if (e && e.snapTs) keep.add(e.snapTs);
   const base = loadSnapMeta(id).__baseline;
   if (base) keep.add(base);
   return keep;
@@ -313,7 +354,7 @@ function shellBlock(id, mtimeMs) {
     brief: m.brief, technical: m.technical || '', interview: m.interview || '', confirmed: m.confirmed === true }));
   const meta = loadMeta()[id] || {};
   const job = meta.job
-    ? { hasJob: true, status: meta.job.status || 'draft', company: meta.company || '', role: meta.role || '', materials: meta.job.materials || [] }
+    ? { hasJob: true, status: flowOf(meta), company: meta.company || '', role: meta.role || '', materials: meta.job.materials || [] }
     : { hasJob: false };
   return `\n${SHELL_MARK}<script>window.__MATS__=${JSON.stringify(mats).replace(/</g, '\\u003c')};window.__JOB_INFO__=${JSON.stringify(job).replace(/</g, '\\u003c')};</script><script src="/editor-shell.js" data-doc="${id}" data-mtime="${Number(mtimeMs) || 0}" defer></script><!--/SHELL-INJECT-->\n`;
 }
@@ -339,13 +380,15 @@ function docInfo(id, m) {
   };
 }
 
-function listPage() {
+function listPage(showArchived = false) {
   const meta = loadMeta();
   const docs = fs.readdirSync(path.join(root, 'docs'))
     .filter((f) => f.endsWith('.html') && !f.startsWith('.'));
   const docInfoMap = new Map();
   for (const f of docs) { const did = f.replace('.html', ''); docInfoMap.set(did, docInfo(did, meta[did])); }
-  const infos = [...docInfoMap.values()].filter(Boolean);
+  // archived 独立标记（不混入 flow）：home 默认隐藏，?archived=1 切换显示（S1-T8）
+  const isArchived = (did) => !!((meta[did] || {}).archivedAt);
+  const infos = [...docInfoMap.values()].filter(Boolean).filter((d) => showArchived || !isArchived(d.id));
   const activeApps = loadApps().filter((a) => !APP_TERMINAL.includes(a.status)).length;
   const { active, profiles } = loadProfiles(root);
   const cfg = profiles[active];
@@ -370,12 +413,15 @@ function listPage() {
     cfg ? `🤖 AI 配置：${escHtml(cfg.name || '')}` : '🤖 AI 配置：未配置（岗位草稿仍可手动生成）',
     `📑 PDF 已生成 ${pdfCount}/${docs.length}（以导出页实际渲染为准）`
   ].filter(Boolean);
+  // 岗位状态徽章 = 全部派生（S1-T8）：已投递 ← applications.json（权威）；可投递 ← flow+冲突+stale 三条件；其余按 flow
   const jobStatusBadge = (id) => {
     const m = meta[id] || {};
-    const j = m.job || {};
-    if (j.status === 'deliverable') return '<span class="badge ok">可投递</span>';
-    if (j.status === 'delivered') return '<span class="badge ai">已记录投递</span>';
-    return '<span class="badge warn">草稿</span>';
+    if (deliveredRefs(id).length) return '<span class="badge ai">已记录投递</span>';
+    const f = flowOf(m);
+    if (f === 'reviewed') return deliverableNow(id, m, docInfoMap.get(id))
+      ? '<span class="badge ok">可投递</span>'
+      : '<span class="badge warn">已审阅·PDF 未同步</span>';
+    return f === 'reviewing' ? '<span class="badge warn">审阅中</span>' : '<span class="badge warn">草稿</span>';
   };
   const cardHtml = (id) => {
     const m = meta[id] || {};
@@ -390,7 +436,7 @@ function listPage() {
       : '<span class="badge ok">PDF 同步</span>';
     return `<li class="card doc-card"><b style="font-size:16px">${info.title}</b>
       <div style="color:var(--mut);font-size:12px;margin:6px 0">${id} · 更新于 ${info.mtime}</div>
-      <div style="margin-bottom:8px"><span class="badge">快照 ${snaps}</span>${pdfBadge}${m.job ? jobStatusBadge(id) : ''}${tag ? `<span class="badge">${escHtml(tag)}</span>` : ''}${info.degraded ? '<span class="badge warn">待结构化</span>' : ''}</div>
+      <div style="margin-bottom:8px"><span class="badge">快照 ${snaps}</span>${pdfBadge}${m.job ? jobStatusBadge(id) : ''}${m.archivedAt ? '<span class="badge">🗄 已归档</span>' : ''}${tag ? `<span class="badge">${escHtml(tag)}</span>` : ''}${info.degraded ? '<span class="badge warn">待结构化</span>' : ''}</div>
       ${m.parent ? `<div style="font-size:12px;color:var(--mut)">岗位版：${escHtml((m.company || '') + '·' + (m.role || ''))}（母版 ${escHtml(m.parent)}）</div>` : ''}
       <a href="/edit?id=${id}">继续编辑</a> ·
       <a href="/export?id=${id}">导出</a>
@@ -401,6 +447,7 @@ function listPage() {
       <a href="/diff?base=${id}">对比</a> ·
       ${m.parent ? `<a href="/diff?base=${escHtml(m.parent)}&to=${id}">对比母版</a> · ` : ''}
       ${info.degraded ? `<form method="post" action="/restructure?id=${id}" style="display:inline" onsubmit="return confirm('用 LLM 重新结构化这份文档？会先自动留快照')"><button class="secondary">🔁 结构化</button></form> · ` : ''}
+      <form method="post" action="/archive?id=${id}" style="display:inline" onsubmit="event.preventDefault();fetch('/archive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'${id}'})}).then(()=>location.reload())"><button class="secondary">${m.archivedAt ? '🗄 取消归档' : '🗄 归档'}</button></form> ·
       <form method="post" action="/tag" style="display:inline" onsubmit="event.preventDefault();const t=prompt('标签（≤20字，留空清除）','${tag}');if(t!==null){fetch('/tag',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'${id}',tag:t})}).then(()=>location.reload())}"><button class="secondary">🏷</button></form> ·
       <form method="post" action="/duplicate?id=${id}" style="display:inline" onsubmit="event.preventDefault();const t=prompt('新文档 id（小写字母数字横线）');if(t){this.action='/duplicate?id=${id}&to='+t;this.submit()}"><button>复制</button></form> ·
       <form method="post" action="/delete?id=${id}" style="display:inline" onsubmit="return confirm('确认删除 ${id}？快照会保留')"><button class="danger">删除</button></form>
@@ -408,10 +455,11 @@ function listPage() {
     </li>`;
   };
   const drafts = jobDocs
-    .filter((d) => (meta[d.id].job || {}).status !== 'delivered')
+    .filter((d) => !deliveredRefs(d.id).length)   // 已投递 = 派生自 applications.json（权威来源），不再读存储状态
     .sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 4);
   const byTag = new Map();
   for (const d of docInfoMap.keys()) {
+    if (!showArchived && isArchived(d)) continue;   // archived 默认隐藏
     const key = (meta[d] && meta[d].tag) || '未标记';
     if (!byTag.has(key)) byTag.set(key, []);
     byTag.get(key).push(cardHtml(d));
@@ -435,7 +483,7 @@ function listPage() {
       </form>
     </div>
     ${drafts.length ? `<div class="card" style="margin-top:12px"><b>继续处理岗位草稿</b>
-      ${drafts.map((d) => `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><span><b>${d.title}</b> <span class="badge warn">${((meta[d.id] || {}).job || {}).status === 'deliverable' ? '可投递' : '草稿'}</span><span style="color:var(--mut);font-size:12px">${escHtml(((meta[d.id] || {}).company || '') + '·' + ((meta[d.id] || {}).role || ''))} · ${d.mtime}</span></span><a href="/edit?id=${d.id}"><button>继续处理</button></a></div>`).join('')}
+      ${drafts.map((d) => `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><span><b>${d.title}</b> <span class="badge ${deliverableNow(d.id, meta[d.id] || {}, d) ? 'ok' : 'warn'}">${deliverableNow(d.id, meta[d.id] || {}, d) ? '可投递' : '草稿'}</span><span style="color:var(--mut);font-size:12px">${escHtml(((meta[d.id] || {}).company || '') + '·' + ((meta[d.id] || {}).role || ''))} · ${d.mtime}</span></span><a href="/edit?id=${d.id}"><button>继续处理</button></a></div>`).join('')}
     </div>` : ''}
     <div class="card" style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <form method="post" action="/new"><button class="secondary">＋ 新建空白文档</button></form>
@@ -450,6 +498,7 @@ function listPage() {
     <div style="display:flex;gap:10px;align-items:center;margin:12px 0">
       <input id="searchBox" placeholder="搜索文档（标题/id/标签）" style="flex:1" aria-label="搜索文档">
       <button class="secondary" id="viewToggle">▤ 切换</button>
+      <a class="secondary" style="border:1px solid var(--line);border-radius:8px;padding:7px 12px;background:#fff;color:var(--ink);font-weight:600;font-size:13px;white-space:nowrap" href="${showArchived ? '/' : '/?archived=1'}">${showArchived ? '🗄 隐藏已归档' : '🗄 显示已归档'}</a>
     </div>
     <ul class="doclist" id="doclist">${cards}</ul>
     <script>
@@ -545,7 +594,7 @@ async function handler(req, res) {
       return send(200, fs.readFileSync(path.join(APP_ROOT, 'job-panel.js'), 'utf8'), 'application/javascript; charset=utf-8');
     }
     // ===== 首页 =====
-    if (req.method === 'GET' && url.pathname === '/') return send(200, listPage());
+    if (req.method === 'GET' && url.pathname === '/') return send(200, listPage(url.searchParams.get('archived') === '1'));
     // 正文提取 API（统一出口的只读视图，便于验证与调试）
     if (req.method === 'GET' && url.pathname === '/api/extract') {
       if (!fs.existsSync(docPath(id))) return send(404, 'doc not found', 'text/plain');
@@ -603,8 +652,8 @@ async function handler(req, res) {
         .replaceAll('{{EDU}}', () => '')
         .replaceAll('{{DOC_ID}}', () => newId);
       fs.writeFileSync(docPath(newId), html);
-      // 新建即登记样式来源（meta 唯一写入者 updateMeta）：theme/styleHash/typo/schemaVersion
-      updateMeta(root, newId, (m) => ({ ...(m || {}), ...themeRegistration('classic') }));
+      // 新建即登记样式来源与状态维度（meta 唯一写入者 updateMeta）：theme/styleHash/typo/schemaVersion + kind/flow/archivedAt
+      updateMeta(root, newId, (m) => ({ ...(m || {}), ...themeRegistration('classic'), kind: 'master', flow: 'draft', archivedAt: null }));
       return redirect(`/edit?id=${newId}`);
     }
     if (req.method === 'POST' && url.pathname === '/duplicate') {
@@ -687,14 +736,15 @@ async function handler(req, res) {
         } catch (e) { jdError = String(e.message || e); }
       }
       const nowIso = new Date().toISOString();
-      // meta 唯一写入者 updateMeta：只写目标文档 to（不整表覆盖，避免踩并发更新）
+      // meta 唯一写入者 updateMeta：只写目标文档 to（不整表覆盖，避免踩并发更新）；状态维度 kind/flow/archivedAt（job.status 不再写，单源 flow）
       updateMeta(root, to, () => ({
         parent: from, company, role, jd, jdSource: jd ? (body.jdSource ? String(body.jdSource) : (jdLink ? jdLink : '手动')) : (jdLink || ''),
         createdAt: nowIso,
         tag: (company + '·' + role).slice(0, 20),
         typo: normJob.typo, theme: srcMeta.theme || normJob.theme || null, styleHash: normJob.styleHash, rev: 1,
+        kind: 'job', flow: 'draft', archivedAt: null,
         job: {
-          status: 'draft', sourceSnap: srcSnap, sourceHash: contentHash(srcHtml),
+          sourceSnap: srcSnap, sourceHash: contentHash(srcHtml),
           materials: Array.isArray(body.materials) ? body.materials.filter((x) => typeof x === 'string') : [],
           changes: [], todos: jdError ? [{ section: '岗位信息', question: 'JD 链接读取失败（' + jdError + '），请粘贴 JD 文本', why: '岗位匹配分析需要 JD', resolved: false }] : [],
           generatedAt: null, deliveredAt: null
@@ -729,14 +779,18 @@ async function handler(req, res) {
       updateMeta(root, to, () => ({ parent: body.from, company: body.company.trim(), role: body.role.trim(), jd: typeof body.jd === 'string' ? body.jd : '',
         createdAt: new Date().toISOString(), tag: (body.company.trim() + '·' + body.role.trim()).slice(0, 20),
         typo: normVer.typo, theme: srcMeta.theme || normVer.theme || null, styleHash: normVer.styleHash, rev: 1,
-        job: { status: 'draft', sourceSnap: srcSnap, sourceHash: contentHash(srcHtml), materials: [], changes: [], todos: [], generatedAt: null, deliveredAt: null } }));
+        kind: 'job', flow: 'draft', archivedAt: null,
+        job: { sourceSnap: srcSnap, sourceHash: contentHash(srcHtml), materials: [], changes: [], todos: [], generatedAt: null, deliveredAt: null } }));
       return redirect(`/edit?id=${to}`);
     }
     // 岗位修改清单读/写（状态持久化；应用动作由前端 DOM 执行后回写状态）
     if (req.method === 'GET' && url.pathname === '/job/changes') {
       const metaAll = loadMeta();
       const m = metaAll[id] || {};
-      return sendJson(200, { ok: true, job: m.job || null, doc: { id, parent: m.parent || '', company: m.company || '', role: m.role || '', jd: m.jd || '', jdSource: m.jdSource || '' } });
+      // 兼容视图（S1-T8）：响应里的 status 为派生旧词汇（reviewed→deliverable，其余→draft），flow 为存储单源；
+      // schemaVersion<2 时 flowOf 由 job.status 即时推导，绝不写回。
+      const job = m.job ? { ...m.job, status: legacyFlowStatus(m), flow: flowOf(m) } : null;
+      return sendJson(200, { ok: true, job, doc: { id, parent: m.parent || '', company: m.company || '', role: m.role || '', jd: m.jd || '', jdSource: m.jdSource || '' } });
     }
     if (req.method === 'POST' && url.pathname === '/job/changes') {
       const body = JSON.parse(await readBody(req));
@@ -756,8 +810,13 @@ async function handler(req, res) {
           c.updatedAt = new Date().toISOString();
         }
         if (Array.isArray(body.todos)) m.job.todos = body.todos;
-        if (typeof body.status === 'string' && ['draft', 'deliverable', 'delivered'].includes(body.status)) m.job.status = body.status;
-        jobOut = m.job;
+        if (typeof body.status === 'string') {
+          // 状态维度单源（S1-T8）：旧词汇映射 deliverable/delivered→reviewed（投递历史改由 applications.json 派生），新词汇直通；
+          // 只写 flow，不再写 job.status（迁移会删除它）
+          const toFlow = { draft: 'draft', deliverable: 'reviewed', delivered: 'reviewed', reviewing: 'reviewing', reviewed: 'reviewed' };
+          if (toFlow[body.status]) m.flow = toFlow[body.status];
+        }
+        jobOut = { ...m.job, status: legacyFlowStatus(m), flow: flowOf(m) };   // 响应带派生兼容视图（不存储）
         return m;
       });
       if (!isJob) return sendJson(404, { ok: false, error: '该文档不是岗位草稿' });
@@ -792,7 +851,7 @@ async function handler(req, res) {
         }
         m.job.todos = (m.job.todos || []).concat(ops.todos.map((t) => ({ ...t, resolved: false })));
         m.job.generatedAt = new Date().toISOString();
-        m.job.status = 'draft';
+        m.flow = 'reviewing';   // 生成产生 pending 建议 → 审阅中（状态维度单源 flow；job.status 不再写）
         m.job.summary = ops.summary;
         jobOut = m.job;
         return m;
@@ -847,9 +906,10 @@ async function handler(req, res) {
               const base = { ...(m || {}) };
               base.typo = newTypo;
               base.rev = (Number(base.rev) || 0) + 1;
-              // 改稿使「可投递」失效（已有投递存档不受影响）
-              if (prevHash && prevHash !== newHash && base.job && base.job.status === 'deliverable') {
-                base.job = { ...base.job, status: 'draft', invalidatedAt: new Date().toISOString() };
+              // 改稿使「可投递」失效（已有投递存档不受影响）：flow reviewed→draft（可投递本身是派生判定，stale 即时生效；此处降级存储的审阅状态）
+              if (prevHash && prevHash !== newHash && flowOf(base) === 'reviewed') {
+                base.flow = 'draft';
+                if (base.job) base.job = { ...base.job, invalidatedAt: new Date().toISOString() };
               }
               return base;
             });
@@ -890,24 +950,128 @@ async function handler(req, res) {
       const exists = fs.existsSync(pdfPath(id));
       return sendJson(r.ok && exists ? 200 : 500, { ok: r.ok && exists, mtime: exists ? fs.statSync(pdfPath(id)).mtimeMs : 0, renderInputId: r.frozen.renderInputId, error: r.ok && exists ? null : '渲染失败（详见服务日志）' });
     }
+    // ===== 导出记录（S1-T8，spec §8 binding）：POST /export 是唯一记录者 =====
+    // 不可变产物 pdfs/history/<id>@<完整 renderInputId>.pdf：存在即复用、绝不覆盖；幂等键 = renderInputId
+    // （并发/重复 POST 经 updateMeta 原子 RMW 去重 → 只 1 条 exports 记录 + 只 1 个文件）。
+    // 渲染失败 → 不记 exports；文件已生成而记录写入失败 → 重试复用文件并补记录。
+    // GET 打开导出页、POST /render、自动重渲都不经过这里（绝不创建 exports 记录）。
+    if (req.method === 'POST' && url.pathname === '/export') {
+      if (!fs.existsSync(docPath(id))) return sendJson(404, { ok: false, error: 'doc not found' });
+      const rst0 = currentRenderState(id);
+      let frozen = rst0.frozen;
+      // 不可复现输入（remote URL / 缺失资源）→ 拒绝导出（spec §12.1：普通渲染允许，POST /export 拒绝并提示先本地化）
+      if (!frozen.reproducible) {
+        return sendJson(409, { ok: false, error: '文档包含不可复现资源（远程 URL 或缺失文件），请先本地化后再导出', remote: frozen.remote, missing: frozen.missing });
+      }
+      const findEx = (rid) => exportsOf(loadMeta()[id] || {}).find((e) => e && e.renderInputId === rid) || null;
+      const respondReuse = (e) => sendJson(200, { ok: true, exportId: e.exportId, url: '/history-pdf?exportId=' + encodeURIComponent(e.exportId), renderInputId: e.renderInputId, file: e.file, reused: true });
+      // 同身份已有记录且产物在 → 完全复用（重复点击/重试不再渲染、不再快照、不再记录）
+      let ex = findEx(frozen.renderInputId);
+      if (ex && fs.existsSync(histPathOf(id, frozen.renderInputId))) return respondReuse(ex);
+      if (!fs.existsSync(histPathOf(id, frozen.renderInputId))) {
+        const r = await renderCurrent(id);   // 当前文档渲染唯一入口；以任务启动时冻结的身份为准
+        if (!r.ok) return sendJson(500, { ok: false, error: '渲染失败，未写入导出记录（详见服务日志）' });
+        frozen = r.frozen;
+        const hf = histPathOf(id, frozen.renderInputId);
+        if (!fs.existsSync(hf)) {
+          // 独占物化不可变产物：临时副本 + linkSync（EEXIST → 并发请求已产出同身份产物 → 复用，绝不覆盖）
+          fs.mkdirSync(path.dirname(hf), { recursive: true });
+          const tmp = `${hf}.${process.pid}.${Date.now()}.tmp`;
+          fs.copyFileSync(pdfPath(id), tmp);
+          try { fs.linkSync(tmp, hf); }
+          catch (e) { try { fs.unlinkSync(tmp); } catch {} if (e.code !== 'EEXIST') throw e; }
+          try { fs.unlinkSync(tmp); } catch {}
+        }
+      }
+      // 并发窗口内他人已补记录 → 复用（本路径只补缺失记录，不产生重复）
+      ex = findEx(frozen.renderInputId);
+      if (ex && fs.existsSync(histPathOf(id, frozen.renderInputId))) return respondReuse(ex);
+      // 冻结快照（exports[].snapTs 引用；投递存档从此快照渲染，绝不重冻后来编辑的正文）——冻结的是本任务渲染输入，不是"当前"正文
+      const metaNow = loadMeta()[id] || {};
+      const sDir = snapDir(id);
+      fs.mkdirSync(sDir, { recursive: true });
+      const snapTs = timestamp();
+      atomicWrite(path.join(sDir, snapTs + '.html'), frozen.html);
+      atomicWrite(path.join(sDir, snapTs + '.manifest.json'), JSON.stringify(buildManifest(frozen, frozen.html, metaNow)));
+      let pages = 0;
+      try { pages = parseInt(execFileSync('pdfinfo', [histPathOf(id, frozen.renderInputId)]).toString().match(/Pages:\s*(\d+)/)?.[1] || '0', 10); } catch { pages = 0; }
+      // 测试钩子：模拟"文件已生成、记录写入失败"（重试须复用文件并补记录）
+      const recFailFile = process.env.RESUME_TEST_EXPORT_RECORD_FAIL_FILE;
+      if (recFailFile && fs.existsSync(recFailFile)) throw Object.assign(new Error('测试钩子：导出记录写入失败（文件已存在，重试应复用并补记录）'), { httpCode: 500 });
+      const rec = {
+        exportId: randomUUID(),                                   // 全局唯一关联键（applications 条目引用）
+        snapTs,                                                   // 冻结快照引用（配额豁免；投递存档渲染源）
+        renderInputId: frozen.renderInputId,                      // 完整 40hex（幂等键）
+        file: path.join('pdfs', 'history', `${id}@${frozen.renderInputId}.pdf`),   // 不可变产物（相对数据根）
+        at: new Date().toISOString(),
+        jobId: kindOf(metaNow) === 'job' ? id : null,             // 岗位草稿导出 → 草稿文档 id；母版 → null
+        bodyHash: frozen.bodyHash,
+        pages,
+        theme: metaNow.theme || normalizeToCurrent(frozen.html).theme || null
+      };
+      let out = null;
+      updateMeta(root, id, (m) => {
+        const base = { ...(m || {}) };
+        const list = exportsOf(base);
+        const hit = list.find((e) => e && e.renderInputId === frozen.renderInputId);
+        if (hit) { out = hit; return base; }   // 原子去重（幂等键 renderInputId）：并发先到者胜，后到者复用同一记录
+        out = rec;
+        base.exports = list.concat([rec]);
+        return base;
+      });
+      try { pruneSnapshots(id, sDir); } catch {}   // 导出冻结快照同受配额（被 exports 引用者经 protectedSnaps 豁免；并发落败方的孤儿快照可被清理）
+      return sendJson(200, { ok: true, exportId: out.exportId, url: '/history-pdf?exportId=' + encodeURIComponent(out.exportId), renderInputId: out.renderInputId, file: out.file, reused: out !== rec });
+    }
+    // ===== 不可变导出产物下载（S1-T8）：按 exportId（全局唯一）跨文档 meta.exports 查找并伺服；纯读 =====
+    if (req.method === 'GET' && url.pathname === '/history-pdf') {
+      const exportId = String(url.searchParams.get('exportId') || '');
+      if (!exportId || exportId.length > 64) return send(400, 'exportId required', 'text/plain');
+      const metaAll = loadMeta();
+      let docId = null, entry = null;
+      for (const k of Object.keys(metaAll)) {
+        const hit = exportsOf(metaAll[k]).find((e) => e && e.exportId === exportId);
+        if (hit) { docId = k; entry = hit; break; }
+      }
+      if (!entry) return send(404, '导出记录不存在（exportId=' + exportId.slice(0, 64) + '）', 'text/plain');
+      const rel = path.normalize(String(entry.file || ''));
+      if (path.isAbsolute(rel) || rel.startsWith('..')) return send(500, '导出记录 file 路径非法（拒绝访问数据根之外）', 'text/plain');
+      const f = path.join(root, rel);
+      if (!fs.existsSync(f)) return send(404, '导出记录存在但产物文件缺失：' + rel + '（重新 POST /export 可修复）', 'text/plain');
+      const name = sanitizeFileName(docId + '_' + String(entry.at || '').slice(0, 10)) + '.pdf';
+      res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': 'attachment; ' + dispositionFileName(name) });
+      return fs.createReadStream(f).on('error', () => res.destroy()).pipe(res);
+    }
     // ===== 投递：冻结内容 + 从冻结内容生成存档 PDF =====
+    // S1-T8：带 exportId 时绑定该导出的冻结快照（存档 PDF 从它渲染，绝不重冻后来编辑的正文）；
+    // 无 exportId（看板表单等旧入口）保持既有行为：现场冻结当前内容。
     if (req.method === 'POST' && url.pathname === '/app/add') {
       const body = JSON.parse(await readBody(req));
       if (typeof body.company !== 'string' || !body.company.trim() || typeof body.role !== 'string' || !body.role.trim())
         return send(400, 'company 和 role 必填', 'text/plain');
       if (!body.docId || !VALID_ID.test(body.docId)) return send(400, 'invalid docId', 'text/plain');
       if (!fs.existsSync(docPath(body.docId))) return send(404, 'doc not found', 'text/plain');
+      const exportId = (typeof body.exportId === 'string' && body.exportId.trim()) ? body.exportId.trim() : '';
       const now = timestamp();
-      const snapTs = timestamp();
-      const sDir = snapDir(body.docId);
-      fs.mkdirSync(sDir, { recursive: true });
-      const frozenFile = path.join(sDir, snapTs + '.html');
-      // 冻结点：freezeHtml（内联当时 meta.typo、自包含）+ manifest 全字段；存档 PDF 从冻结内容渲染（铁律二）
-      const frozen = writeFrozenSnapshot(sDir, snapTs, fs.readFileSync(docPath(body.docId), 'utf8'), loadMeta()[body.docId] || {});
-      const hash = contentHash(frozen.html);
+      let snapTs, frozenFile;
+      if (exportId) {
+        const entry = exportsOf(loadMeta()[body.docId] || {}).find((e) => e && e.exportId === exportId);
+        if (!entry) return sendJson(404, { ok: false, error: 'exportId 不存在（请先在导出页创建导出记录，再记录投递）' });
+        const f = path.join(snapDir(body.docId), String(entry.snapTs || '').replace(/[^0-9-]/g, '') + '.html');
+        if (!entry.snapTs || !fs.existsSync(f)) return sendJson(409, { ok: false, error: '导出对应的冻结快照缺失，无法绑定投递（请先重新导出）' });
+        snapTs = entry.snapTs;
+        frozenFile = f;
+      } else {
+        snapTs = timestamp();
+        const sDir = snapDir(body.docId);
+        fs.mkdirSync(sDir, { recursive: true });
+        frozenFile = path.join(sDir, snapTs + '.html');
+        // 冻结点：freezeHtml（内联当时 meta.typo、自包含）+ manifest 全字段；存档 PDF 从冻结内容渲染（铁律二）
+        writeFrozenSnapshot(sDir, snapTs, fs.readFileSync(docPath(body.docId), 'utf8'), loadMeta()[body.docId] || {});
+      }
+      const hash = contentHash(fs.readFileSync(frozenFile, 'utf8'));
       fs.mkdirSync(path.join(root, 'pdfs', 'archive'), { recursive: true });
       const out = archivePath(now);
-      const archiveOk = await renderDoc({ src: frozenFile, out });  // 从冻结内容生成，绝不复用旧 PDF
+      const archiveOk = await renderDoc({ src: frozenFile, out });  // 从冻结内容生成，绝不复用旧 PDF、绝不重冻当前正文
       const apps = loadApps();
       apps.push({
         id: now, company: body.company.trim(), role: body.role.trim(), docId: body.docId,
@@ -917,7 +1081,7 @@ async function handler(req, res) {
         appliedAt: typeof body.appliedAt === 'string' ? body.appliedAt : '',
         nextStep: typeof body.nextStep === 'string' ? body.nextStep.trim() : '',
         dueDate: typeof body.dueDate === 'string' ? body.dueDate : '',
-        snapTs, contentHash: hash, status: '已投递', createdAt: now, updatedAt: now,
+        snapTs, exportId: exportId || null, contentHash: hash, status: '已投递', createdAt: now, updatedAt: now,
         archive: archiveOk && fs.existsSync(out)
           ? { status: 'ok', generatedAt: now, hash }
           : { status: 'failed', hash, error: '渲染失败，未生成存档 PDF' }
@@ -1711,6 +1875,24 @@ async function handler(req, res) {
       });
       return sendJson(200, { ok: true });
     }
+    // ===== 归档（S1-T8）：最小 POST /archive 置/清 archivedAt（独立标记，不混入 flow；home 默认隐藏 archived）=====
+    if (req.method === 'POST' && url.pathname === '/archive') {
+      const body = await readBodyAuto(req);
+      const docId = String(body.id || id || '');
+      if (!VALID_ID.test(docId)) return send(400, 'invalid id', 'text/plain');
+      if (!fs.existsSync(docPath(docId))) return sendJson(404, { ok: false, error: 'doc not found' });
+      const cur = (loadMeta()[docId] || {}).archivedAt;
+      // 显式布尔 → 置/清；缺省 → 切换
+      const want = (body.archived === undefined) ? !cur : (body.archived === true || body.archived === 'true' || body.archived === '1' || body.archived === 1);
+      let archivedAt = null;
+      updateMeta(root, docId, (m) => {
+        const next = { ...(m || {}) };
+        archivedAt = want ? (next.archivedAt || timestamp()) : null;
+        next.archivedAt = archivedAt;
+        return next;
+      });
+      return sendJson(200, { ok: true, archived: !!archivedAt, archivedAt });
+    }
     if (req.method === 'POST' && url.pathname === '/link') {
       const body = JSON.parse(await readBody(req));
       if (!body.id || !VALID_ID.test(body.id)) return send(400, 'invalid id', 'text/plain');
@@ -1966,11 +2148,10 @@ async function handler(req, res) {
       const date = new Date().toISOString().slice(0, 10);
       const parts = meta.parent ? [name, meta.role || '', meta.company || '', date] : [name, id, date];
       const fileName = sanitizeFileName(parts.filter(Boolean).join('_')) + (rst.stale ? '_旧版本' : '') + '.pdf';
-      // 文件名含中文：Node 头仅允许 Latin1 —— ASCII 兜底 + RFC 5987 filename*（既有直写非 ASCII 会 500，随本段修复）
-      const asciiName = fileName.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '');
+      // 文件名含中文：ASCII 兜底 + RFC 5987 filename*（ext-value 额外编码 !'()*，见 dispositionFileName）
       res.writeHead(200, {
         'Content-Type': 'application/pdf',
-        'Content-Disposition': `inline; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+        'Content-Disposition': `inline; ${dispositionFileName(fileName)}`,
         'X-PDF-Stale': rst.stale ? '1' : '0'
       });
       return fs.createReadStream(pdfPath(id)).on('error', () => res.destroy()).pipe(res);
@@ -2031,6 +2212,18 @@ async function handler(req, res) {
           ? `<span class="badge err">当前显示的是旧版本 PDF（生成于 ${new Date(pdfStat.mtimeMs).toLocaleString('zh-CN')}），不是最新内容</span>`
           : `<span class="badge err">尚无 PDF</span>`;
       const trackSrc = meta.parent ? `<span class="badge ai">${escHtml((meta.company || '') + '·' + (meta.role || ''))}</span>` : '';
+      // 导出记录（S1-T8）：不可变产物列表；usedBy/deliveredRefs 读取时派生自 applications.json（权威来源，绝不存储）
+      const apps4ex = loadApps();
+      const deliveredCnt = apps4ex.filter((a) => a.docId === id).length;
+      const exRows = exportsOf(meta).slice().reverse().map((e) => {
+        const used = usedByExport(e.exportId);
+        const fOk = e.file && fs.existsSync(path.join(root, path.normalize(String(e.file))));
+        const isCur = e.renderInputId === rst.frozen.renderInputId;
+        return `<div style="display:flex;justify-content:space-between;gap:8px;margin:6px 0;font-size:12px;flex-wrap:wrap">
+          <span>${escHtml(String(e.at || ''))}${isCur ? ' <span class="badge ok">当前内容</span>' : ''} · <code>${escHtml(String(e.renderInputId || '').slice(0, 12))}…</code> · ${Number(e.pages) || 0} 页 · 主题 ${escHtml(String(e.theme || '-'))}${used.length ? ` <span class="badge ai">投递使用：${used.map((a) => escHtml(String(a.company || '') + '·' + String(a.role || ''))).join('、')}</span>` : ''}</span>
+          <span>${fOk ? `<a href="/history-pdf?exportId=${encodeURIComponent(String(e.exportId || ''))}">下载</a>` : '<span class="badge err">产物缺失</span>'}</span>
+        </div>`;
+      }).join('');
       return send(200, page('导出', `<h1>导出 PDF</h1>
     <div class="card">
       <p>正在导出：<b>${escHtml(id)}</b> ${trackSrc} ${versionLine}</p>
@@ -2040,20 +2233,24 @@ async function handler(req, res) {
       ${gate}
       ${importantWarn}
       <p>
-        ${pdfCurrent && !pendingConflicts.length ? `<a href="/pdf?id=${id}"><button>下载最新版 PDF</button></a>` : `<button disabled title="先解决上方问题">下载最新版 PDF</button>`}
+        ${pdfCurrent && !pendingConflicts.length ? `<button id="dlBtn">下载最新版 PDF</button>` : `<button disabled title="先解决上方问题">下载最新版 PDF</button>`}
         <button class="secondary" type="button" onclick="rerender()">重新生成</button>
         <a href="/snapshots?id=${id}" class="secondary" style="margin-left:8px">历史导出</a>
         <a href="/edit?id=${id}" class="secondary" style="margin-left:8px">返回编辑</a>
         <span id="rrMsg" style="font-size:12px"></span>
       </p>
       <details style="font-size:13px;margin-top:6px"><summary style="cursor:pointer">语义说明</summary>
-        <div>· 最新版 PDF：与当前文档内容一致，文件名 姓名_岗位_公司_日期.pdf<br>· 历史导出：从历史快照重新渲染，在「历史版本」页操作<br>· 投递存档：点击「记录已投递」时从当时冻结内容生成，之后改稿不影响它</div></details>
+        <div>· 下载/记录投递：都先 POST /export 创建不可变导出记录（幂等键 renderInputId，同内容重复点击不再记录），产物存 pdfs/history/，经 /history-pdf?exportId=… 下载<br>· 投递存档：绑定所选导出的冻结快照，之后改稿不影响它（绝不重冻后来的正文）<br>· 下方预览为「最新版」便利文件（可被覆盖）；导出记录与投递存档不指向它</div></details>
     </div>
     ${rows.length ? `<div class="card" style="margin-top:12px"><b>渲染检查</b>${rows.map((r) => `<div style="margin:6px 0">${r}</div>`).join('')}</div>` : ''}
     ${suggestions ? `<div class="card" style="margin-top:12px"><b>超过两页的可读处理建议</b><ol style="font-size:13px">${suggestions}</ol><p style="font-size:12px;color:var(--mut)">不需要靠缩小字号硬塞：优先去重、精简、隐藏低相关项目；也可以保留更多页。</p></div>` : ''}
     <div class="card" style="margin-top:12px">
+      <b>导出记录</b> <span style="font-size:12px;color:var(--mut)">不可变产物；同内容（同 renderInputId）只记一条</span>
+      ${exRows || '<div style="color:var(--mut);font-size:12px;margin-top:6px">尚无导出记录（点「下载最新版 PDF」即创建首条）</div>'}
+    </div>
+    <div class="card" style="margin-top:12px">
       <b>记录已投递</b>
-      <p style="font-size:12px;color:var(--mut)">只做记录，不会自动发送任何文件。记录时绑定当前内容快照与存档 PDF。</p>
+      <p style="font-size:12px;color:var(--mut)">只做记录，不会自动发送任何文件。记录时先创建不可变导出（同内容复用既有记录），存档 PDF 绑定该导出的冻结快照。${deliveredCnt ? `该文档已有 ${deliveredCnt} 条投递记录（关联按 exportId 派生）。` : ''}</p>
       <form id="trackForm">
         <input id="tkCompany" placeholder="公司" value="${escHtml(meta.company || '')}" required>
         <input id="tkRole" placeholder="岗位" value="${escHtml(meta.role || '')}" required>
@@ -2062,7 +2259,7 @@ async function handler(req, res) {
         <button ${pdfCurrent && !pendingConflicts.length ? '' : 'disabled title="先解决上方问题"'}>记录已投递</button><span id="tkMsg" style="font-size:12px"></span>
       </form>
     </div>
-    ${pdfStat ? `<iframe src="/pdf?id=${id}" title="PDF 预览" style="width:100%;height:70vh;margin-top:12px;border:1px solid var(--line);border-radius:12px"></iframe><p style="color:var(--mut);font-size:12px">预览不显示？<a href="/pdf?id=${id}" target="_blank">新窗口打开 PDF</a></p>` : ''}
+    ${pdfStat ? `<iframe src="/pdf?id=${id}" title="PDF 预览" style="width:100%;height:70vh;margin-top:12px;border:1px solid var(--line);border-radius:12px"></iframe><p style="color:var(--mut);font-size:12px">预览为「最新版」便利文件；下载请用上方的导出记录（不可变产物）。</p>` : ''}
     <script>
       ${meta.parent && pdfCurrent && !pendingConflicts.length ? `fetch('/job/changes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: '${id}', status: 'deliverable' }) }).catch(function () {});` : ''}
       async function rerender() {
@@ -2075,19 +2272,36 @@ async function handler(req, res) {
           if (d.ok) setTimeout(function () { location.reload(); }, 600);
         } catch (e) { msg.textContent = ' ❌ ' + e.message; }
       }
+      // 下载按钮 = POST /export（唯一记录者，幂等）→ 导航到 /history-pdf?exportId=… 下载不可变产物（不再链 /pdf）
+      var dlBtn = document.getElementById('dlBtn');
+      if (dlBtn) dlBtn.onclick = async function () {
+        var msg = document.getElementById('rrMsg');
+        dlBtn.disabled = true; msg.textContent = ' 导出中…';
+        try {
+          var r = await fetch('/export?id=${id}', { method: 'POST' });
+          var d = await r.json().catch(function () { return null; });
+          if (d && d.ok && d.url) { msg.textContent = d.reused ? ' ✅ 复用既有导出记录' : ' ✅ 已创建导出记录'; location.href = d.url; dlBtn.disabled = false; }
+          else { msg.textContent = ' ❌ ' + ((d && d.error) || '导出失败'); dlBtn.disabled = false; }
+        } catch (e) { msg.textContent = ' ❌ ' + e.message; dlBtn.disabled = false; }
+      };
+      // 记录已投递：先 POST /export 取得（或复用）当前身份的导出记录 → /app/add 绑定 exportId（存档来自该导出的冻结快照）
       document.getElementById('trackForm').addEventListener('submit', async function (e) {
         e.preventDefault();
         var msg = document.getElementById('tkMsg');
         msg.textContent = ' 记录中…';
-        var r = await fetch('/app/add', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ company: document.getElementById('tkCompany').value.trim(), role: document.getElementById('tkRole').value.trim(),
-            docId: '${id}', channel: document.getElementById('tkChannel').value.trim(), appliedAt: document.getElementById('tkDate').value }) });
-        var d = await r.json().catch(function () { return null; });
-        if (d && d.ok) {
-          msg.textContent = ' ✅ 已记录（未自动发送）';
-          if (d.warning) alert(d.warning);
-          await fetch('/job/changes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: '${id}', status: 'delivered' }) }).catch(function () {});
-        } else msg.textContent = ' ❌ ' + ((d && d.error) || '失败');
+        try {
+          var er = await fetch('/export?id=${id}', { method: 'POST' });
+          var ed = await er.json().catch(function () { return null; });
+          if (!ed || !ed.ok || !ed.exportId) { msg.textContent = ' ❌ 导出失败，未记录投递：' + ((ed && ed.error) || ''); return; }
+          var r = await fetch('/app/add', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ company: document.getElementById('tkCompany').value.trim(), role: document.getElementById('tkRole').value.trim(),
+              docId: '${id}', channel: document.getElementById('tkChannel').value.trim(), appliedAt: document.getElementById('tkDate').value, exportId: ed.exportId }) });
+          var d = await r.json().catch(function () { return null; });
+          if (d && d.ok) {
+            msg.textContent = ' ✅ 已记录（未自动发送；存档绑定本次导出快照）';
+            if (d.warning) alert(d.warning);
+          } else msg.textContent = ' ❌ ' + ((d && d.error) || '失败');
+        } catch (err) { msg.textContent = ' ❌ ' + err.message; }
       });
     </script>`, 'docs'));
     }
@@ -2118,6 +2332,13 @@ function countProjects(docFile) {
 }
 function sanitizeFileName(s) {
   return String(s).replace(/[\\/:*?"<>|\s]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').slice(0, 80) || 'resume';
+}
+// Content-Disposition 文件名（ASCII 兜底 + RFC 5987 filename*）：Node 头仅允许 Latin1，非 ASCII 直写会 500。
+// ext-value 在 encodeURIComponent 之外还需百分号编码 !'()*（RFC 5987 §3.2.1 attr-char；T4 review Minor-1 carry-in 修复）。
+function dispositionFileName(fileName) {
+  const asciiName = String(fileName).replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '');
+  const ext = encodeURIComponent(String(fileName)).replace(/[!'()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  return `filename="${asciiName}"; filename*=UTF-8''${ext}`;
 }
 function decodeName(s) {
   return String(s).replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim() || 'resume';

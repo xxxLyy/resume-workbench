@@ -733,6 +733,177 @@ async function runS1T7Tests() {
   }
 }
 await runS1T7Tests();
+
+// ===== S1 Task 8：导出不可变/并发幂等/失败恢复 + 投递绑定 exportId + 导出页按钮契约 + archived 默认隐藏（node 级；隔离根+隔离端口）=====
+async function runS1T8Tests() {
+  const T8_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ed-t8-'));
+  const md5 = (b) => createHash('md5').update(b).digest('hex');
+  const md5File = (f) => md5(fs.readFileSync(f));
+  const servers = [];
+  try {
+    const ROOT10 = path.join(T8_TMP, 'r10');
+    const fr10 = seedRoot(ROOT10, { t8: txDoc('t8', 'T8-V1', ''), t8b: txDoc('t8b', 'T8B-V1', ''), t8c: txDoc('t8c', 'T8C-V1', '') }, {});
+    // 假渲染器：失败开关（render-fail 控制文件）+ 原子落盘（tmp+mv，并发下无半截产物）+ .last-src.html 记录渲染输入
+    fs.writeFileSync(fr10, '#!/bin/bash\nshift\n[ -f "$RESUME_ROOT/render-fail" ] && exit 1\nsrc=""; out=""\nif [ "$1" = "--src" ]; then src="$2"; out="$4"; else src="$RESUME_ROOT/docs/$1.html"; out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\ncp "$src" "$RESUME_ROOT/.last-src.html"\ntmp="$out.$$.tmp"\nprintf "%%PDF-1.4 fake\\n" > "$tmp"\nmv "$tmp" "$out"\n');
+    fs.chmodSync(fr10, 0o755);
+    const REC_FAIL = path.join(ROOT10, '.record-fail');
+    const srv10 = await spawnServer(ROOT10, { RESUME_RENDER_BIN: fr10, RESUME_TEST_EXPORT_RECORD_FAIL_FILE: REC_FAIL });
+    servers.push(srv10.child);
+    const B10 = srv10.base;
+    const readMeta10 = () => JSON.parse(fs.readFileSync(path.join(ROOT10, 'docs-meta.json'), 'utf8'));
+    const histDir = path.join(ROOT10, 'pdfs', 'history');
+    const histFiles = (docId) => fs.existsSync(histDir) ? fs.readdirSync(histDir).filter((f) => f.startsWith(docId + '@') && f.endsWith('.pdf')) : [];
+    const histAll = () => fs.existsSync(histDir) ? fs.readdirSync(histDir) : [];
+    const post = (u, body, ct) => fetch(B10 + u, { method: 'POST', headers: ct ? { 'Content-Type': ct } : {}, body, redirect: 'manual' });
+    const postJ = (u, body, ct) => post(u, body, ct).then((r) => r.json().then((j) => ({ status: r.status, body: j }), () => ({ status: r.status, body: null })));
+    const postExport = (docId) => fetch(B10 + '/export?id=' + docId, { method: 'POST' })
+      .then((r) => r.json().then((j) => ({ status: r.status, body: j }), () => ({ status: r.status, body: null })));
+
+    // ① 并发双 POST /export（Promise.all）→ 仅 1 条 exports 记录 + 仅 1 个 history 不可变文件（同一 exportId；完整 40hex 命名）
+    let e1 = null;
+    {
+      const [ra, rb] = await Promise.all([postExport('t8'), postExport('t8')]);
+      const m = readMeta10();
+      const ex = (m.t8 || {}).exports || [];
+      const files = histFiles('t8');
+      if (!ra.body || !ra.body.ok || !rb.body || !rb.body.ok) bad('T8① 并发 POST /export 应都成功', JSON.stringify([ra, rb]).slice(0, 300));
+      else if (!ra.body.exportId || !String(ra.body.url || '').includes('/history-pdf?exportId=')) bad('T8① 响应应含 exportId + /history-pdf 下载 URL', JSON.stringify(ra.body));
+      else if (ex.length !== 1) bad('T8① 并发双 POST 应仅 1 条 exports 记录（幂等键 renderInputId）', String(ex.length));
+      else if (files.length !== 1) bad('T8① 应仅 1 个 history 不可变文件', files.join(','));
+      else if (ra.body.exportId !== rb.body.exportId || ex[0].exportId !== ra.body.exportId) bad('T8① 并发两响应应为同一 exportId', ra.body.exportId + '/' + rb.body.exportId);
+      else if (!/^t8@[0-9a-f]{40}\.pdf$/.test(files[0])) bad('T8① 产物命名应为 <id>@<完整 renderInputId>.pdf（40hex 不截断）', files[0]);
+      else if (histAll().some((f) => f.endsWith('.tmp'))) bad('T8① 不应残留 .tmp 中间文件', histAll().join(','));
+      else {
+        e1 = ex[0];
+        const frozenExpected = freezeHtml(fs.readFileSync(path.join(ROOT10, 'docs', 't8.html'), 'utf8'), m.t8 || {});
+        const miss = ['exportId', 'snapTs', 'renderInputId', 'file', 'at', 'jobId', 'bodyHash', 'pages', 'theme'].filter((k) => !(k in e1));
+        if (miss.length) bad('T8① exports 条目缺字段', miss.join(','));
+        else if (e1.renderInputId !== frozenExpected.renderInputId) bad('T8① renderInputId 应为当前冻结标识', e1.renderInputId);
+        else if (!/^[0-9a-f]{40}$/.test(String(e1.bodyHash))) bad('T8① bodyHash 应为完整 40hex', String(e1.bodyHash));
+        else if (!fs.existsSync(path.join(ROOT10, 'snapshots', 't8', e1.snapTs + '.html')) || !fs.existsSync(path.join(ROOT10, 'snapshots', 't8', e1.snapTs + '.manifest.json'))) bad('T8① snapTs 应引用冻结快照 html + manifest', e1.snapTs);
+        else if (e1.jobId !== null) bad('T8① 母版导出 jobId 应为 null', JSON.stringify(e1.jobId));
+        else {
+          const dl = await fetch(B10 + '/history-pdf?exportId=' + encodeURIComponent(e1.exportId));
+          const dl404 = await fetch(B10 + '/history-pdf?exportId=no-such-id');
+          if (dl.status !== 200 || dl.headers.get('content-type') !== 'application/pdf') bad('T8① /history-pdf 应按 exportId 伺服不可变文件', String(dl.status));
+          else if (dl404.status !== 404) bad('T8① 未知 exportId 应 404', String(dl404.status));
+          else ok('T8① 并发双 POST /export → 1 条 exports 记录 + 1 个 history 文件（同一 exportId；/history-pdf 可伺服）');
+        }
+      }
+    }
+
+    // ② 记录写入失败钩子 → 500 且文件已生成、无记录；重试复用文件并补记录（文件哈希不变、不产生重复文件）
+    {
+      fs.writeFileSync(REC_FAIL, '1');
+      const r1 = await postExport('t8b');
+      const filesMid = histFiles('t8b');
+      const exMid = (readMeta10().t8b || {}).exports || [];
+      const md5Mid = filesMid.length === 1 ? md5File(path.join(histDir, filesMid[0])) : '';
+      fs.rmSync(REC_FAIL, { force: true });
+      const r2 = await postExport('t8b');
+      const ex = (readMeta10().t8b || {}).exports || [];
+      const files = histFiles('t8b');
+      if (r1.status !== 500) bad('T8② 记录写入失败钩子下 POST /export 应 500', String(r1.status));
+      else if (filesMid.length !== 1) bad('T8② 记录写入失败时不可变文件应已生成（待重试复用）', filesMid.join(','));
+      else if (exMid.length) bad('T8② 记录写入失败不得留下 exports 记录', String(exMid.length));
+      else if (!r2.body || !r2.body.ok) bad('T8② 重试应成功', JSON.stringify(r2));
+      else if (ex.length !== 1) bad('T8② 重试后应恰 1 条记录（补齐缺失记录）', String(ex.length));
+      else if (files.length !== 1 || files[0] !== filesMid[0]) bad('T8② 重试应复用同一不可变文件（不重复生成）', files.join(','));
+      else if (md5File(path.join(histDir, files[0])) !== md5Mid) bad('T8② 复用文件哈希应不变');
+      else if (ex[0].exportId !== r2.body.exportId) bad('T8② 响应 exportId 应与补齐记录一致');
+      else ok('T8② 记录写入失败 → 重试复用文件并补记录（文件哈希不变、无重复文件、无丢失记录）');
+    }
+
+    // ③ 渲染失败 → 不记 exports（无记录、无 history 产物、无冻结快照痕迹）
+    {
+      fs.writeFileSync(path.join(ROOT10, 'render-fail'), '1');
+      const r = await postExport('t8c');
+      fs.rmSync(path.join(ROOT10, 'render-fail'), { force: true });
+      const ex = (readMeta10().t8c || {}).exports || [];
+      if (r.status !== 500 || (r.body && r.body.ok)) bad('T8③ 渲染失败应 500 且不报成功', JSON.stringify(r).slice(0, 200));
+      else if (ex.length) bad('T8③ 渲染失败不得记 exports', String(ex.length));
+      else if (histFiles('t8c').length) bad('T8③ 渲染失败不得留下 history 产物');
+      else if (fs.existsSync(path.join(ROOT10, 'snapshots', 't8c'))) bad('T8③ 渲染失败不得留下冻结快照');
+      else ok('T8③ 渲染失败 → 不记 exports（零痕迹）');
+    }
+
+    // ④ 投递绑定 exportId：存档 PDF 来自该导出的冻结快照；之后改正文 → 存档/快照/不可变产物全部不变（不重冻）
+    {
+      if (!e1) bad('T8④ 前置失败：① 未产出导出记录');
+      else {
+        const snapFile = path.join(ROOT10, 'snapshots', 't8', e1.snapTs + '.html');
+        const histFile = path.join(histDir, histFiles('t8')[0]);
+        const snapCountBefore = fs.readdirSync(path.join(ROOT10, 'snapshots', 't8')).filter((f) => f.endsWith('.html')).length;
+        const addRes0 = await postJ('/app/add', JSON.stringify({ company: '绑定公司', role: '绑定岗', docId: 't8', exportId: e1.exportId }), 'application/json');
+        const addRes = addRes0.body;
+        const apps = addRes && addRes.ok ? JSON.parse(fs.readFileSync(path.join(ROOT10, 'applications.json'), 'utf8')) : [];
+        const app = apps.find((a) => a.company === '绑定公司');
+        const archFile = app ? path.join(ROOT10, 'pdfs', 'archive', app.id + '.pdf') : '';
+        const snapCountAfter = fs.readdirSync(path.join(ROOT10, 'snapshots', 't8')).filter((f) => f.endsWith('.html')).length;
+        const archSrc = fs.existsSync(path.join(ROOT10, '.last-src.html')) ? fs.readFileSync(path.join(ROOT10, '.last-src.html'), 'utf8') : '';
+        const archMd5Before = archFile && fs.existsSync(archFile) ? md5File(archFile) : '';
+        const snapMd5Before = md5File(snapFile);
+        const histMd5Before = md5File(histFile);
+        await post('/save?id=t8', txDoc('t8', 'T8-V2-EDIT', ''), 'text/html; charset=utf-8');   // 之后改正文（新身份）
+        const m = readMeta10();
+        const r404 = await postJ('/app/add', JSON.stringify({ company: '幽灵公司', role: 'x', docId: 't8', exportId: 'no-such-export' }), 'application/json');
+        const appsAfter = JSON.parse(fs.readFileSync(path.join(ROOT10, 'applications.json'), 'utf8'));
+        const f0 = failures;
+        if (!addRes || !addRes.ok) bad('T8④ 带 exportId 的投递记录应成功', JSON.stringify(addRes));
+        if (!app || app.exportId !== e1.exportId) bad('T8④ applications 条目应保存所选 exportId', JSON.stringify(app && app.exportId));
+        if (!app || app.snapTs !== e1.snapTs) bad('T8④ 投递应绑定导出的冻结快照（snapTs 一致，不新冻）', JSON.stringify(app && app.snapTs));
+        if (snapCountAfter !== snapCountBefore) bad('T8④ 绑定 exportId 不得再新冻快照', snapCountBefore + '→' + snapCountAfter);
+        if (!archMd5Before) bad('T8④ 存档 PDF 应从冻结快照生成');
+        else if (archSrc !== fs.readFileSync(snapFile, 'utf8')) bad('T8④ 存档渲染输入应为该导出的冻结快照字节');
+        if ((m.t8.exports || []).length !== 1) bad('T8④ 改正文/投递不得新增 exports 记录', String((m.t8.exports || []).length));
+        if (archMd5Before && md5File(archFile) !== archMd5Before) bad('T8④ 改正文后存档 PDF 不得变化（不重冻后来正文）');
+        if (md5File(snapFile) !== snapMd5Before) bad('T8④ 冻结快照不可变');
+        if (md5File(histFile) !== histMd5Before) bad('T8④ 不可变导出产物不得变化');
+        if (r404.status !== 404) bad('T8④ 无效 exportId 应 404', String(r404.status));
+        if (appsAfter.some((a) => a.company === '幽灵公司')) bad('T8④ 无效 exportId 不得产生投递记录');
+        if (failures === f0) ok('T8④ 投递绑定 exportId：存档来自冻结快照，之后改正文 → 存档/快照/产物 md5 全不变');
+      }
+    }
+
+    // ⑤ 导出页下载按钮 = POST /export → /history-pdf 导航；页面不再有 /pdf 链接；GET 打开导出页不创建记录
+    {
+      const pageText = await (await fetch(B10 + '/export?id=t8')).text();
+      const exLen = ((readMeta10().t8 || {}).exports || []).length;
+      if (/<a[^>]+href="\/pdf/.test(pageText)) bad('T8⑤ 导出页不得再有 /pdf 链接（下载走 POST /export → /history-pdf）');
+      else if (!pageText.includes("fetch('/export?id=t8', { method: 'POST' })")) bad('T8⑤ 下载按钮应先 POST /export');
+      else if (!pageText.includes('/history-pdf?exportId=')) bad('T8⑤ 页面应含 /history-pdf?exportId= 下载链接');
+      else if (!pageText.includes('下载最新版 PDF')) bad('T8⑤ 下载按钮文案应保留（下载最新版 PDF）');
+      else if (exLen !== 1) bad('T8⑤ GET 打开导出页（含自动重渲）不得创建 exports 记录', String(exLen));
+      else ok('T8⑤ 导出页按钮 POST /export → /history-pdf 下载，无 /pdf 链接；GET 打开不创建记录');
+    }
+
+    // ⑥ POST /archive 置/清 archivedAt；home 默认隐藏 archived，?archived=1 可切换显示
+    {
+      const ra0 = await postJ('/archive', JSON.stringify({ id: 't8b', archived: true }), 'application/json');
+      const ra = ra0.body;
+      const home1 = await (await fetch(B10 + '/')).text();
+      const home2 = await (await fetch(B10 + '/?archived=1')).text();
+      const rt0 = await postJ('/archive', JSON.stringify({ id: 't8b' }), 'application/json');   // 无显式值 → 切换（清）
+      const rt = rt0.body;
+      const home3 = await (await fetch(B10 + '/')).text();
+      const mb = readMeta10().t8b || {};
+      const f0 = failures;
+      if (!ra || !ra.ok || !ra.archived || !ra.archivedAt) bad('T8⑥ POST /archive 应置 archivedAt', JSON.stringify(ra));
+      else if (home1.includes('/edit?id=t8b')) bad('T8⑥ home 默认应隐藏 archived 文档');
+      else if (!home1.includes('显示已归档')) bad('T8⑥ home 应提供显示归档切换');
+      else if (!home2.includes('/edit?id=t8b') || !home2.includes('已归档')) bad('T8⑥ ?archived=1 应显示 archived 文档（带徽章）');
+      else if (!rt || !rt.ok || rt.archived !== false || rt.archivedAt !== null) bad('T8⑥ POST /archive 无显式值应切换清除', JSON.stringify(rt));
+      else if (!home3.includes('/edit?id=t8b')) bad('T8⑥ 取消归档后应恢复默认显示');
+      else if (mb.archivedAt !== null) bad('T8⑥ 清除后 meta.archivedAt 应为 null', JSON.stringify(mb.archivedAt));
+      else if (failures === f0) ok('T8⑥ POST /archive 置/清 archivedAt；home 默认隐藏 archived、可切换显示');
+    }
+  } finally {
+    for (const c of servers) { try { c.kill('SIGKILL'); } catch {} }
+    await sleep(50);
+    try { fs.rmSync(T8_TMP, { recursive: true, force: true }); } catch {}
+  }
+}
+await runS1T8Tests();
 if (failures) { console.error('❌ 事务/锁/冻结点验证失败 ' + failures + ' 项'); process.exit(1); }
 
 let bin;

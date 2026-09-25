@@ -1463,3 +1463,178 @@ try {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 EOF
+
+# —— S1-F：状态维度（kind/flow/archivedAt）+ 旧值映射（迁移删 job.status）+ 派生可投递/usedBy/deliveredRefs + exports 幂等键 ——
+# 隔离：全程 mktemp 根；映射段注入模拟检查器；服务段隔离端口 + 假渲染器。零接触真实 docs/snapshots/pdfs/JSON/config。
+node --input-type=module << 'EOF'
+import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import http from 'node:http';
+import { spawn } from 'node:child_process';
+import { updateMeta } from './tx.mjs';
+import { runMigration } from './migrate-meta.mjs';
+const fail = (m) => { console.error('❌ S1-F ' + m); process.exit(1); };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 's1f-'));
+const CSS = '\n.sheet{color:#111}\n';
+const doc = (id, body) => '<!doctype html>\n<html><head>\n<meta charset="utf-8">\n<style>' + CSS + '</style>\n</head>\n<body>\n<h1>' + id + '</h1>\n<div class="sheet"><p>' + body + '</p></div>\n</body></html>\n';
+const seedRoot = (name, docs, meta) => {
+  const r = path.join(tmp, name);
+  for (const d of ['docs', 'snapshots', 'pdfs']) fs.mkdirSync(path.join(r, d), { recursive: true });
+  fs.writeFileSync(path.join(r, 'docs-meta.json'), JSON.stringify(meta || {}));
+  fs.writeFileSync(path.join(r, 'applications.json'), '[]');
+  fs.writeFileSync(path.join(r, 'materials.json'), '[]');
+  for (const [id, html] of Object.entries(docs)) fs.writeFileSync(path.join(r, 'docs', id + '.html'), html);
+  return r;
+};
+const readMeta = (r) => JSON.parse(fs.readFileSync(path.join(r, 'docs-meta.json'), 'utf8'));
+const mockCheckers = () => ({
+  renderPdf: async (src, out) => { fs.writeFileSync(out, '%PDF-1.4 mock\n'); return true; },
+  pdftotext: () => 'MOCK-TEXT', pdfinfoPages: () => 1,
+  comparePdfs: () => ({ pass: true, max: 0, pages: [{ page: 1, ratio: 0 }], dpi: 150, threshold: 0.005, pixFmt: 'rgb24' })
+});
+try {
+  // ---------- ① 映射表四例 + 无 job 母版 + 已显式写 flow 不被旧映射覆盖；迁移后删 job.status（单源） ----------
+  const R1 = seedRoot('r1', { jd: doc('jd', 'D'), jp: doc('jp', 'P'), jv: doc('jv', 'V'), jl: doc('jl', 'L'), mm: doc('mm', 'M'), jw: doc('jw', 'W') }, {
+    jd: { job: { status: 'draft', changes: [], todos: [] } },
+    jp: { job: { status: 'draft', changes: [{ id: 'c1', status: 'pending' }], todos: [] } },
+    jv: { job: { status: 'deliverable', changes: [] } },
+    jl: { job: { status: 'delivered', changes: [], deliveredAt: 'x' } },
+    mm: { tag: '母版' },
+    jw: { flow: 'reviewed', job: { status: 'draft', changes: [] } }   // 迁移前新代码已显式写 flow → 不得被旧映射覆盖
+  });
+  const rep1 = await runMigration(R1, { checkers: mockCheckers() });
+  if (!rep1.ok) fail('① 迁移应成功: ' + JSON.stringify(rep1.stopped));
+  const m1 = readMeta(R1);
+  const expect = { jd: ['job', 'draft'], jp: ['job', 'reviewing'], jv: ['job', 'reviewed'], jl: ['job', 'reviewed'], mm: ['master', 'draft'], jw: ['job', 'reviewed'] };
+  for (const [id, pair] of Object.entries(expect)) {
+    const e = m1[id] || {};
+    if (e.kind !== pair[0]) fail('① ' + id + ' kind 应为 ' + pair[0] + ': ' + JSON.stringify(e.kind));
+    if (e.flow !== pair[1]) fail('① ' + id + ' flow 应为 ' + pair[1] + '（映射表）: ' + JSON.stringify(e.flow));
+    if (e.archivedAt !== null) fail('① ' + id + ' archivedAt 应初始化为 null（独立归档标记，不混入 flow）: ' + JSON.stringify(e.archivedAt));
+    if (e.schemaVersion !== 2) fail('① ' + id + ' schemaVersion 应为 2');
+    if (e.job && Object.prototype.hasOwnProperty.call(e.job, 'status')) fail('① ' + id + ' 迁移后应删除 job.status（单源）: ' + JSON.stringify(e.job));
+    if (pair[0] === 'job' && !e.job) fail('① ' + id + ' 应保留 job 对象（只删 status 键）');
+  }
+  if (m1.jl.job.deliveredAt !== 'x') fail('① 只删 job.status，job 其他字段（deliveredAt）应保留');
+  console.log('✅ S1-F-① 状态映射表（draft→draft / draft+pending→reviewing / deliverable→reviewed / delivered→reviewed / 无job→master+draft）+ 显式 flow 优先 + 删 job.status + archivedAt=null');
+
+  // ---------- ② 服务级：派生可投递三条件 + 兼容读不写回 + usedBy/deliveredRefs 派生自 applications.json + exports 幂等键 + RFC5987 ----------
+  const R2 = seedRoot('r2', { jdoc: doc('jdoc', 'J-V1'), exdoc: doc('exdoc', 'E-V1'), jl2: doc('jl2', 'L-V1') }, {
+    jdoc: { kind: 'job', flow: 'draft', schemaVersion: 2, job: { changes: [] }, company: '测试司', role: '岗' },
+    jl2: { job: { status: 'deliverable', changes: [] }, lastRenderInputId: 'seed-not-match' }   // 兼容读夹具（schemaVersion<2、无 flow、无 PDF → 不 stale 判定无关）
+  });
+  const fr = path.join(tmp, 'fake-render.sh');
+  fs.writeFileSync(fr, '#!/bin/bash\nshift\nif [ "$1" = "--src" ]; then out="$4"; else out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\nprintf "%%PDF-1.4 fake\\n" > "$out"\n');
+  fs.chmodSync(fr, 0o755);
+  const freePort = () => new Promise((resolve, reject) => { const s = http.createServer(); s.once('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
+  const port = await freePort();
+  const srv = spawn(process.execPath, ['server.mjs'], {
+    cwd: process.cwd(),
+    env: { ...process.env, RESUME_ROOT: R2, PORT: String(port), RESUME_RENDER_BIN: fr },
+    stdio: ['ignore', 'ignore', 'pipe']
+  });
+  let serr = ''; srv.stderr.on('data', (d) => { serr += d; });
+  const B = 'http://127.0.0.1:' + port;
+  try {
+    let up = false;
+    const t0 = Date.now();
+    while (Date.now() - t0 < 12000) { if (srv.exitCode !== null) break; try { await fetch(B + '/'); up = true; break; } catch {} await sleep(80); }
+    if (!up) fail('② 测试服务启动失败: ' + serr.slice(0, 500));
+    const home = async () => await (await fetch(B + '/')).text();
+    const metaRaw = () => fs.readFileSync(path.join(R2, 'docs-meta.json'), 'utf8');
+    const postJ = (u, body) => fetch(B + u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body === undefined ? '' : JSON.stringify(body) }).then((r) => r.json());
+
+    // 兼容读（schemaVersion<2）：flow 由 job.status 即时推导（/job/changes 兼容视图），且绝不写回
+    const rawBefore = metaRaw();
+    const jl2State = await (await fetch(B + '/job/changes?id=jl2')).json();
+    if (!jl2State.ok || !jl2State.job) fail('② jl2 /job/changes 应成功');
+    if (jl2State.job.flow !== 'reviewed') fail('② 兼容读应从 job.status=deliverable 即时推导 flow=reviewed: ' + JSON.stringify(jl2State.job.flow));
+    if (jl2State.job.status !== 'deliverable') fail('② 兼容视图 status 应为旧词汇 deliverable: ' + JSON.stringify(jl2State.job.status));
+    await home();
+    if (metaRaw() !== rawBefore) fail('② 兼容读不得写回（docs-meta 字节不变）');
+
+    // 派生可投递三条件（flow==='reviewed' / 无 pending 事实冲突 / !stale）——全部满足才「可投递」
+    await postJ('/render?id=jdoc');   // fresh
+    let h = await home();
+    if (h.includes('可投递')) fail('② 条件1：flow=draft 不得可投递');
+    const jc = await postJ('/job/changes?id=jdoc', { status: 'deliverable' });   // → flow=reviewed
+    if (!jc.ok || jc.job.flow !== 'reviewed' || jc.job.status !== 'deliverable') fail('② status=deliverable 应映射 flow=reviewed: ' + JSON.stringify(jc.job));
+    h = await home();
+    if (!h.includes('可投递')) fail('② flow=reviewed + 无冲突 + fresh 应可投递（派生）');
+    updateMeta(R2, 'jdoc', (m) => ({ ...m, job: { ...m.job, changes: [{ id: 'cf1', level: 'conflict', status: 'pending' }] } }));
+    h = await home();
+    if (h.includes('可投递')) fail('② 条件2：存在 pending 事实冲突不得可投递');
+    await postJ('/job/changes?id=jdoc', { updates: [{ id: 'cf1', status: 'rejected' }] });
+    h = await home();
+    if (!h.includes('可投递')) fail('② 冲突处理后应恢复可投递');
+    fs.writeFileSync(path.join(R2, 'docs', 'jdoc.html'), doc('jdoc', 'J-V2'));   // 直接改正文 → stale（不经 /save，flow 不动）
+    h = await home();
+    if (h.includes('可投递')) fail('② 条件3：stale 不得可投递');
+    await postJ('/render?id=jdoc');
+    h = await home();
+    if (!h.includes('可投递')) fail('② 重渲（fresh）后应恢复可投递');
+    // 改稿（/save）使 reviewed 失效 → flow 降回 draft（可投递随之失效；已有投递存档不受影响）
+    await fetch(B + '/save?id=jdoc', { method: 'POST', headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: doc('jdoc', 'J-V3') });
+    const jAfterSave = await (await fetch(B + '/job/changes?id=jdoc')).json();
+    if (jAfterSave.job.flow !== 'draft' || jAfterSave.job.status !== 'draft') fail('② 改稿后 flow 应降回 draft（兼容视图 status=draft）: ' + JSON.stringify(jAfterSave.job && { f: jAfterSave.job.flow, s: jAfterSave.job.status }));
+    h = await home();
+    if (h.includes('可投递')) fail('② 改稿后不得可投递');
+
+    // exports 幂等键（顺序重复 POST）+ GET 导出页 / POST /render 不创建记录
+    await (await fetch(B + '/export?id=exdoc')).text();          // 打开导出页（自动重渲）
+    await postJ('/render?id=exdoc');                              // 显式渲染
+    let mEx = readMeta(R2).exdoc || {};
+    if (mEx.exports) fail('② GET 导出页 / POST /render 不得创建 exports 记录');
+    const p1 = await (await fetch(B + '/export?id=exdoc', { method: 'POST' })).json();
+    const p2 = await (await fetch(B + '/export?id=exdoc', { method: 'POST' })).json();
+    mEx = readMeta(R2).exdoc || {};
+    const histF = () => fs.readdirSync(path.join(R2, 'pdfs', 'history')).filter((f) => f.startsWith('exdoc@'));
+    if (!p1.ok || !p1.exportId || !String(p1.url || '').includes('/history-pdf?exportId=')) fail('② POST /export 应返回 exportId + /history-pdf url: ' + JSON.stringify(p1));
+    if ((mEx.exports || []).length !== 1) fail('② 同身份重复 POST 应仅 1 条记录: ' + (mEx.exports || []).length);
+    if (p2.exportId !== p1.exportId || p2.reused !== true) fail('② 重复 POST 应复用同一 exportId（reused=true）: ' + JSON.stringify(p2));
+    if (histF().length !== 1) fail('② 应仅 1 个不可变产物: ' + histF().join(','));
+    const e0 = (mEx.exports || [])[0] || {};
+    if (e0.file !== 'pdfs/history/' + histF()[0]) fail('② entry.file 应指向不可变产物（相对路径）: ' + JSON.stringify(e0.file));
+    if (!/^[0-9a-f]{40}$/.test(String(e0.renderInputId))) fail('② renderInputId 应为完整 40hex: ' + JSON.stringify(e0.renderInputId));
+    fs.writeFileSync(path.join(R2, 'docs', 'exdoc.html'), doc('exdoc', 'E-V2'));   // 新身份
+    const p3 = await (await fetch(B + '/export?id=exdoc', { method: 'POST' })).json();
+    mEx = readMeta(R2).exdoc || {};
+    if ((mEx.exports || []).length !== 2 || p3.exportId === p1.exportId) fail('② 新身份应新增记录（幂等键=renderInputId 而非 docId）');
+    if (histF().length !== 2) fail('② 新身份应有新的不可变产物: ' + histF().join(','));
+
+    // usedBy / deliveredRefs：读取时从 applications.json 派生（权威来源），随编辑即时变化，绝不存储/写回
+    const rawBefore2 = metaRaw();
+    let exPage = await (await fetch(B + '/export?id=exdoc')).text();
+    if (exPage.includes('投递使用')) fail('② 无投递时不应出现 usedBy 关联');
+    fs.writeFileSync(path.join(R2, 'applications.json'), JSON.stringify([
+      { id: '2026-09-25-000000-000', company: '甲公司', role: '岗A', docId: 'exdoc', exportId: e0.exportId, snapTs: e0.snapTs, status: '已投递' },
+      { id: '2026-09-25-000000-001', company: '乙公司', role: '岗B', docId: 'jdoc', status: '已投递' }
+    ]));
+    exPage = await (await fetch(B + '/export?id=exdoc')).text();
+    h = await home();
+    if (!exPage.includes('投递使用') || !exPage.includes('甲公司')) fail('② usedBy 应读取时派生自 applications.json（导出页导出记录）');
+    if (!h.includes('已记录投递')) fail('② deliveredRefs 应派生「已记录投递」徽章（applications.json 权威）');
+    if (metaRaw() !== rawBefore2) fail('② 派生不得写回 docs-meta（字节不变）');
+    if (metaRaw().includes('usedBy') || metaRaw().includes('deliveredRefs')) fail('② usedBy/deliveredRefs 绝不存储');
+    fs.writeFileSync(path.join(R2, 'applications.json'), JSON.stringify([
+      { id: '2026-09-25-000000-001', company: '乙公司', role: '岗B', docId: 'jdoc', status: '已投递' }
+    ]));
+    exPage = await (await fetch(B + '/export?id=exdoc')).text();
+    if (exPage.includes('甲公司')) fail('② applications.json 编辑后 usedBy 应随之消失');
+
+    // RFC 5987 filename* ext-value：encodeURIComponent 之外还需百分号编码 !'()*（Task 4 review Minor-1 carry-in 修复）
+    fs.writeFileSync(path.join(R2, 'docs', 'rfc.html'), '<!doctype html><html><head><meta charset="utf-8"><style>' + CSS + '</style></head><body><h1>测试!\'()*名</h1><div class="sheet"><p>R</p></div></body></html>');
+    const rPdf = await fetch(B + '/pdf?id=rfc');
+    const cd = rPdf.headers.get('Content-Disposition') || '';
+    if (rPdf.status !== 200) fail('② /pdf 含特殊字符文件名应 200: ' + rPdf.status);
+    if (!cd.includes("filename*=UTF-8''")) fail('② 应含 RFC5987 filename*: ' + cd);
+    if (!/%21%27%28%29/.test(cd)) fail("② ext-value 应编码 !'()*（!'() → %21%27%28%29）: " + cd);
+    if (/'|\(|\)|!/.test(cd.split("filename*=UTF-8''")[1] || 'x')) fail('② ext-value 不得残留未编码的 !\'(): ' + cd);
+    console.log('✅ S1-F-② 派生可投递三条件（flow/冲突/stale）+ 改稿降级 + 兼容读不写回 + usedBy/deliveredRefs 随 applications.json 即时派生（绝不存储）+ exports 幂等键（重复 POST 单记录、新身份新记录、GET/render 不记）+ RFC5987 ext-value 编码 !\'()*');
+  } finally {
+    srv.kill('SIGKILL');
+    await sleep(50);
+  }
+} finally {
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+EOF
