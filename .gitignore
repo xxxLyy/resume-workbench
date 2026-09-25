@@ -12,6 +12,11 @@ photos/
 audio/
 .chromium-choice.json
 .chromium-choice.json.probe-lock
+# 运行时敏感状态（S1 收尾 F-3）：中断事务载荷（真实 html+meta 整份副本）、跨进程锁、docs-meta 原子写残留
+.tx/
+.migrate.lock
+.meta.lock
+.docs-meta.json.*.tmp
 .gstack/
 *.log
 .superpowers/

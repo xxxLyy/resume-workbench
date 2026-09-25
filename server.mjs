@@ -669,13 +669,22 @@ async function handler(req, res) {
           const frozen = freezeHtml(srcHtml, srcMeta);
           const norm = normalizeToCurrent(frozen.html);
           atomicWrite(docPath(to), norm.html);
-          updateMeta(root, to, () => ({
-            ...(srcMeta || {}),
-            typo: norm.typo,
-            theme: srcMeta.theme || norm.theme || null,
-            styleHash: norm.styleHash,
-            rev: 1
-          }));
+          // S1 收尾 F-1：副本只继承内容维度（kind/flow/theme/styleHash/typo/tag/schemaVersion 等），剥离渲染/导出/迁移状态——
+          // exports/lastRenderInputId/lastRenderAt 是源文档专属记账（继承会让副本导出页显示源记录、POST /export 按 renderInputId
+          // 去重复用源记录 → 物化无记录的孤儿 history 文件、usedBy/投递绑定跨文档错乱）；migration 三门禁绑定源文档的迁移时点；
+          // archivedAt 重置 null（副本是新生文档，不继承归档态）。
+          updateMeta(root, to, () => {
+            const inherited = { ...(srcMeta || {}) };
+            for (const k of ['exports', 'lastRenderInputId', 'lastRenderAt', 'migration']) delete inherited[k];
+            return {
+              ...inherited,
+              typo: norm.typo,
+              theme: srcMeta.theme || norm.theme || null,
+              styleHash: norm.styleHash,
+              rev: 1,
+              archivedAt: null
+            };
+          });
           // 复制不经 beginTx 直接落新文档：目标 id 若残留历史未完成记录已被取代（T7 承载缺陷；留着会在下次启动恢复时把副本回滚掉）
           try { const n = dropSupersededTx(root, to); if (n) console.error(`[tx] 同文档过期事务记录已清理 ${n} 条：${to}（/duplicate）`); } catch {}
         });
@@ -1857,7 +1866,15 @@ async function handler(req, res) {
       fs.writeFileSync(tmp, structured);
       fs.renameSync(tmp, docPath(id));
       // 再生文档 = 装配产出的全新 classic 文档：重新登记样式来源（旧正文与旧 typo 已在上方快照中冻结）
-      updateMeta(root, id, (m) => ({ ...(m || {}), ...themeRegistration('classic') }));
+      // S1 收尾 F-2（二选一，取「保留既有 schemaVersion」）：再生文档由当前模板装配产出，构造性满足 v2 格式；
+      // themeRegistration 的 schemaVersion:1 只承载 /new（未迁移新建）语义。若回写 1，已迁移文档会落入
+      // schemaVersion=1 + migration.state='done' 的矛盾态，下一轮迁移把它当 pending（白跑整轮三门禁+备份+锁窗口）。
+      // 文档无 schemaVersion 时保持 themeRegistration 缺省（1，与 /new 同口径）。
+      updateMeta(root, id, (m) => {
+        const reg = themeRegistration('classic');
+        if (m && m.schemaVersion !== undefined) reg.schemaVersion = m.schemaVersion;
+        return { ...(m || {}), ...reg };
+      });
       await renderCurrent(id);   // 当前文档渲染一律走组装入口
       return redirect(`/edit?id=${id}`);
     }
@@ -2388,18 +2405,27 @@ function tryListen(i) {
 }
 // 启动恢复：扫描 .tx/ 未完成事务（进程被杀于两次 rename 之间等），只恢复目标文档的正文与 meta，不覆盖其他文档的并发更新。
 // 必须先于 listen（避免恢复完成前对外提供写服务）。陈旧 .migrate.lock（持有者已死）顺手清除，避免重启后写请求被误 503。
+// S1 收尾 F-4：外来进程（活 pid）持 .migrate.lock = 迁移进行中，文档可能正处于 beginTx 与三门禁完成之间——
+// 此刻回滚会让迁移随后的锁所有权复核（只验锁、不验文档）照样盖章 schemaVersion=2 → html 旧 + meta 已迁移。
+// 故外锁在持时跳过本次启动恢复（记录原样留给持有者提交/清理，或下次干净启动恢复）；无外锁时行为不变。
+let foreignMigrateLock = false;
 try {
-  if (fs.existsSync(rootLock.path(root)) && !rootLock.isHeld(root)) rootLock.release(root);
+  foreignMigrateLock = rootLock.isHeld(root);
+  if (fs.existsSync(rootLock.path(root)) && !foreignMigrateLock) rootLock.release(root);
 } catch {}
-try {
-  // 默认恢复（tx.mjs defaultRestoreDoc）：首选事务内旧正文副本（精确旧字节）；仅 oldHtml 载荷缺失时走快照兜底，
-  // 兜底按热修 a7eb561 裁决 legacy-safe（oldMeta.typo 未定义 → 保留快照内联排版；已迁移 → 归一化正文）。
-  const recovered = recoverPending(root);
-  const done = recovered.filter((r) => r.ok);
-  if (done.length) console.error(`[tx] 启动恢复未完成事务 ${done.length} 条：` + done.map((r) => `${r.docId}(${r.phase})`).join('、'));
-  const failed = recovered.filter((r) => !r.ok);
-  for (const r of failed) console.error(`[tx] 恢复失败（记录保留待重试）：${r.docId} — ${r.error}`);
-} catch (e) {
-  console.error('[tx] 启动恢复异常：', e && e.message || e);
+if (foreignMigrateLock) {
+  console.error('[tx] 跳过启动恢复：.migrate.lock 由外来进程持有（迁移进行中），未完成事务记录原样保留（持有者清理或下次干净启动恢复）');
+} else {
+  try {
+    // 默认恢复（tx.mjs defaultRestoreDoc）：首选事务内旧正文副本（精确旧字节）；仅 oldHtml 载荷缺失时走快照兜底，
+    // 兜底按热修 a7eb561 裁决 legacy-safe（oldMeta.typo 未定义 → 保留快照内联排版；已迁移 → 归一化正文）。
+    const recovered = recoverPending(root);
+    const done = recovered.filter((r) => r.ok);
+    if (done.length) console.error(`[tx] 启动恢复未完成事务 ${done.length} 条：` + done.map((r) => `${r.docId}(${r.phase})`).join('、'));
+    const failed = recovered.filter((r) => !r.ok);
+    for (const r of failed) console.error(`[tx] 恢复失败（记录保留待重试）：${r.docId} — ${r.error}`);
+  } catch (e) {
+    console.error('[tx] 启动恢复异常：', e && e.message || e);
+  }
 }
 tryListen(0);

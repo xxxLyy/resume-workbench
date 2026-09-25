@@ -1754,3 +1754,210 @@ try {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 EOF
+
+# —— S1-FW：终审横切修复波回归（F-1 duplicate 继承剥离 / F-2 restructure 保留 schemaVersion / F-4 启动恢复与外锁互斥）——
+# 隔离：全程 mktemp 根 + 隔离端口 + 假渲染器 + 假 LLM（本机 HTTP），零接触真实 docs/snapshots/pdfs/JSON/config。
+node --input-type=module << 'EOF'
+import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import http from 'node:http';
+import { spawn } from 'node:child_process';
+import { assembleTemplate } from './template.mjs';
+import { runMigration } from './migrate-meta.mjs';
+const fail = (m) => { console.error('❌ S1-FW ' + m); process.exit(1); };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 's1fw-'));
+const CSS = '\n.sheet{color:#111}\n';
+const doc = (id, body) => '<!doctype html>\n<html><head>\n<meta charset="utf-8">\n<style>' + CSS + '</style>\n</head>\n<body>\n<h1>' + id + '</h1>\n<div class="sheet"><p>' + body + '</p></div>\n</body></html>\n';
+const seedRoot = (name, docs, meta) => {
+  const r = path.join(tmp, name);
+  for (const d of ['docs', 'snapshots', 'pdfs']) fs.mkdirSync(path.join(r, d), { recursive: true });
+  fs.writeFileSync(path.join(r, 'docs-meta.json'), JSON.stringify(meta || {}));
+  fs.writeFileSync(path.join(r, 'applications.json'), '[]');
+  fs.writeFileSync(path.join(r, 'materials.json'), '[]');
+  for (const [did, html] of Object.entries(docs || {})) fs.writeFileSync(path.join(r, 'docs', did + '.html'), html);
+  return r;
+};
+const readMeta = (r) => JSON.parse(fs.readFileSync(path.join(r, 'docs-meta.json'), 'utf8'));
+// 假渲染器：旁车 <out>.env.json 透传 RESUME_RENDER_INPUT_ID（与真实 render.mjs 同契约；POST /export 名实校验依赖它）
+const fr = path.join(tmp, 'fake-render.sh');
+fs.writeFileSync(fr, '#!/bin/bash\nshift\nif [ "$1" = "--src" ]; then out="$4"; else out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\nprintf "%%PDF-1.4 fake\\n" > "$out"\necho \'{"renderInputId":"\'"$RESUME_RENDER_INPUT_ID"\'","reproducible":true,"dpi":150}\' > "$out.env.json"\n');
+fs.chmodSync(fr, 0o755);
+// 假 LLM（OpenAI 兼容 /chat/completions）：/restructure 结构化返回固定 JSON
+const LLM_CONTENT = JSON.stringify({
+  name: '重构员', contact: '', intent: '测试', summary: '重构后摘要。',
+  skills: [], work: [{ title: '某公司', role: '工程师', date: '2020-2024', bullets: ['做了一件事'] }],
+  projects: [], education: []
+});
+const llmSrv = http.createServer((req, res) => {
+  let b = ''; req.on('data', (d) => { b += d; });
+  req.on('end', () => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ choices: [{ message: { content: LLM_CONTENT } }] })); });
+});
+await new Promise((r) => llmSrv.listen(0, '127.0.0.1', r));
+const llmBase = 'http://127.0.0.1:' + llmSrv.address().port + '/v1';
+const freePort = () => new Promise((resolve, reject) => { const s = http.createServer(); s.once('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
+// 起隔离根服务（假渲染器注入；stderr 累积供日志断言）
+async function startSrv(rootDir) {
+  const port = await freePort();
+  const srv = spawn(process.execPath, ['server.mjs'], {
+    cwd: process.cwd(),
+    env: { ...process.env, RESUME_ROOT: rootDir, PORT: String(port), RESUME_RENDER_BIN: fr },
+    stdio: ['ignore', 'ignore', 'pipe']
+  });
+  let serrBuf = ''; srv.stderr.on('data', (d) => { serrBuf += d; });
+  const inst = {
+    srv, B: 'http://127.0.0.1:' + port,
+    get serr() { return serrBuf; },
+    stop: async () => { srv.kill('SIGKILL'); await sleep(50); }
+  };
+  const t0 = Date.now();
+  let up = false;
+  while (Date.now() - t0 < 12000) { if (srv.exitCode !== null) break; try { await fetch(inst.B + '/'); up = true; break; } catch {} await sleep(80); }
+  if (!up) { await inst.stop(); fail('测试服务启动失败 (root=' + path.basename(rootDir) + '): ' + inst.serr.slice(0, 500)); }
+  return inst;
+}
+try {
+  // ---------- S1-FW-1（F-1）：/duplicate 剥离 exports/lastRenderInputId/lastRenderAt/migration、archivedAt=null；副本 POST /export 自建记录+产物 ----------
+  {
+    const RID_SRC = 'aa'.repeat(20);
+    const srcMeta = {
+      kind: 'master', flow: 'reviewed', tag: '主', theme: 'classic', styleHash: 'deadbeef', typo: '',
+      schemaVersion: 2, migration: { state: 'done', at: '2026-01-01T00:00:00.000Z', checks: {} },
+      exports: [{ exportId: 'e-source-0001', snapTs: '2026-01-01-000000-000', renderInputId: RID_SRC, file: 'pdfs/history/srcdoc@' + RID_SRC + '.pdf', at: '2026-01-01T00:00:00.000Z', jobId: null, bodyHash: 'bh', pages: 1, theme: 'classic' }],
+      lastRenderInputId: RID_SRC, lastRenderAt: '2026-01-01T00:00:00.000Z',
+      archivedAt: '2026-02-02T00:00:00.000Z', rev: 9
+    };
+    const R1 = seedRoot('fw1', { srcdoc: doc('srcdoc', 'S-V1') }, { srcdoc: JSON.parse(JSON.stringify(srcMeta)) });
+    const s1 = await startSrv(R1);
+    try {
+      const rDup = await fetch(s1.B + '/duplicate?id=srcdoc&to=copy1', { method: 'POST', redirect: 'manual' });
+      if (![302, 303].includes(rDup.status)) fail('FW-1 /duplicate 应 3xx，实际 ' + rDup.status + '（' + (await rDup.text().catch(() => '')).slice(0, 200) + '）');
+      const m = readMeta(R1);
+      const c = m.copy1 || null;
+      if (!c) fail('FW-1 副本未登记 meta');
+      for (const k of ['exports', 'lastRenderInputId', 'lastRenderAt', 'migration']) {
+        if (Object.prototype.hasOwnProperty.call(c, k)) fail('FW-1 副本不应继承 ' + k + ': ' + JSON.stringify(c[k]));
+      }
+      if (c.archivedAt !== null) fail('FW-1 副本 archivedAt 应重置为 null: ' + JSON.stringify(c.archivedAt));
+      // 内容维度按既有继承契约保留
+      if (c.theme !== 'classic') fail('FW-1 副本 theme 应继承 classic: ' + JSON.stringify(c.theme));
+      if (c.kind !== 'master' || c.flow !== 'reviewed' || c.tag !== '主') fail('FW-1 副本应继承 kind/flow/tag: ' + JSON.stringify(c));
+      if (typeof c.styleHash !== 'string' || !c.styleHash) fail('FW-1 副本应登记 styleHash: ' + JSON.stringify(c.styleHash));
+      if (typeof c.typo !== 'string') fail('FW-1 副本 typo 应为字符串（归一化结果）: ' + JSON.stringify(c.typo));
+      if (c.schemaVersion !== 2) fail('FW-1 副本应继承 schemaVersion=2（正文为当前格式归一化产物）: ' + JSON.stringify(c.schemaVersion));
+      if (c.rev !== 1) fail('FW-1 副本 rev 应重置 1: ' + JSON.stringify(c.rev));
+      if (JSON.stringify(m.srcdoc) !== JSON.stringify(srcMeta)) fail('FW-1 源文档 meta 不应变化: ' + JSON.stringify(m.srcdoc));
+      // 副本 POST /export：创建自己的记录 + 自己的不可变文件（绝不复用继承记录、绝不产生无记录孤儿文件）
+      const pEx = await (await fetch(s1.B + '/export?id=copy1', { method: 'POST' })).json();
+      if (!pEx.ok || !pEx.exportId) fail('FW-1 副本 POST /export 应成功并返回 exportId: ' + JSON.stringify(pEx));
+      if (pEx.exportId === 'e-source-0001' || pEx.reused === true) fail('FW-1 副本导出不允许复用源文档继承记录: ' + JSON.stringify(pEx));
+      const m2 = readMeta(R1);
+      const exList = (m2.copy1 || {}).exports || [];
+      if (exList.length !== 1) fail('FW-1 副本 exports 应恰有 1 条自己的记录: ' + exList.length + ' ' + JSON.stringify(exList.map((e) => e.exportId)));
+      const rec0 = exList[0] || {};
+      if (rec0.exportId !== pEx.exportId || rec0.renderInputId !== pEx.renderInputId) fail('FW-1 副本记录应与本次响应一致: ' + JSON.stringify(rec0));
+      const own = fs.readdirSync(path.join(R1, 'pdfs', 'history')).filter((f) => f.startsWith('copy1@'));
+      if (own.length !== 1) fail('FW-1 副本应恰有 1 个不可变产物: ' + own.join(','));
+      if (rec0.file !== 'pdfs/history/' + own[0]) fail('FW-1 记录 file 应指向副本自己的产物: ' + JSON.stringify(rec0.file) + ' vs ' + own[0]);
+      if (!fs.existsSync(path.join(R1, rec0.file))) fail('FW-1 记录指向的产物文件应存在: ' + rec0.file);
+      const srcEx = (m2.srcdoc || {}).exports || [];
+      if (srcEx.length !== 1 || srcEx[0].exportId !== 'e-source-0001') fail('FW-1 源文档 exports 不应受影响: ' + JSON.stringify(srcEx.map((e) => e.exportId)));
+    } finally { await s1.stop(); }
+    console.log('✅ S1-FW-1（F-1）/duplicate 剥离 exports/lastRenderInputId/lastRenderAt/migration + archivedAt=null + theme/styleHash/typo/kind/flow 继承；副本 POST /export 自建记录与产物文件');
+  }
+  // ---------- S1-FW-2（F-2）：/restructure 保留既有 schemaVersion（矛盾态消除）；migrate-meta 重跑 no-op ----------
+  {
+    const deg = assembleTemplate('classic')
+      .replaceAll('{{NAME}}', () => '降级员').replaceAll('{{CONTACT}}', () => '').replaceAll('{{INTENT}}', () => '')
+      .replaceAll('{{SUMMARY}}', () => '以下为 PDF 提取的原文（待整理）：').replaceAll('{{SKILLS}}', () => '')
+      .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => '<div class="plain-lines"><p style="white-space:pre-wrap">原始文本行</p></div>')
+      .replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => 'deg');
+    const R2 = seedRoot('fw2', { deg }, {
+      deg: { schemaVersion: 2, migration: { state: 'done', at: '2026-01-01T00:00:00.000Z', checks: {} }, theme: 'legacy', styleHash: 'old-hash', typo: 'h1{color:blue}' }
+    });
+    fs.writeFileSync(path.join(R2, 'config.json'), JSON.stringify({ active: 0, profiles: [{ name: 't', baseURL: llmBase, apiKey: 'k123456', model: 'm' }] }));
+    const s2 = await startSrv(R2);
+    try {
+      const rRe = await fetch(s2.B + '/restructure?id=deg', { method: 'POST', redirect: 'manual' });
+      if (![302, 303].includes(rRe.status)) fail('FW-2 /restructure 应 3xx，实际 ' + rRe.status + '（' + (await rRe.text().catch(() => '')).slice(0, 200) + '）');
+      const md = readMeta(R2).deg || {};
+      if (md.schemaVersion !== 2) fail('FW-2 已迁移文档 restructure 后 schemaVersion 应保持 2（不得回写 1 造成 1+migration.done 矛盾态）: ' + JSON.stringify(md.schemaVersion));
+      if (!md.migration || md.migration.state !== 'done') fail('FW-2 migration.state 应保持 done（与 schemaVersion=2 一致）: ' + JSON.stringify(md.migration));
+      if (md.theme !== 'classic' || typeof md.styleHash !== 'string' || !md.styleHash) fail('FW-2 restructure 仍应重登记 classic 主题: ' + JSON.stringify({ t: md.theme, h: md.styleHash }));
+    } finally { await s2.stop(); }
+    // migrate-meta 重跑 = no-op：无 pending、不备份、不跑门禁、docs-meta 字节不变
+    const before = fs.readFileSync(path.join(R2, 'docs-meta.json'), 'utf8');
+    const mockCheckers = {
+      renderPdf: async (src, out) => { fs.writeFileSync(out, '%PDF-1.4 mock\n'); return true; },
+      pdftotext: () => 'MOCK-TEXT', pdfinfoPages: () => 1,
+      comparePdfs: () => ({ pass: true, max: 0, pages: [{ page: 1, ratio: 0 }], dpi: 150, threshold: 0.005, pixFmt: 'rgb24' })
+    };
+    const rep = await runMigration(R2, { checkers: mockCheckers });
+    if (!rep.ok) fail('FW-2 migrate-meta 重跑应成功: ' + JSON.stringify(rep.stopped));
+    if (rep.backup !== null) fail('FW-2 无 pending 不应备份（no-op）: ' + JSON.stringify(rep.backup));
+    if ((rep.docs || []).length !== 0) fail('FW-2 不应有待迁文档: ' + JSON.stringify(rep.docs));
+    if (fs.readFileSync(path.join(R2, 'docs-meta.json'), 'utf8') !== before) fail('FW-2 重跑不得改动 docs-meta');
+    console.log('✅ S1-FW-2（F-2）/restructure 于 schemaVersion=2 文档保持 2 且 migration 保持 done；migrate-meta 重跑 no-op（不备份/不门禁/零写入）');
+  }
+  // ---------- S1-FW-4（F-4）：启动恢复与外来 .migrate.lock 互斥（外锁在 → 跳过；无外锁 → 恢复如常） ----------
+  {
+    const R4 = seedRoot('fw4', { tdoc: '<!doctype html><html><head></head><body>NEW-SAVED</body></html>' }, { tdoc: { rev: 7 } });
+    // txId 用前缀+时戳构造（文件内不出现 11 连数字字面量，避免隐私门禁手机号模式自命中——S1-9 假号码红改同款纪律）
+    const txId = 's1fw4-' + Date.now() + '-424242';
+    const txd = path.join(R4, '.tx');
+    fs.mkdirSync(txd, { recursive: true });
+    // 手工种"中断保存"事务：标记 + 旧 meta 副本 + 旧正文副本（载荷齐 = 可恢复记录）
+    fs.writeFileSync(path.join(txd, txId + '.meta.json'), JSON.stringify({ rev: 5, tag: 'old' }));
+    fs.writeFileSync(path.join(txd, txId + '.html'), '<!doctype html><html><head></head><body>OLD-BYTES</body></html>');
+    fs.writeFileSync(path.join(txd, txId + '.json'), JSON.stringify({ txId, docId: 'tdoc', phase: 'save', oldSnapTs: '', startedAt: Date.now() - 60000, host: os.hostname(), pid: 424242 }));
+    const docFile = path.join(R4, 'docs', 'tdoc.html');
+    const txFiles = () => fs.readdirSync(txd);
+    // (a) 外来活进程持 .migrate.lock → 启动必须跳过恢复：文档不回滚、记录原样、锁不被代删、日志留痕
+    const sleeper = spawn('sleep', ['60']);
+    fs.writeFileSync(path.join(R4, '.migrate.lock'), JSON.stringify({ pid: sleeper.pid, host: os.hostname(), startedAt: Date.now() }));
+    const s4a = await startSrv(R4);
+    try {
+      if (!fs.readFileSync(docFile, 'utf8').includes('NEW-SAVED')) fail('FW-4a 外来锁在持时启动不得回滚文档（迁移可能正处门禁中途）');
+      if (txFiles().length !== 3) fail('FW-4a tx 记录应原样保留给持有者/下次干净启动: ' + txFiles().join(','));
+      if (!fs.existsSync(path.join(R4, '.migrate.lock'))) fail('FW-4a 不得删除外来鲜活锁');
+      if (!s4a.serr.includes('跳过启动恢复')) fail('FW-4a 跳过应留日志: ' + s4a.serr.slice(0, 300));
+    } finally { await s4a.stop(); sleeper.kill('SIGKILL'); }
+    // (b) 无外来锁 → 启动恢复如常（回滚目标文档 + 清记录 + 日志）
+    fs.rmSync(path.join(R4, '.migrate.lock'), { force: true });
+    const s4b = await startSrv(R4);
+    try {
+      if (!fs.readFileSync(docFile, 'utf8').includes('OLD-BYTES')) fail('FW-4b 无锁时启动恢复应回滚文档: ' + fs.readFileSync(docFile, 'utf8').slice(0, 100));
+      if (txFiles().length !== 0) fail('FW-4b 恢复成功后记录应清理: ' + txFiles().join(','));
+      if ((readMeta(R4).tdoc || {}).rev !== 5) fail('FW-4b meta 应回滚到事务前副本: ' + JSON.stringify(readMeta(R4).tdoc));
+      if (!s4b.serr.includes('启动恢复未完成事务 1 条')) fail('FW-4b 应有恢复日志: ' + s4b.serr.slice(0, 300));
+    } finally { await s4b.stop(); }
+    console.log('✅ S1-FW-4（F-4）外来活 pid .migrate.lock → 启动跳过恢复（记录原样/文档不回滚/留日志）；无锁时恢复行为不变');
+  }
+} finally {
+  llmSrv.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+EOF
+
+# —— S1-FW-3（F-3）：隐私门禁忽略清单 — .tx 载荷/双锁/atomicWrite 残留必须被忽略，真·未跟踪敏感文件仍被检出 ——
+# 探针文件种在真实根（皆本节新建、trap 移除）；零写入真实 docs/snapshots/pdfs/JSON/config。
+# 假手机号用拼接构造（本文件不出现 11 连字面量，避免门禁自命中——S1-9 假号码红改同款纪律）。
+(
+  S1FW_PHONE='1380013'
+  S1FW_PHONE="${S1FW_PHONE}8000"
+  S1FW_TX='.tx/s1fw-privacy-probe.html'
+  S1FW_NOTE='s1fw-sensitive-probe.txt'
+  s1fw_clean() { rm -f "$S1FW_TX" "$S1FW_NOTE"; }
+  trap s1fw_clean EXIT
+  mkdir -p .tx
+  printf '<html><body>phone %s</body></html>\n' "$S1FW_PHONE" > "$S1FW_TX"
+  if ! bash privacy-check.sh > /dev/null 2>&1; then echo '❌ S1-FW-3 .tx/ 中断事务载荷未被忽略（隐私门禁应绿）'; exit 1; fi
+  printf 'phone %s\n' "$S1FW_PHONE" > "$S1FW_NOTE"
+  if bash privacy-check.sh > /dev/null 2>&1; then echo '❌ S1-FW-3 真·未跟踪敏感文件未被检出（门禁应红）'; exit 1; fi
+  rm -f "$S1FW_NOTE"
+  # 锁与 atomicWrite 残留：模式生效性与文件存在无关 → check-ignore 直接探针（防 .gitignore 模式被误删）
+  for p in .migrate.lock .meta.lock .docs-meta.json.0.0.0.tmp; do
+    if ! git check-ignore -q "$p"; then echo "❌ S1-FW-3 未忽略: $p"; exit 1; fi
+  done
+  s1fw_clean
+  trap - EXIT
+  echo '✅ S1-FW-3（F-3）隐私门禁：.tx 载荷/双锁/原子写残留全忽略（门禁绿），真·未跟踪敏感文件仍检出（门禁红）'
+)
