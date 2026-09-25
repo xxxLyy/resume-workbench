@@ -468,6 +468,18 @@ if (gtSingle.missing.length !== 1 || gtSingle.missing[0] !== 'p2.png') fail('单
 delete process.env.RESUME_ROOT;
 fs.rmSync(gtRoot, { recursive: true, force: true });
 
+// ⑤c 负向（Task 9 review Minor-1）：病态未闭合引号（<img src=x alt=a"b>）RES_TAG_RE 整标签不匹配，
+//     但宽松回退仍须收集 src —— 本地缺失入 missing[]、远程 url 翻 reproducible=false（漏收=误判可复现，方向错误）
+const mfRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-s1a-mf-'));
+process.env.RESUME_ROOT = mfRoot;   // 隔离根，绝不触碰真实数据
+const mfLocal = resourceFingerprint('<body><img src=malformed.png alt=a"b></body>');
+if (mfLocal.missing.length !== 1 || mfLocal.missing[0] !== 'malformed.png') fail('未闭合引号 malformed 标签的 src 应经回退收集入 missing: ' + JSON.stringify(mfLocal.missing));
+if (mfLocal.reproducible !== false) fail('malformed 标签缺失 src 应 reproducible=false');
+const mfRemote = resourceFingerprint('<body><img src=https://e.com/mf.png alt=a"b></body>');
+if (mfRemote.remote.length !== 1 || mfRemote.remote[0] !== 'https://e.com/mf.png' || mfRemote.reproducible !== false) fail('未闭合引号 malformed 标签的远程 src 应收集且 reproducible=false: ' + JSON.stringify(mfRemote));
+delete process.env.RESUME_ROOT;
+fs.rmSync(mfRoot, { recursive: true, force: true });
+
 // ⑥ staleInfo 三态：fresh / stale / none（mtime 不参与判定）
 const sFresh = staleInfo({ lastRenderInputId: 'a1' }, { renderInputId: 'a1', pdfExists: true });
 const sStale = staleInfo({ lastRenderInputId: 'a1' }, { renderInputId: 'b2', pdfExists: true });
@@ -481,7 +493,7 @@ if (staleInfo({ lastRenderInputId: 'a1' }, { renderInputId: 'a1', pdfExists: fal
 const renderSrc = fs.readFileSync('render.mjs', 'utf8');
 if (/docs-meta|loadMeta|meta\.typo/.test(renderSrc)) fail('render.mjs 不得引用 docs-meta / meta.typo（铁律二）');
 if (!renderSrc.includes("'--src'") || !renderSrc.includes("'--out'")) fail('render.mjs 应保留 --src/--out 入口');
-console.log('✅ S1-A freeze 六导出：splitDoc 两态/HTML 幂等/meta.typo 覆盖/renderInputId 含正文/完整资源指纹（含属性值带 > 不截断）/staleInfo 三态/render meta-blind');
+console.log('✅ S1-A freeze 六导出：splitDoc 两态/HTML 幂等/meta.typo 覆盖/renderInputId 含正文/完整资源指纹（含属性值带 > 不截断/malformed 回退）/staleInfo 三态/render meta-blind');
 EOF
 
 # —— S1-HF：热修 — legacy 内联排版优先于空 meta（裁决：effective typo = (meta.typo 定义且非空) ? meta.typo : (内联值 if present else '')）——
@@ -1013,7 +1025,7 @@ fs.mkdirSync(path.join(RDATA, 'pdfs'), { recursive: true });
 const mkHtml = (extraStyle, workHtml) => assembleTemplate('classic')
   .replace('</head>', () => (extraStyle ? `<style>${extraStyle}</style></head>` : '</head>'))
   .replaceAll('{{NAME}}', () => '门禁测试员')
-  .replaceAll('{{CONTACT}}', () => '电话：13800000000 ｜ 邮箱：gate@example.com')
+  .replaceAll('{{CONTACT}}', () => '电话：12345678901 ｜ 邮箱：gate@example.com')
   .replaceAll('{{INTENT}}', () => '意向岗位：后端工程师')
   .replaceAll('{{SUMMARY}}', () => '五年后端研发经验，主导高并发订单系统与数据链路建设。')
   .replaceAll('{{SKILLS}}', () => '<p>Node.js / MySQL / Redis / 消息队列</p><p>分布式系统设计与性能调优</p>')
@@ -1427,7 +1439,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 's1e2-'));
 const R = path.join(tmp, 'data');
 for (const d of ['docs', 'snapshots', 'pdfs']) fs.mkdirSync(path.join(R, d), { recursive: true });
 const fill = (tpl, id, name) => tpl
-  .replaceAll('{{NAME}}', () => name).replaceAll('{{CONTACT}}', () => '电话：13800000000 ｜ 邮箱：e2e@example.com').replaceAll('{{INTENT}}', () => '意向岗位：后端工程师')
+  .replaceAll('{{NAME}}', () => name).replaceAll('{{CONTACT}}', () => '电话：12345678901 ｜ 邮箱：e2e@example.com').replaceAll('{{INTENT}}', () => '意向岗位：后端工程师')
   .replaceAll('{{SUMMARY}}', () => '五年后端研发经验，主导高并发订单系统与数据链路建设。')
   .replaceAll('{{SKILLS}}', () => '<p>Node.js / MySQL / Redis / 消息队列</p>')
   .replaceAll('{{WORK}}', () => '<div class="entry"><div class="entry-title">某科技公司</div><div class="entry-role">后端工程师</div><div class="entry-date">2021-2026</div><p>负责订单核心服务，主导拆单重构与容量治理。</p></div>')

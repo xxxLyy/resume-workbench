@@ -81,9 +81,13 @@ function bodyInner(html) {
 // —— 资源引用收集 ——
 // 会实际加载资源的标签/属性（<a href> 是导航链接、不加载资源，绝不收集——否则含超链接的简历会被误判不可复现）
 // 标签体允许引号内 '>'（如 <img alt="a > b" src="x.png">）：逐段跳过成对引号，避免在属性值处截断漏收 src
-// （S1-T9 加固，Task 2 review Minor-1）。病态输入（未闭合引号）整标签不匹配 —— 与旧正则同为务实收集，非 HTML 解析器。
+// （S1-T9 加固，Task 2 review Minor-1）。病态输入（未闭合引号，如 <img src=x alt=a"b>）整标签不匹配 ——
+// 比旧正则 [^>]*（能匹配整标签）更严；为不漏收 malformed 标签的 src，下方 2b 提供宽松回退提取（Task 9 review Minor-1）。
 const RES_TAG_RE = /<(?:img|image|script|link|source|embed|iframe|video|audio|input)\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
 const RES_ATTR_RE = /\b(?:src|href|poster|xlink:href|data-src)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
+// 回退用：良构匹配空白化后，宽松扫出"类标签"残段（不要求引号成对/闭合 '>'，止于下一个 '<'），值允许无引号
+const RES_TAG_LOOSE_RE = /<(?:img|image|script|link|source|embed|iframe|video|audio|input)\b[^<]*/gi;
+const RES_ATTR_LOOSE_RE = /\b(?:src|href|poster|xlink:href|data-src)\s*=\s*["']?([^"'>\s]+)/gi;
 const CSS_URL_RE = /url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"]+?))\s*\)/gi;
 
 function collectRefs(html) {
@@ -116,6 +120,16 @@ function collectRefs(html) {
     while ((a = RES_ATTR_RE.exec(tag)) !== null) push(a[1] ?? a[2]);
     const ss = /\bsrcset\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(tag);
     if (ss) for (const cand of (ss[1] ?? ss[2] ?? '').split(',')) push(cand.trim().split(/\s+/)[0]);
+  }
+  // 2b) 回退（Task 9 review Minor-1）：病态未闭合引号标签 RES_TAG_RE 整标签不匹配（比旧正则更严）。
+  //     把良构匹配空白化后，对剩余"类标签"残段做简单 src/href 提取，保证 malformed 标签的 src 不漏收
+  //     （漏收会误判 reproducible=true，方向错误；误收最多多报 missing/remote，方向安全）。CSS url() 已由 1) 全文扫描覆盖。
+  const residue = html.replace(RES_TAG_RE, (s) => ' '.repeat(s.length));
+  RES_TAG_LOOSE_RE.lastIndex = 0;
+  while ((m = RES_TAG_LOOSE_RE.exec(residue)) !== null) {
+    RES_ATTR_LOOSE_RE.lastIndex = 0;
+    let a;
+    while ((a = RES_ATTR_LOOSE_RE.exec(m[0])) !== null) push(a[1]);
   }
   return refs;
 }

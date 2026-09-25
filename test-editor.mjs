@@ -1018,7 +1018,8 @@ async function runS1T9Tests() {
             const sv = await fetch(srvA.base + '/save?id=t9', { method: 'POST', headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: txDoc('t9', 'T9-V1', '') }).then((r) => r.json());
             const after = snapTsAll();
             const fillersLeft = after.filter((ts) => ts.startsWith('2027-')).length;
-            const stillCommitted = (readMeta11().t9 || {}).exports && readMeta11().t9.exports[0].snapTs === committed.snapTs;
+            const metaT9 = readMeta11();
+            const stillCommitted = (metaT9.t9 || {}).exports && metaT9.t9.exports[0].snapTs === committed.snapTs;
             if (!sv || !sv.ok) bad('T9② 保存失败（prune 未触发）', JSON.stringify(sv));
             else if (after.includes(SIM_ORPHAN)) bad('T9② 可清理孤儿快照应被 prune 清掉（配额生效）');
             else if (!after.includes(committed.snapTs)) bad('T9② committed 引用（exports[].snapTs）必须在 prune 中幸存', committed.snapTs);
