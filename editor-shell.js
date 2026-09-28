@@ -43,7 +43,7 @@
     + '.ed-on .edit-toolbar .save-state[data-state="error"]{color:var(--ed-err);background:var(--ed-err-soft)}'
     + '.ed-on .edit-toolbar button{min-height:32px;padding:0 12px;border-radius:8px;font-size:12px;font-weight:600;transition:transform .12s,box-shadow .12s,background .12s;'
     + 'background:var(--ed-panel);color:var(--ed-ink);border:1px solid var(--ed-line)}'
-    + '.ed-on .edit-toolbar button:hover{transform:translateY(-1px);box-shadow:0 3px 9px rgba(24,27,48,.12)}'
+    + '.ed-on .edit-toolbar button:hover{transform:translateY(-1px);box-shadow:0 3px 9px rgba(60,45,25,.12)}'
     + '.ed-on .edit-toolbar button:active{transform:translateY(1px);box-shadow:none}'
     + '.ed-on .edit-toolbar button:disabled{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none}'
     + '.ed-on .edit-toolbar button.ed-primary{background:var(--ed-accent);border-color:var(--ed-accent);color:var(--ed-accent-ink)}'
@@ -62,7 +62,7 @@
     + '#ed-canvas-tools .ed-zunit{color:var(--ed-mut)}'
     // 纸张：grid item 原地落位，内部滚动；zoom 缩放只影响屏幕
     + '.ed-on .sheet{grid-row:3;grid-column:2;justify-self:center;height:100%;overflow-y:auto;margin:0 0 16px;'
-    + 'box-shadow:0 4px 17px rgba(37,50,75,.08);transition:box-shadow .2s}'
+    + 'box-shadow:0 4px 17px rgba(60,45,25,.08);transition:box-shadow .2s}'
     // 左栏
     + '#ed-left{grid-row:2/4;grid-column:1;overflow-y:auto;background:var(--ed-panel);border-right:1px solid var(--ed-line);padding:16px 12px;min-width:0}'
     + '#ed-left.ed-hidden{display:none}'
@@ -93,7 +93,7 @@
     + '.ed-addsec{width:100%;margin-top:10px;min-height:32px;padding:0 12px;border:1px dashed var(--ed-line);border-radius:8px;background:transparent;color:var(--ed-mut);font-size:12px;cursor:pointer}'
     + '.ed-addsec:hover{border-color:var(--ed-accent);color:var(--ed-accent)}'
     + '.ed-mat{border:1px solid var(--ed-line);border-radius:9px;padding:10px;font-size:12px;margin-top:10px;cursor:pointer;transition:box-shadow .15s,transform .15s;background:var(--ed-panel)}'
-    + '.ed-mat:hover{box-shadow:0 3px 9px rgba(24,27,48,.10);transform:translateY(-1px)}'
+    + '.ed-mat:hover{box-shadow:0 3px 9px rgba(60,45,25,.10);transform:translateY(-1px)}'
     + '.ed-mat:focus-visible{outline:2px solid var(--ed-accent);outline-offset:1px}'
     + '.ed-mat small{display:block;margin-top:4px;font-size:10px;color:var(--ed-mut)}'
     + '.ed-mat .ed-mat-unconf{margin-left:6px;font-size:10px;font-weight:600;color:var(--ed-warn);background:var(--ed-warn-soft);border-radius:999px;padding:1px 6px}'
@@ -132,7 +132,7 @@
     + '#ed-seltb button:hover{background:rgba(255,255,255,.14)}'
     + '#ed-seltb button:focus-visible{outline:2px solid var(--ed-accent-soft);outline-offset:1px}'
     // 素材选择器弹层
-    + '#ed-matpop{position:fixed;z-index:102;top:50%;left:50%;transform:translate(-50%,-50%);width:min(480px,92vw);max-height:80vh;overflow-y:auto;background:var(--ed-panel);border:1px solid var(--ed-line);border-radius:14px;box-shadow:0 18px 50px rgba(41,48,80,.16);padding:16px;display:none;font-size:13px}'
+    + '#ed-matpop{position:fixed;z-index:102;top:50%;left:50%;transform:translate(-50%,-50%);width:min(480px,92vw);max-height:80vh;overflow-y:auto;background:var(--ed-panel);border:1px solid var(--ed-line);border-radius:14px;box-shadow:0 18px 50px rgba(60,45,25,.16);padding:16px;display:none;font-size:13px}'
     + '#ed-matpop h3{font-family:var(--ed-serif);margin:0 0 10px;font-size:14px}'
     + '#ed-matpop .ed-matpop-sec{margin:10px 0}'
     + '#ed-matpop .ed-matpop-label{font-size:11px;color:var(--ed-mut);margin-bottom:4px}'
@@ -144,10 +144,10 @@
     + '#ed-matpop .ed-mattypes{display:flex;gap:6px}'
     + '#ed-matpop .ed-mattypes button{flex:1;min-height:30px;border:1px solid var(--ed-line);border-radius:7px;background:var(--ed-panel);font-size:11px;color:var(--ed-mut);cursor:pointer}'
     + '#ed-matpop .ed-mattypes button.on{border-color:var(--ed-accent);color:var(--ed-accent);background:var(--ed-accent-soft);font-weight:600}'
-    + '#ed-matmask{position:fixed;inset:0;background:rgba(32,39,55,.24);z-index:101;display:none}'
+    + '#ed-matmask{position:fixed;inset:0;background:rgba(60,45,25,.24);z-index:101;display:none}'
     // 岗位草稿弹层（结构化输入，创建独立草稿，不依赖模型）
-    + '#ed-jobmask{position:fixed;inset:0;background:rgba(32,39,55,.24);z-index:103;display:none}'
-    + '#ed-jobpop{position:fixed;z-index:104;top:50%;left:50%;transform:translate(-50%,-50%);width:min(520px,94vw);max-height:86vh;overflow-y:auto;background:var(--ed-panel);border:1px solid var(--ed-line);border-radius:14px;box-shadow:0 18px 50px rgba(41,48,80,.16);padding:16px;display:none;font-size:13px}'
+    + '#ed-jobmask{position:fixed;inset:0;background:rgba(60,45,25,.24);z-index:103;display:none}'
+    + '#ed-jobpop{position:fixed;z-index:104;top:50%;left:50%;transform:translate(-50%,-50%);width:min(520px,94vw);max-height:86vh;overflow-y:auto;background:var(--ed-panel);border:1px solid var(--ed-line);border-radius:14px;box-shadow:0 18px 50px rgba(60,45,25,.16);padding:16px;display:none;font-size:13px}'
     + '#ed-jobpop h3{font-family:var(--ed-serif);margin:0 0 4px;font-size:14px}'
     + '#ed-jobpop .ed-jp-note{font-size:11px;color:var(--ed-mut);margin-bottom:10px}'
     + '#ed-jobpop label{display:block;font-size:12px;color:var(--ed-ink);margin:8px 0 2px}'
@@ -158,17 +158,17 @@
     + '#ed-jobpop .ed-jp-row button.ed-primary{background:var(--ed-accent);border-color:var(--ed-accent);color:var(--ed-accent-ink)}'
     + '#ed-jobpop .ed-jp-msg{font-size:11px;color:var(--ed-warn);margin-top:8px;min-height:14px}'
     // 预览模式：纸张短过渡后归正，正文保持平面
-    + '.ed-preview .sheet{transition:transform .35s ease,box-shadow .35s ease;box-shadow:0 12px 32px rgba(37,50,75,.14)}'
+    + '.ed-preview .sheet{transition:transform .35s ease,box-shadow .35s ease;box-shadow:0 12px 32px rgba(60,45,25,.14)}'
     + '.ed-preview .sheet p:hover,.ed-preview .sheet li:hover,.ed-preview .sheet h1:hover,.ed-preview .sheet .entry-head:hover,.ed-preview .sheet .contact:hover{outline:none!important}'
     // 定位高亮闪记
     + '@keyframes edFlash{0%{outline:2px solid var(--ed-accent);outline-offset:2px}100%{outline:2px solid transparent;outline-offset:2px}}'
     + '.ed-flash{animation:edFlash 1.2s ease-out}'
     // 面板/布局过渡（折叠列宽过渡在 body.ed-on 上）
     // 响应式：中屏收左栏，窄屏单栏切换
-    + '@media(max-width:1200px){body.ed-on{--ed-left-w:0px;--ed-right-w:300px}#ed-left{position:absolute;z-index:60;top:0;bottom:0;left:0;width:240px;box-shadow:4px 0 16px rgba(41,48,80,.10);display:none}#ed-left.ed-open{display:block}}'
+    + '@media(max-width:1200px){body.ed-on{--ed-left-w:0px;--ed-right-w:300px}#ed-left{position:absolute;z-index:60;top:0;bottom:0;left:0;width:240px;box-shadow:4px 0 16px rgba(60,45,25,.10);display:none}#ed-left.ed-open{display:block}}'
     + '@media(max-width:767px){body.ed-on{grid-template-columns:minmax(0,1fr);--ed-right-w:0px}'
     + '#ed-canvas-tools{display:none}'
-    + '#ed-right{position:fixed;z-index:70;top:0;right:0;bottom:0;width:min(340px,94vw);box-shadow:-4px 0 16px rgba(41,48,80,.12);display:none}'
+    + '#ed-right{position:fixed;z-index:70;top:0;right:0;bottom:0;width:min(340px,94vw);box-shadow:-4px 0 16px rgba(60,45,25,.12);display:none}'
     + '#ed-right.ed-open{display:flex}}'
     + '@media(prefers-reduced-motion:reduce){body.ed-on{transition:none}.ed-on .edit-toolbar button,.ed-mat,.ed-preview .sheet{transition:none!important}.ed-flash{animation:none!important}}'
     // 外壳视觉兜底覆盖：存量文档内联的工具栏/toast/恢复条版本不一，一律由注入层统一（仅屏幕、不落盘、不进 PDF）

@@ -2052,13 +2052,31 @@ if (printResidual) fail('print 块存在未被断言解析到的残留内容（�
 // 2) 正文文字属性禁令（作用域 = .sheet 及其后代）；布局/滚动/阴影/outline/caret 不受限
 //    扫描范围 = 屏幕注入段 + print 段全量（print 段用同一 FORBID，只放行还原白名单里逐字登记的声明）
 const FORBID = /(?:^|;)\s*(color|font-family|font-size|font-weight|font-style|line-height|letter-spacing|text-align|text-decoration|text-transform|text-indent|background|background-color|margin|margin-[a-z]+|padding|padding-[a-z]+)\s*:/;
+// FORBID 按选择器分级（控制器裁决）：后代选择器保持全量禁令；裸 .sheet 只禁文字属性与背景，放行纸张框架盒属性（margin/padding/box-shadow/width/height/overflow/outline/caret/transition/grid-*/justify-self）。
+// 依据：.sheet 是外壳负责定位/滚动的纸张容器，文档排版住在后代与主题里；注入仅 @media screen，打印输出不可能变化，§7.4 像素等价是兜底。
+const FORBID_BARE_SHEET = /(?:^|;)\s*(color|font|font-[a-z]+|line-height|letter-spacing|text-[a-z-]+|background|background-color)\s*:/;
 const printAnchor = injected.indexOf(PRINT_ANCHOR);
 const screenInjected = printAnchor >= 0 ? injected.slice(0, printAnchor) : injected;
-const sheetRules = [...screenInjected.matchAll(/'([^']*\.sheet[^']*)\{([^']*)\}'/g)];
+// 屏幕段与 print 臂同款"全量字面量拼接"重建真实 CSS —— 逐字面量正则看不见跨字面量的规则
+// （实测盲区：editor-shell.js:64-65 的 .ed-on .sheet{…margin:0 0 16px;' + 'box-shadow:…} 两段拼接）。
+const screenCss = [...screenInjected.matchAll(/'([^']*)'/g)].map((m) => m[1]).join('');
+if (!screenCss.startsWith('@media screen{') || !screenCss.endsWith('}')) {
+  fail('屏幕注入 CSS 拼接形状异常（不是单个完整 @media screen 块，需修断言）: ' + screenCss.slice(0, 140));
+}
+if ((screenCss.match(/\{/g) || []).length !== (screenCss.match(/\}/g) || []).length) {
+  fail('屏幕注入 CSS 拼接后花括号不平衡（字面量配对被破坏，需修断言）');
+}
+// 展平取最内层规则（@media 嵌套的前奏因内含 { 不会误配成规则）；选择器含 .sheet 的规则全部受禁令约束
+const sheetRules = [...screenCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter((m) => m[1].includes('.sheet'));
 if (!sheetRules.length) fail('注入层未匹配到任何 .sheet 规则（断言正则失效，需修断言）');
+// 裸 .sheet 判定：选择器列表中每个含 .sheet 的部分都以 .sheet（可带伪类）结尾
+const isBareSheetSel = (sel) => sel.split(',').map((s) => s.trim()).filter((s) => s.includes('.sheet'))
+  .every((s) => /\.sheet(?:::[a-zA-Z-]+(?:\([^)]*\))?)*$/.test(s));
 sheetRules.forEach((m) => {
+  const sel = m[1].trim().replace(/\s+/g, ' ');
   const decls = m[2].replace(/caret-color|outline-color/g, 'editorHintOnly');
-  if (FORBID.test(decls)) fail(`注入层对 ${m[1]} 声明了正文文字属性: ${m[2].slice(0, 140)}`);
+  const forbid = isBareSheetSel(sel) ? FORBID_BARE_SHEET : FORBID;
+  if (forbid.test(decls)) fail(`注入层对 ${sel} 声明了正文文字属性: ${m[2].slice(0, 140)}`);
 });
 // 2b) print 段的 .sheet 规则同样受正文禁令约束（摘掉还原白名单后仍有 FORBID 属性即红）
 const printSheetRules = printRules.filter((m) => m[1].includes('.sheet'));
@@ -2087,7 +2105,9 @@ for (const [f, allow] of Object.entries(FILES)) {
     if (HEX.test(ln) && !allow.some((re) => re.test(ln))) fail(`${f}:${i + 1} 组件层残留字面色: ${ln.trim().slice(0, 90)}`);
   });
 }
-const COLD = /#F4F5F8|#202737|#697186|#DCE0E8|#5B5DE8|#EEEFFE|#409eff|#2563eb|#dbeafe|#ede9fe|#5b21b6|--indigo/i;
+// 冷色黑名单：hex 家族 + 冷色 rgba 家族（修复轮2 起）。rgba(37,50,75/41,48,80/24,27,48,·) 是蓝灰阴影、rgba(32,39,55,·) 是蓝灰遮罩，
+// hex-only 黑名单扫不到 rgba 形态（实测漏网：editor-shell.js 旧 :65 box-shadow rgba(37,50,75,.08)）；暖阴影家族 = rgba(60,45,25,·)（同 server.mjs --shadow）。
+const COLD = /#F4F5F8|#202737|#697186|#DCE0E8|#5B5DE8|#EEEFFE|#409eff|#2563eb|#dbeafe|#ede9fe|#5b21b6|--indigo|rgba\(37,50,75,|rgba\(41,48,80,|rgba\(24,27,48,|rgba\(32,39,55,/i;
 for (const f of Object.keys(FILES)) {
   fs.readFileSync(f, 'utf8').split('\n').forEach((ln, i) => {
     if (COLD.test(ln)) fail(`${f}:${i + 1} 冷色/靛蓝残留: ${ln.trim().slice(0, 90)}`);
