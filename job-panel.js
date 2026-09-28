@@ -136,10 +136,14 @@
       var from = Math.max(start, ns) - ns, to = Math.min(end, ne) - ns;
       nd.data = nd.data.slice(0, from) + (j === first ? after : '') + nd.data.slice(to);
     }
-    sheet.dispatchEvent(new Event('input', { bubbles: true }));
+    touch();
     return true;
   }
-  function touch() { sheet.dispatchEvent(new Event('input', { bubbles: true })); }
+  // 程序化变更统一出口（S2-T5）：走外壳共享入口（合成 input 保持 dirty 语义 + 补 op 时间戳）；无外壳时退回裸派发
+  function touch() {
+    if (window.__edMarkProgrammatic) window.__edMarkProgrammatic();
+    else sheet.dispatchEvent(new Event('input', { bubbles: true }));
+  }
 
   // ===== 应用/撤销一条修改 =====
   function applyChange(c) {
@@ -149,9 +153,9 @@
     }
     if (c.kind === 'hide') {
       var found = findEntry(c);
-      if (found) { hidePair(found.pair, true); return { ok: true, meta: { target: 'entry', title: found.pair.title } }; }
+      if (found) { hidePair(found.pair, true); touch(); return { ok: true, meta: { target: 'entry', title: found.pair.title } }; }
       var sec = sectionByTitle(c.section);
-      if (sec) { sec.classList.add('ed-sec-hidden'); return { ok: true, meta: { target: 'section', title: c.section } }; }
+      if (sec) { sec.classList.add('ed-sec-hidden'); touch(); return { ok: true, meta: { target: 'section', title: c.section } }; }
       return { ok: false, error: '找不到要隐藏的章节/条目' };
     }
     if (c.kind === 'reorder') {
@@ -195,9 +199,9 @@
     if (c.kind === 'replace') return replaceText(c.after, c.before, { context: c.context }) ? { ok: true } : { ok: false, error: '撤销失败：改后文本已变化' };
     if (c.kind === 'hide') {
       var found = findEntry(c);
-      if (found) { hidePair(found.pair, false); return { ok: true }; }
+      if (found) { hidePair(found.pair, false); touch(); return { ok: true }; }
       var sec = sectionByTitle(c.section);
-      if (sec) { sec.classList.remove('ed-sec-hidden'); return { ok: true }; }
+      if (sec) { sec.classList.remove('ed-sec-hidden'); touch(); return { ok: true }; }
       return { ok: false, error: '撤销失败：目标不存在' };
     }
     if (c.kind === 'reorder') {

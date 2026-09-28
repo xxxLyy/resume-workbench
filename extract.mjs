@@ -6,11 +6,15 @@ import { createHash } from 'node:crypto';
 const VOID = new Set(['br', 'img', 'hr', 'input', 'meta', 'link', 'area', 'base', 'col', 'embed', 'source', 'track', 'wbr']);
 
 // 编辑器运行时 UI（即使未按注释对剥离也不进正文）
+// S2-T5 补充：岗位弹层/遮罩 + 查找面板 + 快捷键弹层 + 聚焦态 class（第二道防线；注释对剥离是第一道）。
+// 注意：ed-flash 不得加入本表——isChrome 命中即整元素跳过提取，而 .ed-flash 历史上挂在真实正文节点上；
+// 该根因已由 flashEl 改走 CSS Custom Highlight API 消除（不再挂 class），由块 10 断言守护。
 const CHROME_MARKERS = [
   /\bedit-toolbar\b/, /\bpage-line\b/, /\btoast\b/, /\brecovery-bar\b/,
   /\bdata-ai-panel\b/, /\bdata-ed-shell\b/, /\bdata-ed-inj\b/,
   /\bdata-ed-shot\b/, /\bed-seltb\b/, /\bed-matpop\b/, /\bed-matmask\b/,
-  /\bed-left\b/, /\bed-right\b/, /\bed-status\b/, /\bed-canvas-tools\b/
+  /\bed-left\b/, /\bed-right\b/, /\bed-status\b/, /\bed-canvas-tools\b/,
+  /\bed-jobpop\b/, /\bed-jobmask\b/, /\bed-keys\b/, /\bed-find\b/, /\bed-focus\b/
 ];
 
 const HIDDEN_CLASS = /\b(?:ed-sec-hidden|ed-entry-hidden)\b/;

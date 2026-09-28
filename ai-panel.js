@@ -157,7 +157,9 @@
       var from = Math.max(start, ns) - ns, to = Math.min(end, ne) - ns;
       nd.data = nd.data.slice(0, from) + (j === firstIdx ? after : '') + nd.data.slice(to);
     }
-    sheet.dispatchEvent(new Event('input', { bubbles: true }));  // 触发本地自动保存兜底
+    // 程序化变更统一出口（S2-T5）：与外壳撤销栈共用；无外壳时退回裸派发（行为等价）
+    if (window.__edMarkProgrammatic) window.__edMarkProgrammatic();
+    else sheet.dispatchEvent(new Event('input', { bubbles: true }));  // 触发本地自动保存兜底
     return true;
   }
 

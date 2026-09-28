@@ -21,6 +21,9 @@
   var SHEET_H = 297 * MM;   // 1123px
   var MATS = Array.isArray(window.__MATS__) ? window.__MATS__ : [];
   var JOB_INFO = window.__JOB_INFO__ || { hasJob: false };
+  // CSS Custom Highlight API：高亮只存在于内存 Range，不改 DOM → 瞬态天然不落盘（flashEl 与查找高亮共用）
+  var HL_OK = typeof window.Highlight === 'function' && !!(window.CSS && CSS.highlights);
+  var flashHl = null;
 
   // ===== 设计令牌 + 外壳样式（仅屏幕；print 一律隐藏外壳、还原文档流）=====
   var css = document.createElement('style');
@@ -195,6 +198,28 @@
     + '.ed-on .sheet{caret-color:var(--ed-accent)}'
     + '.ed-on .sheet p:hover,.ed-on .sheet li:hover,.ed-on .sheet h1:hover,.ed-on .sheet .entry-head:hover,.ed-on .sheet .contact:hover{outline-color:rgba(194,65,12,.45)}'
     + '.ed-on button:focus-visible,.ed-on input:focus-visible,.ed-on textarea:focus-visible,.ed-on a:focus-visible{outline-color:var(--ed-accent)}'
+    // ===== S2-T5 基础编辑五件（全走 --ed-* token；仅屏幕，不落盘、不进 PDF）=====
+    // flash / 查找高亮走 CSS Custom Highlight API（高亮只在内存 Range，正文零 DOM 变更）
+    + '::highlight(ed-flash){background:var(--ed-accent-soft);color:inherit}'
+    + '::highlight(ed-find){background:var(--ed-warn-soft);color:inherit}'
+    + '::highlight(ed-find-cur){background:var(--ed-accent);color:var(--ed-accent-ink)}'
+    // 基础格式组（顶栏）
+    + '.ed-on .ed-fmt{display:flex;gap:4px;align-items:center}'
+    + '.ed-on .ed-fmt button{min-height:26px;padding:0 8px;font-size:12px;line-height:1}'
+    // 文内查找替换面板
+    + '.ed-on #ed-find{position:fixed;top:56px;right:18px;z-index:120;display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:var(--ed-panel);border:1px solid var(--ed-line);border-radius:10px;box-shadow:0 6px 18px rgba(60,45,25,.16);padding:8px 10px}'
+    + '.ed-on #ed-find input{border:1px solid var(--ed-line);border-radius:6px;padding:4px 8px;font-size:13px;background:var(--ed-panel);color:var(--ed-ink);width:150px}'
+    + '.ed-on #ed-find button{min-height:26px;padding:0 8px;font-size:12px}'
+    + '.ed-on #ed-find-count{font-size:12px;color:var(--ed-mut);min-width:44px;text-align:center}'
+    // 聚焦编辑：body.ed-focus 收起左右栏（服务端 /save 归一化剥离该 class）
+    + '.ed-on.ed-focus{grid-template-columns:0 minmax(0,1fr) 0}'
+    + '.ed-on.ed-focus #ed-left,.ed-on.ed-focus #ed-right{display:none}'
+    // 快捷键提示弹层
+    + '.ed-on #ed-keys{position:fixed;z-index:130;top:50%;left:50%;transform:translate(-50%,-50%);width:min(440px,92vw);background:var(--ed-panel);color:var(--ed-ink);border:1px solid var(--ed-line);border-radius:12px;box-shadow:0 12px 32px rgba(60,45,25,.22);padding:16px 18px}'
+    + '.ed-on #ed-keys b{font-family:var(--ed-serif);font-size:15px}'
+    + '.ed-on #ed-keys ul{list-style:none;padding:0;margin:10px 0 0;display:grid;gap:6px}'
+    + '.ed-on #ed-keys li{display:flex;gap:10px;align-items:baseline;font-size:13px;line-height:1.6}'
+    + '.ed-on #ed-keys kbd{font-family:var(--ed-sans);background:var(--ed-bg);border:1px solid var(--ed-line);border-radius:5px;padding:1px 6px;font-size:11px;min-width:56px;text-align:center}'
     + '}'
     + '@media print{#ed-left,#ed-right,#ed-status,#ed-canvas-tools,#ed-seltb,#ed-matpop,#ed-matmask{display:none!important}'
     + 'body.ed-on{display:block;height:auto;overflow:visible;background:var(--ed-panel)}.ed-on .sheet{overflow:visible;height:auto;box-shadow:none;margin:0}}';
@@ -339,10 +364,22 @@
     return out;
   }
 
-  function notifyEdit() { sheet.dispatchEvent(new Event('input', { bubbles: true })); }
-
-  // ===== 统一程序化撤销栈（覆盖章节/条目/素材/AI/审阅的自动修改；原生输入撤销仍用 ⌘Z）=====
+  // ===== 变更来源与统一撤销（设计 §6.1：一次 ⌘Z 撤销最近输入，定向撤销只对程序化操作）=====
   var undoStack = [];
+  var nativeInputCount = 0;                 // 受信任 input 计数（真实打字 / IME 组合完成）
+  var composing = false;                    // IME 组合中
+  var opSeq = 0;                            // op 自增 id，Toast 据此绑定
+  window.__edComposing = function () { return composing; };
+  window.__edNativeInputCount = function () { return nativeInputCount; };
+
+  // 程序化变更的唯一出口：外壳与 ai-panel / job-panel 共用（面板原先各自裸派发 input，无法归类）
+  window.__edMarkProgrammatic = function () {
+    sheet.dispatchEvent(new Event('input', { bubbles: true }));   // 保持既有 dirty 语义（isTrusted=false → 不计入原生输入）
+    var top = undoStack[undoStack.length - 1];
+    if (top && top.pending) { top.nativeCountAtApply = nativeInputCount; top.pending = false; }
+  };
+  function notifyEdit() { window.__edMarkProgrammatic(); }         // 既有一切调用点保持原义
+
   function snapshotState() {
     return { body: sheet.innerHTML, typo: window.__edGetTypo ? window.__edGetTypo() : '' };
   }
@@ -355,20 +392,68 @@
     btn.title = top ? ('撤销最近一次操作：' + top.label) : '';
   }
   window.__edPushUndo = function (label) {
-    undoStack.push({ label: label || '', state: snapshotState() });
+    opSeq++;
+    undoStack.push({ id: opSeq, label: label || '', state: snapshotState(), nativeCountAtApply: null, pending: true });
     if (undoStack.length > 30) undoStack.shift();
     updateUndoBtn();
+    return opSeq;
   };
-  window.__edUndoLast = function () {
-    var op = undoStack.pop();
-    if (!op) return false;
-    sheet.innerHTML = op.state.body;
-    if (window.__edSetTypo) window.__edSetTypo(op.state.typo);
-    notifyEdit();
+  // 只有"该 op 之后没有新的受信任输入"时，⌘Z 才消费它；否则整片快照会吞掉后续文字
+  function programmaticUndoSafeNow() {
+    var top = undoStack[undoStack.length - 1];
+    return !!top && top.nativeCountAtApply != null && nativeInputCount === top.nativeCountAtApply;
+  }
+  window.__edUndoLast = function (expectedId) {
+    var top = undoStack[undoStack.length - 1];
+    if (!top) return false;
+    if (expectedId != null && top.id !== expectedId) return false;      // Toast 绑定的 op 已非栈顶 → 拒绝，绝不弹别人的
+    if (expectedId == null && !programmaticUndoSafeNow() &&
+        !window.confirm('撤销「' + (top.label || '操作') + '」会回到该操作之前，其后的正文输入也会一并回退。确认撤销？')) return false;
+    undoStack.pop();
+    sheet.innerHTML = top.state.body;
+    if (window.__edSetTypo) window.__edSetTypo(top.state.typo);
+    window.__edMarkProgrammatic();
+    if (window.__edRefreshFind) window.__edRefreshFind();               // 正文已变：命中位置必须重算
     renderNav();
     updateUndoBtn();
     return true;
   };
+
+  sheet.addEventListener('compositionstart', function () { composing = true; });
+  sheet.addEventListener('compositionend', function () { composing = false; });
+  sheet.addEventListener('input', function (e) {
+    if (!e.isTrusted) return;                    // 合成事件（外壳与面板的程序化变更）不计
+    // 原生撤销/重做同样派发受信任 input（historyUndo/historyRedo）：计数必须随历史回退，
+    // 否则"该 op 之后无新输入"的等值判定永远回不去（§6.1 计数快照语义；测试口径"递增/回退"）
+    if (e.inputType === 'historyUndo') nativeInputCount = Math.max(0, nativeInputCount - 1);
+    else nativeInputCount++;
+    if (window.__edRefreshFind) window.__edRefreshFind();   // 内容一变即重算查找命中
+  });
+  // ⌘S 门控：文档内联监听是 document 的 bubble 阶段，capture 必然先跑 → 组合期直接截断（template.html 不改）
+  document.addEventListener('keydown', function (e) {
+    if (!(e.metaKey || e.ctrlKey) || String(e.key).toLowerCase() !== 's') return;
+    if (composing || e.isComposing) { e.preventDefault(); e.stopPropagation(); }
+  }, true);
+  document.addEventListener('keydown', function (e) {
+    if (composing || e.isComposing) return;                       // IME 组合期一律不触发外壳快捷键
+    var mod = e.metaKey || e.ctrlKey;
+    var k = String(e.key).toLowerCase();
+    var t = e.target;
+    var inField = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA');
+    if (mod && !e.shiftKey && k === 'z') {
+      if (programmaticUndoSafeNow()) { e.preventDefault(); window.__edUndoLast(); return; }
+      // 栈上仍有未决程序化 op 且其后已有受信任输入：既不消费快照（会吞掉后续文字），
+      // 也不放行原生回退（同样会抹掉后续输入，违反 §7 验收"连续 ⌘Z 不得吞掉后续文字"）。
+      // op 交给工具条/Toast 入口（带 window.confirm 显式确认）处理。
+      if (undoStack.length) { e.preventDefault(); }
+      return;                                                     // 空栈：交回浏览器原生撤销
+    }
+    if (mod && !e.shiftKey && k === 'f') { e.preventDefault(); openFindPanel(); return; }
+    if (mod && e.shiftKey && k === 'f') { e.preventDefault(); toggleFocusMode(); return; }
+    // 真实键盘 Shift+/ 上报 key='?'；部分合成输入路径（Playwright press('Shift+/') 实测）上报 key='/' + shiftKey=true → 两种形态都认
+    if (!mod && (e.key === '?' || (e.key === '/' && e.shiftKey)) && !inField) { e.preventDefault(); toggleShortcutHelp(true); return; }
+    if (e.key === 'Escape') { toggleShortcutHelp(false); closeFindPanel(); }
+  });
 
   var navlist = left.querySelector('#ed-navlist');
   function entryPair(entry) { return entry.ul ? [entry.head, entry.ul] : [entry.head]; }
@@ -491,6 +576,9 @@
           mk(off ? '显' : '隐', (off ? '显示' : '隐藏') + '该条目（不删除内容，PDF 同步）', function () {
             setEntryHidden(en, !off);
           }, false);
+          // S2-T5 基础编辑：条目复制 / 删除（title 字面量与块 8 断言一致；mk 已内置压栈+通知）
+          mk('⧉', '复制条目', function () { dupEntry(en); });
+          mk('🗑', '删除条目', function () { delEntry(en); });
           row.appendChild(eops);
           sub.appendChild(row);
         });
@@ -507,12 +595,271 @@
       if (on) n.setAttribute('aria-current', 'true'); else n.removeAttribute('aria-current');
     });
   }
+  // 定位闪记：CSS Custom Highlight API（零 DOM 变更 → 瞬态不落盘；不支持时只滚动定位，不降级为 class）
   function flashEl(el) {
-    el.classList.remove('ed-flash');
-    void el.offsetWidth;  // 重触发动画
-    el.classList.add('ed-flash');
-    setTimeout(function () { el.classList.remove('ed-flash'); }, 1300);
+    if (!el) return;
+    try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { }
+    if (!HL_OK) return;
+    var r = document.createRange();
+    r.selectNodeContents(el);
+    if (flashHl) flashHl.add(r); else { flashHl = new Highlight(r); CSS.highlights.set('ed-flash', flashHl); }
+    setTimeout(function () { CSS.highlights.delete('ed-flash'); flashHl = null; }, 1300);
   }
+  window.__edFlashForTest = flashEl;   // 测试可见入口：证明 flash 不再往正文挂 class（非行为钩子）
+
+  // 条目复制/删除：mk() 已内置压栈（label=title）+ notifyEdit + renderNav，这里只做 DOM 与 Toast
+  function stripIds(el) { el.removeAttribute('id'); el.querySelectorAll('[id]').forEach(function (x) { x.removeAttribute('id'); }); }
+  function dupEntry(en) {
+    var parent = en.head.parentNode;
+    var ref = en.ul ? en.ul.nextSibling : en.head.nextSibling;
+    var headCopy = en.head.cloneNode(true); stripIds(headCopy);
+    parent.insertBefore(headCopy, ref);
+    if (en.ul) { var ulCopy = en.ul.cloneNode(true); stripIds(ulCopy); parent.insertBefore(ulCopy, headCopy.nextSibling); }
+    undoToast('已复制条目');                              // 无 opId → 绑定刚压入的栈顶
+  }
+  function delEntry(en) {
+    if (en.ul) en.ul.remove();
+    en.head.remove();
+    undoToast('已删除条目（可撤销）');
+  }
+
+  // ===== 基础格式：一律走浏览器原生 execCommand（参与原生撤销；不压整片快照栈——§6.1）=====
+  function shellToast(msg) {                   // template.html 的 toast() 在其 IIFE 私有作用域，注入脚本取不到
+    var t = document.createElement('div');
+    t.className = 'toast';
+    t.textContent = msg;
+    mount(t);
+    requestAnimationFrame(function () { t.style.opacity = '1'; });
+    setTimeout(function () { t.style.opacity = '0'; setTimeout(function () { t.remove(); }, 400); }, 2500);
+  }
+  var SAFE_URL = /^(?:https?:|mailto:)/i;
+  function normalizeUrl(u) { return String(u).replace(/[\u0000-\u0020\u00a0]/g, ''); }   // 去空白/控制字符，防 java\tscript: 绕过
+  function runFormat(cmd) {
+    sheet.focus();
+    if (cmd === 'createLink') {
+      var sel = window.getSelection();
+      if (!sel || sel.isCollapsed) { shellToast('先选中要加链接的文字'); return; }
+      var u = window.prompt('链接地址（仅 http/https/mailto）', 'https://');
+      if (u === null) return;
+      var v = normalizeUrl(u);
+      if (!SAFE_URL.test(v)) { shellToast('已拒绝：仅允许 http/https/mailto 链接'); return; }
+      document.execCommand('createLink', false, v);
+      return;
+    }
+    document.execCommand(cmd, false, null);
+  }
+  var fmtWrap = document.createElement('span');
+  fmtWrap.setAttribute('data-ed-inj', '1');
+  fmtWrap.className = 'ed-fmt';
+  [['B', 'bold', '加粗'], ['•', 'insertUnorderedList', '无序列表'], ['🔗', 'createLink', '插入链接（仅 http/https/mailto）'], ['⌫', 'removeFormat', '清除多余格式']].forEach(function (b) {
+    var btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'secondary'; btn.textContent = b[0]; btn.title = b[2];
+    btn.setAttribute('data-fmt', b[1]);
+    btn.addEventListener('mousedown', function (e) { e.preventDefault(); });   // 不抢焦点/选区：execCommand 作用于正文当前选区
+    btn.addEventListener('click', function () { runFormat(b[1]); });
+    fmtWrap.appendChild(btn);
+  });
+  if (toolbar) toolbar.insertBefore(fmtWrap, toolbar.querySelector('.spacer') || null);
+
+  // ===== 文内查找替换：每个正文块一条独立文本流（跨 <b> 允许、跨块禁止）；高亮走 Highlight API 不改 DOM =====
+  var findPanel = null, findHits = [], findCur = -1, findQuery = '';
+  var BLOCK_RE = /^(P|LI|H[1-4]|TD|TH|PRE|BLOCKQUOTE|DD|DT)$/;
+  var SKIP_RE = /(^|[^a-z])(page-line|ed-find|ed-keys|ed-matpop|ed-matmask|ed-jobpop|ed-jobmask)([^a-z]|$)/;
+
+  function blockOf(textNode) {                       // 最近的块级祖先；.sheet 直接子节点也视为块
+    var el = textNode.parentNode;
+    while (el && el !== sheet) {
+      if (BLOCK_RE.test(el.tagName)) return el;
+      if (el.parentElement === sheet) return el;
+      el = el.parentElement;
+    }
+    return null;
+  }
+  function inChrome(el) {                            // 排除外壳/瞬态节点里的文本
+    var x = el;
+    while (x && x !== sheet) {
+      if (x.nodeType === 1) {
+        if (x.hasAttribute && (x.hasAttribute('data-ed-inj') || x.hasAttribute('data-ed-shell'))) return true;
+        if (x.className && SKIP_RE.test(String(x.className))) return true;
+      }
+      x = x.parentElement;
+    }
+    return false;
+  }
+  function streamBlocks() {                          // 命中只可能落在单个正文块内
+    // 块身份按元素同一性线性查找：普通对象键会把 Element 串化成 '[object HTML…]'，
+    // 同名标签全部并进一条流 → 制造跨块假命中（简报草案的 byEl[blk] 即此缺陷）
+    var walker = document.createTreeWalker(sheet, NodeFilter.SHOW_TEXT), blocks = [], n;
+    while ((n = walker.nextNode())) {
+      if (!n.data) continue;
+      var blk = blockOf(n);
+      if (!blk || inChrome(n.parentNode)) continue;
+      var cur = null;
+      for (var i = 0; i < blocks.length; i++) { if (blocks[i].el === blk) { cur = blocks[i]; break; } }
+      if (!cur) { cur = { el: blk, nodes: [], stream: '' }; blocks.push(cur); }
+      cur.nodes.push({ node: n, start: cur.stream.length });
+      cur.stream += n.data;
+    }
+    return blocks;
+  }
+  function locate(blk, pos) {
+    for (var i = 0; i < blk.nodes.length; i++) {
+      var cur = blk.nodes[i], next = i + 1 < blk.nodes.length ? blk.nodes[i + 1].start : Infinity;
+      if (pos >= cur.start && pos < next) return { node: cur.node, offset: pos - cur.start };
+    }
+    var last = blk.nodes[blk.nodes.length - 1];
+    return last ? { node: last.node, offset: last.node.data.length } : null;
+  }
+  function rangeIn(blk, from, to) {                  // Range 完全落在同一块内 → deleteContents 不会跨块删结构
+    var a = locate(blk, from), b = locate(blk, Math.max(from, to - 1));
+    if (!a || !b) return null;
+    var r = document.createRange();
+    r.setStart(a.node, a.offset);
+    r.setEnd(b.node, Math.min(b.offset + 1, b.node.data.length));
+    return r;
+  }
+  function collectHits(q) {                          // 每次都用当前 DOM 现算，杜绝过期偏移
+    var hits = [];
+    if (!q) return hits;
+    streamBlocks().forEach(function (blk) {
+      var idx = blk.stream.indexOf(q);
+      while (idx >= 0) { hits.push({ el: blk.el, blk: blk, from: idx, to: idx + q.length }); idx = blk.stream.indexOf(q, idx + q.length); }
+    });
+    return hits;
+  }
+  function paintFind() {
+    if (!HL_OK) return;
+    CSS.highlights.delete('ed-find-cur');
+    var hl = null;
+    findHits.forEach(function (h, i) {
+      var r = rangeIn(h.blk, h.from, h.to);
+      if (!r) return;
+      if (i === findCur) { CSS.highlights.set('ed-find-cur', new Highlight(r)); }
+      if (hl) hl.add(r); else hl = new Highlight(r);
+    });
+    if (hl) CSS.highlights.set('ed-find', hl); else CSS.highlights.delete('ed-find');
+  }
+  function clearFindPaint() { if (HL_OK) { CSS.highlights.delete('ed-find'); CSS.highlights.delete('ed-find-cur'); } }
+  function refreshFind(silent) {                     // 内容变化后重算；命中数变化即回显
+    var q = findQuery;
+    findHits = q ? collectHits(q) : [];
+    if (findCur >= findHits.length) findCur = findHits.length ? 0 : -1;
+    if (findCur < 0 && findHits.length) findCur = 0;   // 正文打字重算出新命中：指向第一处（否则计数显示 0/N、「替换当前」空转）
+    paintFind();
+    var c = document.getElementById('ed-find-count');
+    if (c) c.textContent = findHits.length ? (findCur + 1) + '/' + findHits.length : '0/0';
+    else if (!silent) { /* 面板未开：无需回显 */ }
+  }
+  window.__edRefreshFind = function () { refreshFind(true); };
+  function gotoHit(d) {
+    if (!findHits.length) return;
+    findCur = (findCur + d + findHits.length) % findHits.length;
+    paintFind();
+    var h = findHits[findCur], r = rangeIn(h.blk, h.from, h.to);
+    if (r && r.startContainer.parentNode && r.startContainer.parentNode.scrollIntoView) r.startContainer.parentNode.scrollIntoView({ block: 'center' });
+    var c = document.getElementById('ed-find-count');
+    if (c) c.textContent = (findCur + 1) + '/' + findHits.length;
+  }
+  function pruneEmpty(r) {
+    var c = r.commonAncestorContainer;
+    var host = c && c.nodeType === 1 ? c : (c ? c.parentNode : null);
+    if (host && host.querySelectorAll) host.querySelectorAll('b:empty,strong:empty,em:empty,i:empty,span:empty').forEach(function (el) { el.remove(); });
+  }
+  function applyReplacements(q, to, hitList) {        // 替换前逐个二次校验，任一不符即整体中止（不静默错删）
+    var done = 0;
+    for (var i = hitList.length - 1; i >= 0; i--) {   // 从后往前，块内偏移不失效
+      var h = hitList[i], fresh = collectHits(q), match = null;
+      for (var j = 0; j < fresh.length; j++) {
+        // 二次校验按"元素同一性 + 偏移"匹配（重算出的块对象是新实例，不能按块对象比较）
+        if (fresh[j].el === h.el && fresh[j].from === h.from) { match = fresh[j]; break; }
+      }
+      if (!match) return { done: done, stale: true };      // 位置已漂移：放弃本次，让调用方重算
+      if (match.blk.stream.substr(match.from, q.length) !== q) return { done: done, stale: true };
+      var r = rangeIn(match.blk, match.from, match.to);
+      if (!r) continue;
+      r.deleteContents();
+      r.insertNode(document.createTextNode(to));
+      pruneEmpty(r);
+      done++;
+    }
+    return { done: done, stale: false };
+  }
+  function replaceOne() {
+    if (findCur < 0 || !findHits[findCur]) return;
+    var q = findQuery, to = document.getElementById('ed-find-r').value;
+    var opId = window.__edPushUndo('替换');                // 快照必须在改动之前（改动后再压栈，撤销就变成无操作）
+    var res = applyReplacements(q, to, [findHits[findCur]]);
+    notifyEdit();
+    refreshFind();
+    if (res.stale) { window.__edUndoLast(opId); shellToast('正文已变化，已重新计算命中位置'); }
+  }
+  function replaceAll() {
+    var q = findQuery, to = document.getElementById('ed-find-r').value;
+    var hits = collectHits(q);                        // 用当下现算，不用缓存
+    if (!hits.length) { refreshFind(); return; }
+    var opId = window.__edPushUndo('替换全部（' + hits.length + ' 处）');
+    var res = applyReplacements(q, to, hits);
+    notifyEdit();
+    refreshFind();
+    if (res.stale) { window.__edUndoLast(opId); shellToast('正文已变化，未执行替换'); return; }
+    undoToast('已替换全部', opId);
+  }
+  function openFindPanel() {
+    if (findPanel) { var q0 = document.getElementById('ed-find-q'); if (q0) q0.focus(); return; }
+    findPanel = document.createElement('div');
+    findPanel.id = 'ed-find';
+    findPanel.setAttribute('data-ed-inj', '1');
+    findPanel.innerHTML = ''
+      + '<input id="ed-find-q" placeholder="查找（当前正文）" aria-label="查找">'
+      + '<input id="ed-find-r" placeholder="替换为" aria-label="替换为">'
+      + '<span id="ed-find-count" role="status">0/0</span>'
+      + '<button type="button" id="ed-find-prev" class="secondary" title="上一处">↑</button>'
+      + '<button type="button" id="ed-find-next" class="secondary" title="下一处">↓</button>'
+      + '<button type="button" id="ed-find-one" title="替换当前一处">替换</button>'
+      + '<button type="button" id="ed-find-all" title="全部替换（一次撤销）">全部替换</button>'
+      + '<button type="button" id="ed-find-close" class="secondary" title="关闭（Esc）">✕</button>'
+      + (HL_OK ? '' : '<span style="font-size:11px">此浏览器不支持高亮，仅计数与跳转</span>');
+    mount(findPanel);
+    document.getElementById('ed-find-q').addEventListener('input', function () {
+      findQuery = this.value; findCur = 0; refreshFind();
+    });
+    document.getElementById('ed-find-prev').addEventListener('click', function () { gotoHit(-1); });
+    document.getElementById('ed-find-next').addEventListener('click', function () { gotoHit(1); });
+    document.getElementById('ed-find-one').addEventListener('click', replaceOne);
+    document.getElementById('ed-find-all').addEventListener('click', replaceAll);
+    document.getElementById('ed-find-close').addEventListener('click', closeFindPanel);
+    document.getElementById('ed-find-q').focus();
+  }
+  function closeFindPanel() {
+    clearFindPaint();
+    if (findPanel) { findPanel.remove(); findPanel = null; }
+    findHits = []; findCur = -1; findQuery = '';
+  }
+  window.__edOpenFind = openFindPanel;
+  window.__edCloseFind = closeFindPanel;
+
+  // ===== 聚焦编辑 + 快捷键提示弹层（都是瞬态：mount 进 SHELL-INJECT 注释对 /save 剥离；ed-focus 由服务端归一化兜底）=====
+  function toggleFocusMode() {
+    var on = !document.body.classList.contains('ed-focus');
+    document.body.classList.toggle('ed-focus', on);
+    if (window.__edPersistUiSoon) window.__edPersistUiSoon();
+    shellToast(on ? '聚焦编辑：已收起左右栏（⌘⇧F 退出）' : '已退出聚焦编辑');
+  }
+  window.__edToggleFocus = toggleFocusMode;
+  window.__edFocusMode = function () { return document.body.classList.contains('ed-focus'); };
+  var KEYS = [['⌘S', '保存'], ['⌘F', '文内查找替换'], ['⌘Z', '撤销该操作（仅当它之后没有新的正文输入）'],
+    ['⌘⇧F', '聚焦编辑'], ['?', '本快捷键提示'], ['Esc', '关闭弹层'],
+    ['（说明）', '打字与加粗等格式操作由浏览器原生撤销接管；程序化操作用「↩ 撤销」按钮或 ⌘Z']];
+  function toggleShortcutHelp(show) {
+    var ex = document.getElementById('ed-keys');
+    if (show === false || ex) { if (ex) ex.remove(); return; }   // 幂等：未打开时直接返回（Esc 分支共用）
+    var d = document.createElement('div');
+    d.id = 'ed-keys'; d.setAttribute('data-ed-inj', '1'); d.setAttribute('role', 'dialog');
+    d.setAttribute('aria-label', '快捷键提示'); d.setAttribute('tabindex', '-1');
+    d.innerHTML = '<b>快捷键</b><ul>' + KEYS.map(function (k) { return '<li><kbd>' + k[0] + '</kbd><span>' + k[1] + '</span></li>'; }).join('') + '</ul>';
+    mount(d); d.focus();
+  }
+  window.__edOpenShortcutHelp = function () { toggleShortcutHelp(true); };
   renderNav();
 
   // 滚动同步当前章节（sheet 内部滚动；取观察带内最靠上的章节，底部排除带收窄让末节可命中）
@@ -546,6 +893,7 @@
   left.querySelector('#ed-addsec').addEventListener('click', function () {
     var name = prompt('新章节名称', '自定义章节');
     if (!name || !name.trim()) return;
+    window.__edPushUndo('添加章节');   // S2-T5：插入 DOM 之前压栈（下方 notifyEdit 完成 op 时间戳）
     var sec = document.createElement('section');
     sec.className = 'section';
     var t = document.createElement('div');
@@ -824,9 +1172,9 @@
   }
   if (jobBtn) jobBtn.addEventListener('click', openJobPop);
 
-  // 插入：章节内有 ul 则 append li，否则 append p；撤销 = 移除节点
+  // 插入：章节内有 ul 则 append li，否则 append p；撤销 = Toast/工具条消费同一条 op（快照恢复）
   function insertIntoSection(secEl, text) {
-    window.__edPushUndo('插入素材');
+    var opId = window.__edPushUndo('插入素材');
     var ul = secEl.querySelector('ul');
     var node;
     if (ul) {
@@ -841,10 +1189,10 @@
     notifyEdit();
     node.scrollIntoView({ block: 'center', behavior: 'smooth' });
     flashEl(node);
-    undoToast('已插入素材', function () { node.remove(); notifyEdit(); });
+    undoToast('已插入素材', opId);   // 旧实现传 node.remove() 闭包 → 绕过栈造成双重恢复，已按 opId 绑定
   }
-  // 撤销 toast（复用现有 .toast 样式，加按钮）
-  function undoToast(msg, undo) {
+  // 撤销 toast（复用现有 .toast 样式，加按钮）：绑定 opId，栈顶不是它 → 拒绝并置「已失效」，绝不弹别人的 op
+  function undoToast(msg, opId) {
     var t = document.createElement('div');
     t.className = 'toast';
     t.style.pointerEvents = 'auto';
@@ -854,7 +1202,18 @@
     b.type = 'button';
     b.textContent = '撤销';
     b.style.cssText = 'background:transparent;border:1px solid var(--ed-panel);color:var(--ed-panel);border-radius:4px;padding:1px 8px;font-size:12px;cursor:pointer';
-    b.addEventListener('click', function () { undo(); t.remove(); });
+    var target = opId == null ? (undoStack[undoStack.length - 1] || {}).id : opId;
+    function invalidate() {
+      b.disabled = true;
+      b.textContent = '已失效';
+      span.textContent = msg + '　该操作已不是最近一次操作，请到工具条撤销　';
+    }
+    b.addEventListener('click', function () {
+      if (b.disabled) return;
+      if (target == null || !window.__edUndoLast(target)) { invalidate(); return; }   // 只消费自己那条；栈顶已变 → 不弹别人的
+      b.disabled = true;                                                              // 成功消费后同样禁用该入口
+      t.remove();
+    });
     t.appendChild(span); t.appendChild(b);
     mount(t);
     requestAnimationFrame(function () { t.style.opacity = '1'; });

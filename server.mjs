@@ -38,6 +38,8 @@ const MAX_SNAPSHOTS = 50;
 // 并覆写 pdfs/<id>.pdf、拉起 Chromium；迁移三门禁期间放行它们＝浏览器标签页与迁移并发写 meta / 抢渲染。
 // 故与他人持 .migrate.lock 期间同样 503（纯读 GET 一律不受影响）。新增会写盘的 GET 必须登记到这里。
 const WRITE_ON_GET = new Set(['/pdf', '/export']);
+// 编辑器瞬态 body class：旧文档的内联清理选择器不认 ed-focus，必须由服务端兜底（设计 §6.2）
+const EDITOR_ONLY_BODY_CLASS = new Set(['ed-on', 'ed-preview', 'ed-focus']);
 const APP_STATUSES = ['已投递', '笔试', '面试中', 'offer', '已拒', '搁置'];
 const APP_TERMINAL = ['offer', '已拒', '搁置'];
 const docPath = (id) => path.join(root, 'docs', id + '.html');
@@ -952,7 +954,14 @@ async function handler(req, res) {
         // 运行时面板样式（head 中，不在注释对里）也要剥离
         .replace(/<style[^>]*data-ai-panel[^>]*>[\s\S]*?<\/style>/g, '')
         .replace(/<style[^>]*data-ed-shell[^>]*>[\s\S]*?<\/style>/g, '')
-        .replace(/<style[^>]*data-job-panel[^>]*>[\s\S]*?<\/style>/g, '');
+        .replace(/<style[^>]*data-job-panel[^>]*>[\s\S]*?<\/style>/g, '')
+        // body class 归一化（S2-T5，设计 §6.2）：只删编辑器瞬态项，其余属性与内容原样保留。
+        // ed-focus 是注入层加的聚焦态，旧文档 doSave 的内联清理选择器不认它 → 服务端兜底。
+        // 幂等：无 class 的 <body> 原样返回；save(serve(D)) === D 的字节稳定性不受影响。
+        .replace(/<body\b[^>]*>/g, (tag) => tag.replace(/\sclass="([^"]*)"/, (m, cls) => {
+          const keep = String(cls).trim().split(/\s+/).filter((c) => c && !EDITOR_ONLY_BODY_CLASS.has(c));
+          return keep.length ? ` class="${keep.join(' ')}"` : '';
+        }));
       if (!html.trim()) return send(400, 'empty save rejected', 'text/plain');
       if (!fs.existsSync(docPath(id))) return send(404, 'doc not found', 'text/plain');
       // 跨进程排他锁：保存与迁移互斥（被他人持有 → 503）。持锁贯穿整个事务，覆盖两次 rename 之间被杀的窗口。
