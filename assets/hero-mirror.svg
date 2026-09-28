@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 180" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="镜子前整理简历的线稿插画">
+  <rect x="18" y="22" width="96" height="132" rx="46"/>
+  <path d="M66 154v14M46 168h40"/>
+  <circle cx="66" cy="66" r="15"/>
+  <path d="M44 116c0-14 10-24 22-24s22 10 22 24"/>
+  <path d="M30 40c8-6 18-9 28-9"/>
+  <rect x="138" y="34" width="80" height="108" rx="4"/>
+  <path d="M150 56h56M150 70h56M150 84h40M150 104h56M150 118h30"/>
+  <path d="M198 142l22 22M220 164l-8 2 2-8"/>
+</svg>

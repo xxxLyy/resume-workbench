@@ -20,6 +20,12 @@ import { assembleTemplate, themeRegistration } from './template.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const root = process.env.RESUME_ROOT || APP_ROOT;   // 数据根（docs/snapshots/pdfs/JSON/backups 全在此）
+// 自绘线稿插画：读入内联，避免新增静态资源路由（路由集合冻结）
+const svgAsset = (name) => {
+  try { return fs.readFileSync(path.join(APP_ROOT, 'assets', name), 'utf8').replace(/^<\?xml[^>]*\?>\s*/, ''); }
+  catch { return ''; }   // 缺失 → 空插画位，不影响功能
+};
+const HERO_SVG = svgAsset('hero-mirror.svg');
 for (const d of ['docs', 'snapshots', 'pdfs', 'backups', 'logs', '.tx']) fs.mkdirSync(path.join(root, d), { recursive: true });
 
 // 服务日志由 launchd 写入 RESUME_LOG_FILE：启动时轮转一次，此后每 24h 检查（copytruncate，50MB 触发、留尾部 2MB 到 .1）
@@ -327,6 +333,19 @@ ul.doclist.list-view{grid-template-columns:1fr}
 .diff-line.del{background:var(--err-soft);text-decoration:line-through}
 .diff-line.ins{background:var(--ok-soft)}
 footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
+.hero{display:flex;gap:20px;align-items:center;justify-content:space-between;max-height:180px;margin:4px 0 14px}
+.hero-title{font-family:var(--serif);font-size:34px;font-weight:800;letter-spacing:.8px;margin:0 0 6px}
+.hero-sub{color:var(--mut);font-size:13px;line-height:1.6;margin:0 0 12px;max-width:46ch}
+.hero-acts{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.hero-art{flex:0 0 200px;color:var(--accent);opacity:.9}
+.hero-art svg{width:100%;height:auto;max-height:150px}
+.cta{display:inline-block;background:var(--accent);color:var(--accent-ink);border:none;border-radius:8px;padding:9px 16px;font-weight:700;font-size:14px;cursor:pointer}
+.cta:hover{transform:translateY(-1px);box-shadow:0 3px 9px rgba(60,45,25,.16)}
+.cta-alt{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:9px 14px;font-weight:600;font-size:13px;cursor:pointer}
+.statusline{margin-top:12px;font-size:13px;line-height:1.7;color:var(--mut)}
+.statusline .sep{margin:0 8px;color:var(--line)}
+#jobCard[open] summary{margin-bottom:6px}
+@media (max-width:700px){.hero{flex-direction:column;align-items:flex-start;max-height:none}.hero-art{display:none}}
 .kb{display:flex;gap:10px;overflow-x:auto;align-items:flex-start;padding-bottom:8px}
 .tablewrap{overflow-x:auto}
 @media (max-width:600px){.kb{flex-direction:column;overflow-x:visible}.kb>div{min-width:0!important;width:100%}}
@@ -405,14 +424,15 @@ function listPage(showArchived = false) {
     const ivs = Array.isArray(a.interviews) ? a.interviews : [];
     return ivs.some((iv) => { const t = iv.time ? new Date(iv.time).getTime() : null; return t && t - nowMs < 48 * 3600 * 1000; });
   });
+  // 状态摘要：一行、按优先级排序（告警 > 时限 > 进行中 > 同步口径 > 配置）；PDF 口径单一
   const todoBits = [
-    staleCount && `🔄 ${staleCount} 份 PDF 内容有更新，导出时重渲`,
-    degradedCount && `⚠️ ${degradedCount} 份待结构化`,
-    activeApps && `📋 ${activeApps} 份投递中`,
-    upcoming.length && `⏰ ${upcoming.length} 份逾期/近期面试提醒`,
-    cfg ? `🤖 AI 配置：${escHtml(cfg.name || '')}` : '🤖 AI 配置：未配置（岗位草稿仍可手动生成）',
-    `📑 PDF 已生成 ${pdfCount}/${docs.length}（以导出页实际渲染为准）`
-  ].filter(Boolean);
+    { p: 1, t: degradedCount && `⚠️ ${degradedCount} 份待结构化` },
+    { p: 1, t: staleCount && `🔄 ${staleCount} 份 PDF 较旧，导出时重渲` },
+    { p: 2, t: upcoming.length && `⏰ ${upcoming.length} 份逾期/近期面试提醒` },
+    { p: 3, t: activeApps && `📋 ${activeApps} 份投递中` },
+    { p: 4, t: `📑 PDF ${pdfCount}/${docs.length} 同步` },
+    { p: 5, t: cfg ? `🤖 AI：${escHtml(cfg.name || '')}` : '🤖 AI 未配置（岗位草稿仍可手动生成）' }
+  ].filter((b) => b.t).sort((a, b) => a.p - b.p).map((b) => b.t);
   // 岗位状态徽章 = 全部派生（S1-T8）：已投递 ← applications.json（权威）；可投递 ← flow+冲突+stale 三条件；其余按 flow
   const jobStatusBadge = (id) => {
     const m = meta[id] || {};
@@ -468,11 +488,29 @@ function listPage(showArchived = false) {
   const cards = keys.length === 1 && keys[0] === '未标记'
     ? byTag.get('未标记').join('\n')
     : keys.map((k) => `<li class="group-head">${escHtml(k)}</li>\n${byTag.get(k).join('\n')}`).join('\n');
-  return page('简历工作台', `<h1>简历工作台</h1>
+  // 「继续上次任务」回退链数据源：最近 mtime 排序（浏览器端再按 localStorage['resume-last-active-doc'] 优先）
+  const byMtime = [...infos].sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const fallbackId = byMtime.length ? byMtime[0].id : '';
+  const docIds = byMtime.map((d) => d.id);
+  const docTitles = Object.fromEntries(byMtime.map((d) => [d.id, d.title]));
+  return page('简历工作台', `
+    <section class="hero">
+      <div class="hero-txt">
+        <h1 class="hero-title">简历工作台</h1>
+        <p class="hero-sub">一份母版，针对每个岗位生成可投递的两页 PDF。数据全在本地。</p>
+        <div class="hero-acts">
+          ${fallbackId
+            ? `<a id="continueBtn" class="cta" href="/edit?id=${encodeURIComponent(fallbackId)}" data-fallback="${fallbackId}" data-doc-ids='${JSON.stringify(docIds)}' data-doc-titles='${JSON.stringify(docTitles)}'>▶ 继续上次任务</a>`
+            : `<form method="post" action="/new" style="display:inline"><button class="cta" type="submit">＋ 新建第一份简历</button></form>`}
+          <button type="button" class="cta-alt" id="jobToggle" aria-expanded="false" aria-controls="jobCard">🎯 针对岗位生成</button>
+        </div>
+      </div>
+      <div class="hero-art" aria-hidden="true">${HERO_SVG}</div>
+    </section>
     ${corruptBanner()}
-    <div class="card" id="jobCard">
-      <b style="font-size:15px">🎯 针对岗位生成简历</b>
-      <p style="font-size:12px;color:var(--mut);margin:6px 0">拿到 JD → 生成独立岗位草稿（不改母版）→ 审阅修改清单 → 导出两页 PDF。不配置模型也可手动生成草稿。</p>
+    <details class="card" id="jobCard">
+      <summary style="cursor:pointer;font-weight:700">🎯 针对岗位生成简历</summary>
+      <p style="font-size:13px;line-height:1.6;color:var(--mut);margin:6px 0">拿到 JD → 生成独立岗位草稿（不改母版）→ 审阅修改清单 → 导出两页 PDF。不配置模型也可手动生成草稿。</p>
       <form id="jobForm" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;align-items:end">
         <label style="font-size:12px">公司<input id="jobCompany" required style="width:100%"></label>
         <label style="font-size:12px">岗位<input id="jobRole" required style="width:100%"></label>
@@ -481,7 +519,7 @@ function listPage(showArchived = false) {
         <label style="font-size:12px;grid-column:1/-1">JD 文本（可留空，稍后补）<textarea id="jobJd" rows="3" style="width:100%"></textarea></label>
         <div style="grid-column:1/-1"><button type="submit">生成岗位草稿</button><span id="jobMsg" style="font-size:12px;color:var(--mut)"></span></div>
       </form>
-    </div>
+    </details>
     ${drafts.length ? `<div class="card" style="margin-top:12px"><b>继续处理岗位草稿</b>
       ${drafts.map((d) => `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><span><b>${d.title}</b> <span class="badge ${deliverableNow(d.id, meta[d.id] || {}, d) ? 'ok' : 'warn'}">${deliverableNow(d.id, meta[d.id] || {}, d) ? '可投递' : '草稿'}</span><span style="color:var(--mut);font-size:12px">${escHtml(((meta[d.id] || {}).company || '') + '·' + ((meta[d.id] || {}).role || ''))} · ${d.mtime}</span></span><a href="/edit?id=${d.id}"><button>继续处理</button></a></div>`).join('')}
     </div>` : ''}
@@ -494,7 +532,7 @@ function listPage(showArchived = false) {
         </form>
       </details>
     </div>
-    <div class="card" style="margin-top:12px;display:flex;gap:14px;flex-wrap:wrap;font-size:13px">${todoBits.map((t) => `<span>${t}</span>`).join('')}</div>
+    <div class="card statusline" role="status">${todoBits.join('<span class="sep">·</span>')}</div>
     <div style="display:flex;gap:10px;align-items:center;margin:12px 0">
       <input id="searchBox" placeholder="搜索文档（标题/id/标签）" style="flex:1" aria-label="搜索文档">
       <button class="secondary" id="viewToggle">▤ 切换</button>
@@ -541,6 +579,26 @@ function listPage(showArchived = false) {
           if (!d.contains(e.target)) d.removeAttribute('open');
         });
       });
+      (function () {
+        var jt = document.getElementById('jobToggle'), jc = document.getElementById('jobCard');
+        if (jt && jc) jt.addEventListener('click', function () {
+          jc.open = !jc.open;
+          jt.setAttribute('aria-expanded', jc.open ? 'true' : 'false');
+          if (jc.open) { var f = document.getElementById('jobCompany'); if (f) f.focus(); }
+        });
+        var btn = document.getElementById('continueBtn');
+        if (!btn) return;                                    // 无文档时渲染的是「新建第一份简历」，无此按钮
+        var ids = JSON.parse(btn.getAttribute('data-doc-ids') || '[]');
+        var titles = JSON.parse(btn.getAttribute('data-doc-titles') || '{}');
+        var fb = btn.getAttribute('data-fallback') || '';
+        var last = '';
+        try { last = localStorage.getItem('resume-last-active-doc') || ''; } catch (e) { last = ''; }
+        if (last && ids.indexOf(last) < 0) { try { localStorage.removeItem('resume-last-active-doc'); } catch (e) {} last = ''; }
+        var pick = last || fb;
+        if (!pick || ids.indexOf(pick) < 0) { btn.style.display = 'none'; return; }   // 不展示无效入口
+        btn.href = '/edit?id=' + encodeURIComponent(pick);
+        btn.textContent = (last ? '▶ 继续：' : '▶ 最近编辑：') + (titles[pick] || pick);
+      })();
     </script>`, 'docs');
 }
 

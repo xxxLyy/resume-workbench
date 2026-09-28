@@ -132,6 +132,22 @@ curl -sf "$B/" | grep -q "/edit?id=$DOCID" || fail '新文档未出现在首页�
 curl -sf "$B/" | grep -q 'class="card doc-card"' || fail '首页缺文档卡片'
 echo "✅ 新建文档与编辑器注入幂等（${DOCID}）"
 
+# S2-T3: 首页结构（hero / 一行状态摘要 / 折叠岗位表单 / 继续上次任务）
+# 放在文档创建之后：无文档时 hero 渲染「新建第一份简历」空态，continueBtn/data-doc-ids 不存在（回退链契约如此）
+HOME_HTML=$(curl -s "$B/")
+echo "$HOME_HTML" | grep -qF '<h1 class="hero-title">简历工作台</h1>' || fail '首页缺 hero 标题'
+echo "$HOME_HTML" | grep -qF 'id="continueBtn"' || fail '首页缺「继续上次任务」入口'
+echo "$HOME_HTML" | grep -qF 'data-doc-ids=' || fail '继续按钮缺 data-doc-ids（回退链无依据）'
+echo "$HOME_HTML" | grep -qF '<details class="card" id="jobCard"' || fail '岗位表单未收进 <details> 折叠'
+echo "$HOME_HTML" | grep -qF 'id="jobCompany"' || fail '岗位表单公司字段丢失（业务契约破坏）'
+echo "$HOME_HTML" | grep -qF 'id="jobJd"' || fail '岗位表单 JD 字段丢失'
+echo "$HOME_HTML" | grep -qF 'id="jobForm"' || fail '岗位表单 id 丢失（既有脚本依赖）'
+[ "$(printf '%s' "$HOME_HTML" | grep -cF 'class="card statusline"')" = "1" ] || fail '状态摘要应为一行（0 处或多处）'
+echo "$HOME_HTML" | grep -qF 'hero-art' || fail '缺插画位'
+echo "$HOME_HTML" | grep -qF '<svg' || fail '插画未内联为 SVG（禁止外链）'
+if printf '%s' "$HOME_HTML" | grep -qE 'https?://[^"'"'"']*\.(png|jpg|jpeg|svg)'; then fail '首页出现外链图片'; fi
+echo '✅ S2-T3 首页结构（hero/折叠岗位表单/一行状态摘要/继续上次任务）'
+
 # 写入基线内容
 curl -s -X POST "$B/save?id=$DOCID" --data-binary "$(sed 's/点击开始编辑…/文本A/' "$RESUME_ROOT/docs/$DOCID.html")" | grep -q '"ok":true' || fail '基线保存失败'
 grep -q '文本A' "$RESUME_ROOT/docs/$DOCID.html" || fail '基线未落盘'

@@ -6,6 +6,8 @@
   // 初始磁盘 mtime 暴露给模板保存状态机（多标签冲突检测的基线）
   window.__edDocMtime = Number(document.currentScript.getAttribute('data-mtime') || 0);
   var sheet = document.querySelector('.sheet');
+  // 首页「继续上次任务」数据源 = 最近访问（mtime ≠ 最近访问，故用本地键；不进 docs-meta）
+  try { localStorage.setItem('resume-last-active-doc', DOC_ID); } catch (e) { /* 隐私模式下忽略 */ }
   if (!sheet) return;
   // 幂等：清掉历史落盘/重复注入的外壳 DOM 与样式后重建（落盘残留无事件绑定，复用会是死 UI）
   ['ed-left', 'ed-right', 'ed-status', 'ed-canvas-tools', 'ed-seltb', 'ed-matpop', 'ed-matmask'].forEach(function (id) {

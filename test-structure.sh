@@ -1669,31 +1669,32 @@ try {
     if (metaRaw() !== rawBefore) fail('② 兼容读不得写回（docs-meta 字节不变）');
 
     // 派生可投递三条件（flow==='reviewed' / 无 pending 事实冲突 / !stale）——全部满足才「可投递」
+    // S2-T3：匹配收进徽章文本（>可投递<）——首页 hero 文案含「可投递」散文（"生成可投递的两页 PDF"），裸子串会误报；徽章语义不变
     await postJ('/render?id=jdoc');   // fresh
     let h = await home();
-    if (h.includes('可投递')) fail('② 条件1：flow=draft 不得可投递');
+    if (h.includes('>可投递<')) fail('② 条件1：flow=draft 不得可投递');
     const jc = await postJ('/job/changes?id=jdoc', { status: 'deliverable' });   // → flow=reviewed
     if (!jc.ok || jc.job.flow !== 'reviewed' || jc.job.status !== 'deliverable') fail('② status=deliverable 应映射 flow=reviewed: ' + JSON.stringify(jc.job));
     h = await home();
-    if (!h.includes('可投递')) fail('② flow=reviewed + 无冲突 + fresh 应可投递（派生）');
+    if (!h.includes('>可投递<')) fail('② flow=reviewed + 无冲突 + fresh 应可投递（派生）');
     updateMeta(R2, 'jdoc', (m) => ({ ...m, job: { ...m.job, changes: [{ id: 'cf1', level: 'conflict', status: 'pending' }] } }));
     h = await home();
-    if (h.includes('可投递')) fail('② 条件2：存在 pending 事实冲突不得可投递');
+    if (h.includes('>可投递<')) fail('② 条件2：存在 pending 事实冲突不得可投递');
     await postJ('/job/changes?id=jdoc', { updates: [{ id: 'cf1', status: 'rejected' }] });
     h = await home();
-    if (!h.includes('可投递')) fail('② 冲突处理后应恢复可投递');
+    if (!h.includes('>可投递<')) fail('② 冲突处理后应恢复可投递');
     fs.writeFileSync(path.join(R2, 'docs', 'jdoc.html'), doc('jdoc', 'J-V2'));   // 直接改正文 → stale（不经 /save，flow 不动）
     h = await home();
-    if (h.includes('可投递')) fail('② 条件3：stale 不得可投递');
+    if (h.includes('>可投递<')) fail('② 条件3：stale 不得可投递');
     await postJ('/render?id=jdoc');
     h = await home();
-    if (!h.includes('可投递')) fail('② 重渲（fresh）后应恢复可投递');
+    if (!h.includes('>可投递<')) fail('② 重渲（fresh）后应恢复可投递');
     // 改稿（/save）使 reviewed 失效 → flow 降回 draft（可投递随之失效；已有投递存档不受影响）
     await fetch(B + '/save?id=jdoc', { method: 'POST', headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: doc('jdoc', 'J-V3') });
     const jAfterSave = await (await fetch(B + '/job/changes?id=jdoc')).json();
     if (jAfterSave.job.flow !== 'draft' || jAfterSave.job.status !== 'draft') fail('② 改稿后 flow 应降回 draft（兼容视图 status=draft）: ' + JSON.stringify(jAfterSave.job && { f: jAfterSave.job.flow, s: jAfterSave.job.status }));
     h = await home();
-    if (h.includes('可投递')) fail('② 改稿后不得可投递');
+    if (h.includes('>可投递<')) fail('② 改稿后不得可投递');
 
     // exports 幂等键（顺序重复 POST）+ GET 导出页 / POST /render 不创建记录
     await (await fetch(B + '/export?id=exdoc')).text();          // 打开导出页（自动重渲）
