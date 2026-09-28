@@ -79,7 +79,7 @@ const saveMats = (mats) => writeJson('mats', mats);
 const saveApps = (apps) => writeJson('apps', apps);
 // docs-meta.json 无 saveMeta：唯一写入者为 tx.mjs 的 updateMeta（读最新→只 patch 目标文档→原子 rename），见各写路径。
 const corruptBanner = () => corrupt.size
-  ? `<div class="card" style="border-color:#f3c2c2;background:#fef2f2;color:#7f1d1d"><b>⚠️ 检测到数据文件损坏，相关写入已停止：</b>${[...corrupt].map((k) => JSON_FILES[k]).join('、')} —— 请先在设置页用备份恢复，或人工修复 JSON 后刷新。</div>`
+  ? `<div class="card" style="border-color:var(--err-soft);background:var(--err-soft);color:var(--err)"><b>⚠️ 检测到数据文件损坏，相关写入已停止：</b>${[...corrupt].map((k) => JSON_FILES[k]).join('、')} —— 请先在设置页用备份恢复，或人工修复 JSON 后刷新。</div>`
   : '';
 
 // ===== 状态维度与派生关联（S1-T8，spec §7/§8，binding）=====
@@ -290,50 +290,50 @@ function page(title, inner, active = '') {
   const nav = (key, href, label) => `<a href="${href}"${active === key ? ' class="on"' : ''}>${label}</a>`;
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
 <style>/*BENTO-V1*/
-/*A-VARS*/:root{--bg:#F4F5F8;--ink:#202737;--mut:#697186;--line:#DCE0E8;--indigo:#5B5DE8;--ok:#2F7D5A;--warn:#B45309;--err:#B91C1C;--radius:10px;--shadow:0 1px 3px rgba(41,48,80,.06);--shadow-up:0 10px 24px rgba(41,48,80,.10)}
+/*A-VARS*/:root{--bg:#F6F1E7;--panel:#FFFCF5;--ink:#26221C;--mut:#6E675C;--line:#E2D9C8;--accent:#C2410C;--accent-ink:#FFF7ED;--accent-soft:#FBE9D8;--ok:#2F6B4F;--ok-soft:#E4EFE6;--warn:#A25711;--warn-soft:#FBEEDC;--err:#A32B2B;--err-soft:#F7E4E1;--ai:#7A5C3E;--ai-soft:#F1E7D8;--radius:8px;--shadow:0 1px 2px rgba(60,45,25,.07);--shadow-up:0 10px 24px rgba(60,45,25,.12);--serif:"Songti SC","Noto Serif CJK SC","Source Han Serif SC",Georgia,serif;--sans:"PingFang SC",-apple-system,sans-serif}
 *{box-sizing:border-box}
-body{font-family:"PingFang SC",-apple-system,sans-serif;max-width:1100px;margin:0 auto;padding:0 20px 40px;font-size:14px;background:var(--bg);color:var(--ink)}
-a{color:var(--indigo);text-decoration:none;font-weight:600}
-.topnav{display:flex;justify-content:space-between;align-items:center;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:10px 18px;margin:16px 0 20px;position:sticky;top:12px;z-index:50;flex-wrap:wrap;gap:8px}
-.topnav .brand{font-weight:800;font-size:15px;color:var(--ink)}
+body{font-family:var(--sans);line-height:1.6;max-width:1100px;margin:0 auto;padding:0 20px 40px;font-size:14px;background:var(--bg);color:var(--ink)}
+a{color:var(--accent);text-decoration:none;font-weight:600}
+.topnav{display:flex;justify-content:space-between;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:10px 18px;margin:16px 0 20px;position:sticky;top:12px;z-index:50;flex-wrap:wrap;gap:8px}
+.topnav .brand{font-family:var(--serif);letter-spacing:.4px;font-weight:800;font-size:16px;color:var(--ink)}
 .topnav .links a{margin-left:16px;color:var(--mut);font-weight:600}
-.topnav .links a.on{color:var(--indigo)}
+.topnav .links a.on{color:var(--accent)}
 .topnav .links a:hover{color:var(--ink)}
-h1{font-size:22px;font-weight:800;margin:6px 0 12px}
-button{cursor:pointer;background:var(--indigo);color:#fff;border:none;border-radius:8px;min-height:32px;padding:0 12px;font-weight:600;font-size:13px;transition:transform .12s,box-shadow .12s,background .12s}
-button.secondary{background:#fff;color:var(--ink);border:1px solid var(--line)}
-button.danger{background:#fff;color:var(--err);border:1px solid #f3c2c2}
-button.danger:hover{background:#fef2f2}
-button:hover{transform:translateY(-1px);box-shadow:0 3px 9px rgba(24,27,48,.12)}
+h1{font-family:var(--serif);font-size:26px;font-weight:800;letter-spacing:.6px;margin:6px 0 12px}
+button{cursor:pointer;background:var(--accent);color:var(--accent-ink);border:none;border-radius:8px;min-height:32px;padding:0 12px;font-weight:600;font-size:13px;transition:transform .12s,box-shadow .12s,background .12s}
+button.secondary{background:var(--panel);color:var(--ink);border:1px solid var(--line)}
+button.danger{background:var(--panel);color:var(--err);border:1px solid var(--err-soft)}
+button.danger:hover{background:var(--err-soft)}
+button:hover{transform:translateY(-1px);box-shadow:0 3px 9px rgba(60,45,25,.16)}
 button:active{transform:translateY(1px);box-shadow:none}
-button.secondary:hover{background:#F4F5F8}
+button.secondary:hover{background:var(--bg)}
 button:disabled{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none}
-input,textarea{border:1px solid var(--line);border-radius:8px;padding:7px 10px;background:#fff;font-size:13px;max-width:100%}
-select{border:1px solid var(--line);border-radius:8px;padding:7px 10px;background:#fff;font-size:13px}
-button:focus-visible,input:focus-visible,a:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid var(--indigo);outline-offset:1px}
-.card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 16px}
-.badge{display:inline-block;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:600;background:#f3f4f6;color:#374151;margin-right:6px}
-.badge.ok{background:#dcfce7}.badge.warn{background:#fef3c7}.badge.ai{background:#ede9fe;color:#5b21b6}.badge.err{background:#fee2e2;color:#991b1b}
+input,textarea{border:1px solid var(--line);border-radius:8px;padding:7px 10px;background:var(--panel);color:var(--ink);font-size:13px;max-width:100%}
+select{border:1px solid var(--line);border-radius:8px;padding:7px 10px;background:var(--panel);color:var(--ink);font-size:13px}
+button:focus-visible,input:focus-visible,a:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 16px}
+.badge{display:inline-block;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:600;background:var(--bg);color:var(--mut);margin-right:6px}
+.badge.ok{background:var(--ok-soft);color:var(--ok)}.badge.warn{background:var(--warn-soft);color:var(--warn)}.badge.ai{background:var(--ai-soft);color:var(--ai)}.badge.err{background:var(--err-soft);color:var(--err)}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:12px 0}
 .stat{border-radius:var(--radius);padding:12px 14px;box-shadow:var(--shadow);border:1px solid var(--line)}
 .stat b{font-size:22px;display:block}
 .stat span{font-size:12px;color:var(--mut)}
-.stat.s1{background:#ede9fe}.stat.s2{background:#dbeafe}.stat.s3{background:#dcfce7}.stat.s4{background:#fef3c7}
+.stat.s1{background:var(--ai-soft)}.stat.s2{background:var(--accent-soft)}.stat.s3{background:var(--ok-soft)}.stat.s4{background:var(--warn-soft)}
 ul.doclist{list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
 ul.doclist.list-view{grid-template-columns:1fr}
-.group-head{list-style:none;grid-column:1/-1;font-weight:800;font-size:14px;margin:10px 0 0;padding-bottom:4px;border-bottom:1px solid var(--line);color:var(--mut)}
+.group-head{list-style:none;grid-column:1/-1;font-family:var(--serif);font-weight:800;font-size:15px;margin:10px 0 0;padding-bottom:4px;border-bottom:1px solid var(--line);color:var(--mut)}
 .diff-line{padding:3px 8px;border-radius:6px;margin:2px 0;font-size:13px}
 .diff-line.same{color:var(--mut)}
-.diff-line.del{background:#fee2e2;text-decoration:line-through}
-.diff-line.ins{background:#dcfce7}
-footer{margin-top:36px;text-align:center;color:#a8a29e;font-size:12px}
+.diff-line.del{background:var(--err-soft);text-decoration:line-through}
+.diff-line.ins{background:var(--ok-soft)}
+footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .kb{display:flex;gap:10px;overflow-x:auto;align-items:flex-start;padding-bottom:8px}
 .tablewrap{overflow-x:auto}
 @media (max-width:600px){.kb{flex-direction:column;overflow-x:visible}.kb>div{min-width:0!important;width:100%}}
 @media(hover:hover) and (pointer:fine){
 .doc-card{transition:transform .25s,box-shadow .25s}
 .doc-card:hover{transform:perspective(900px) rotateX(2deg) rotateY(-2px) translateY(-3px);box-shadow:var(--shadow-up)}}
-.doc-card:focus-within{outline:2px solid var(--indigo);outline-offset:2px}
+.doc-card:focus-within{outline:2px solid var(--accent);outline-offset:2px}
 @media(prefers-reduced-motion:reduce){.doc-card{transition:none!important}.doc-card:hover{transform:none!important}}
 </style></head><body>
 <nav class="topnav"><a class="brand" href="/">📄 简历工作台</a><span class="links">${nav('docs', '/', '文档')}${nav('materials', '/materials', '🧱 素材库')}${nav('apps', '/applications', '📋 投递看板')}${nav('stats', '/stats', '📊 复盘')}${nav('settings', '/settings', '⚙️ 设置')}</span></nav>
@@ -434,7 +434,7 @@ function listPage(showArchived = false) {
     const pdfBadge = si.state === 'none' ? '<span class="badge warn">PDF 未生成</span>'
       : si.state === 'stale' ? '<span class="badge warn">PDF 较旧</span>'
       : '<span class="badge ok">PDF 同步</span>';
-    return `<li class="card doc-card"><b style="font-size:16px">${info.title}</b>
+    return `<li class="card doc-card"><b style="font-family:var(--serif);font-size:16px">${info.title}</b>
       <div style="color:var(--mut);font-size:12px;margin:6px 0">${id} · 更新于 ${info.mtime}</div>
       <div style="margin-bottom:8px"><span class="badge">快照 ${snaps}</span>${pdfBadge}${m.job ? jobStatusBadge(id) : ''}${m.archivedAt ? '<span class="badge">🗄 已归档</span>' : ''}${tag ? `<span class="badge">${escHtml(tag)}</span>` : ''}${info.degraded ? '<span class="badge warn">待结构化</span>' : ''}</div>
       ${m.parent ? `<div style="font-size:12px;color:var(--mut)">岗位版：${escHtml((m.company || '') + '·' + (m.role || ''))}（母版 ${escHtml(m.parent)}）</div>` : ''}
@@ -489,7 +489,7 @@ function listPage(showArchived = false) {
       <form method="post" action="/new"><button class="secondary">＋ 新建空白文档</button></form>
       <details class="import-box" style="flex:1;min-width:220px"><summary style="cursor:pointer;font-weight:700">📄 导入 PDF</summary>
         <form id="up" style="margin-top:8px">
-          <span style="color:#666">选择 PDF 文件导入为新文档</span><input type="file" id="upfile" accept="application/pdf">
+          <span style="color:var(--mut)">选择 PDF 文件导入为新文档</span><input type="file" id="upfile" accept="application/pdf">
           <button>导入</button><span id="upmsg"></span>
         </form>
       </details>
@@ -498,7 +498,7 @@ function listPage(showArchived = false) {
     <div style="display:flex;gap:10px;align-items:center;margin:12px 0">
       <input id="searchBox" placeholder="搜索文档（标题/id/标签）" style="flex:1" aria-label="搜索文档">
       <button class="secondary" id="viewToggle">▤ 切换</button>
-      <a class="secondary" style="border:1px solid var(--line);border-radius:8px;padding:7px 12px;background:#fff;color:var(--ink);font-weight:600;font-size:13px;white-space:nowrap" href="${showArchived ? '/' : '/?archived=1'}">${showArchived ? '🗄 隐藏已归档' : '🗄 显示已归档'}</a>
+      <a class="secondary" style="border:1px solid var(--line);border-radius:8px;padding:7px 12px;background:var(--panel);color:var(--ink);font-weight:600;font-size:13px;white-space:nowrap" href="${showArchived ? '/' : '/?archived=1'}">${showArchived ? '🗄 隐藏已归档' : '🗄 显示已归档'}</a>
     </div>
     <ul class="doclist" id="doclist">${cards}</ul>
     <script>
@@ -1329,7 +1329,7 @@ async function handler(req, res) {
       const snapFile = path.join(snapDir(id), ts + '.html');
       if (!fs.existsSync(snapFile)) return send(404, 'snapshot not found', 'text/plain');
       let html = fs.readFileSync(snapFile, 'utf8');
-      const banner = `<div style="position:sticky;top:0;z-index:1000;background:#fef3c7;color:#92400e;padding:8px 16px;font-size:13px;text-align:center;border-bottom:2px solid #f59e0b">📜 历史快照只读预览（${ts}）</div><style>.edit-toolbar,.page-line{display:none!important}</style>`;
+      const banner = `<div style="position:sticky;top:0;z-index:1000;background:var(--warn-soft);color:var(--warn);padding:8px 16px;font-size:13px;text-align:center;border-bottom:2px solid var(--warn)">📜 历史快照只读预览（${ts}）</div><style>.edit-toolbar,.page-line{display:none!important}</style>`;
       html = html.replace('contenteditable="true"', '').replace("sheet.contentEditable = 'true'", '');
       return send(200, html.replace('<body>', '<body>' + banner));
     }
@@ -1459,7 +1459,7 @@ async function handler(req, res) {
         <thead><tr><th tabindex="0" onclick="sortCol(0)" onkeydown="if(event.key==='Enter')sortCol(0)">公司</th><th tabindex="0" onclick="sortCol(1)" onkeydown="if(event.key==='Enter')sortCol(1)">岗位</th><th tabindex="0" onclick="sortCol(2)" onkeydown="if(event.key==='Enter')sortCol(2)">渠道</th><th tabindex="0" onclick="sortCol(3)" onkeydown="if(event.key==='Enter')sortCol(3)">状态</th><th tabindex="0" onclick="sortCol(4)" onkeydown="if(event.key==='Enter')sortCol(4)">投递日期</th><th tabindex="0" onclick="sortCol(5)" onkeydown="if(event.key==='Enter')sortCol(5)">下一步</th><th tabindex="0" onclick="sortCol(6)" onkeydown="if(event.key==='Enter')sortCol(6)">截止时间</th><th>操作</th></tr></thead>
         <tbody>${apps.map(row).join('') || '<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:20px">暂无投递</td></tr>'}</tbody>
       </table></div>
-      <style>#appTable th{cursor:pointer;text-align:left;padding:8px;border-bottom:2px solid var(--line)}#appTable th:hover{background:#f9fafb}#appTable td{padding:8px;border-bottom:1px solid var(--line)}#appTable th.asc::after{content:' ↑'}#appTable th.desc::after{content:' ↓'}</style>
+      <style>#appTable th{cursor:pointer;text-align:left;padding:8px;border-bottom:2px solid var(--line)}#appTable th:hover{background:var(--bg)}#appTable td{padding:8px;border-bottom:1px solid var(--line)}#appTable th.asc::after{content:' ↑'}#appTable th.desc::after{content:' ↓'}</style>
       <script>
         var sortDir = 1, sortIdx = -1;
         function sortCol(i) {
@@ -1487,10 +1487,10 @@ async function handler(req, res) {
         const due = a.dueDate && (new Date(a.dueDate).getTime() - nowMs) < 48 * 3600 * 1000 && new Date(a.dueDate).getTime() >= nowMs - 24 * 3600 * 1000 ? '<span class="badge warn">⚠️</span>' : '';
         const arch = a.archive && a.archive.status === 'failed' ? '<span class="badge err" title="存档 PDF 生成失败">存档缺失</span>' : '';
         return `<div class="app-card card" data-status="${escHtml(a.status)}" data-app="${escHtml(a.id)}" style="margin:8px 0;padding:8px 10px">
-          <b>${escHtml(a.company)}</b> <span style="color:#555">${escHtml(a.role)}</span>${due}
-          <div style="font-size:12px;color:#555;margin:2px 0"><a href="/edit?id=${escHtml(a.docId)}">${escHtml(a.docId)}</a> <span class="badge ${a.jd ? 'ok' : 'warn'}">${a.jd ? 'JD ✓' : 'JD ✗'}</span>${arch}${a.channel ? `<span class="badge">${escHtml(a.channel)}</span>` : ''}</div>
-          ${a.nextStep || a.dueDate ? `<div style="font-size:12px;color:#555">${a.nextStep ? '下一步：' + escHtml(a.nextStep) : ''}${a.dueDate ? ' 截止：' + escHtml(a.dueDate) : ''}</div>` : ''}
-          ${a.note ? `<div style="font-size:12px;color:#777">${escHtml(a.note)}</div>` : ''}
+          <b>${escHtml(a.company)}</b> <span style="color:var(--mut)">${escHtml(a.role)}</span>${due}
+          <div style="font-size:12px;color:var(--mut);margin:2px 0"><a href="/edit?id=${escHtml(a.docId)}">${escHtml(a.docId)}</a> <span class="badge ${a.jd ? 'ok' : 'warn'}">${a.jd ? 'JD ✓' : 'JD ✗'}</span>${arch}${a.channel ? `<span class="badge">${escHtml(a.channel)}</span>` : ''}</div>
+          ${a.nextStep || a.dueDate ? `<div style="font-size:12px;color:var(--mut)">${a.nextStep ? '下一步：' + escHtml(a.nextStep) : ''}${a.dueDate ? ' 截止：' + escHtml(a.dueDate) : ''}</div>` : ''}
+          ${a.note ? `<div style="font-size:12px;color:var(--mut)">${escHtml(a.note)}</div>` : ''}
           <div style="margin-top:4px;font-size:12px">
             ${idx > 0 ? `<button class="secondary" style="padding:2px 8px" onclick="appPatch('${a.id}',{status:APP_STATUSES[${idx - 1}]})">◀</button>` : ''}
             ${idx < APP_STATUSES.length - 1 && !APP_TERMINAL.includes(a.status) ? `<button class="secondary" style="padding:2px 8px" onclick="appPatch('${a.id}',{status:APP_STATUSES[${idx + 1}]})">▶</button>` : ''}
@@ -1502,7 +1502,7 @@ async function handler(req, res) {
           </div>
         </div>`;
       };
-      const cols = APP_STATUSES.map((st) => `<div style="min-width:200px;flex:1"><div class="group-head">${st}</div>${apps.filter((a) => a.status === st).map(appCard).join('') || '<div style="color:#999;font-size:12px;padding:4px 8px">（空）</div>'}</div>`).join('');
+      const cols = APP_STATUSES.map((st) => `<div style="min-width:200px;flex:1"><div class="group-head">${st}</div>${apps.filter((a) => a.status === st).map(appCard).join('') || '<div style="color:var(--mut);font-size:12px;padding:4px 8px">（空）</div>'}</div>`).join('');
       return send(200, page('投递看板', `<h1>投递看板 <a href="/applications?view=table" style="font-size:13px;font-weight:400">⇄ 表格视图</a></h1>
     ${corruptBanner()}
     <p><a href="/">返回首页</a></p>
@@ -1578,7 +1578,7 @@ async function handler(req, res) {
     </div>
     <div class="card" style="margin-top:12px">
       <b>面试记录</b> <button class="secondary" style="padding:2px 8px;font-size:12px" onclick="ivAdd()">＋</button>
-      <div id="ivList">${interviews.map((iv, i) => `<div style="border-left:3px solid var(--indigo);padding:8px;margin:8px 0;background:#fafafa">
+      <div id="ivList">${interviews.map((iv, i) => `<div style="border-left:3px solid var(--accent);padding:8px;margin:8px 0;background:var(--bg)">
         <b>${escHtml(iv.round || '第' + (i + 1) + '轮')}</b> <span style="color:var(--mut);font-size:12px">${escHtml(iv.time || '')}</span>
         <a href="/app/ics?id=${escHtml(app.id)}&i=${i}" target="_blank" style="font-size:12px;margin-left:8px">📅 ICS</a>
         ${iv.questions ? `<div style="font-size:13px;margin-top:4px"><b>问题：</b>${escHtml(iv.questions)}</div>` : ''}
@@ -1586,7 +1586,7 @@ async function handler(req, res) {
         ${iv.feedback ? `<div style="font-size:13px"><b>反馈：</b>${escHtml(iv.feedback)}</div>` : ''}
         ${iv.next ? `<div style="font-size:12px;color:var(--mut)">下一步：${escHtml(iv.next)}</div>` : ''}
       </div>`).join('') || '<div style="color:var(--mut);font-size:12px">暂无面试记录</div>'}</div>
-      <details style="margin-top:8px"><summary style="cursor:pointer;font-size:13px;color:var(--indigo)">＋ 添加面试记录</summary>
+      <details style="margin-top:8px"><summary style="cursor:pointer;font-size:13px;color:var(--accent)">＋ 添加面试记录</summary>
         <div style="margin-top:8px;font-size:13px">
           <p>轮次 <input id="ivRound" size="10" placeholder="如：一面" required> 时间 <input id="ivTime" type="datetime-local"></p>
           <p>问题<br><textarea id="ivQ" rows="2" cols="60"></textarea></p>
@@ -1966,7 +1966,7 @@ async function handler(req, res) {
       const byTag = {}; const meta = loadMeta(); apps.forEach((a) => { const t = (meta[a.docId] || {}).tag || '未标记'; byTag[t] = (byTag[t] || 0) + 1; });
       const interviewed = apps.filter((a) => ['面试中', 'offer'].includes(a.status) || (Array.isArray(a.interviews) && a.interviews.length)).length;
       const n = apps.length;
-      const funnelBar = funnel.map(([s, c]) => `<div style="display:flex;align-items:center;margin:4px 0"><span style="width:70px;font-size:12px">${s}</span><div style="flex:1;background:#f3f4f6;border-radius:4px;height:20px"><div style="background:var(--indigo);height:100%;border-radius:4px;width:${n ? (c / n * 100) : 0}%"></div></div><span style="width:30px;text-align:right;font-size:12px">${c}</span></div>`).join('');
+      const funnelBar = funnel.map(([s, c]) => `<div style="display:flex;align-items:center;margin:4px 0"><span style="width:70px;font-size:12px">${s}</span><div style="flex:1;background:var(--bg);border-radius:4px;height:20px"><div style="background:var(--accent);height:100%;border-radius:4px;width:${n ? (c / n * 100) : 0}%"></div></div><span style="width:30px;text-align:right;font-size:12px">${c}</span></div>`).join('');
       const warn = n < 10 ? `<div class="badge warn" style="margin-bottom:10px">样本量小（n=${n}），仅供参考</div>` : '';
       return send(200, page('复盘', `<h1>📊 复盘统计 <span style="font-size:13px;font-weight:400;color:var(--mut)">n=${n}</span></h1>${warn}
     <div class="card"><b>状态分布</b><div style="font-size:11px;color:var(--mut);margin:4px 0">当前状态计数（非阶段漏斗；有面试记录即计入面试口径）</div>${funnelBar}</div>
@@ -2247,7 +2247,7 @@ async function handler(req, res) {
       const pendingConflicts = (job ? job.changes.filter((c) => c.level === 'conflict' && ['pending'].includes(c.status)) : []);
       const pendingImportant = (job ? job.changes.filter((c) => c.level === 'important' && c.status === 'pending') : []);
       const gate = pendingConflicts.length
-        ? `<div class="card" style="border-color:#f3c2c2;background:#fef2f2"><b>⛔ 存在 ${pendingConflicts.length} 条事实冲突未处理，暂不能下载</b>
+        ? `<div class="card" style="border-color:var(--err-soft);background:var(--err-soft)"><b>⛔ 存在 ${pendingConflicts.length} 条事实冲突未处理，暂不能下载</b>
            <p style="font-size:13px">请到编辑器右侧「审阅」面板逐条处理（接受或撤销）后再导出：</p>
            <ul style="font-size:13px">${pendingConflicts.map((c) => `<li>${escHtml((c.section || '') + '：' + (c.reason || c.before || c.id))}</li>`).join('')}</ul>
            <p><a href="/edit?id=${id}">去处理 →</a></p></div>`

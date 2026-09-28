@@ -40,7 +40,7 @@
 <!-- ② 注入层（editor-shell.js 运行时注入的等价物）：整块 @media screen、.ed-on 特异性覆盖、保存时剥离 -->
 <style>
 @media screen{
-  body.ed-on{--ed-bg:#F0EBE2;--ed-panel:#FFFCF5;--ed-ink:#26221C;--ed-mut:#6E675C;--ed-line:#DED3C0;--ed-accent:#C2410C;--ed-accent-ink:#FFF7ED;--ed-accent-soft:#FBE9D8;--ed-ok:#2F6B4F;--ed-ok-soft:#E4EFE6;--ed-warn:#A65A12;--ed-warn-soft:#FBEEDC;--ed-err:#A32B2B;--ed-err-soft:#F7E4E1;--ed-serif:"Songti SC","Noto Serif CJK SC","Source Han Serif SC",Georgia,serif;
+  body.ed-on{--ed-bg:#F0EBE2;--ed-panel:#FFFCF5;--ed-ink:#26221C;--ed-mut:#6E675C;--ed-line:#DED3C0;--ed-accent:#C2410C;--ed-accent-ink:#FFF7ED;--ed-accent-soft:#FBE9D8;--ed-ok:#2F6B4F;--ed-ok-soft:#E4EFE6;--ed-warn:#A25711;--ed-warn-soft:#FBEEDC;--ed-err:#A32B2B;--ed-err-soft:#F7E4E1;--ed-serif:"Songti SC","Noto Serif CJK SC","Source Han Serif SC",Georgia,serif;
     display:grid;height:100vh;overflow:hidden;background:var(--ed-bg);color:var(--ed-ink);
     grid-template-columns:208px minmax(0,1fr) 320px;grid-template-rows:auto auto minmax(0,1fr) auto}
   /* 外壳视觉兜底覆盖：靠 .ed-on 前缀压过上面的文档内联规则，不使用 !important */

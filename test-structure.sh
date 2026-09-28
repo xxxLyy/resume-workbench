@@ -1961,3 +1961,34 @@ EOF
   trap - EXIT
   echo '✅ S1-FW-3（F-3）隐私门禁：.tx 载荷/双锁/原子写残留全忽略（门禁绿），真·未跟踪敏感文件仍检出（门禁红）'
 )
+
+# —— S2-B1：应用页面设计变量统一（server.mjs 字面色 / 冷色黑名单 / 路由集合不变）——
+echo "── S2-B1: 应用页面设计变量统一（server.mjs 字面色 / 冷色黑名单 / 路由集合不变）──"
+node --input-type=module << 'EOF'
+import fs from 'node:fs';
+const fail = (m) => { console.error('❌ ' + m); process.exit(1); };
+const F = 'server.mjs';
+const ALLOW_DECL = /\/\*A-VARS\*\/:root\{/;            // 唯一允许出现 hex 的行 = token 声明行
+const HEX = /#[0-9a-fA-F]{3,8}\b/;
+fs.readFileSync(F, 'utf8').split('\n').forEach((ln, i) => {
+  if (HEX.test(ln) && !ALLOW_DECL.test(ln)) fail(`${F}:${i + 1} 组件层残留字面色: ${ln.trim().slice(0, 90)}`);
+});
+// 冷色/靛蓝黑名单：任何位置（含声明行）都不得出现
+const COLD = /#F4F5F8|#202737|#697186|#DCE0E8|#5B5DE8|#EEEFFE|#409eff|#2563eb|#dbeafe|#ede9fe|#5b21b6|--indigo/i;
+fs.readFileSync(F, 'utf8').split('\n').forEach((ln, i) => {
+  if (COLD.test(ln)) fail(`${F}:${i + 1} 冷色/靛蓝残留: ${ln.trim().slice(0, 90)}`);
+});
+// 路由集合不变（任何新增 pathname 字面量都会红）。初值 = S2 开工前实测冻结的 54 个字面量
+const sm = fs.readFileSync(F, 'utf8');
+const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','/ai/prep','/ai/review','/ai/rewrite','/ai/test',
+  '/api/extract','/app','/app/add','/app/archive-regenerate','/app/del','/app/ics','/app/jd','/app/update','/applications',
+  '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf',
+  '/job-panel.js','/job/changes','/job/create','/job/generate','/link','/mat/add','/mat/confirm','/mat/del','/mat/update',
+  '/materials','/new','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings',
+  '/snapshot/baseline','/snapshot/note','/snapshot/pdf','/snapshot/view','/snapshots','/stats','/tag','/version/create'].sort();
+const got = [...new Set([...sm.matchAll(/url\.pathname === '([^']+)'/g)].map((m) => m[1]))].sort();
+const missing = ROUTES_FROZEN.filter((r) => !got.includes(r));
+const extra = got.filter((r) => !ROUTES_FROZEN.includes(r));
+if (missing.length || extra.length) fail(`路由集合变化 missing=${missing} extra=${extra}`);
+console.log('✅ S2-B1 server.mjs 设计变量统一 + 路由集合不变');
+EOF
