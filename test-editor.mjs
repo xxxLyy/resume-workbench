@@ -1389,10 +1389,30 @@ try {
   if (m0.styleHash !== m1v.styleHash || m0.renderInputId !== m1v.renderInputId) {
     bad(`渲染标识漂移 styleHash ${m0.styleHash}->${m1v.styleHash} renderInputId ${m0.renderInputId}->${m1v.renderInputId}`);
   } else ok('styleHash / renderInputId 未漂移');
-  // 6d 外壳跨文档一致性：另一份 legacy 夹具（模板装配 → 去 data-theme + 内联 typo-custom + meta theme:'legacy'，
-  //    形态照 test-structure.sh:1449-1454 既有配方；txDoc 无工具栏 chrome，采样必为 null，故用装配形态），
-  //    外壳采样必须与本文档逐项相同 → 证明外壳观感由注入层统一、与文档内联样式代际无关
+  // 6d 外壳跨文档一致 + 覆盖优先级（两侧证据）：legacy 夹具的**文档内联 chrome 故意改成另一代取值**
+  //    （冷灰蓝实心底 / 方角 / 不同按钮底色 / 不同 save-state 配色，全部假数据），使得
+  //      (i)  拆掉 style[data-ed-shell] 后，两份文档的采样值必然不同（legacy 逐项回到它自己写的内联值）；
+  //      (ii) 注入层在场时两份文档逐项相同（sA === sB）——即 .ed-on 特异性真的压过了分叉的文档内联 chrome。
+  //    另需证明"只是渲染期覆盖、文档字节没被改写"：内联 <style id="legacy-chrome"> 原文仍在页面里，
+  //    且磁盘夹具 sha1 打开前后一致。
+  //    夹具形态（去 data-theme + 内联 typo-custom + meta theme:'legacy'）仍照 test-structure.sh:1449-1454；
+  //    txDoc 无工具栏 chrome、采样必为 null，故用 assembleTemplate 装配形态。
   const LEGACY_DOC = 'ed-legacy-fixture';
+  const L_TB_BG = '#E7EAF0', L_TB_INK = '#0B1B33', L_TB_LINE = '#B9BEC9', L_RADIUS = '2px';
+  const L_BTN_BG = '#3D4A63', L_BTN_INK = '#F2F4F8';
+  const L_OK_INK = '#0B3D2A', L_OK_BG = '#BFE3C9';
+  const rgbOf = (h) => 'rgb(' + [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)).join(', ') + ')';
+  // 只扰动注入层确实覆盖的属性（.ed-on .edit-toolbar / .ed-on .edit-toolbar button / .ed-on …[data-state]），
+  // 否则 sA===sB 会因为"注入层压根没管这项"而假绿或假红。
+  const LEGACY_CHROME = '<style id="legacy-chrome">'
+    + `.edit-toolbar{background:${L_TB_BG};color:${L_TB_INK};border:1px solid ${L_TB_LINE};border-radius:${L_RADIUS}}`
+    + `.edit-toolbar button,.edit-toolbar button.secondary{background:${L_BTN_BG};color:${L_BTN_INK};border-radius:${L_RADIUS}}`
+    + `.save-state[data-state="saved"]{color:${L_OK_INK};background:${L_OK_BG}}`
+    + '.save-state[data-state="dirty"]{color:#4A3000;background:#EFD9A0}'
+    + '.save-state[data-state="saving"]{color:#0A2A5E;background:#C3D4F2}'
+    + '.save-state[data-state="error"]{color:#5A0B0B;background:#F0C4C4}'
+    + '</style>';
+  const legacyFile = path.join(dataRoot, 'docs', LEGACY_DOC + '.html');
   {
     let tpl = assembleTemplate('classic');
     tpl = tpl.replaceAll('{{NAME}}', () => '遗留测试员').replaceAll('{{CONTACT}}', () => 'legacy@example.com')
@@ -1400,18 +1420,58 @@ try {
       .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => '').replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => LEGACY_DOC);
     const legacyHtml = tpl
       .replace('<style data-theme="classic">', '<style>')
-      .replace('</head>', '<style id="typo-custom">.sheet p{letter-spacing:0.02em}</style>\n</head>');
-    fs.writeFileSync(path.join(dataRoot, 'docs', LEGACY_DOC + '.html'), legacyHtml);
+      .replace('</head>', '<style id="typo-custom">.sheet p{letter-spacing:0.02em}</style>\n' + LEGACY_CHROME + '\n</head>');
+    fs.writeFileSync(legacyFile, legacyHtml);
     const meta6 = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
     meta6[LEGACY_DOC] = { theme: 'legacy' };
     fs.writeFileSync(metaFile, JSON.stringify(meta6));
   }
+  const legacySha0 = sha1(fs.readFileSync(legacyFile, 'utf8'));
   const pageB = await ctx6.newPage();
   await pageB.goto(`${base}/edit?id=${LEGACY_DOC}`, { waitUntil: 'networkidle' });
   await pageB.waitForSelector('body.ed-on');
   const sB = await shellSample(pageB);
-  if (JSON.stringify(sA) !== JSON.stringify(sB)) bad('外壳样式跨文档不一致（classic vs legacy 夹具）', JSON.stringify({ sA, sB }));
-  else ok('外壳计算样式跨文档（classic vs legacy）逐项一致');
+  // (ii) 注入层在场：两份文档外壳逐项相同（此时 legacy 的内联 chrome 与 classic 已分叉）
+  if (JSON.stringify(sA) !== JSON.stringify(sB)) bad('外壳样式跨文档不一致（classic vs 差异化 chrome 的 legacy 夹具）', JSON.stringify({ sA, sB }).slice(0, 600));
+  else ok('外壳计算样式跨文档逐项一致（legacy 内联 chrome 已分叉仍被统一）');
+  // 文档字节未被改写：内联 legacy-chrome 原文仍在页面中，磁盘夹具 sha1 未变
+  const inlineChrome = await pageB.evaluate(() => (document.querySelector('#legacy-chrome') || {}).textContent || '');
+  if (!inlineChrome.includes(L_TB_BG) || !inlineChrome.includes(L_RADIUS) || !inlineChrome.includes(L_BTN_BG) || !inlineChrome.includes(L_OK_BG)) {
+    bad('legacy 夹具的内联 chrome 在页面里被改写了（应只在渲染期被覆盖，不得改写文档）', inlineChrome.slice(0, 200));
+  } else ok('文档自身内联 chrome 原文仍在页面中（渲染期覆盖，未改写文档）');
+  const legacySha1v = sha1(fs.readFileSync(legacyFile, 'utf8'));
+  if (legacySha1v !== legacySha0) bad('legacy 夹具磁盘字节在打开后变化（serve 改写了冻结件）');
+  else ok(`legacy 夹具磁盘字节打开前后一致（sha1 ${legacySha0.slice(0, 8)}）`);
+  // (i) 拆掉注入层：两份文档必然不同，且 legacy 逐项回到自身内联 chrome
+  await pageB.evaluate(() => { document.querySelector('style[data-ed-shell]').remove(); });
+  const sBbare = await shellSample(pageB);
+  await page.evaluate(() => { const s = document.querySelector('style[data-ed-shell]'); if (s) s.remove(); });
+  const sAbare = await shellSample(page);
+  const probe = [
+    ['toolbar.backgroundColor', sA.toolbar?.backgroundColor, sB.toolbar?.backgroundColor, sBbare.toolbar?.backgroundColor, rgbOf(L_TB_BG)],
+    ['toolbar.color', sA.toolbar?.color, sB.toolbar?.color, sBbare.toolbar?.color, rgbOf(L_TB_INK)],
+    ['toolbar.borderRadius', sA.toolbar?.borderRadius, sB.toolbar?.borderRadius, sBbare.toolbar?.borderRadius, L_RADIUS],
+    ['btn.backgroundColor', sA.btn?.backgroundColor, sB.btn?.backgroundColor, sBbare.btn?.backgroundColor, rgbOf(L_BTN_BG)],
+    ['btn.color', sA.btn?.color, sB.btn?.color, sBbare.btn?.color, rgbOf(L_BTN_INK)],
+    ['state.color', sA.state?.color, sB.state?.color, sBbare.state?.color, rgbOf(L_OK_INK)],
+    ['state.backgroundColor', sA.state?.backgroundColor, sB.state?.backgroundColor, sBbare.state?.backgroundColor, rgbOf(L_OK_BG)]
+  ];
+  // 三向对照（uni/sA=注入层在场，bare=拆掉注入层，own=夹具自己写的内联值）：
+  //   bare 必须等于 own   → 差异化确实被采样到（否则 6d 什么都没证明）
+  //   uni 必须不等于 bare → .ed-on 覆盖真的改了渲染结果（注入层失效即红）
+  //   sA 必须等于 uni     → 两份文档外壳统一
+  const bareNotOwn = probe.filter(([, , , bare, own]) => bare !== own);
+  const notOverridden = probe.filter(([, , uni, bare]) => uni === bare);
+  const notUnified = probe.filter(([, a, b]) => a !== b);
+  if (bareNotOwn.length) bad('拆掉注入层后 legacy 外壳未逐项回到自身内联 chrome（差异化没被测到）', JSON.stringify(bareNotOwn).slice(0, 500));
+  else ok('拆掉注入层：legacy 外壳 7 项逐字回到自身内联 chrome（旧代际取值）');
+  if (notOverridden.length) bad('.ed-on 覆盖未压过 legacy 的分叉内联 chrome（注入层失效或特异性不足）', JSON.stringify(notOverridden).slice(0, 500));
+  else ok('加上注入层：同 7 项被 .ed-on 覆盖（与文档自身内联 chrome 全部不同）');
+  if (notUnified.length) bad('注入层在场时两份文档外壳仍有差异（外壳未统一）', JSON.stringify(notUnified).slice(0, 500));
+  else ok('加上注入层：classic 与 legacy 同 7 项逐项相同（外壳统一）');
+  if (JSON.stringify(sAbare) === JSON.stringify(sBbare)) {
+    bad('两份文档去掉注入层后仍完全相同 → 6d 没有差异化，证明不了覆盖优先级', JSON.stringify(sAbare).slice(0, 400));
+  } else ok('去掉注入层：classic 与 legacy 外壳采样不同（文档自身 chrome 确实分叉）');
   await ctx6.close();
   }
 } finally {

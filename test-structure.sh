@@ -2002,21 +2002,57 @@ grep -qF '@media print { .edit-toolbar, .page-line, .toast, .recovery-bar { disp
 node --input-type=module << 'EOF'
 import fs from 'node:fs';
 const fail = (m) => { console.error('❌ ' + m); process.exit(1); };
-const IMPORTANT_BASELINE = 4;          // 实测现状：editor-shell.js :162、:173（两处）、:175
+const IMPORTANT_BASELINE = 4;          // 实测现状：editor-shell.js :162、:173（两处）、:197
 const src = fs.readFileSync('editor-shell.js', 'utf8');
 const screenOpen = src.indexOf("'@media screen{'");
 if (screenOpen < 0) fail('editor-shell.js 缺少 @media screen 注入块');
 const injectEnd = src.indexOf('document.head.appendChild(css)');
 if (injectEnd < 0) fail('找不到注入块收尾锚点 document.head.appendChild(css)');
 const injected = src.slice(screenOpen, injectEnd);
-// 1) @media print 块只准隐藏/还原，不准声明颜色/背景/边框/阴影
-const printBlock = /@media print\{([\s\S]*?)\}'/.exec(src);
-if (!printBlock) fail('editor-shell.js 缺少 @media print 块');
-if (/color|background(-color)?:|border|box-shadow/.test(printBlock[1])) fail('注入层 @media print 含视觉规则: ' + printBlock[1].slice(0, 140));
+// print 段由多个 JS 字面量拼成。旧写法 /@media print\{([\s\S]*?)\}'/ 非贪婪、止步于第一个 }'，
+// 只看到隐藏段；⌘P 还原段（background:var(--ed-panel)/box-shadow:none/margin:0）从未进入任何检查，
+// 而 .sheet 禁令又把注入段切在 '@media print{ 之前 —— 还原字面量两头落空。
+// 现在把 print 的全部字面量拼回真实 CSS，两项检查都覆盖 print 全量。
+const PRINT_ANCHOR = "'@media print{";
+const printOpen = injected.indexOf(PRINT_ANCHOR);
+if (printOpen < 0) fail('editor-shell.js 缺少 @media print 块');
+const printCss = [...injected.slice(printOpen).matchAll(/'([^']*)'/g)].map((m) => m[1]).join('');
+if (!printCss.startsWith('@media print{') || !printCss.endsWith('}')) {
+  fail('print 注入 CSS 拼接形状异常（不是单个完整 @media print 块，需修断言）: ' + printCss.slice(0, 140));
+}
+// print 段对 .sheet 的"还原"白名单（第 2 项正文禁令专用，独立登记：即使有人日后扩了下面的
+// PRINT_ALLOW，也不能把正文文字属性夹带进 print 的 .sheet 规则里绕过禁令）
+const PRINT_SHEET_RESTORE = new Map([
+  ['.ed-on .sheet', ['overflow:visible', 'height:auto', 'box-shadow:none', 'margin:0']]
+]);
+// 1) @media print 块只准"隐藏 + 还原"：选择器与声明逐字登记，任何未登记项（含颜色/背景/边框/阴影）一律红。
+//    逐字白名单严于原先的黑名单正则（黑名单只排除已知视觉属性，白名单要求每条声明都被显式登记）。
+const PRINT_ALLOW = new Map([
+  ['#ed-left,#ed-right,#ed-status,#ed-canvas-tools,#ed-seltb,#ed-matpop,#ed-matmask', ['display:none!important']],
+  ['body.ed-on', ['display:block', 'height:auto', 'overflow:visible', 'background:var(--ed-panel)']],
+  ...PRINT_SHEET_RESTORE
+]);
+const VISUAL_DECL = /^(?:color|background|background-color|border(?:-[a-z]+)*|box-shadow|font(?:-[a-z]+)*|line-height|letter-spacing|text-[a-z-]+)\s*:/;
+const printInner = printCss.slice('@media print{'.length, -1);
+const printRules = [...printInner.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
+if (!printRules.length) fail('print 块未解析出任何规则（断言正则失效，需修断言）');
+let printDecls = 0;
+printRules.forEach((m) => {
+  const sel = m[1].trim();
+  const allow = PRINT_ALLOW.get(sel);
+  if (!allow) fail(`注入层 @media print 含未登记选择器（print 只准隐藏/还原，新增须逐字登记）: ${sel.slice(0, 120)}`);
+  m[2].split(';').map((d) => d.trim()).filter(Boolean).forEach((d) => {
+    printDecls++;
+    if (!allow.includes(d)) fail(`注入层 @media print 含${VISUAL_DECL.test(d) ? '视觉规则' : '未登记声明'}（print 只准隐藏/还原）: ${sel}{${d.slice(0, 100)}}`);
+  });
+});
+// 解析完整性：白名单判定必须吃掉 print 全文，残留即说明断言正则漏看了内容（正是本轮修复的那个洞）
+const printResidual = printRules.reduce((acc, m) => acc.replace(m[0], () => ''), printInner).trim();
+if (printResidual) fail('print 块存在未被断言解析到的残留内容（需修断言）: ' + printResidual.slice(0, 140));
 // 2) 正文文字属性禁令（作用域 = .sheet 及其后代）；布局/滚动/阴影/outline/caret 不受限
-//    扫描范围 = 屏幕注入段（@media print 段的"还原"规则由上面第 1 项专项检查治理，不进正文禁令扫描）
+//    扫描范围 = 屏幕注入段 + print 段全量（print 段用同一 FORBID，只放行还原白名单里逐字登记的声明）
 const FORBID = /(?:^|;)\s*(color|font-family|font-size|font-weight|font-style|line-height|letter-spacing|text-align|text-decoration|text-transform|text-indent|background|background-color|margin|margin-[a-z]+|padding|padding-[a-z]+)\s*:/;
-const printAnchor = injected.indexOf("'@media print{");
+const printAnchor = injected.indexOf(PRINT_ANCHOR);
 const screenInjected = printAnchor >= 0 ? injected.slice(0, printAnchor) : injected;
 const sheetRules = [...screenInjected.matchAll(/'([^']*\.sheet[^']*)\{([^']*)\}'/g)];
 if (!sheetRules.length) fail('注入层未匹配到任何 .sheet 规则（断言正则失效，需修断言）');
@@ -2024,10 +2060,19 @@ sheetRules.forEach((m) => {
   const decls = m[2].replace(/caret-color|outline-color/g, 'editorHintOnly');
   if (FORBID.test(decls)) fail(`注入层对 ${m[1]} 声明了正文文字属性: ${m[2].slice(0, 140)}`);
 });
+// 2b) print 段的 .sheet 规则同样受正文禁令约束（摘掉还原白名单后仍有 FORBID 属性即红）
+const printSheetRules = printRules.filter((m) => m[1].includes('.sheet'));
+if (!printSheetRules.length) fail('print 段未匹配到任何 .sheet 还原规则（断言正则失效，需修断言）');
+printSheetRules.forEach((m) => {
+  const sel = m[1].trim();
+  const allow = PRINT_SHEET_RESTORE.get(sel) || [];
+  const rest = m[2].split(';').map((d) => d.trim()).filter((d) => d && !allow.includes(d)).join(';');
+  if (FORBID.test(rest)) fail(`注入层 @media print 对 ${sel} 声明了正文文字属性: ${rest.slice(0, 140)}`);
+});
 // 3) !important 只准持平基线（新增覆盖必须靠 .ed-on 特异性）
 const imp = (injected.match(/!important/g) || []).length;
 if (imp > IMPORTANT_BASELINE) fail(`注入层 !important 由基线 ${IMPORTANT_BASELINE} 增至 ${imp}（新增规则请靠特异性覆盖）`);
-console.log(`✅ S2-A 注入层纪律通过（.sheet 规则 ${sheetRules.length} 条 / !important ${imp} ≤ ${IMPORTANT_BASELINE} / themes 未动 / print 规则仍在）`);
+console.log(`✅ S2-A 注入层纪律通过（.sheet 规则 ${sheetRules.length}+${printSheetRules.length}(print) 条 / print 规则 ${printRules.length} 条 ${printDecls} 项声明全在白名单 / !important ${imp} ≤ ${IMPORTANT_BASELINE} / themes 未动 / print 规则仍在）`);
 EOF
 
 # —— S2-B2：编辑器与面板设计变量统一（三个注入文件字面色 / 冷色黑名单）——
