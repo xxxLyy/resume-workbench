@@ -1474,6 +1474,36 @@ try {
   } else ok('去掉注入层：classic 与 legacy 外壳采样不同（文档自身 chrome 确实分叉）');
   await ctx6.close();
   }
+
+  // 7) 看板：1440 宽下 6 列齐全且第 6 列不被截断；空列压缩不撑满（本块自成一个 { } 作用域 + 自开 ctx）
+  {
+  const ctx7 = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const kbPage = await ctx7.newPage();
+  await kbPage.goto(`${base}/applications`, { waitUntil: 'networkidle' });
+  const kb = await kbPage.evaluate(() => {
+    const el = document.querySelector('.kb');
+    if (!el) return null;
+    const cols = [...el.querySelectorAll('.kb-col')];
+    const box = el.getBoundingClientRect();
+    return {
+      scrollW: el.scrollWidth, clientW: el.clientWidth, cols: cols.length,
+      widths: cols.map((c) => Math.round(c.getBoundingClientRect().width)),
+      heads: [...el.querySelectorAll('.group-head')].map((h) => h.textContent.trim()),
+      lastVisible: cols.length ? (cols[cols.length - 1].getBoundingClientRect().right <= box.right + 1) : false
+    };
+  });
+  if (!kb) bad('看板缺 .kb 容器');
+  else {
+    if (kb.cols !== 6) bad(`看板列数应为 6，实际 ${kb.cols}`); else ok('看板 6 列齐全');
+    if (!kb.lastVisible) bad('看板第 6 列被截断（右边缘超出容器）'); else ok('看板第 6 列完整可见');
+    if (kb.scrollW > kb.clientW + 1) bad(`看板仍需横向滚动 scrollW=${kb.scrollW} clientW=${kb.clientW}`); else ok('看板 1440 宽下无需横向滚动');
+    const narrow = kb.widths.filter((w) => w < 130).length;
+    if (narrow) ok(`空列已压缩（${narrow} 列宽 <130px）`);
+    else if (kb.widths.every((w) => w >= 180)) ok('无空列（全部列宽 ≥180px）');
+    else bad(`空列未压缩且列宽异常：${JSON.stringify(kb.widths)}`);
+  }
+  await ctx7.close();
+  }
 } finally {
   await browser.close();
 }

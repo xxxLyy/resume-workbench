@@ -292,13 +292,14 @@ function readBodyToFile(req, file, maxSize) {
   });
 }
 
-function page(title, inner, active = '') {
+function page(title, inner, active = '', wide = false) {
   const nav = (key, href, label) => `<a href="${href}"${active === key ? ' class="on"' : ''}>${label}</a>`;
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
 <style>/*BENTO-V1*/
 /*A-VARS*/:root{--bg:#F6F1E7;--panel:#FFFCF5;--ink:#26221C;--mut:#6E675C;--line:#E2D9C8;--accent:#C2410C;--accent-ink:#FFF7ED;--accent-soft:#FBE9D8;--ok:#2F6B4F;--ok-soft:#E4EFE6;--warn:#A25711;--warn-soft:#FBEEDC;--err:#A32B2B;--err-soft:#F7E4E1;--ai:#7A5C3E;--ai-soft:#F1E7D8;--radius:8px;--shadow:0 1px 2px rgba(60,45,25,.07);--shadow-up:0 10px 24px rgba(60,45,25,.12);--serif:"Songti SC","Noto Serif CJK SC","Source Han Serif SC",Georgia,serif;--sans:"PingFang SC",-apple-system,sans-serif}
 *{box-sizing:border-box}
 body{font-family:var(--sans);line-height:1.6;max-width:1100px;margin:0 auto;padding:0 20px 40px;font-size:14px;background:var(--bg);color:var(--ink)}
+body.wide{max-width:min(1440px,100%)}
 a{color:var(--accent);text-decoration:none;font-weight:600}
 .topnav{display:flex;justify-content:space-between;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:10px 18px;margin:16px 0 20px;position:sticky;top:12px;z-index:50;flex-wrap:wrap;gap:8px}
 .topnav .brand{font-family:var(--serif);letter-spacing:.4px;font-weight:800;font-size:16px;color:var(--ink)}
@@ -347,6 +348,9 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 #jobCard[open] summary{margin-bottom:6px}
 @media (max-width:700px){.hero{flex-direction:column;align-items:flex-start;max-height:none}.hero-art{display:none}}
 .kb{display:flex;gap:10px;overflow-x:auto;align-items:flex-start;padding-bottom:8px}
+.kb-col{flex:1 1 0;min-width:180px}
+.kb-col.empty{flex:0 0 92px;min-width:92px}
+.kb-col .group-head{margin-top:0}
 .tablewrap{overflow-x:auto}
 @media (max-width:600px){.kb{flex-direction:column;overflow-x:visible}.kb>div{min-width:0!important;width:100%}}
 @media(hover:hover) and (pointer:fine){
@@ -354,7 +358,7 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .doc-card:hover{transform:perspective(900px) rotateX(2deg) rotateY(-2px) translateY(-3px);box-shadow:var(--shadow-up)}}
 .doc-card:focus-within{outline:2px solid var(--accent);outline-offset:2px}
 @media(prefers-reduced-motion:reduce){.doc-card{transition:none!important}.doc-card:hover{transform:none!important}}
-</style></head><body>
+</style></head><body${wide ? ' class="wide"' : ''}>
 <nav class="topnav"><a class="brand" href="/">📄 简历工作台</a><span class="links">${nav('docs', '/', '文档')}${nav('materials', '/materials', '🧱 素材库')}${nav('apps', '/applications', '📋 投递看板')}${nav('stats', '/stats', '📊 复盘')}${nav('settings', '/settings', '⚙️ 设置')}</span></nav>
 ${inner}
 <footer>简历平台 · 本地优先 · 数据在 ${path.basename(root) === 'resume' ? '~/resume' : 'RESUME_ROOT'}</footer>
@@ -1555,8 +1559,9 @@ async function handler(req, res) {
         const idx = APP_STATUSES.indexOf(a.status);
         const due = a.dueDate && (new Date(a.dueDate).getTime() - nowMs) < 48 * 3600 * 1000 && new Date(a.dueDate).getTime() >= nowMs - 24 * 3600 * 1000 ? '<span class="badge warn">⚠️</span>' : '';
         const arch = a.archive && a.archive.status === 'failed' ? '<span class="badge err" title="存档 PDF 生成失败">存档缺失</span>' : '';
-        return `<div class="app-card card" data-status="${escHtml(a.status)}" data-app="${escHtml(a.id)}" style="margin:8px 0;padding:8px 10px">
-          <b>${escHtml(a.company)}</b> <span style="color:var(--mut)">${escHtml(a.role)}</span>${due}
+        return `<div class="app-card card" data-status="${escHtml(a.status)}" data-app="${escHtml(a.id)}" style="margin:8px 0;padding:8px 10px;background:var(--panel);border:1px solid var(--line)">
+          <div style="font-family:var(--serif);font-size:14px;font-weight:800;color:var(--ink)">${escHtml(a.company)}${due}</div>
+          <div style="color:var(--mut);font-size:12px">${escHtml(a.role)}</div>
           <div style="font-size:12px;color:var(--mut);margin:2px 0"><a href="/edit?id=${escHtml(a.docId)}">${escHtml(a.docId)}</a> <span class="badge ${a.jd ? 'ok' : 'warn'}">${a.jd ? 'JD ✓' : 'JD ✗'}</span>${arch}${a.channel ? `<span class="badge">${escHtml(a.channel)}</span>` : ''}</div>
           ${a.nextStep || a.dueDate ? `<div style="font-size:12px;color:var(--mut)">${a.nextStep ? '下一步：' + escHtml(a.nextStep) : ''}${a.dueDate ? ' 截止：' + escHtml(a.dueDate) : ''}</div>` : ''}
           ${a.note ? `<div style="font-size:12px;color:var(--mut)">${escHtml(a.note)}</div>` : ''}
@@ -1571,7 +1576,10 @@ async function handler(req, res) {
           </div>
         </div>`;
       };
-      const cols = APP_STATUSES.map((st) => `<div style="min-width:200px;flex:1"><div class="group-head">${st}</div>${apps.filter((a) => a.status === st).map(appCard).join('') || '<div style="color:var(--mut);font-size:12px;padding:4px 8px">（空）</div>'}</div>`).join('');
+      const cols = APP_STATUSES.map((st) => {
+        const items = apps.filter((a) => a.status === st);
+        return `<div class="kb-col${items.length ? '' : ' empty'}"><div class="group-head">${st} <span style="color:var(--mut);font-weight:600">${items.length}</span></div>${items.map(appCard).join('') || '<div style="color:var(--mut);font-size:12px;padding:4px 8px">（空）</div>'}</div>`;
+      }).join('');
       return send(200, page('投递看板', `<h1>投递看板 <a href="/applications?view=table" style="font-size:13px;font-weight:400">⇄ 表格视图</a></h1>
     ${corruptBanner()}
     <p><a href="/">返回首页</a></p>
@@ -1613,7 +1621,7 @@ async function handler(req, res) {
         if (r.ok) { var d = await r.json().catch(function () { return null; }); if (d && d.warning) alert(d.warning); location.reload(); }
         else document.getElementById('appmsg').textContent = ' ❌ ' + (await r.text());
       });
-    </script>`, 'apps'));
+    </script>`, 'apps', true));
     }
     // ===== 投递详情 =====
     if (req.method === 'GET' && url.pathname === '/app') {
@@ -1763,7 +1771,7 @@ async function handler(req, res) {
     <div id="cards"></div>
     <p><button type="button" id="addBtn">➕ 添加配置</button> <button type="button" id="saveBtn">保存</button> <a href="/">返回首页</a> <span id="msg"></span></p>
     <div class="card" style="margin-top:20px">
-      <b>💾 备份与恢复</b>
+      <b style="font-family:var(--serif);font-size:14px">💾 备份与恢复</b>
       <p style="font-size:13px;color:var(--mut)">备份含 docs/snapshots/pdfs 与三个 JSON（docs-meta/applications/materials），<b>不含 config.json（密钥不进备份）</b>。</p>
       <p><a href="/backup"><button>下载备份</button></a> <span style="font-size:12px;color:var(--mut)">恢复默认「合并」：本地独有记录保留，同 id 冲突以备份为准，预览里逐条列出</span></p>
       <form id="restoreForm"><input type="file" id="restoreFile" accept=".tar.gz,.tgz">
@@ -2035,16 +2043,16 @@ async function handler(req, res) {
       const byTag = {}; const meta = loadMeta(); apps.forEach((a) => { const t = (meta[a.docId] || {}).tag || '未标记'; byTag[t] = (byTag[t] || 0) + 1; });
       const interviewed = apps.filter((a) => ['面试中', 'offer'].includes(a.status) || (Array.isArray(a.interviews) && a.interviews.length)).length;
       const n = apps.length;
-      const funnelBar = funnel.map(([s, c]) => `<div style="display:flex;align-items:center;margin:4px 0"><span style="width:70px;font-size:12px">${s}</span><div style="flex:1;background:var(--bg);border-radius:4px;height:20px"><div style="background:var(--accent);height:100%;border-radius:4px;width:${n ? (c / n * 100) : 0}%"></div></div><span style="width:30px;text-align:right;font-size:12px">${c}</span></div>`).join('');
+      const funnelBar = funnel.map(([s, c]) => `<div style="display:flex;align-items:center;margin:6px 0"><span style="width:70px;font-size:12px">${s}</span><div style="flex:1;background:var(--bg);border-radius:4px;height:20px"><div style="background:var(--accent);height:100%;border-radius:4px;width:${n ? (c / n * 100) : 0}%"></div></div><span style="width:30px;text-align:right;font-size:12px">${c}</span></div>`).join('');
       const warn = n < 10 ? `<div class="badge warn" style="margin-bottom:10px">样本量小（n=${n}），仅供参考</div>` : '';
       return send(200, page('复盘', `<h1>📊 复盘统计 <span style="font-size:13px;font-weight:400;color:var(--mut)">n=${n}</span></h1>${warn}
-    <div class="card"><b>状态分布</b><div style="font-size:11px;color:var(--mut);margin:4px 0">当前状态计数（非阶段漏斗；有面试记录即计入面试口径）</div>${funnelBar}</div>
+    <div class="card"><b style="font-family:var(--serif);font-size:14px">状态分布</b><div style="font-size:11px;color:var(--mut);margin:4px 0">当前状态计数（非阶段漏斗；有面试记录即计入面试口径）</div>${funnelBar}</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px">
-      <div class="card"><b>按渠道</b>${Object.entries(byCh).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:4px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
-      <div class="card"><b>按简历版本</b>${Object.entries(byDoc).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:4px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
-      <div class="card"><b>按岗位方向</b>${Object.entries(byTag).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:4px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
+      <div class="card"><b style="font-family:var(--serif);font-size:14px">按渠道</b>${Object.entries(byCh).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
+      <div class="card"><b style="font-family:var(--serif);font-size:14px">按简历版本</b>${Object.entries(byDoc).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
+      <div class="card"><b style="font-family:var(--serif);font-size:14px">按岗位方向</b>${Object.entries(byTag).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
     </div>
-    <div class="card" style="margin-top:12px"><b>面试参与</b><p style="font-size:13px">${interviewed}/${n} 有面试安排或已进入面试（${n ? Math.round(interviewed / n * 100) : 0}%）；预约不等于完成。</p></div>`, 'apps'));
+    <div class="card" style="margin-top:12px"><b style="font-family:var(--serif);font-size:14px">面试参与</b><p style="font-size:13px">${interviewed}/${n} 有面试安排或已进入面试（${n ? Math.round(interviewed / n * 100) : 0}%）；预约不等于完成。</p></div>`, 'apps'));
     }
     // ===== 备份 =====
     if (req.method === 'GET' && url.pathname === '/backup') {
