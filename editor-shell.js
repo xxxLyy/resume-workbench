@@ -446,6 +446,27 @@
     else nativeInputCount++;
     if (window.__edRefreshFind) window.__edRefreshFind();   // 内容一变即重算查找命中
   });
+
+  // ===== S2-T7 C1：离线恢复（template.html「恢复这份修改」）× 撤销栈重排基线 =====
+  // 恢复路径整片替换 sheet.innerHTML 且不派发任何事件（template.html 冻结，无法在里面通知外壳），
+  // 栈里替换前的快照全部失效且危险：⌘Z（此时 programmaticUndoSafeNow 成立）会静默回滚恢复内容，
+  // 回滚又触发 __edMarkProgrammatic → markDirty → writeCache，用回滚后的正文覆盖恢复缓存 → 永久丢失（终审已复现）。
+  // 检测方式：document capture 阶段监听 .recovery-bar 按钮点击（含 conflict-bar，它同样带 recovery-bar 类），
+  // 本次点击的同步派发跑完后（setTimeout 0，必然晚于按钮内联 onclick）比对 sheet.innerHTML 是否被换掉，
+  // 换了才清栈——「丢弃」/「强制保存」不换正文，不误清；普通打字与外壳自身的程序化操作不会点击恢复条，
+  // 不可能触发本监听。不选 MutationObserver：sheet 的 childList 变更（增删章节/条目、__edUndoLast 自身
+  // 回滚、冲突条"加载服务器版本"）与恢复替换在观察者眼里同形，无法归因，会违反"不得在外壳自身程序化
+  // 操作期间清栈"的要求。
+  document.addEventListener('click', function (e) {
+    var btn = e.target && e.target.closest ? e.target.closest('.recovery-bar button') : null;
+    if (!btn) return;
+    var bodyBefore = sheet.innerHTML;
+    setTimeout(function () {
+      if (sheet.innerHTML === bodyBefore) return;   // 正文未被整片替换 → 栈仍有意义，不动
+      undoStack.length = 0;                          // 重排基线：替换前的任何快照都不许再被消费
+      updateUndoBtn();                               // 工具条「↩ 撤销」随空栈隐藏
+    }, 0);
+  }, true);
   // ⌘S 门控：文档内联监听是 document 的 bubble 阶段，capture 必然先跑 → 组合期直接截断（template.html 不改）
   document.addEventListener('keydown', function (e) {
     if (!(e.metaKey || e.ctrlKey) || String(e.key).toLowerCase() !== 's') return;
@@ -459,11 +480,15 @@
     // 打字进用户文档永远优先：光标在正文（contenteditable，含其内部节点）或任何输入控件里时，
     // '?' 是正常字符，绝不开弹层；弹层入口 = ⌘/（任意焦点，与打字永不冲突）+ 工具条「?」按钮。
     var inField = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable === true);
+    // ⌘Z 护栏（S2-T7 I2，台账既定裁决"⌘Z 加 INPUT/TEXTAREA 判定"）：焦点在表单控件里时 ⌘Z 属于该控件
+    // （浏览器原生字段撤销），外壳绝不消费程序化 op——否则查找框里一个 ⌘Z 会静默改写整篇正文。
+    // 注意与 inField 的差别：sheet 本身是 contenteditable（DIV），正文里的 ⌘Z 仍走下面的消费/交回原生判定。
+    var inTextField = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA');
     if (mod && !e.shiftKey && k === 'z') {
       // §6.1 line 87：仅当"该 op 之后没有新的受信任输入"时才消费栈顶；否则**不拦截**，
       // 原样交回浏览器原生撤销——原生撤销恰好逐字回退 op 之后的输入（⌘⇧Z 可重做），
       // 程序化 op 保留在栈上走工具条/Toast 入口（带 window.confirm 显式确认）。
-      if (programmaticUndoSafeNow()) { e.preventDefault(); window.__edUndoLast(); }
+      if (!inTextField && programmaticUndoSafeNow()) { e.preventDefault(); window.__edUndoLast(); }
       return;
     }
     if (mod && !e.shiftKey && k === 'f') { e.preventDefault(); openFindPanel(); return; }
@@ -471,7 +496,16 @@
     if (mod && !e.shiftKey && k === '/') { e.preventDefault(); toggleShortcutHelp(); return; }   // ⌘/：任意焦点下开快捷键弹层（不与打字冲突）
     // 真实键盘 Shift+/ 上报 key='?'；部分合成输入路径（Playwright press('Shift+/') 实测）上报 key='/' + shiftKey=true → 两种形态都认
     if (!mod && (e.key === '?' || (e.key === '/' && e.shiftKey)) && !inField) { e.preventDefault(); toggleShortcutHelp(true); return; }
-    if (e.key === 'Escape') { toggleShortcutHelp(false); closeFindPanel(); }
+    if (e.key === 'Escape') {
+      // Esc 只关最上层（S2-T7 M6）：素材/岗位弹层 > 快捷键帮助 > 查找面板 > 窄屏浮层（后者由更晚注册的监听自理）。
+      // 弹层开着时本次 Esc 归弹层：其自身监听（下方）负责关闭并 stopImmediatePropagation。
+      // 旧实现无条件 toggleShortcutHelp(false)+closeFindPanel()——关弹层的同一次 Esc 会连带清掉查找面板
+      // （丢失查询词）与快捷键帮助；弹层 handler 里的 stopPropagation 拦不住同节点上更早注册的本监听。
+      // 关闭一层即 stopImmediatePropagation：同一次 Esc 不再穿透到窄屏浮层监听，保证单层语义。
+      if ((matpop && matpop.style.display === 'block') || (jobpop && jobpop.style.display === 'block')) return;
+      if (document.getElementById('ed-keys')) { e.stopImmediatePropagation(); toggleShortcutHelp(false); return; }
+      if (findPanel) { e.stopImmediatePropagation(); closeFindPanel(); return; }
+    }
   });
 
   var navlist = left.querySelector('#ed-navlist');
@@ -866,9 +900,9 @@
   }
   window.__edToggleFocus = toggleFocusMode;
   window.__edFocusMode = function () { return document.body.classList.contains('ed-focus'); };
-  var KEYS = [['⌘S', '保存'], ['⌘F', '文内查找替换'], ['⌘Z', '撤销该操作（仅当它之后没有新的正文输入；否则 ⌘Z 交回浏览器原生撤销）'],
-    ['⌘⇧F', '聚焦编辑'], ['⌘/', '本快捷键提示（焦点既不在正文、也不在输入框时按 ? 亦可；在正文或输入框里 ? 就是正常打字）'], ['Esc', '关闭弹层'],
-    ['（说明）', '打字与加粗等格式操作由浏览器原生撤销接管；程序化操作用「↩ 撤销」按钮或 ⌘Z']];
+  var KEYS = [['⌘S', '保存'], ['⌘F', '文内查找替换'], ['⌘Z', '撤销该操作（仅当它之后没有新的正文输入；否则 ⌘Z 交回浏览器原生撤销。焦点在输入框里时 ⌘Z 永远属于输入框）'],
+    ['⌘⇧F', '聚焦编辑'], ['⌘/', '本快捷键提示（焦点既不在正文、也不在输入框时按 ? 亦可；在正文或输入框里 ? 就是正常打字）'], ['Esc', '关闭最上层弹层（一次只关一层）'],
+    ['（说明）', '打字与加粗等格式操作由浏览器原生撤销接管；条目复制/删除、替换、排序、AI/审阅落盘等程序化改动走「↩ 撤销」按钮或 ⌘Z（该操作之后无新输入时）；排版调整不进撤销栈，用排版面板「恢复默认排版」还原']];
   function toggleShortcutHelp(show) {
     var ex = document.getElementById('ed-keys');
     if (show === false || ex) { if (ex) ex.remove(); return; }   // 幂等：未打开时直接返回（Esc 分支共用）
@@ -1089,7 +1123,9 @@
   }
   matmask.addEventListener('click', closeMatPop);
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && matpop.style.display === 'block') { e.stopPropagation(); closeMatPop(); }
+    // stopImmediatePropagation（S2-T7 M6）：同一次 Esc 只关本弹层，不再触发同节点上更晚注册的
+    // 岗位弹层/窄屏浮层监听（stopPropagation 对同节点监听无效）。
+    if (e.key === 'Escape' && matpop.style.display === 'block') { e.stopImmediatePropagation(); closeMatPop(); }
   });
   // 焦点圈定：Tab 不跑到弹层外
   function trapTab(container, e) {
@@ -1120,7 +1156,8 @@
   }
   jobmask.addEventListener('click', closeJobPop);
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && jobpop.style.display === 'block') { e.stopPropagation(); closeJobPop(); }
+    // stopImmediatePropagation（S2-T7 M6）：同 matpop——Esc 单层关闭，不穿透到窄屏浮层监听。
+    if (e.key === 'Escape' && jobpop.style.display === 'block') { e.stopImmediatePropagation(); closeJobPop(); }
   });
   jobpop.addEventListener('keydown', function (e) { trapTab(jobpop, e); });
   function jobField(labelTxt, inputEl) {
@@ -1403,7 +1440,14 @@
       if (v.narrowLeftOpen === true) left.classList.add('ed-open');
       if (v.narrowRightOpen === true) right.classList.add('ed-open');
     }
-    if (v.pane && right.querySelector('#ed-rtabs button[data-pane="' + v.pane + '"]')) selectTab(v.pane);
+    // S2-T7 I5a：v.pane 来自 localStorage，载荷可被外部写坏；直接内插进 querySelector 时含引号的值会抛
+    // SyntaxError，而 restoreUi 在初始化尾部内联调用——抛出会中断其后全部初始化（选区工具条等）。
+    // CSS.escape 使任意字符串成为合法属性值（损坏值最多匹配不到按钮 → 跳过面板恢复，不再致命）。
+    if (v.pane) {
+      var paneVal = String(v.pane);
+      var paneEsc = (window.CSS && CSS.escape) ? CSS.escape(paneVal) : paneVal.replace(/["\\]/g, '\\$&');
+      if (right.querySelector('#ed-rtabs button[data-pane="' + paneEsc + '"]')) selectTab(paneVal);
+    }
     if (typeof v.scrollTop === 'number' && v.scrollTop > 0) sheet.scrollTop = v.scrollTop;   // zoom 已先应用，同一像素值即同一位置
   }
   sheet.addEventListener('scroll', persistSoon);

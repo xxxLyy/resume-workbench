@@ -2186,7 +2186,42 @@ try {
     await page.evaluate(() => { if (window.__edToggleLeftNarrow) window.__edToggleLeftNarrow(); });
     await page.evaluate(() => window.__edPersistUi());
     const narrow = await page.evaluate(() => JSON.parse(localStorage.getItem('resume-ui:' + window.__edDocId) || '{}'));
-    if (typeof narrow.narrowLeftOpen !== 'boolean') bad('窄屏浮层展开态未持久化'); else ok('窄屏浮层展开态可持久化（与宽屏折叠分字段存储）');
+    if (typeof narrow.narrowLeftOpen !== 'boolean') bad('窄屏浮层展开态未持久化');
+    else if (narrow.narrowLeftOpen !== true) bad(`窄屏展开后应持久化为 true（得 ${narrow.narrowLeftOpen}）`);
+    else ok('窄屏浮层展开态可持久化（与宽屏折叠分字段存储）');
+    // 13c-2 [S2-T7 I5b] 真端到端往返：窄屏视口下重载 → ed-open 必须被 restoreUi 真的恢复回来
+    //   （旧断言只查 typeof === 'boolean'，存了没消费也绿；台账 Task 6 minor 转本波）
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForSelector('body.ed-on');
+    await page.waitForTimeout(400);
+    const narrowBack = await page.evaluate(() => ({
+      leftOpen: document.getElementById('ed-left').classList.contains('ed-open'),
+      stillNarrow: window.innerWidth < 1200
+    }));
+    if (!narrowBack.stillNarrow) bad('重载后视口已不是窄屏，本往返无效（需修夹具而非放宽断言）');
+    else if (!narrowBack.leftOpen) bad('窄屏重载后 ed-open 浮层未恢复（存下的布尔未被 restoreUi 消费）');
+    else ok('窄屏浮层展开态端到端往返：toggle → reload → ed-open 真的恢复');
+    // 13d [S2-T7 I5a] 损坏会话载荷不得中断初始化：pane 含引号曾让 restoreUi 的 querySelector 抛
+    //   SyntaxError，而 restoreUi 在初始化尾部内联调用 → 其后初始化（选区工具条等）全部中断。
+    //   修复（CSS.escape）后：损坏 pane 静默跳过，其余字段照常恢复，页面无未捕获异常。
+    const ctx13d = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    await ctx13d.addInitScript((id) => {
+      try { localStorage.setItem('resume-ui:' + id, '{"v":1,"zoom":1.1,"pane":"a\\"b","scrollTop":10}'); } catch (e) {}
+    }, ED_DOC);
+    const page13d = await ctx13d.newPage();
+    const errs13d = [];
+    page13d.on('pageerror', (e) => errs13d.push(String(e)));
+    await page13d.goto(`${base}/edit?id=${ED_DOC}`, { waitUntil: 'networkidle' });
+    await page13d.waitForSelector('body.ed-on');
+    const init13d = await page13d.evaluate(() => ({
+      seltb: !!document.getElementById('ed-seltb'),
+      zoom: window.__edGetZoom ? window.__edGetZoom() : null
+    }));
+    if (errs13d.length) bad(`损坏会话载荷（pane 含引号）引发页面级异常：${errs13d[0].slice(0, 120)}`);
+    else if (!init13d.seltb) bad('restoreUi 之后的初始化被损坏载荷中断（缺 #ed-seltb 选区工具条）');
+    else if (init13d.zoom !== 1.1) bad(`损坏载荷只应废掉 pane 字段，zoom 应照常恢复（得 ${init13d.zoom}）`);
+    else ok('损坏会话载荷不再中断初始化（pane 跳过、zoom 照常、无 pageerror）');
+    await ctx13d.close();
   }
   const metaAll = JSON.parse(fs.readFileSync(path.join(dataRoot, 'docs-meta.json'), 'utf8'));
   const leaked = Object.values(metaAll).some((m) => m && Object.keys(m).some((k) => /zoom|hidden|pane|scroll|focus|lastActive|ui/i.test(k)));
@@ -2194,7 +2229,9 @@ try {
   await ctx13.close();
   }
 
-  // 14) [S2-T6｜简报称"块 13"] 窄屏单栏不破 + 应用 UI 正文可读性（≥13px / 行高 ≥1.5）；简历正文不在门禁内
+  // 14) [S2-T6｜简报称"块 13"] 窄屏单栏不破 + 应用 UI 正文可读性（≥13px / 行高 ≥1.6）；简历正文不在门禁内
+  //     [S2-T7 I3] 门禁回紧 1.5 → 1.6：设计 §2/§7.5 定的是 ≥1.6，旧断言放宽到 1.5 无裁决记录，
+  //     1.55 的回归会静默通过。基线实测五个采样点均 ≥1.6（见 t7 报告），故收紧密口本身零 CSS 改动。
   {
   const ctxN = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const narrow = await ctxN.newPage();
@@ -2237,10 +2274,165 @@ try {
   read.forEach((r) => {
     if (r.missing) bad(`可读性采样缺元素 ${r.sel}`);
     else if (r.fs < 13) bad(`应用 UI 正文字号过小 ${r.sel}=${r.fs}px（应 ≥13px）`);
-    else if (r.ratio < 1.5) bad(`应用 UI 正文行高过小 ${r.sel}=${r.ratio}（应 ≥1.5）`);
+    else if (r.ratio < 1.6) bad(`应用 UI 正文行高过小 ${r.sel}=${r.ratio}（应 ≥1.6，设计 §2/§7.5；不得放宽本门禁救火）`);
     else ok(`可读性通过 ${r.sel} ${r.fs}px/${r.ratio}`);
   });
   await ctx14.close();
+  }
+
+  // 15) [S2-T7 C1] 离线恢复 × 撤销栈重排基线（终审 Critical 1 的常驻复现）。
+  //     序列照抄终审演示：程序化 op → 点「恢复这份修改」→ ⌘Z（op 后无受信任输入 → 旧码
+  //     programmaticUndoSafeNow 成立且无确认）→ 旧码把恢复内容静默回滚，且 __edMarkProgrammatic →
+  //     markDirty → writeCache 用回滚后的正文覆盖恢复缓存 → 永久丢失。修复 = 注入层在恢复条点击
+  //     导致正文被整片替换后清空 undoStack（template.html 保持零改动）。
+  {
+    const REC_DOC = 'ed-fixture-recover-undo';
+    let tpl = assembleTemplate('classic');
+    tpl = tpl.replaceAll('{{NAME}}', () => '测试员').replaceAll('{{CONTACT}}', () => 'test@example.com')
+      .replaceAll('{{INTENT}}', () => '测试').replaceAll('{{SUMMARY}}', () => '摘要文本').replaceAll('{{SKILLS}}', () => '<p>技能一：内容</p>')
+      .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => '<div class="entry-head"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024</div></div>\n<ul><li>项目A描述</li></ul>')
+      .replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => REC_DOC);
+    fs.writeFileSync(path.join(dataRoot, 'docs', REC_DOC + '.html'), tpl);
+    const ctx15 = await browser.newContext();
+    // 预置离线恢复缓存（正文与服务器不同 → 加载后必出恢复条；比块 2 的失败保存路径更确定）
+    await ctx15.addInitScript((id) => {
+      try {
+        localStorage.setItem('resume-autosave:' + id, JSON.stringify({
+          v: 2, rev: 99, typo: '', docId: id,
+          body: '<div class="header"><h1>测试员</h1></div><section class="section"><div class="section-title">恢复章节</div><p>RECOVERED-MARKER</p></section>'
+        }));
+      } catch (e) {}
+    }, REC_DOC);
+    const page15 = await ctx15.newPage();
+    let dialogs15 = 0;
+    page15.on('dialog', async (d) => { dialogs15++; await d.dismiss(); });
+    await page15.goto(`${base}/edit?id=${REC_DOC}`, { waitUntil: 'networkidle' });
+    await page15.waitForSelector('body.ed-on');
+    await page15.waitForSelector('.recovery-bar');
+    // ① 真实程序化操作（导航「复制条目」→ __edPushUndo + notifyEdit），此后不再产生任何受信任输入
+    const dupBtn15 = page15.locator('#ed-navlist button[aria-label^="复制条目"]').first();
+    if (!(await dupBtn15.count())) bad('C1 夹具缺「复制条目」按钮（无法制造程序化 op）');
+    else {
+      await dupBtn15.click();
+      await page15.waitForTimeout(150);
+      const undoVisible15 = await page15.evaluate(() => { const b = document.getElementById('ed-undo-btn'); return !!b && b.style.display !== 'none' && !!b.textContent; });
+      if (!undoVisible15) bad('C1 前置不成立：程序化操作后「↩ 撤销」按钮未出现（op 未压栈）');
+      // ② 点「恢复这份修改」（恢复条第一颗按钮；「丢弃」是 .secondary）
+      await page15.click('.recovery-bar button');
+      await page15.waitForTimeout(250);
+      const recovered15 = await page15.evaluate(() => document.querySelector('.sheet').textContent.includes('RECOVERED-MARKER'));
+      if (!recovered15) bad('恢复条未把缓存正文写入 sheet（前置不成立）');
+      // ③ ⌘Z：无论栈是否已清都走完终审序列，三处断言各自独立报（红证据要能指到丢失本身）
+      await page15.click('.sheet');
+      await page15.keyboard.press('Meta+z');
+      await page15.waitForTimeout(600);                       // 跨过 writeCache 的 300ms debounce
+      const post15 = await page15.evaluate((id) => ({
+        stackCleared: (() => { const b = document.getElementById('ed-undo-btn'); return !b || b.style.display === 'none'; })(),
+        survived: document.querySelector('.sheet').textContent.includes('RECOVERED-MARKER'),
+        cache: localStorage.getItem('resume-autosave:' + id)
+      }), REC_DOC);
+      if (!post15.stackCleared) bad('恢复后撤销栈未重排基线（工具条「↩ 撤销」仍指向替换前的旧快照）');
+      if (!post15.survived) bad('⌘Z 把刚恢复的内容静默回滚了（终审复现的永久内容丢失）');
+      else if (post15.cache && !post15.cache.includes('RECOVERED-MARKER')) bad('⌘Z 后恢复缓存被回滚正文覆盖（丢失不可逆）');
+      else if (dialogs15) bad(`⌘Z 在恢复场景不应弹任何 confirm（弹了 ${dialogs15} 次）`);
+      else ok('离线恢复 × ⌘Z：栈已重排基线、恢复内容存活、缓存未被回滚正文覆盖、无 confirm');
+    }
+    await ctx15.close();
+  }
+
+  // 16) [S2-T7 I2] 输入框内 ⌘Z 属于输入框：既不消费程序化 op、也不改正文、也不弹确认
+  //     （台账既定裁决"⌘Z 加 INPUT/TEXTAREA 判定"；旧码 inField 只被 ? 分支使用，⌘Z 分支裸奔）。
+  //     独立夹具（§7.7 夹具纪律）：ED_DOC 的正文会被块 8-11 的场景改写，条目按钮不保证存在。
+  {
+    const I2_DOC = 'ed-fixture-undo-field';
+    let tpl = assembleTemplate('classic');
+    tpl = tpl.replaceAll('{{NAME}}', () => '测试员').replaceAll('{{CONTACT}}', () => 'test@example.com')
+      .replaceAll('{{INTENT}}', () => '测试').replaceAll('{{SUMMARY}}', () => '摘要文本').replaceAll('{{SKILLS}}', () => '<p>技能一：内容</p>')
+      .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => '<div class="entry-head"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024</div></div>\n<ul><li>项目A描述</li></ul>')
+      .replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => I2_DOC);
+    fs.writeFileSync(path.join(dataRoot, 'docs', I2_DOC + '.html'), tpl);
+    const ctx16 = await browser.newContext();
+    const page16 = await ctx16.newPage();
+    let dialogs16 = 0;
+    page16.on('dialog', async (d) => { dialogs16++; await d.dismiss(); });
+    await page16.goto(`${base}/edit?id=${I2_DOC}`, { waitUntil: 'networkidle' });
+    await page16.waitForSelector('body.ed-on');
+    const dupBtn16 = page16.locator('#ed-navlist button[aria-label^="复制条目"]').first();
+    if (!(await dupBtn16.count())) bad('I2 场景缺「复制条目」按钮（无法制造程序化 op）');
+    else {
+      await dupBtn16.click();
+      await page16.waitForTimeout(150);
+      const before16 = await page16.evaluate(() => ({
+        html: document.querySelector('.sheet').innerHTML,
+        undoVisible: (() => { const b = document.getElementById('ed-undo-btn'); return !!b && b.style.display !== 'none'; })()
+      }));
+      if (!before16.undoVisible) bad('I2 前置不成立：程序化 op 未压栈');
+      // 焦点进查找输入框并真实打字（INPUT 的受信任输入不进 sheet 计数器 → 旧码 ⌘Z 会被外壳劫持）
+      await page16.evaluate(() => window.__edOpenFind());
+      await page16.waitForSelector('#ed-find-q');
+      await page16.click('#ed-find-q');
+      await page16.keyboard.type('项目');
+      await page16.keyboard.press('Meta+z');
+      await page16.waitForTimeout(300);
+      const after16 = await page16.evaluate(() => ({
+        html: document.querySelector('.sheet').innerHTML,
+        undoVisible: (() => { const b = document.getElementById('ed-undo-btn'); return !!b && b.style.display !== 'none'; })()
+      }));
+      if (after16.html !== before16.html) bad('输入框内 ⌘Z 被外壳劫持：正文被整片回滚（字段自身的撤销被偷走）');
+      else if (!after16.undoVisible) bad('输入框内 ⌘Z 消费了程序化 op（工具条撤销消失）');
+      else if (dialogs16) bad(`输入框内 ⌘Z 不应弹 confirm（弹了 ${dialogs16} 次）`);
+      else ok('输入框内 ⌘Z：正文零变化、op 仍在栈上、无 confirm（交回字段原生撤销）');
+    }
+    await ctx16.close();
+  }
+
+  // 17) [S2-T7 M6] Esc 只关最上层：快捷键帮助 > 查找面板；岗位弹层 > 查找面板。
+  //     旧码 dispatcher 无条件 toggleShortcutHelp(false)+closeFindPanel()，且弹层 handler 的
+  //     stopPropagation 拦不住同节点上更早注册的 dispatcher → 关弹层的同一次 Esc 连带清掉查找词。
+  {
+    const ctx17 = await browser.newContext();
+    const page17 = await ctx17.newPage();
+    await page17.goto(`${base}/edit?id=${ED_DOC}`, { waitUntil: 'networkidle' });
+    await page17.waitForSelector('body.ed-on');
+    // 叠两层：查找面板（带查询词）+ 快捷键帮助（z 序更高，属最上层）
+    await page17.evaluate(() => window.__edOpenFind());
+    await page17.waitForSelector('#ed-find-q');
+    await page17.click('#ed-find-q');
+    await page17.keyboard.type('项目A');
+    await page17.evaluate(() => window.__edOpenShortcutHelp());
+    await page17.waitForSelector('#ed-keys');
+    // Esc #1：只关帮助层，查找面板与查询词保留
+    await page17.keyboard.press('Escape');
+    const s1 = await page17.evaluate(() => ({
+      keys: !!document.getElementById('ed-keys'),
+      find: !!document.getElementById('ed-find'),
+      q: (document.getElementById('ed-find-q') || {}).value || ''
+    }));
+    if (s1.keys) bad('Esc 未关闭快捷键帮助（最上层没被关掉）');
+    else if (!s1.find || s1.q !== '项目A') bad(`Esc 关多了：帮助层连带清掉查找面板（查询词剩 "${s1.q}"）`);
+    else ok('Esc 单层关闭：帮助层关掉，查找面板与查询词保留');
+    // Esc #2：最上层换成岗位弹层 → 只关弹层，查找面板保留
+    const jobBtn17 = page17.locator('.ed-jobbtn');
+    if (!(await jobBtn17.count())) bad('M6 场景缺「＋ 岗位草稿」按钮（无法打开弹层）');
+    else {
+      await jobBtn17.click();
+      await page17.waitForFunction(() => document.getElementById('ed-jobpop').style.display === 'block');
+      await page17.keyboard.press('Escape');
+      const s2 = await page17.evaluate(() => ({
+        jobOpen: document.getElementById('ed-jobpop').style.display === 'block',
+        find: !!document.getElementById('ed-find'),
+        q: (document.getElementById('ed-find-q') || {}).value || ''
+      }));
+      if (s2.jobOpen) bad('Esc 未关闭岗位弹层');
+      else if (!s2.find || s2.q !== '项目A') bad('关岗位弹层的同一次 Esc 连带清掉了查找面板（查询词丢失——终审复现）');
+      else ok('关弹层的 Esc 不再连带清掉查找面板');
+      // Esc #3：只剩查找面板 → 正常关闭（单层语义不劫持最底层能力）
+      await page17.keyboard.press('Escape');
+      const s3 = await page17.evaluate(() => !!document.getElementById('ed-find'));
+      if (s3) bad('无更上层时 Esc 未关闭查找面板');
+      else ok('仅剩查找面板时 Esc 正常关闭它');
+    }
+    await ctx17.close();
   }
 } finally {
   await browser.close();
