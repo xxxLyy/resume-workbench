@@ -50,10 +50,19 @@
 - 交付物：`themes/resume-classic.css`、`freeze.mjs`（freezeHtml/normalizeToCurrent/renderInputId/staleInfo）、注入链路改造、`.tx/` 事务与文档锁、`migrate-meta.mjs`（**数据格式 schemaVersion 1→2；编辑器版本 data-editor 不变，仍 v5** —— 两者是不同字段）、导出记录表 `docs-meta[id].exports[]`（exportId/snapTs/完整 renderInputId/不可变产物）、文档状态维度模型（**存储字段** kind/flow/archivedAt；**派生自 applications.json 的仅投递关联** deliveredRefs/usedBy；可投递为派生判定）。
 - 数据契约（接口级，S1 设计 v3 定稿）：`docs-meta[id] = { theme, styleHash, typo, schemaVersion, migration, rev, renderInputId 相关(lastRenderInputId/lastRenderAt), kind, flow, archivedAt, job?, exports? }`；快照冻结格式 = 自包含 HTML（内联 typo）+ 伴生 `snapshots/<id>/<ts>.manifest.json`（theme、styleHash、typoHash、renderInputId、editorVersion、chromiumBin 可 null、browserVersion、fonts 记录、dpi、createdAt）；渲染环境旁车 `<pdf>.env.json`。
 
-### S2 应用层全量换肤
+### S2 应用层全量换肤（已完成 · 2026-09-29）
 - 进入：S1 退出。退出：统一设计变量与可读性验收通过；业务能力/路由/数据契约兼容；既有撤销零回归；首页首屏为「继续上次任务/针对岗位生成」+ 会话状态恢复（草稿/编辑位置/缩放/面板）；基础编辑能力（查找替换/格式/项目复制与删除恢复/聚焦/快捷键）接入统一撤销栈。
 - 边界：预设与分享副本仅预留设计位、不展示无效入口；不重写撤销逻辑（兼容式接入）。
 - **本阶段起 `test-editor.mjs` 立"既有编辑方式"常驻套件。**
+- **实际结果（commits `5208e44`..`fd6ff12`，12 个实现提交 + 3 个文档提交）**：退出准则逐条达成，`test.sh` 194 ✅ / 0 ❌（浏览器常驻套件从 5 块扩到 17 块）、`test-structure.sh` / `test-render.sh` / `privacy-check.sh` 全 exit 0。设计 §7 十条验收各有指名证据（见 `dev-docs/2026-09-27-s2-plan.md` 附 A 映射与 `.superpowers/sdd/2026-09-27-s2-plan/progress.md`）。
+- **与原计划的偏差（均已回写设计，不是静默偏离）**：
+  1. 撤销口径唯一化——一次 ⌘Z 撤销"最近输入的 B"、保留 A 与加粗；定向撤销只对程序化操作承诺，格式化走浏览器原生 `execCommand` 不压快照栈（设计 §6.1，取代原"格式化属程序操作"的冲突表述）。
+  2. 分派依据由"最后一次来源"改为**受信任输入计数器 + op 计数快照**，并建立 `__edMarkProgrammatic()` 共享出口——因为 AI/岗位面板自行派发合成 `input`（`ai-panel.js:160`、`job-panel.js:139/142`），布尔判定会把 AI 改写误判为原生输入；同时补齐面板隐藏路径不派发事件的既有缺陷。
+  3. **`template.html` 零改动**：它被冻结进每份既有文档，改它只影响新建文档；保存清理/瞬态剥离/⌘S 门控一律落在注入层 + 服务端 `/save` 归一化 + `extract.mjs`，使升级前已存在的文档同权（设计 §6.2、验收第 10 条）。
+  4. `?` 快捷键不得吃掉简历正文里的问号：只在焦点不在可编辑元素时触发，另给 `⌘/` 与工具条按钮两条入口（设计 §7.7 v2.4）。
+  5. 主题文件与 `render.mjs` 全程零改动，PDF 等价以"像素证据 + 渲染路径字节同一"双重成立；`render.mjs` 的 print 兜底经实测确认不需要（既有文档全部自带 print 隐藏规则）。
+  6. 顺带修掉三个既有缺陷：`/save` 每次保存净增 3 换行导致冻结件永不到稳态；离线恢复与撤销栈相撞可致**永久内容丢失**；1280×720 下纸张遮住状态条使「↩ 撤销」不可点。
+- **上线遗留（T7 唯一开放门槛）**：`:7766` 仍跑修复前的内存代码，需一次 `launchctl kickstart -k` 重启，`/save` 换行修复才对真实文档生效。
 
 ### S3 区域绑定与区域级分析
 - 进入：S1 退出（与 S2 可并行，但建议 S2 后以免预览层冲突）。退出：绑定持久化；自动初绑进待确认；段落拆分/合并/复制/排序/撤销/回滚后绑定"正确保持，或明确失效且不误改"（失效语义在设计文档定：无法判定归属→待重新绑定）；未确认绑定不阻止手动编辑与普通导出；区域级分析与修改模式可用；事实与表达分离的素材模型迁移完成。
