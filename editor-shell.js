@@ -124,8 +124,10 @@
     + '.ed-typo .ed-reset{width:100%;min-height:32px;border:1px solid var(--ed-line);border-radius:8px;background:var(--ed-panel);color:var(--ed-ink);font-size:12px;cursor:pointer}'
     + '.ed-typo .ed-reset:hover{background:var(--ed-bg)}'
     + '.ed-typo .ed-note{font-size:11px;color:var(--ed-mut);line-height:1.6;margin-top:12px}'
-    // 底栏
-    + '#ed-status{grid-row:4;grid-column:1/-1;display:flex;gap:16px;align-items:center;padding:5px 16px;font-size:11px;color:var(--ed-mut);background:var(--ed-panel);border-top:1px solid var(--ed-line);min-height:28px}'
+    // 底栏：position:relative+z-index 抬升绘制层级——冻结主题 .sheet{position:relative;min-height:297mm}
+    // （themes/resume-classic.css:10/:12）在矮视口让纸张溢出 grid 行，静态定位的底栏会被盖住、
+    // 「↩ 撤销」（唯一定向撤销入口）不可点；非 .sheet 规则，不声明任何文字属性
+    + '#ed-status{grid-row:4;grid-column:1/-1;position:relative;z-index:5;display:flex;gap:16px;align-items:center;padding:5px 16px;font-size:11px;color:var(--ed-mut);background:var(--ed-panel);border-top:1px solid var(--ed-line);min-height:28px}'
     + '#ed-status .ed-st-right{margin-left:auto}'
     + '#ed-status .ed-undobtn{border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink);border-radius:999px;font-size:11px;min-height:20px;padding:0 10px;cursor:pointer}'
     + '#ed-status .ed-undobtn:hover{background:var(--ed-bg)}'
@@ -300,12 +302,26 @@
     jobBtn.title = '基于当前简历创建独立岗位草稿（不改母版）';
     toolbar.appendChild(jobBtn);
   }
+  // 快捷键提示入口（S2-T5 修复轮1）：正文里的 '?' 交还给打字（打字进用户文档永远优先），
+  // 弹层保留两个入口：⌘/（任意焦点）与本按钮（鼠标可达）；data-ed-inj 保证不落盘
+  var keysBtn = toolbar && toolbar.querySelector('.ed-keysbtn');
+  if (toolbar && !keysBtn) {
+    keysBtn = document.createElement('button');
+    keysBtn.type = 'button';
+    keysBtn.className = 'ed-iconbtn ed-ghost ed-keysbtn';
+    keysBtn.setAttribute('data-ed-inj', '1');
+    keysBtn.setAttribute('aria-label', '快捷键提示');
+    keysBtn.title = '快捷键提示（⌘/）';
+    keysBtn.textContent = '?';
+    toolbar.appendChild(keysBtn);
+  }
+  if (keysBtn) keysBtn.addEventListener('click', function () { toggleShortcutHelp(); });
   // 目标顺序（appendChild 移动已有节点，幂等）
   if (toolbar) {
     [ltBtn, homeBtn, docName, verBadge].forEach(function (el) { if (el) toolbar.appendChild(el); });
     var spacer = toolbar.querySelector('.spacer');
     if (spacer) toolbar.appendChild(spacer);
-    [jobBtn, saveState, saveBtn, histBtn, previewBtn, pdfBtn, rtBtn].forEach(function (el) { if (el) toolbar.appendChild(el); });
+    [jobBtn, saveState, saveBtn, histBtn, previewBtn, pdfBtn, keysBtn, rtBtn].forEach(function (el) { if (el) toolbar.appendChild(el); });
   }
 
   // ===== 左栏：章节导航 + 素材 =====
@@ -407,7 +423,9 @@
     var top = undoStack[undoStack.length - 1];
     if (!top) return false;
     if (expectedId != null && top.id !== expectedId) return false;      // Toast 绑定的 op 已非栈顶 → 拒绝，绝不弹别人的
-    if (expectedId == null && !programmaticUndoSafeNow() &&
+    // 确认门只看"被消费的这条 op 之后是否有受信任输入"，与入口无关（§6.1 line 95 点名工具条 / Toast 两个入口；
+    // 旧实现 keyed on expectedId==null，Toast 恒带 id → 无确认整片 innerHTML 重写且打断原生撤销链，不可恢复）。
+    if (!programmaticUndoSafeNow() &&
         !window.confirm('撤销「' + (top.label || '操作') + '」会回到该操作之前，其后的正文输入也会一并回退。确认撤销？')) return false;
     undoStack.pop();
     sheet.innerHTML = top.state.body;
@@ -423,8 +441,7 @@
   sheet.addEventListener('compositionend', function () { composing = false; });
   sheet.addEventListener('input', function (e) {
     if (!e.isTrusted) return;                    // 合成事件（外壳与面板的程序化变更）不计
-    // 原生撤销/重做同样派发受信任 input（historyUndo/historyRedo）：计数必须随历史回退，
-    // 否则"该 op 之后无新输入"的等值判定永远回不去（§6.1 计数快照语义；测试口径"递增/回退"）
+    // 计数随输入前进、随原生撤销（historyUndo）后退：⌘Z 交回原生（§6.1 line 87）把 op 之后的输入撤回到 op 应用时点后，等值判定重新成立 → 下一次 ⌘Z 恢复消费该 op。
     if (e.inputType === 'historyUndo') nativeInputCount = Math.max(0, nativeInputCount - 1);
     else nativeInputCount++;
     if (window.__edRefreshFind) window.__edRefreshFind();   // 内容一变即重算查找命中
@@ -439,17 +456,19 @@
     var mod = e.metaKey || e.ctrlKey;
     var k = String(e.key).toLowerCase();
     var t = e.target;
-    var inField = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA');
+    // 打字进用户文档永远优先：光标在正文（contenteditable，含其内部节点）或任何输入控件里时，
+    // '?' 是正常字符，绝不开弹层；弹层入口 = ⌘/（任意焦点，与打字永不冲突）+ 工具条「?」按钮。
+    var inField = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable === true);
     if (mod && !e.shiftKey && k === 'z') {
-      if (programmaticUndoSafeNow()) { e.preventDefault(); window.__edUndoLast(); return; }
-      // 栈上仍有未决程序化 op 且其后已有受信任输入：既不消费快照（会吞掉后续文字），
-      // 也不放行原生回退（同样会抹掉后续输入，违反 §7 验收"连续 ⌘Z 不得吞掉后续文字"）。
-      // op 交给工具条/Toast 入口（带 window.confirm 显式确认）处理。
-      if (undoStack.length) { e.preventDefault(); }
-      return;                                                     // 空栈：交回浏览器原生撤销
+      // §6.1 line 87：仅当"该 op 之后没有新的受信任输入"时才消费栈顶；否则**不拦截**，
+      // 原样交回浏览器原生撤销——原生撤销恰好逐字回退 op 之后的输入（⌘⇧Z 可重做），
+      // 程序化 op 保留在栈上走工具条/Toast 入口（带 window.confirm 显式确认）。
+      if (programmaticUndoSafeNow()) { e.preventDefault(); window.__edUndoLast(); }
+      return;
     }
     if (mod && !e.shiftKey && k === 'f') { e.preventDefault(); openFindPanel(); return; }
     if (mod && e.shiftKey && k === 'f') { e.preventDefault(); toggleFocusMode(); return; }
+    if (mod && !e.shiftKey && k === '/') { e.preventDefault(); toggleShortcutHelp(); return; }   // ⌘/：任意焦点下开快捷键弹层（不与打字冲突）
     // 真实键盘 Shift+/ 上报 key='?'；部分合成输入路径（Playwright press('Shift+/') 实测）上报 key='/' + shiftKey=true → 两种形态都认
     if (!mod && (e.key === '?' || (e.key === '/' && e.shiftKey)) && !inField) { e.preventDefault(); toggleShortcutHelp(true); return; }
     if (e.key === 'Escape') { toggleShortcutHelp(false); closeFindPanel(); }
@@ -847,8 +866,8 @@
   }
   window.__edToggleFocus = toggleFocusMode;
   window.__edFocusMode = function () { return document.body.classList.contains('ed-focus'); };
-  var KEYS = [['⌘S', '保存'], ['⌘F', '文内查找替换'], ['⌘Z', '撤销该操作（仅当它之后没有新的正文输入）'],
-    ['⌘⇧F', '聚焦编辑'], ['?', '本快捷键提示'], ['Esc', '关闭弹层'],
+  var KEYS = [['⌘S', '保存'], ['⌘F', '文内查找替换'], ['⌘Z', '撤销该操作（仅当它之后没有新的正文输入；否则 ⌘Z 交回浏览器原生撤销）'],
+    ['⌘⇧F', '聚焦编辑'], ['⌘/', '本快捷键提示（焦点不在正文时按 ? 亦可；正文里的 ? 是正常打字）'], ['Esc', '关闭弹层'],
     ['（说明）', '打字与加粗等格式操作由浏览器原生撤销接管；程序化操作用「↩ 撤销」按钮或 ⌘Z']];
   function toggleShortcutHelp(show) {
     var ex = document.getElementById('ed-keys');
@@ -1210,7 +1229,13 @@
     }
     b.addEventListener('click', function () {
       if (b.disabled) return;
-      if (target == null || !window.__edUndoLast(target)) { invalidate(); return; }   // 只消费自己那条；栈顶已变 → 不弹别人的
+      if (target == null || !window.__edUndoLast(target)) {
+        // 返回 false 有两种：confirm 被取消（op 仍是栈顶 → Toast 保持可点，等用户再决定）；
+        // 或栈顶已变（→ 置「已失效」，绝不弹别人的 op）。只有后者才失效。
+        var now = undoStack[undoStack.length - 1];
+        if (target == null || !now || now.id !== target) invalidate();
+        return;
+      }
       b.disabled = true;                                                              // 成功消费后同样禁用该入口
       t.remove();
     });

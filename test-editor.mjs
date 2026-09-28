@@ -1609,11 +1609,18 @@ try {
   await page.keyboard.press('Meta+z');                   // 连续撤销
   const afterSeq = await page.evaluate(() => ({
     text: document.querySelector('.sheet').textContent,
-    btn: (document.getElementById('ed-undo-btn') || {}).textContent || ''
+    btn: (document.getElementById('ed-undo-btn') || {}).textContent || '',
+    secHidden: !!document.querySelector('.sheet section.ed-sec-hidden')
   }));
-  if (!afterSeq.btn.includes('撤销')) bad('「程序操作 → 输入 → 连续撤销」把程序化 op 静默回退了（应保留待确认）');
-  else if (!afterSeq.text.includes('CCC')) bad('连续 ⌘Z 抹掉了后续输入 CCC（整片快照回退未受保护）：' + afterSeq.text);
-  else ok('后续输入受保护：⌘Z 只回退原生输入，程序化 op 仍在栈上');
+  // [T5F-C1] 原断言"每个已键入字符挺过两次 ⌘Z"在原生撤销语义下不可满足：§6.1 line 87 裁决
+  //   "该 op 之后有新的受信任输入 → ⌘Z 不拦截，交回原生撤销"，而原生撤销的职责恰是逐字回退后续输入
+  //   （⌘⇧Z 可重做）；§7 line 117 禁止的是"整片快照回退吞掉后续文字"，不是原生逐字撤销。改写为三条：
+  //   ⌘Z 确实交回原生（CCC 被回退）、程序化 op 仍在栈上（工具条仍提供它）、op 自身 DOM 效果（章节隐藏）完好。
+  if (!beforeSeq.text.includes('CCC')) bad('8b 前置失败：CCC 未打进正文（后续断言无意义）');
+  else if (!afterSeq.btn.includes('撤销')) bad('「程序操作 → 输入 → 连续撤销」把程序化 op 静默回退了（应保留在栈上待显式确认）');
+  else if (!afterSeq.secHidden) bad('程序化 op 自身的 DOM 效果丢失：发生了整片快照回退（违反 §7"不得整片回退吞掉后续文字"）');
+  else if (afterSeq.text.includes('CCC')) bad('⌘Z 被拦截成静默 no-op（既未消费 op 也未交回原生撤销，违反 §6.1 line 87"交回原生撤销"）：CCC 原样在位');
+  else ok('⌘Z 交回原生撤销：后续输入被原生回退，程序化 op 仍在栈上且其隐藏效果完好（无整片回退）');
 
   // 8c Toast 绑 opId：消费后失效；栈顶已变时不得弹别人的 op
   const toastOneShot = await page.evaluate(async () => {
@@ -1662,6 +1669,84 @@ try {
   else if (!staleToast.bKept) bad('点击 A 的旧 Toast 弹掉了 B 的 op（双重恢复缺陷仍在）');
   else if (!staleToast.invalidated) bad('被拒绝的陈旧 Toast 未进入「已失效」态（用户看不到状态）');
   else ok('陈旧 Toast 拒绝撤销别人的 op，并显示已失效');
+
+  // 8e [T5F-C2] Toast 路径同样必须过确认门（§6.1 line 95 点名工具条 / Toast 两个入口）：
+  //   删除条目 → 继续打字 → 5s 内点仍可见的 Toast → 必须弹 confirm；取消 → 什么都不变
+  //   （Toast 不得被误置「已失效」——op 仍是栈顶）；确认 → 整片回退（删除的条目恢复，其后输入按文案一并回退）。
+  //   旧缺陷：确认门 keyed on expectedId==null，Toast 恒带 id → 无确认整片 innerHTML 重写且原生撤销链被打断（不可恢复）。
+  const del8e = await page.evaluate(() => {
+    // 8d 把两个章节都藏了（隐藏章节的条目按钮不渲染）：先显示一个章节，再删它的条目
+    const show = [...document.querySelectorAll('#ed-navlist button')].find((x) => (x.title || '').includes('显示该章节'));
+    if (show) show.click();                                  // 同步 renderNav，条目按钮立即可查
+    const b = [...document.querySelectorAll('#ed-navlist button')].find((x) => (x.title || '').includes('删除条目'));
+    if (!b) return { fail: 'no-del-btn' };
+    b.click();                                               // 删除条目 → 压栈 + Toast（5s 可见窗口）
+    return { fail: null };
+  });
+  if (del8e.fail) bad(`8e 前置缺失：${del8e.fail}（无法验证 Toast 确认门）`);
+  else {
+    await page.evaluate(() => { document.querySelector('.sheet').focus(); });
+    await page.keyboard.type('TTT');                         // op 之后出现受信任输入 → Toast 消费必须先过 confirm
+    const pre8e = await page.evaluate(() => ({
+      text: document.querySelector('.sheet').textContent,
+      toastBtn: !!([...document.querySelectorAll('.toast button')].find((x) => x.textContent === '撤销' && !x.disabled))
+    }));
+    if (!pre8e.text.includes('TTT')) bad('8e 前置失败：TTT 未打进正文');
+    else if (!pre8e.toastBtn) bad('8e 前置失败：删除 Toast 或其撤销按钮不可见');
+    else {
+      let dlg1 = null;
+      const h1 = async (d) => { dlg1 = d.message(); await d.dismiss(); };
+      page.once('dialog', h1);
+      await page.evaluate(() => {
+        const t = [...document.querySelectorAll('.toast button')].find((x) => x.textContent === '撤销' && !x.disabled);
+        if (t) t.click();
+      });
+      await page.waitForTimeout(150);
+      page.off('dialog', h1);   // 红态（未弹 confirm）时摘掉悬挂监听，避免误吃块 10 的 prompt
+      const afterDismiss = await page.evaluate(() => ({
+        text: document.querySelector('.sheet').textContent,
+        toastStillOffers: !!([...document.querySelectorAll('.toast button')].find((x) => x.textContent === '撤销' && !x.disabled)),
+        btn: (document.getElementById('ed-undo-btn') || {}).textContent || ''
+      }));
+      if (dlg1 === null) bad('点击 Toast（其后有受信任输入）未弹 confirm（§6.1 line 95 要求两个入口都显式确认）');
+      else if (!/一并回退/.test(dlg1)) bad('Toast 确认文案未写明其后输入会一并回退：' + dlg1);
+      else if (afterDismiss.text !== pre8e.text) bad('取消 confirm 仍改动了正文（Toast 路径无确认整片回退）：' + afterDismiss.text);
+      else if (!afterDismiss.btn.includes('删除条目')) bad('取消 confirm 把 op 弹出了栈（应原样保留）：' + afterDismiss.btn);
+      else if (!afterDismiss.toastStillOffers) bad('取消 confirm 把 Toast 误置「已失效」（op 仍是栈顶，入口应保持可点）');
+      else ok('Toast 确认门：其后有输入 → 点 Toast 弹 confirm；取消 → 正文/栈/Toast 全不变');
+      let dlg2 = null;
+      const h2 = async (d) => { dlg2 = d.message(); await d.accept(); };
+      page.once('dialog', h2);
+      await page.evaluate(() => {
+        const t = [...document.querySelectorAll('.toast button')].find((x) => x.textContent === '撤销' && !x.disabled);
+        if (t) t.click();
+      });
+      await page.waitForTimeout(150);
+      page.off('dialog', h2);   // 同上：未弹出即摘掉，绝不把悬挂监听带进后续块
+      const afterAccept = await page.evaluate(() => document.querySelector('.sheet').textContent);
+      if (dlg2 === null) bad('再次点击 Toast 未弹 confirm（第二次消费同样要过确认门）');
+      else if (afterAccept.includes('TTT') || !afterAccept.includes('某公司')) {
+        bad('确认 Toast 撤销后未回到 op 前状态（被删条目应恢复、其后输入 TTT 应一并回退）：' + afterAccept.slice(0, 160));
+      } else ok('Toast 确认门：确认 → 整片回退到删除前（条目恢复、其后输入按文案一并回退）');
+    }
+  }
+
+  // 8f [T5F-I6] 底部状态条不得被纸张盖住：冻结主题 .sheet{position:relative;min-height:297mm}
+  //   （themes/resume-classic.css:10/:12）在矮视口让纸张溢出 grid 行、盖住静态定位的 #ed-status——
+  //   「↩ 撤销」是唯一的定向撤销入口，必须真实可点。ctx 默认视口即 1280×720；
+  //   断言 elementFromPoint(按钮中心) 命中按钮自身或其内部元素。
+  const hit8f = await page.evaluate(() => {
+    const b = document.getElementById('ed-undo-btn');
+    if (!b || b.style.display === 'none' || !b.textContent.trim()) return { fail: 'no-undo-btn' };
+    const r = b.getBoundingClientRect();
+    const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    const desc = (n) => (n ? (n.id ? '#' + n.id : (String(n.className || n.tagName))) : 'null');
+    return { fail: null, hit: el === b || b.contains(el), at: desc(el), vw: window.innerWidth, vh: window.innerHeight };
+  });
+  if (hit8f.fail) bad('8f 前置缺失：栈上没有 ↩ 撤销按钮可测命中');
+  else if (hit8f.vw !== 1280 || hit8f.vh !== 720) bad(`8f 前置失败：视口应为 1280×720，实际 ${hit8f.vw}×${hit8f.vh}`);
+  else if (!hit8f.hit) bad(`↩ 撤销按钮被纸张盖住（elementFromPoint 命中 ${hit8f.at}）：1280×720 下定向撤销不可点`);
+  else ok('1280×720 下 ↩ 撤销按钮真实可点（elementFromPoint 命中按钮，状态条不再被纸张盖住）');
 
   // 9) 查找替换：不跨块级边界的假命中 / 跨 <b> 命中可替换 / 内容变化即重算 / 替换前二次校验 / 全部替换一条撤销
   await page.evaluate((fix) => {
@@ -1728,6 +1813,44 @@ try {
     return { unchanged: s.textContent === before };
   });
   if (!guarded.unchanged) bad('无命中时点全部替换仍改动了正文'); else ok('无命中时替换为无操作');
+  // 9d2 [T5F-I5] 陈旧位置守卫必须真被行使（committed 套件里 :776/:777 的 stale 分支是死代码，9d 只测了无命中）：
+  //   收集命中后，程序化改写命中文本——**保持文本节点同一性、只改内容**，并派发合成 input（AI/面板程序化
+  //   变更的真实形状；外壳只对受信任 input 重算命中，合成 input 不触发 → 缓存命中真实过期）。点「替换当前一处」：
+  //   不得替换任何东西、必须告知用户、命中必须按当前正文重算。
+  await page.evaluate(() => {
+    const s = document.querySelector('.sheet');
+    s.innerHTML = '<section><h2>第一章</h2><p>目标词在前</p><p>目标词在后</p></section>';
+    s.dispatchEvent(new Event('input', { bubbles: true }));
+    if (window.__edOpenFind) window.__edOpenFind();
+  });
+  await page.fill('#ed-find-q', '目标词');
+  await page.fill('#ed-find-r', '替换体');
+  probe = await page.evaluate(() => document.getElementById('ed-find-count').textContent);
+  if (probe !== '1/2') bad(`9d2 前置失败：命中计数应 1/2，实际 ${probe}`);
+  else {
+    await page.evaluate(() => {
+      const p = document.querySelector('.sheet p');
+      p.firstChild.nodeValue = '已被改写';                    // 节点同一性不变、内容失效 → 缓存的 (元素,偏移) 与目标文本双双过期
+      p.dispatchEvent(new Event('input', { bubbles: true })); // 合成 input：程序化变更形状，外壳不因此重算
+    });
+    await page.click('#ed-find-one');                        // 替换当前一处（唯一使用缓存命中的入口）
+    const staleGuard = await page.evaluate(() => ({
+      text: document.querySelector('.sheet').textContent,
+      count: document.getElementById('ed-find-count').textContent,
+      toast: Array.from(document.querySelectorAll('.toast')).map((t) => t.textContent).join(' ')
+    }));
+    if (staleGuard.text.includes('替换体')) bad('陈旧命中仍被替换（替换前二次校验失效，错改正文）：' + staleGuard.text);
+    else if (!/正文已变化/.test(staleGuard.toast)) bad('陈旧命中中止后没有告知用户：' + staleGuard.toast);
+    else if (staleGuard.count !== '1/1') bad(`陈旧命中中止后未按当前正文重算命中，count=${staleGuard.count}（应 1/1：只剩第二处）`);
+    else ok('陈旧位置守卫：未替换任何内容、已告知用户、命中按当前正文重算（1/1）');
+  }
+  // 9d2 用过自己的单章节夹具：恢复块 9 的两章节夹具（9e 跨章节断言依赖 secs=2/h2=2/ps=3）
+  await page.evaluate(() => {
+    const s = document.querySelector('.sheet');
+    s.innerHTML = '<section><h2>第一章</h2><p>结尾甲</p><p>开头乙</p></section>'
+      + '<section><h2>第二章</h2><p>候选人<b>姓名</b>测试</p></section>';
+    s.dispatchEvent(new Event('input', { bubbles: true }));
+  });
   await page.evaluate(() => { if (window.__edCloseFind) window.__edCloseFind(); });
   // 9e 跨章节选区格式化不破坏结构
   await page.evaluate(() => {
@@ -1817,15 +1940,61 @@ try {
   //   会让块 11 第一步"输入框内 ? 不弹层"读到旧弹层而误报（实测复现），检查完毕即关闭。
   await page.evaluate(() => { if (window.__edCloseFind) window.__edCloseFind(); const k = document.getElementById('ed-keys'); if (k) k.remove(); });
 
-  // 11) 快捷键门控：输入框内 ? 不弹层；正文 ? 弹层；Esc 关闭；IME 组合期不触发；⌘S 在组合期不发 /save
+  // 11) 快捷键门控 [T5F-I3 裁决：typing into the user's document always wins]：
+  //     输入框内 ? 不弹层；正文（contenteditable）内 ? = 正常插入问号、不弹层——旧契约"正文 ? 弹层"会让
+  //     简历永远打不出问号（committed 断言锁定了该错误契约，此处按裁决反转）；焦点在正文外 ? 弹层；
+  //     ⌘/ 任意焦点下都弹层；工具条 ? 按钮鼠标可达。与设计 §7 line 123 括注"仅正文/无输入焦点时触发"
+  //     的偏离及理由记录在 task-5-report.md「Fix round 1」。
+  //     Esc 关闭；IME 组合期不触发；⌘S 在组合期不发 /save。
   await page.evaluate(() => { const i = document.createElement('input'); i.id = 'probe-input'; i.setAttribute('data-ed-inj', '1'); document.body.appendChild(i); i.focus(); });
   await page.keyboard.type('?');
   if (await page.evaluate(() => !!document.getElementById('ed-keys'))) bad('输入框内输入 ? 触发了快捷键弹层'); else ok('输入框内 ? 不触发弹层');
-  await page.evaluate(() => { const i = document.getElementById('probe-input'); if (i) i.remove(); document.querySelector('.sheet').focus(); });
-  await page.keyboard.press('Shift+/');
-  if (!(await page.evaluate(() => !!document.getElementById('ed-keys')))) bad('正文聚焦时 ? 未打开快捷键提示'); else ok('? 打开快捷键提示');
+  // 11b 焦点在正文：? 作为字符插入，且不弹层
+  const qBefore = await page.evaluate(() => {
+    const i = document.getElementById('probe-input'); if (i) i.remove();
+    const p = document.querySelector('.sheet p');
+    const r = document.createRange(); r.selectNodeContents(p); r.collapse(false);
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    document.querySelector('.sheet').focus();
+    return p.textContent;
+  });
+  await page.keyboard.type('?');
+  const qInSheet = await page.evaluate(() => ({
+    keys: !!document.getElementById('ed-keys'),
+    text: document.querySelector('.sheet p').textContent
+  }));
+  if (qInSheet.keys) bad('正文内输入 ? 触发了快捷键弹层（正文问号被吃掉——违反"打字进用户文档永远优先"）');
+  else if (qInSheet.text !== qBefore + '?') bad(`正文聚焦时 ? 未作为字符插入：${JSON.stringify(qBefore)} → ${JSON.stringify(qInSheet.text)}`);
+  else ok('正文内输入 ?：问号正常插入、不弹层（打字优先）');
+  // 11c 焦点在正文外：? 打开弹层；Esc 关闭（先清场：11b 红态下旧代码可能已把弹层打开）
+  await page.evaluate(() => { const k = document.getElementById('ed-keys'); if (k) k.remove(); const ae = document.activeElement; if (ae && ae.blur) ae.blur(); });
+  await page.keyboard.type('?');
+  if (!(await page.evaluate(() => !!document.getElementById('ed-keys')))) bad('焦点在正文外时 ? 未打开快捷键提示'); else ok('焦点在正文外 ? 打开快捷键提示');
   await page.keyboard.press('Escape');
   if (await page.evaluate(() => !!document.getElementById('ed-keys'))) bad('Esc 未关闭快捷键提示'); else ok('Esc 关闭快捷键提示');
+  // 11d ⌘/ 在任意焦点下打开（正文焦点与输入框焦点各测一次；与打字永不冲突）
+  await page.evaluate(() => { const k = document.getElementById('ed-keys'); if (k) k.remove(); document.querySelector('.sheet').focus(); });
+  await page.keyboard.press('Meta+/');
+  if (!(await page.evaluate(() => !!document.getElementById('ed-keys')))) bad('⌘/ 在正文焦点下未打开快捷键提示'); else ok('⌘/ 在正文焦点下打开弹层');
+  await page.evaluate(() => {
+    const k = document.getElementById('ed-keys'); if (k) k.remove();
+    const i = document.createElement('input'); i.id = 'probe-input2'; i.setAttribute('data-ed-inj', '1'); document.body.appendChild(i); i.focus();
+  });
+  await page.keyboard.press('Meta+/');
+  if (!(await page.evaluate(() => !!document.getElementById('ed-keys')))) bad('⌘/ 在输入框焦点下未打开快捷键提示'); else ok('⌘/ 在输入框焦点下打开弹层');
+  // 11e 工具条 ? 按钮（正文 ? 交还打字后，弹层的鼠标可达入口）
+  const keysBtnOk = await page.evaluate(() => {
+    const k = document.getElementById('ed-keys'); if (k) k.remove();
+    const i = document.getElementById('probe-input2'); if (i) i.remove();
+    const b = document.querySelector('.edit-toolbar button.ed-keysbtn');
+    if (!b) return null;
+    b.click();
+    return !!document.getElementById('ed-keys');
+  });
+  if (keysBtnOk === null) bad('工具条没有 ? 按钮（正文 ? 交还打字后，弹层缺少鼠标可达入口）');
+  else if (!keysBtnOk) bad('点击工具条 ? 按钮未打开快捷键弹层');
+  else ok('工具条 ? 按钮打开快捷键弹层');
+  await page.evaluate(() => { const k = document.getElementById('ed-keys'); if (k) k.remove(); });
   // IME 组合期：? 与 ⌘Z 都不得生效；composing 标志可查询
   await page.evaluate(() => {
     const s = document.querySelector('.sheet'); s.focus();
@@ -1871,6 +2040,83 @@ try {
   const off = await page.evaluate(() => ({ cls: document.body.classList.contains('ed-focus'), flag: window.__edFocusMode(), left: getComputedStyle(document.getElementById('ed-left')).display }));
   if (off.cls || off.flag !== false || off.left === 'none') bad('再次 ⌘⇧F 未退出聚焦编辑'); else ok('聚焦编辑可退出');
   await ctx.close();
+  }
+
+  // 12) [T5F-I4] 服务端 body 瞬态 class 剥离（§6.2 硬约束 / §7.10 新旧文档同权）：legacy 形态夹具
+  //     （pre-S2 模板装配：无 data-theme + 内联 typo-custom + meta theme:'legacy'；template.html 零改动，
+  //     其内联 doSave 清理只认 ed-on/ed-preview、不认 ed-focus——这正是升级前已存在文档的真实形态）。
+  //     客户端上送必然带着 ed-focus（先用解析 DOM 证明），落盘必须由服务端归一化剥净三个瞬态 class，
+  //     同时逐字保留其余 class 与全部内容；再存一次字节稳定（剥离幂等）。
+  {
+  const ctx12 = await browser.newContext();
+  const page12 = await ctx12.newPage();
+  const STRIP_DOC = 'ed-strip-legacy';
+  const stripFile = path.join(dataRoot, 'docs', STRIP_DOC + '.html');
+  {
+    let tpl = assembleTemplate('classic');
+    tpl = tpl.replaceAll('{{NAME}}', () => '剥离测试遗留员').replaceAll('{{CONTACT}}', () => 'strip@example.com')
+      .replaceAll('{{INTENT}}', () => '测试').replaceAll('{{SUMMARY}}', () => '摘要文本').replaceAll('{{SKILLS}}', () => '<p>技能一：内容</p>')
+      .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => '').replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => STRIP_DOC);
+    const legacyHtml = tpl
+      .replace('<style data-theme="classic">', '<style>')                    // legacy 形态：主题块无 data-theme（同 6d 夹具形态）
+      .replace('</head>', '<style id="typo-custom">.sheet p{letter-spacing:0.02em}</style>\n</head>');
+    fs.writeFileSync(stripFile, legacyHtml);
+    const metaP = path.join(dataRoot, 'docs-meta.json');
+    const mm = JSON.parse(fs.readFileSync(metaP, 'utf8'));
+    mm[STRIP_DOC] = { theme: 'legacy' };
+    fs.writeFileSync(metaP, JSON.stringify(mm));
+  }
+  // 夹具有效性自检（解析 DOM 查内联脚本，不做磁盘子串判定）：doSave 必须**不认识** ed-focus，
+  // 否则剥净可能是客户端卫生的功劳，证明不了服务端兜底。
+  const fixtureKnowsFocus = await page12.evaluate((html) => {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const inline = [...doc.querySelectorAll('script')].map((s) => s.textContent).join('\n');
+    return /ed-focus/.test(inline) || !/classList\.remove\('ed-on', 'ed-preview'\)/.test(inline);
+  }, fs.readFileSync(stripFile, 'utf8'));
+  if (fixtureKnowsFocus) bad('12 前置失败：夹具内联脚本认识 ed-focus 或缺 doSave 清理行（证明不了服务端兜底）');
+  const posted12 = [];
+  page12.on('request', (r) => { if (r.method() === 'POST' && r.url().includes('/save')) { const pd = r.postData(); if (pd) posted12.push(pd); } });
+  await page12.goto(`${base}/edit?id=${STRIP_DOC}`, { waitUntil: 'networkidle' });
+  await page12.waitForSelector('body.ed-on');
+  await page12.evaluate(() => { document.body.classList.add('ed-focus', 'ed-preview', 'keep-me-legacy'); });
+  const saveOnce12 = async () => {
+    await page12.click('#saveBtn');
+    await page12.waitForFunction(() => (document.getElementById('saveState') || {}).dataset?.state === 'saved', { timeout: 12000 });
+  };
+  await saveOnce12();
+  // 客户端实际上送的 body class（解析 POST 体的 DOM；子串 grep 会命中 POST 体内注入脚本自身的文本，必然误报）
+  const sentClass = await page12.evaluate((html) => {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return doc.body ? (doc.body.getAttribute('class') || '') : '(no body)';
+  }, posted12[posted12.length - 1] || '');
+  const sentList = sentClass.split(/\s+/).filter(Boolean);
+  if (!sentList.includes('ed-focus')) bad('12 前置失败：客户端上送的 body 未携带 ed-focus（内联清理已认它，服务端兜底证明失效）：' + sentClass);
+  else ok('legacy 客户端上送 body 携带 ed-focus（其内联 doSave 不认识 → 只能靠服务端剥）');
+  const onDisk12 = fs.readFileSync(stripFile, 'utf8');
+  const dom12 = await page12.evaluate((html) => {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return {
+      bodyClass: (doc.body.getAttribute('class') || '').split(/\s+/).filter(Boolean),
+      content: doc.querySelector('.sheet') ? doc.querySelector('.sheet').textContent : '',
+      toolbar: doc.querySelectorAll('.edit-toolbar').length,
+      typo: doc.querySelectorAll('style#typo-custom').length
+    };
+  }, onDisk12);
+  let stripBad = null;
+  ['ed-on', 'ed-preview', 'ed-focus'].forEach((c) => { if (dom12.bodyClass.includes(c)) stripBad = c; });
+  if (stripBad) bad(`legacy 文档落盘 body 仍带瞬态 class ${stripBad}（服务端兜底失效）`);
+  else if (!dom12.bodyClass.includes('keep-me-legacy')) bad('服务端剥离误删了非瞬态 class：' + dom12.bodyClass.join(' '));
+  else if (!dom12.content.includes('剥离测试遗留员') || dom12.toolbar === 0) bad('瞬态剥离误伤了正文或文档自带工具栏');
+  else ok('legacy 夹具落盘：ed-focus/ed-on/ed-preview 全被服务端剥离，keep-me-legacy 与正文/工具栏原样保留');
+  // 幂等：稳态（首次保存已完成 legacy 内联 typo → meta 迁移）下重载再存一次 → 字节稳定
+  const sha12 = createHash('sha1').update(onDisk12).digest('hex');
+  await page12.reload({ waitUntil: 'networkidle' });
+  await page12.waitForSelector('body.ed-on');
+  await saveOnce12();
+  const onDisk12b = fs.readFileSync(stripFile, 'utf8');
+  if (createHash('sha1').update(onDisk12b).digest('hex') !== sha12) bad('legacy 文档稳态二次保存字节漂移（body class 剥离不幂等）');
+  else ok('剥离幂等：legacy 文档稳态二次保存字节稳定');
+  await ctx12.close();
   }
 } finally {
   await browser.close();
