@@ -1992,3 +1992,61 @@ const extra = got.filter((r) => !ROUTES_FROZEN.includes(r));
 if (missing.length || extra.length) fail(`路由集合变化 missing=${missing} extra=${extra}`);
 console.log('✅ S2-B1 server.mjs 设计变量统一 + 路由集合不变');
 EOF
+
+# —— S2-A：注入层纪律（编辑器外壳注入 CSS 的边界护栏；S2 全程生效）——
+echo "── S2-A: 注入层纪律（仅屏幕 / 不声明正文文字属性 / !important 不增）+ print 仍在 + themes 零改动 ──"
+S2_BASE=5208e44
+git diff --quiet "$S2_BASE" -- themes/ || { echo "❌ themes/ 被改动（S2 全程禁止）"; git diff --stat "$S2_BASE" -- themes/; exit 1; }
+grep -qF '@media print { .edit-toolbar, .page-line, .toast, .recovery-bar { display: none !important; } }' themes/resume-classic.css \
+  || { echo '❌ 主题的 print 隐藏行被删改（冻结件必须自带打印隐藏规则）'; exit 1; }
+node --input-type=module << 'EOF'
+import fs from 'node:fs';
+const fail = (m) => { console.error('❌ ' + m); process.exit(1); };
+const IMPORTANT_BASELINE = 4;          // 实测现状：editor-shell.js :162、:173（两处）、:175
+const src = fs.readFileSync('editor-shell.js', 'utf8');
+const screenOpen = src.indexOf("'@media screen{'");
+if (screenOpen < 0) fail('editor-shell.js 缺少 @media screen 注入块');
+const injectEnd = src.indexOf('document.head.appendChild(css)');
+if (injectEnd < 0) fail('找不到注入块收尾锚点 document.head.appendChild(css)');
+const injected = src.slice(screenOpen, injectEnd);
+// 1) @media print 块只准隐藏/还原，不准声明颜色/背景/边框/阴影
+const printBlock = /@media print\{([\s\S]*?)\}'/.exec(src);
+if (!printBlock) fail('editor-shell.js 缺少 @media print 块');
+if (/color|background(-color)?:|border|box-shadow/.test(printBlock[1])) fail('注入层 @media print 含视觉规则: ' + printBlock[1].slice(0, 140));
+// 2) 正文文字属性禁令（作用域 = .sheet 及其后代）；布局/滚动/阴影/outline/caret 不受限
+//    扫描范围 = 屏幕注入段（@media print 段的"还原"规则由上面第 1 项专项检查治理，不进正文禁令扫描）
+const FORBID = /(?:^|;)\s*(color|font-family|font-size|font-weight|font-style|line-height|letter-spacing|text-align|text-decoration|text-transform|text-indent|background|background-color|margin|margin-[a-z]+|padding|padding-[a-z]+)\s*:/;
+const printAnchor = injected.indexOf("'@media print{");
+const screenInjected = printAnchor >= 0 ? injected.slice(0, printAnchor) : injected;
+const sheetRules = [...screenInjected.matchAll(/'([^']*\.sheet[^']*)\{([^']*)\}'/g)];
+if (!sheetRules.length) fail('注入层未匹配到任何 .sheet 规则（断言正则失效，需修断言）');
+sheetRules.forEach((m) => {
+  const decls = m[2].replace(/caret-color|outline-color/g, 'editorHintOnly');
+  if (FORBID.test(decls)) fail(`注入层对 ${m[1]} 声明了正文文字属性: ${m[2].slice(0, 140)}`);
+});
+// 3) !important 只准持平基线（新增覆盖必须靠 .ed-on 特异性）
+const imp = (injected.match(/!important/g) || []).length;
+if (imp > IMPORTANT_BASELINE) fail(`注入层 !important 由基线 ${IMPORTANT_BASELINE} 增至 ${imp}（新增规则请靠特异性覆盖）`);
+console.log(`✅ S2-A 注入层纪律通过（.sheet 规则 ${sheetRules.length} 条 / !important ${imp} ≤ ${IMPORTANT_BASELINE} / themes 未动 / print 规则仍在）`);
+EOF
+
+# —— S2-B2：编辑器与面板设计变量统一（三个注入文件字面色 / 冷色黑名单）——
+echo "── S2-B2: 编辑器与面板设计变量统一（三个注入文件字面色 / 冷色黑名单）──"
+node --input-type=module << 'EOF'
+import fs from 'node:fs';
+const fail = (m) => { console.error('❌ ' + m); process.exit(1); };
+const FILES = { 'editor-shell.js': [/body\.ed-on\{--ed-/], 'ai-panel.js': [], 'job-panel.js': [] };
+const HEX = /#[0-9a-fA-F]{3,8}\b/;
+for (const [f, allow] of Object.entries(FILES)) {
+  fs.readFileSync(f, 'utf8').split('\n').forEach((ln, i) => {
+    if (HEX.test(ln) && !allow.some((re) => re.test(ln))) fail(`${f}:${i + 1} 组件层残留字面色: ${ln.trim().slice(0, 90)}`);
+  });
+}
+const COLD = /#F4F5F8|#202737|#697186|#DCE0E8|#5B5DE8|#EEEFFE|#409eff|#2563eb|#dbeafe|#ede9fe|#5b21b6|--indigo/i;
+for (const f of Object.keys(FILES)) {
+  fs.readFileSync(f, 'utf8').split('\n').forEach((ln, i) => {
+    if (COLD.test(ln)) fail(`${f}:${i + 1} 冷色/靛蓝残留: ${ln.trim().slice(0, 90)}`);
+  });
+}
+console.log('✅ S2-B2 编辑器与面板设计变量统一');
+EOF

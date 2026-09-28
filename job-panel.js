@@ -15,32 +15,32 @@
   var css = document.createElement('style');
   css.setAttribute('data-job-panel', '1');
   css.textContent = '.jp{padding:12px;font-size:12px;display:flex;flex-direction:column;gap:8px}'
-    + '.jp-meta{color:#697186;font-size:11px}'
+    + '.jp-meta{color:var(--ed-mut);font-size:11px}'
     + '.jp-head{display:flex;flex-wrap:wrap;gap:6px;align-items:center}'
-    + '.jp-head button{min-height:28px;padding:0 10px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid #DCE0E8;background:#fff;color:#202737}'
-    + '.jp-head button.jp-primary{background:#5B5DE8;border-color:#5B5DE8;color:#fff}'
+    + '.jp-head button{min-height:28px;padding:0 10px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink)}'
+    + '.jp-head button.jp-primary{background:var(--ed-accent);border-color:var(--ed-accent);color:var(--ed-accent-ink)}'
     + '.jp-head button:disabled{opacity:.55;cursor:not-allowed}'
     + '.jp-sum{display:flex;flex-wrap:wrap;gap:4px}'
-    + '.jp-group{border:1px solid #DCE0E8;border-radius:9px;padding:8px}'
+    + '.jp-group{border:1px solid var(--ed-line);border-radius:9px;padding:8px}'
     + '.jp-group h4{margin:0 0 6px;font-size:12px;display:flex;justify-content:space-between;align-items:center;gap:6px}'
-    + '.jp-group.jp-important{border-color:#F5D08A;background:#FFFBF0}'
-    + '.jp-group.jp-conflict{border-color:#F3C2C2;background:#FEF2F2}'
-    + '.jp-item{border-top:1px solid #F0F1F6;padding:6px 0}'
+    + '.jp-group.jp-important{border-color:var(--ed-warn);background:var(--ed-warn-soft)}'
+    + '.jp-group.jp-conflict{border-color:var(--ed-err-soft);background:var(--ed-err-soft)}'
+    + '.jp-item{border-top:1px solid var(--ed-line);padding:6px 0}'
     + '.jp-item:first-of-type{border-top:none}'
-    + '.jp-item .jp-reason{color:#697186;font-size:11px;margin:2px 0}'
-    + '.jp-before{background:#FEE2E2;text-decoration:line-through;border-radius:5px;padding:2px 4px;margin:2px 0;word-break:break-all}'
-    + '.jp-after{background:#DCFCE7;border-radius:5px;padding:2px 4px;margin:2px 0;word-break:break-all}'
+    + '.jp-item .jp-reason{color:var(--ed-mut);font-size:11px;margin:2px 0}'
+    + '.jp-before{background:var(--ed-err-soft);text-decoration:line-through;border-radius:5px;padding:2px 4px;margin:2px 0;word-break:break-all}'
+    + '.jp-after{background:var(--ed-ok-soft);border-radius:5px;padding:2px 4px;margin:2px 0;word-break:break-all}'
     + '.jp-item .jp-ops{margin-top:4px;display:flex;gap:4px;flex-wrap:wrap}'
-    + '.jp-item .jp-ops button{min-height:24px;padding:0 8px;border-radius:6px;font-size:11px;cursor:pointer;border:1px solid #DCE0E8;background:#fff;color:#202737}'
-    + '.jp-item .jp-ops button.jp-accept{background:#5B5DE8;border-color:#5B5DE8;color:#fff}'
-    + '.jp-st{font-size:10px;border-radius:999px;padding:1px 7px;background:#F3F4F6;color:#374151;margin-left:6px}'
-    + '.jp-st.accepted{background:#DCFCE7;color:#166534}'
-    + '.jp-st.rejected{background:#F3F4F6;color:#6B7280}'
-    + '.jp-st.conflict{background:#FEE2E2;color:#991B1B}'
-    + '.jp-todo{border-left:3px solid #F59E0B;background:#FFFBEB;border-radius:6px;padding:6px 8px;margin:4px 0}'
-    + '.jp-empty{color:#697186;text-align:center;padding:16px 8px}'
-    + '.jp-msg{font-size:11px;color:#B45309}'
-    + '.jp button:focus-visible{outline:2px solid #5B5DE8;outline-offset:1px}';
+    + '.jp-item .jp-ops button{min-height:24px;padding:0 8px;border-radius:6px;font-size:11px;cursor:pointer;border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink)}'
+    + '.jp-item .jp-ops button.jp-accept{background:var(--ed-accent);border-color:var(--ed-accent);color:var(--ed-accent-ink)}'
+    + '.jp-st{font-size:10px;border-radius:999px;padding:1px 7px;background:var(--ed-bg);color:var(--ed-mut);margin-left:6px}'
+    + '.jp-st.accepted{background:var(--ed-ok-soft);color:var(--ed-ok)}'
+    + '.jp-st.rejected{background:var(--ed-bg);color:var(--ed-mut)}'
+    + '.jp-st.conflict{background:var(--ed-err-soft);color:var(--ed-err)}'
+    + '.jp-todo{border-left:3px solid var(--ed-warn);background:var(--ed-warn-soft);border-radius:6px;padding:6px 8px;margin:4px 0}'
+    + '.jp-empty{color:var(--ed-mut);text-align:center;padding:16px 8px}'
+    + '.jp-msg{font-size:11px;color:var(--ed-warn)}'
+    + '.jp button:focus-visible{outline:2px solid var(--ed-accent);outline-offset:1px}';
   document.head.appendChild(css);
 
   var root = document.createElement('div');
@@ -427,7 +427,7 @@
     var todoBox = document.createElement('div');
     todoBox.className = 'jp-group';
     todoBox.innerHTML = '<h4>待补充信息（' + todos.length + '）</h4>' + (todos.length
-      ? todos.map(function (t, i) { return '<div class="jp-todo"><b>' + esc(t.section || '') + '</b>：' + esc(t.question) + (t.why ? '<div class="jp-meta">' + esc(t.why) + '</div>' : '') + '<button data-todo="' + i + '" style="margin-top:4px;min-height:24px;padding:0 8px;border-radius:6px;font-size:11px;cursor:pointer;border:1px solid #DCE0E8;background:#fff">标记已补充</button></div>'; }).join('')
+      ? todos.map(function (t, i) { return '<div class="jp-todo"><b>' + esc(t.section || '') + '</b>：' + esc(t.question) + (t.why ? '<div class="jp-meta">' + esc(t.why) + '</div>' : '') + '<button data-todo="' + i + '" style="margin-top:4px;min-height:24px;padding:0 8px;border-radius:6px;font-size:11px;cursor:pointer;border:1px solid var(--ed-line);background:var(--ed-panel)">标记已补充</button></div>'; }).join('')
       : '<div class="jp-meta">无</div>');
     root.appendChild(todoBox);
     todoBox.querySelectorAll('button[data-todo]').forEach(function (btn) {

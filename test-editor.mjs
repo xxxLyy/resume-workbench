@@ -1321,6 +1321,99 @@ try {
     if (modal !== 'true') bad('岗位弹层缺 aria-modal'); else ok('岗位弹层具备模态语义');
     await ctx.close();
   }
+
+  // 6) 冻结件不变性（稳态下只打开+保存 → 字节与渲染标识全不变）；外壳跨文档一致；注入层不碰正文
+  {
+  const ctx6 = await browser.newContext();
+  const page = await ctx6.newPage();
+  const sha1 = (s) => createHash('sha1').update(s).digest('hex');
+  const docFile = path.join(dataRoot, 'docs', ED_DOC + '.html');
+  const metaFile = path.join(dataRoot, 'docs-meta.json');
+  const readMeta = () => (JSON.parse(fs.readFileSync(metaFile, 'utf8'))[ED_DOC] || {});
+  const saveOnce = async () => {
+    await page.click('#saveBtn');
+    await page.waitForFunction(() => (document.getElementById('saveState') || {}).dataset?.state === 'saved', { timeout: 10000 });
+  };
+  await page.goto(`${base}/edit?id=${ED_DOC}`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('body.ed-on');
+  // 6a 外壳一致性采样（本文档）
+  const shellSample = (pg = page) => pg.evaluate(() => {
+    const pick = (sel, props) => {
+      const el = document.querySelector(sel);
+      if (!el) return null;
+      const cs = getComputedStyle(el); const o = {};
+      props.forEach((k) => { o[k] = cs[k]; });
+      return o;
+    };
+    return {
+      toolbar: pick('.edit-toolbar', ['backgroundColor', 'color', 'borderRadius', 'fontFamily']),
+      btn: pick('.edit-toolbar button', ['backgroundColor', 'color']),
+      state: pick('.save-state', ['color', 'backgroundColor']),
+      status: pick('#ed-status', ['backgroundColor', 'color'])
+    };
+  });
+  const sA = await shellSample();
+  // 6b 正文保护：拆掉注入样式后 .sheet 计算样式必须逐项相同
+  const contentProps = ['color', 'fontFamily', 'fontSize', 'lineHeight', 'marginTop', 'marginBottom', 'paddingLeft'];
+  const contentSample = () => page.evaluate((props) => {
+    const out = {};
+    ['.sheet h1', '.sheet p', '.sheet li'].forEach((sel) => {
+      const el = document.querySelector(sel);
+      if (!el) { out[sel] = null; return; }
+      const cs = getComputedStyle(el); const o = {};
+      props.forEach((k) => { o[k] = cs[k]; });
+      out[sel] = o;
+    });
+    return out;
+  }, contentProps);
+  const cWith = await contentSample();
+  await page.evaluate(() => { document.querySelector('style[data-ed-shell]').remove(); });
+  const cWithout = await contentSample();
+  if (JSON.stringify(cWith) !== JSON.stringify(cWithout)) {
+    bad('注入层改变了 .sheet 正文计算样式', JSON.stringify({ cWith, cWithout }).slice(0, 400));
+  } else ok('注入层不影响简历正文计算样式');
+  // 6c 冻结件不变性：先做一次"规范化保存"（legacy 内联 typo 首次会迁到 meta，属既有 S1 语义），
+  //    再以稳态为基线，只打开+保存第二次 → 字节与标识必须完全不变
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForSelector('body.ed-on');
+  await saveOnce();
+  const h0 = sha1(fs.readFileSync(docFile, 'utf8'));
+  const m0 = readMeta();
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForSelector('body.ed-on');
+  await saveOnce();
+  const h1v = sha1(fs.readFileSync(docFile, 'utf8'));
+  const m1v = readMeta();
+  if (h0 !== h1v) bad('稳态下只打开并保存导致文档字节变化（冻结件被动漂移）');
+  else ok('稳态下只打开并保存：文档字节未变');
+  if (m0.styleHash !== m1v.styleHash || m0.renderInputId !== m1v.renderInputId) {
+    bad(`渲染标识漂移 styleHash ${m0.styleHash}->${m1v.styleHash} renderInputId ${m0.renderInputId}->${m1v.renderInputId}`);
+  } else ok('styleHash / renderInputId 未漂移');
+  // 6d 外壳跨文档一致性：另一份 legacy 夹具（模板装配 → 去 data-theme + 内联 typo-custom + meta theme:'legacy'，
+  //    形态照 test-structure.sh:1449-1454 既有配方；txDoc 无工具栏 chrome，采样必为 null，故用装配形态），
+  //    外壳采样必须与本文档逐项相同 → 证明外壳观感由注入层统一、与文档内联样式代际无关
+  const LEGACY_DOC = 'ed-legacy-fixture';
+  {
+    let tpl = assembleTemplate('classic');
+    tpl = tpl.replaceAll('{{NAME}}', () => '遗留测试员').replaceAll('{{CONTACT}}', () => 'legacy@example.com')
+      .replaceAll('{{INTENT}}', () => '测试').replaceAll('{{SUMMARY}}', () => '摘要文本').replaceAll('{{SKILLS}}', () => '<p>技能一：内容</p>')
+      .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => '').replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => LEGACY_DOC);
+    const legacyHtml = tpl
+      .replace('<style data-theme="classic">', '<style>')
+      .replace('</head>', '<style id="typo-custom">.sheet p{letter-spacing:0.02em}</style>\n</head>');
+    fs.writeFileSync(path.join(dataRoot, 'docs', LEGACY_DOC + '.html'), legacyHtml);
+    const meta6 = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+    meta6[LEGACY_DOC] = { theme: 'legacy' };
+    fs.writeFileSync(metaFile, JSON.stringify(meta6));
+  }
+  const pageB = await ctx6.newPage();
+  await pageB.goto(`${base}/edit?id=${LEGACY_DOC}`, { waitUntil: 'networkidle' });
+  await pageB.waitForSelector('body.ed-on');
+  const sB = await shellSample(pageB);
+  if (JSON.stringify(sA) !== JSON.stringify(sB)) bad('外壳样式跨文档不一致（classic vs legacy 夹具）', JSON.stringify({ sA, sB }));
+  else ok('外壳计算样式跨文档（classic vs legacy）逐项一致');
+  await ctx6.close();
+  }
 } finally {
   await browser.close();
 }

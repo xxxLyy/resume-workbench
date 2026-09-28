@@ -872,10 +872,12 @@ async function handler(req, res) {
     if (req.method === 'POST' && url.pathname === '/save') {
       if (!url.searchParams.get('id')) return send(400, 'id required', 'text/plain');
       let html = await readBody(req);
+      // 注释对剥离必须与 serve 注入对称（注入 `\nPAIR\n`、剥离归 ''）：save(serve(D)) === D 逐字节成立。
+      // 若剥离归 '\n'，每次保存净增 3 个换行（S2-T2 块 6c 冻结件不变性断言实测抓到的漂移），绝不可回改。
       html = html
-        .replace(/\n?<!--AI-INJECT-->[\s\S]*?<!--\/AI-INJECT-->\n?/g, '\n')
-        .replace(/\n?<!--SHELL-INJECT-->[\s\S]*?<!--\/SHELL-INJECT-->\n?/g, '\n')
-        .replace(/\n?<!--JOB-INJECT-->[\s\S]*?<!--\/JOB-INJECT-->\n?/g, '\n')
+        .replace(/\n?<!--AI-INJECT-->[\s\S]*?<!--\/AI-INJECT-->\n?/g, '')
+        .replace(/\n?<!--SHELL-INJECT-->[\s\S]*?<!--\/SHELL-INJECT-->\n?/g, '')
+        .replace(/\n?<!--JOB-INJECT-->[\s\S]*?<!--\/JOB-INJECT-->\n?/g, '')
         // 运行时面板样式（head 中，不在注释对里）也要剥离
         .replace(/<style[^>]*data-ai-panel[^>]*>[\s\S]*?<\/style>/g, '')
         .replace(/<style[^>]*data-ed-shell[^>]*>[\s\S]*?<\/style>/g, '')
