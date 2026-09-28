@@ -347,6 +347,12 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .cta-alt{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:9px 14px;font-weight:600;font-size:13px;cursor:pointer}
 .statusline{margin-top:12px;font-size:13px;line-height:1.7;color:var(--mut)}
 .statusline .sep{margin:0 8px;color:var(--line)}
+/* 搜索行（S2-T6 窄屏修复）：整行可换行 + 输入框可收缩到 0，按钮/链接标签一律 nowrap。
+   390px 下「▤ 切换」曾被 flex 挤到 min-content 而竖排成 3 行；只加 nowrap 会把整行顶出横向溢出，
+   故同时放开换行——窄屏自然折成两行（搜索+切换 / 归档），宽屏视觉与改前逐像素一致。 */
+.searchrow{display:flex;gap:10px;align-items:center;margin:12px 0;flex-wrap:wrap}
+.searchrow input{flex:1 1 180px;min-width:0}
+.searchrow button,.searchrow a{flex:0 0 auto;white-space:nowrap}
 #jobCard[open] summary{margin-bottom:6px}
 @media (max-width:700px){.hero{flex-direction:column;align-items:flex-start;max-height:none}.hero-art{display:none}}
 .kb{display:flex;gap:10px;overflow-x:auto;align-items:flex-start;padding-bottom:8px}
@@ -543,10 +549,10 @@ function listPage(showArchived = false) {
       </details>
     </div>
     <div class="card statusline" role="status">${todoBits.join('<span class="sep">·</span>')}</div>
-    <div style="display:flex;gap:10px;align-items:center;margin:12px 0">
-      <input id="searchBox" placeholder="搜索文档（标题/id/标签）" style="flex:1" aria-label="搜索文档">
+    <div class="searchrow">
+      <input id="searchBox" placeholder="搜索文档（标题/id/标签）" aria-label="搜索文档">
       <button class="secondary" id="viewToggle">▤ 切换</button>
-      <a class="secondary" style="border:1px solid var(--line);border-radius:8px;padding:7px 12px;background:var(--panel);color:var(--ink);font-weight:600;font-size:13px;white-space:nowrap" href="${showArchived ? '/' : '/?archived=1'}">${showArchived ? '🗄 隐藏已归档' : '🗄 显示已归档'}</a>
+      <a class="secondary" style="border:1px solid var(--line);border-radius:8px;padding:7px 12px;background:var(--panel);color:var(--ink);font-weight:600;font-size:13px" href="${showArchived ? '/' : '/?archived=1'}">${showArchived ? '🗄 隐藏已归档' : '🗄 显示已归档'}</a>
     </div>
     <ul class="doclist" id="doclist">${cards}</ul>
     <script>

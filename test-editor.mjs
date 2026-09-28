@@ -2118,6 +2118,130 @@ try {
   else ok('剥离幂等：legacy 文档稳态二次保存字节稳定');
   await ctx12.close();
   }
+
+  // 13) [S2-T6｜简报称"块 12"，因 T5 已占用 12 号故顺延编号] 会话状态恢复：
+  //     缩放（含夹取后真实值）/ 左右折叠 / 活动面板 / sheet 滚动位置 / 聚焦模式，刷新后逐项一致。
+  //     折叠只存布尔（实测无拖拽调节，面板宽只有 208px|0px 与 320px|0px 两态，故不存在 0 宽 falsy 陷阱）；
+  //     滚动容器就是 .sheet 自身（overflow-y:auto，body/html 均 overflow:hidden，已实测确认）。
+  //     会话状态只进 per-doc localStorage，绝不进 docs-meta（末尾有泄漏断言）。
+  {
+  const ctx13 = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await ctx13.newPage();
+  await page.goto(`${base}/edit?id=${ED_DOC}`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('body.ed-on');
+  if (await page.evaluate(() => typeof window.__edSetZoom) !== 'function') bad('缺 window.__edSetZoom（无法验证缩放恢复）');
+  else {
+    const applied = await page.evaluate(() => {
+      window.__edSetZoom(3);                       // 故意越界：必须被 setZoom 的 0.4–1.5 夹取
+      return { clamped: window.__edGetZoom() };
+    });
+    if (applied.clamped !== 1.5) bad(`缩放未走既有夹取（请求 3 → 实际 ${applied.clamped}，期望 1.5）`); else ok('缩放夹取与 setZoom 一致（3 → 1.5）');
+    await page.evaluate(() => {
+      window.__edSetZoom(1.25);
+      const sheet = document.querySelector('.sheet');
+      sheet.scrollTop = 260;                       // 真实滚动容器就是 .sheet
+      window.__edToggleLeft();                    // 宽屏折叠：Step 3 导出的薄封装（内部即 toggleLeft）
+      window.__edToggleRight();
+      if (window.__edSelectTab) window.__edSelectTab('typo');
+      window.__edPersistUi();
+    });
+    const st = await page.evaluate(() => ({ stored: localStorage.getItem('resume-ui:' + window.__edDocId), state: window.__edUiState && window.__edUiState() }));
+    if (!st.stored) bad('未写入 resume-ui:<docId>');
+    else {
+      const v = JSON.parse(st.stored);
+      if (v.zoom !== 1.25) bad(`zoom 未持久化（${v.zoom}）`); else ok('zoom 持久化 1.25');
+      if (v.scrollTop !== 260) bad(`sheet 滚动位置未持久化（${v.scrollTop}，期望 260）`); else ok('sheet 滚动位置持久化 260');
+      if (v.pane !== 'typo') bad(`活动面板未持久化（${v.pane}）`); else ok('活动面板持久化 typo');
+      if (typeof v.leftHidden !== 'boolean' || typeof v.rightHidden !== 'boolean') bad('折叠状态必须是布尔（不能用 falsy 默认值兜底）：' + JSON.stringify(v));
+      else if (v.leftHidden !== true || v.rightHidden !== true) bad(`折叠状态未记录（leftHidden=${v.leftHidden} rightHidden=${v.rightHidden}）`);
+      else ok('左右折叠状态持久化（true/true，含 0 宽语义）');
+      await page.reload({ waitUntil: 'networkidle' });
+      await page.waitForSelector('body.ed-on');
+      await page.waitForTimeout(400);
+      const back = await page.evaluate(() => ({
+        zoom: window.__edGetZoom(),
+        scrollTop: document.querySelector('.sheet').scrollTop,
+        pane: (document.querySelector('#ed-rtabs button[aria-selected="true"]') || {}).dataset?.pane,
+        leftHidden: document.getElementById('ed-left').classList.contains('ed-hidden'),
+        rightHidden: document.getElementById('ed-right').classList.contains('ed-hidden'),
+        leftW: document.body.style.getPropertyValue('--ed-left-w')
+      }));
+      if (back.zoom !== 1.25) bad(`刷新后 zoom 未恢复（${back.zoom}）`); else ok('刷新后 zoom 恢复 1.25');
+      if (back.scrollTop !== 260) bad(`刷新后滚动位置未恢复（${back.scrollTop}）`); else ok('刷新后滚动位置恢复 260');
+      if (back.pane !== 'typo') bad(`刷新后活动面板未恢复（${back.pane}）`); else ok('刷新后活动面板恢复 typo');
+      if (!back.leftHidden || !back.rightHidden) bad('刷新后折叠状态未恢复（面板又展开了）'); else if (back.leftW !== '0px') bad(`折叠未同步列宽（--ed-left-w=${back.leftW}）`); else ok('刷新后左右仍折叠且列宽为 0px');
+    }
+    // 13b 聚焦编辑同属会话状态（T5 的 toggleFocusMode 已调 __edPersistUiSoon，此处补齐"存得下 + 刷得回"两端）
+    await page.evaluate(() => { window.__edToggleFocus(); window.__edPersistUi(); });
+    const focStored = await page.evaluate(() => (JSON.parse(localStorage.getItem('resume-ui:' + window.__edDocId) || '{}')).focusMode);
+    if (focStored !== true) bad(`聚焦模式未持久化（focusMode=${focStored}）`); else ok('聚焦模式持久化 true');
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForSelector('body.ed-on');
+    await page.waitForTimeout(400);
+    const focBack = await page.evaluate(() => ({ cls: document.body.classList.contains('ed-focus'), flag: window.__edFocusMode && window.__edFocusMode() }));
+    if (!focBack.cls || focBack.flag !== true) bad(`刷新后聚焦模式未恢复（ed-focus=${focBack.cls} flag=${focBack.flag}）`); else ok('刷新后聚焦模式恢复（body 重新带上 ed-focus）');
+    await page.evaluate(() => { window.__edToggleFocus(); window.__edPersistUi(); });   // 退出，避免污染下面的窄屏往返
+    // 13c 窄屏（<1200）浮层态：独立往返，不与宽屏布尔混用
+    await page.setViewportSize({ width: 900, height: 800 });
+    await page.evaluate(() => { if (window.__edToggleLeftNarrow) window.__edToggleLeftNarrow(); });
+    await page.evaluate(() => window.__edPersistUi());
+    const narrow = await page.evaluate(() => JSON.parse(localStorage.getItem('resume-ui:' + window.__edDocId) || '{}'));
+    if (typeof narrow.narrowLeftOpen !== 'boolean') bad('窄屏浮层展开态未持久化'); else ok('窄屏浮层展开态可持久化（与宽屏折叠分字段存储）');
+  }
+  const metaAll = JSON.parse(fs.readFileSync(path.join(dataRoot, 'docs-meta.json'), 'utf8'));
+  const leaked = Object.values(metaAll).some((m) => m && Object.keys(m).some((k) => /zoom|hidden|pane|scroll|focus|lastActive|ui/i.test(k)));
+  if (leaked) bad('会话状态泄漏进 docs-meta（数据契约破坏）'); else ok('会话状态未进 docs-meta');
+  await ctx13.close();
+  }
+
+  // 14) [S2-T6｜简报称"块 13"] 窄屏单栏不破 + 应用 UI 正文可读性（≥13px / 行高 ≥1.5）；简历正文不在门禁内
+  {
+  const ctxN = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const narrow = await ctxN.newPage();
+  await narrow.goto(`${base}/`, { waitUntil: 'networkidle' });
+  const ov = await narrow.evaluate(() => ({
+    scrollW: document.documentElement.scrollWidth, inner: window.innerWidth,
+    heroArtHidden: (() => { const el = document.querySelector('.hero-art'); return !el || getComputedStyle(el).display === 'none'; })(),
+    cols: (() => { const el = document.getElementById('doclist'); return el ? getComputedStyle(el).gridTemplateColumns.split(' ').length : 0; })()
+  }));
+  if (ov.scrollW > ov.inner + 1) bad(`首页窄屏横向溢出 scrollW=${ov.scrollW} inner=${ov.inner}`); else ok('首页窄屏无横向溢出');
+  if (!ov.heroArtHidden) bad('窄屏未隐藏 hero 插画'); else ok('窄屏隐藏 hero 插画');
+  if (ov.cols > 1) bad(`窄屏文档列表仍 ${ov.cols} 栏`); else ok('窄屏文档列表单栏');
+  // 14b [T3 遗留缺陷] 窄屏搜索行：视图切换按钮标签不得竖排（被挤到 min-content 后逐字换行）。
+  //     判据用文本节点的客户端矩形数（一行一个矩形），比量高度更直接、不受按钮内边距影响。
+  const vt = await narrow.evaluate(() => {
+    const b = document.getElementById('viewToggle');
+    if (!b) return null;
+    const tn = [...b.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim());
+    if (!tn) return { lines: 0, label: b.textContent };
+    const r = document.createRange(); r.selectNodeContents(tn);
+    return { lines: r.getClientRects().length, label: tn.textContent.trim(), h: Math.round(b.getBoundingClientRect().height) };
+  });
+  if (!vt) bad('首页缺 #viewToggle（窄屏搜索行结构变了，需同步本断言）');
+  else if (vt.lines !== 1) bad(`窄屏「${vt.label}」按钮标签竖排换行（${vt.lines} 行，高 ${vt.h}px）`);
+  else ok(`窄屏「${vt.label}」按钮标签单行不竖排（高 ${vt.h}px）`);
+  await narrow.goto(`${base}/applications`, { waitUntil: 'networkidle' });
+  const kb = await narrow.evaluate(() => ({ scrollW: document.documentElement.scrollWidth, inner: window.innerWidth }));
+  if (kb.scrollW > kb.inner + 1) bad(`窄屏看板横向溢出 scrollW=${kb.scrollW}（应纵向堆叠）`); else ok('窄屏看板纵向堆叠不溢出');
+  await ctxN.close();
+  const ctx14 = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const wide = await ctx14.newPage();
+  await wide.goto(`${base}/`, { waitUntil: 'networkidle' });
+  const read = await wide.evaluate(() => ['.hero-sub', '.statusline', '.card p', '.doc-card', '.doclist .doc-card b'].map((s) => {
+    const el = document.querySelector(s);
+    if (!el) return { sel: s, missing: true };
+    const cs = getComputedStyle(el), fs = parseFloat(cs.fontSize);
+    const lh = cs.lineHeight === 'normal' ? fs * 1.2 : parseFloat(cs.lineHeight);
+    return { sel: s, fs, ratio: +(lh / fs).toFixed(2) };
+  }));
+  read.forEach((r) => {
+    if (r.missing) bad(`可读性采样缺元素 ${r.sel}`);
+    else if (r.fs < 13) bad(`应用 UI 正文字号过小 ${r.sel}=${r.fs}px（应 ≥13px）`);
+    else if (r.ratio < 1.5) bad(`应用 UI 正文行高过小 ${r.sel}=${r.ratio}（应 ≥1.5）`);
+    else ok(`可读性通过 ${r.sel} ${r.fs}px/${r.ratio}`);
+  });
+  await ctx14.close();
+  }
 } finally {
   await browser.close();
 }

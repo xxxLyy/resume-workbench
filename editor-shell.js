@@ -867,7 +867,7 @@
   window.__edToggleFocus = toggleFocusMode;
   window.__edFocusMode = function () { return document.body.classList.contains('ed-focus'); };
   var KEYS = [['⌘S', '保存'], ['⌘F', '文内查找替换'], ['⌘Z', '撤销该操作（仅当它之后没有新的正文输入；否则 ⌘Z 交回浏览器原生撤销）'],
-    ['⌘⇧F', '聚焦编辑'], ['⌘/', '本快捷键提示（焦点不在正文时按 ? 亦可；正文里的 ? 是正常打字）'], ['Esc', '关闭弹层'],
+    ['⌘⇧F', '聚焦编辑'], ['⌘/', '本快捷键提示（焦点既不在正文、也不在输入框时按 ? 亦可；在正文或输入框里 ? 就是正常打字）'], ['Esc', '关闭弹层'],
     ['（说明）', '打字与加粗等格式操作由浏览器原生撤销接管；程序化操作用「↩ 撤销」按钮或 ⌘Z']];
   function toggleShortcutHelp(show) {
     var ex = document.getElementById('ed-keys');
@@ -1264,7 +1264,10 @@
     sheet.style.zoom = zoom === 1 ? '' : String(zoom);
     zval.value = Math.round(zoom * 100);
     updateStatus();
+    persistSoon();                       // S2-T6：会话状态（存的是夹取后的真实值）
   }
+  window.__edSetZoom = setZoom;          // S2-T6 薄封装：测试/外部走同一条夹取路径（0.4–1.5），不另开后门
+  window.__edGetZoom = function () { return zoom; };
   tools.querySelector('#ed-zin').addEventListener('click', function () { setZoom(zoom + 0.1); });
   tools.querySelector('#ed-zout').addEventListener('click', function () { setZoom(zoom - 0.1); });
   tools.querySelector('#ed-z100').addEventListener('click', function () { setZoom(1); });
@@ -1316,6 +1319,7 @@
       p.classList.toggle('on', p.id === 'ed-pane-' + name);
     });
     if (name === 'review') window.dispatchEvent(new Event('ed-review-refresh'));
+    persistSoon();                       // S2-T6：活动面板属会话状态
   }
   // 供 ai-panel / 外部切换（jdfrom 桥等）
   window.__edSelectTab = selectTab;
@@ -1328,6 +1332,7 @@
       left.classList.toggle('ed-hidden');
       document.body.style.setProperty('--ed-left-w', left.classList.contains('ed-hidden') ? '0px' : '208px');
     }
+    persistSoon();                       // S2-T6：折叠态（宽屏布尔 / 窄屏浮层布尔）
   }
   function toggleRight() {
     if (window.innerWidth < 768) right.classList.toggle('ed-open');
@@ -1335,7 +1340,13 @@
       right.classList.toggle('ed-hidden');
       document.body.style.setProperty('--ed-right-w', right.classList.contains('ed-hidden') ? '0px' : '320px');
     }
+    persistSoon();                       // S2-T6
   }
+  // S2-T6 薄封装（不改行为）：面板宽只有两值（左 208px|0px、右 320px|0px），无拖拽调节，
+  // 故测试直接驱动真实折叠函数，不靠文本匹配猜按钮（调用方仍是工具条那两颗 data-ed-inj 按钮）。
+  window.__edToggleLeft = toggleLeft;
+  window.__edToggleRight = toggleRight;
+  window.__edToggleLeftNarrow = function () { left.classList.toggle('ed-open'); };
   var ltBtn = toolbar && toolbar.querySelector('.ed-left-toggle');
   var rtBtn = toolbar && toolbar.querySelector('.ed-right-toggle');
   if (ltBtn) ltBtn.addEventListener('click', toggleLeft);
@@ -1350,6 +1361,54 @@
     if (window.innerWidth >= 1200) { left.classList.remove('ed-open'); }
     if (window.innerWidth >= 768) { right.classList.remove('ed-open'); }
   });
+
+  // ===== S2-T6 会话状态（per-doc localStorage；滚动容器是 .sheet 自身；折叠存布尔而非 0 宽）=====
+  // 只写 localStorage：不碰正文 DOM、不调 notifyEdit()、不进 docs-meta（块 13 有泄漏断言，块 6 冻结件不变性兜底）。
+  // 折叠不存宽度：实测无拖拽调节，左只有 208px|0px、右只有 320px|0px 两态，故 0 宽的 falsy 陷阱不存在，存布尔即可。
+  // 定义点在此（左右面板 / 页签 / 折叠函数 / isNarrow 都已就绪）；restoreUi() 的调用点在初始化尾部——
+  // 必须晚于「窄屏初始自适应宽度」那次 setZoom，否则手机上恢复出来的 zoom 会被自适应值覆盖。
+  var UI_KEY = 'resume-ui:' + DOC_ID;
+  function uiState() {
+    var sel = right.querySelector('#ed-rtabs button[aria-selected="true"]');
+    return {
+      v: 1,
+      zoom: zoom,
+      leftHidden: left.classList.contains('ed-hidden'),
+      rightHidden: right.classList.contains('ed-hidden'),
+      narrowLeftOpen: left.classList.contains('ed-open'),
+      narrowRightOpen: right.classList.contains('ed-open'),
+      pane: (sel && sel.dataset && sel.dataset.pane) || '',
+      scrollTop: sheet.scrollTop || 0,
+      focusMode: document.body.classList.contains('ed-focus')
+    };
+  }
+  window.__edUiState = uiState;
+  window.__edPersistUi = function () {
+    try { localStorage.setItem(UI_KEY, JSON.stringify(uiState())); } catch (e) { /* 隐私模式忽略 */ }
+  };
+  var uiTimer = null;
+  // 定时器里再取一次 __edPersistUi：初始化早期（如窄屏自适应那次 setZoom）触发的 debounce 也不会打到空引用
+  function persistSoon() { clearTimeout(uiTimer); uiTimer = setTimeout(function () { if (window.__edPersistUi) window.__edPersistUi(); }, 300); }
+  window.__edPersistUiSoon = persistSoon;      // T5 的 toggleFocusMode 已在调用它（此前是空引用，本任务补齐）
+  function restoreUi() {
+    var v;
+    try { v = JSON.parse(localStorage.getItem(UI_KEY) || 'null'); } catch (e) { v = null; }
+    if (!v || v.v !== 1) return;
+    if (typeof v.zoom === 'number' && isFinite(v.zoom)) setZoom(v.zoom);          // 夹取交给 setZoom 本身
+    if (v.focusMode) document.body.classList.add('ed-focus');                      // 直接加 class：恢复态不该弹 Toast
+    if (!isNarrow()) {
+      if (v.leftHidden === true && !left.classList.contains('ed-hidden')) toggleLeft();
+      if (v.rightHidden === true && !right.classList.contains('ed-hidden')) toggleRight();
+    } else {
+      if (v.narrowLeftOpen === true) left.classList.add('ed-open');
+      if (v.narrowRightOpen === true) right.classList.add('ed-open');
+    }
+    if (v.pane && right.querySelector('#ed-rtabs button[data-pane="' + v.pane + '"]')) selectTab(v.pane);
+    if (typeof v.scrollTop === 'number' && v.scrollTop > 0) sheet.scrollTop = v.scrollTop;   // zoom 已先应用，同一像素值即同一位置
+  }
+  sheet.addEventListener('scroll', persistSoon);
+  window.addEventListener('resize', persistSoon);
+  window.addEventListener('beforeunload', window.__edPersistUi);
 
   // ===== 排版设置（typo-custom 落盘进 head，render.mjs 读到 → PDF 一致）=====
   var TYPO_DEFAULTS = { fontSize: 13, lineHeight: 1.43, pagePad: 9.4, paraGap: 0.45, secGap: 2.9 };
@@ -1529,6 +1588,10 @@
   if (window.innerWidth < 768) {
     setZoom(Math.max(0.4, (window.innerWidth - 24) / SHEET_W));
   }
+  // S2-T6：会话状态恢复。位置硬要求两条：① 晚于上面那次窄屏自适应 setZoom（存过的 zoom 优先于自适应默认值）；
+  // ② restoreUi 内部先 setZoom 再写 sheet.scrollTop（zoom 改变布局高度，顺序反了同一像素值就不是同一位置）。
+  // 导航高亮无需特殊处理：renderNav() 已在前面跑过，恢复滚动后 IntersectionObserver 会自行把 active 推到正确章节。
+  restoreUi();
 
   // ===== 选区工具条宿主（按钮行为由 ai-panel.js 绑定；无 AI 面板时隐藏）=====
   var seltb = document.createElement('div');
