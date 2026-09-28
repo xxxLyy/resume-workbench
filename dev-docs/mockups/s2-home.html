@@ -1,0 +1,82 @@
+<!doctype html>
+<!-- S2 Task 0 静态对照稿：仅设计确认用，不参与运行；数据全部为假 -->
+<html lang="zh-CN"><head><meta charset="utf-8"><title>S2 对照稿 · 首页</title>
+<style>
+/* ===== 定稿 token（与实施计划 Task 0 清单一字不差） ===== */
+:root{--bg:#F6F1E7;--panel:#FFFCF5;--ink:#26221C;--mut:#6E675C;--line:#E2D9C8;--accent:#C2410C;--accent-ink:#FFF7ED;--accent-soft:#FBE9D8;--ok:#2F6B4F;--ok-soft:#E4EFE6;--warn:#A65A12;--warn-soft:#FBEEDC;--err:#A32B2B;--err-soft:#F7E4E1;--ai:#7A5C3E;--ai-soft:#F1E7D8;--radius:8px;--shadow:0 1px 2px rgba(60,45,25,.07);--shadow-up:0 10px 24px rgba(60,45,25,.12);--serif:"Songti SC","Noto Serif CJK SC","Source Han Serif SC",Georgia,serif;--sans:"PingFang SC",-apple-system,sans-serif}
+*{box-sizing:border-box}
+body{font-family:var(--sans);max-width:1100px;margin:0 auto;padding:0 20px 40px;font-size:14px;line-height:1.6;background:var(--bg);color:var(--ink)}
+a{color:var(--accent);text-decoration:none;font-weight:600}
+.topnav{display:flex;justify-content:space-between;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:10px 18px;margin:16px 0 20px;flex-wrap:wrap;gap:8px}
+.topnav .brand{font-family:var(--serif);font-weight:800;font-size:16px;color:var(--ink);letter-spacing:.4px}
+.topnav .links a{margin-left:16px;color:var(--mut);font-weight:600}
+.topnav .links a.on{color:var(--accent)}
+button{cursor:pointer;background:var(--accent);color:var(--accent-ink);border:none;border-radius:8px;min-height:32px;padding:0 12px;font-weight:600;font-size:13px}
+button.secondary{background:var(--panel);color:var(--ink);border:1px solid var(--line)}
+input,textarea,select{border:1px solid var(--line);border-radius:8px;padding:7px 10px;background:var(--panel);color:var(--ink);font-size:13px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 16px}
+.badge{display:inline-block;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:600;background:var(--bg);color:var(--mut);margin-right:6px}
+.badge.ok{background:var(--ok-soft);color:var(--ok)}.badge.warn{background:var(--warn-soft);color:var(--warn)}.badge.ai{background:var(--ai-soft);color:var(--ai)}
+.hero{display:flex;gap:20px;align-items:center;justify-content:space-between;max-height:180px;margin:4px 0 14px}
+.hero-title{font-family:var(--serif);font-size:34px;font-weight:800;letter-spacing:.8px;margin:0 0 6px}
+.hero-sub{color:var(--mut);font-size:13px;line-height:1.6;margin:0 0 12px;max-width:46ch}
+.hero-acts{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.hero-art{flex:0 0 200px;color:var(--accent);opacity:.9}
+.hero-art svg{width:100%;height:auto;max-height:150px}
+.cta{display:inline-block;background:var(--accent);color:var(--accent-ink);border:none;border-radius:8px;padding:9px 16px;font-weight:700;font-size:14px}
+.cta-alt{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:9px 14px;font-weight:600;font-size:13px;cursor:pointer}
+.statusline{margin-top:12px;font-size:13px;line-height:1.7;color:var(--mut)}
+.statusline .sep{margin:0 8px;color:var(--line)}
+.doclist{list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;margin:12px 0 0}
+.doc-card b{font-family:var(--serif);font-size:16px}
+.doc-card .meta{color:var(--mut);font-size:12px}
+footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
+@media (max-width:700px){.hero{flex-direction:column;align-items:flex-start;max-height:none}.hero-art{display:none}}
+</style></head><body>
+<nav class="topnav"><span class="brand">📄 简历工作台</span><span class="links"><a class="on" href="#">文档</a><a href="#">🧱 素材库</a><a href="#">📋 投递看板</a><a href="#">📊 复盘</a><a href="#">⚙️ 设置</a></span></nav>
+
+<section class="hero">
+  <div class="hero-txt">
+    <h1 class="hero-title">简历工作台</h1>
+    <p class="hero-sub">一份母版，针对每个岗位生成可投递的两页 PDF。数据全在本地。</p>
+    <div class="hero-acts">
+      <a class="cta" href="#">▶ 继续：测试候选人</a>
+      <button class="cta-alt" type="button">🎯 针对岗位生成</button>
+    </div>
+  </div>
+  <div class="hero-art" aria-hidden="true">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 180" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="18" y="22" width="96" height="132" rx="46"/><path d="M66 154v14M46 168h40"/><circle cx="66" cy="66" r="15"/><path d="M44 116c0-14 10-24 22-24s22 10 22 24"/><path d="M30 40c8-6 18-9 28-9"/><rect x="138" y="34" width="80" height="108" rx="4"/><path d="M150 56h56M150 70h56M150 84h40M150 104h56M150 118h30"/><path d="M198 142l22 22M220 164l-8 2 2-8"/></svg>
+  </div>
+</section>
+
+<details class="card" id="jobCard"><summary style="cursor:pointer;font-weight:700">🎯 针对岗位生成简历</summary>
+  <p style="font-size:13px;line-height:1.6;color:var(--mut);margin:6px 0">拿到 JD → 生成独立岗位草稿（不改母版）→ 审阅修改清单 → 导出两页 PDF。不配置模型也可手动生成草稿。</p>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px">
+    <span style="font-size:12px">公司<input placeholder="示例科技"></span>
+    <span style="font-size:12px">岗位<input placeholder="后端工程师"></span>
+    <span style="font-size:12px">母版简历<select><option>测试候选人（mock-doc）</option></select></span>
+    <span style="font-size:12px">JD 链接<input placeholder="https://…"></span>
+  </div>
+  <div style="margin-top:8px"><button type="button">生成岗位草稿</button> <span style="font-size:12px;color:var(--mut)">假数据，仅示形</span></div>
+</details>
+
+<div class="card" style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+  <button class="secondary">＋ 新建空白文档</button>
+  <span style="flex:1;font-size:13px;color:var(--mut)">📄 导入 PDF（折叠在旁）</span>
+</div>
+
+<div class="card statusline" role="status">⚠️ 1 份待结构化<span class="sep">·</span>🔄 1 份 PDF 较旧，导出时重渲<span class="sep">·</span>⏰ 2 份逾期/近期面试提醒<span class="sep">·</span>📋 3 份投递中<span class="sep">·</span>📑 PDF 2/3 同步<span class="sep">·</span>🤖 AI：示例模型</div>
+
+<div style="display:flex;gap:10px;align-items:center;margin:12px 0">
+  <input placeholder="搜索文档（标题/id/标签）" style="flex:1"><button class="secondary">▤ 切换</button>
+  <span class="cta-alt" style="display:inline-block">🗄 显示已归档</span>
+</div>
+
+<ul class="doclist">
+  <li class="card doc-card"><b>测试候选人</b><div class="meta">doc · 3 天前 · 母版</div><div><span class="badge ok">可投递</span><span class="badge">2 页</span></div></li>
+  <li class="card doc-card"><b>示例甲 · 后端</b><div class="meta">mock-doc-2 · 昨天 · 岗位草稿</div><div><span class="badge warn">已审阅·PDF 未同步</span><span class="badge ai">已记录投递</span></div></li>
+  <li class="card doc-card"><b>示例乙 · 数据</b><div class="meta">mock-doc-3 · 今天 · 岗位草稿</div><div><span class="badge">草稿</span></div></li>
+</ul>
+
+<footer>简历平台 · 本地优先 · 数据在 ~/resume</footer>
+</body></html>
