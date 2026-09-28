@@ -382,6 +382,10 @@ function jobBlock(id) {
 }
 
 const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+// 单引号属性内嵌 JSON：沿用本文件既有 JSON.stringify(...).replace(...) 写法（见 shellBlock 的 __MATS__/__JOB_INFO__、
+// 备份页 DATA），把唯一能截断单引号属性的 ' 换成 JSON 转义 \u0027 —— 属性里不再出现裸 '，JSON.parse 原样还原为 '。
+// 值（docInfo.title）已过 escHtml：& < > 以实体形式存在并由属性解析还原，故此处绝不能再转 &（会把 &amp; 变成 &amp;amp;）。
+const jsonAttr = (v) => JSON.stringify(v).replace(/'/g, '\\u0027');
 
 function docInfo(id, m) {
   const f = docPath(id);
@@ -500,7 +504,7 @@ function listPage(showArchived = false) {
         <p class="hero-sub">一份母版，针对每个岗位生成可投递的两页 PDF。数据全在本地。</p>
         <div class="hero-acts">
           ${fallbackId
-            ? `<a id="continueBtn" class="cta" href="/edit?id=${encodeURIComponent(fallbackId)}" data-fallback="${fallbackId}" data-doc-ids='${JSON.stringify(docIds)}' data-doc-titles='${JSON.stringify(docTitles)}'>▶ 继续上次任务</a>`
+            ? `<a id="continueBtn" class="cta" href="/edit?id=${encodeURIComponent(fallbackId)}" data-fallback="${fallbackId}" data-doc-ids='${jsonAttr(docIds)}' data-doc-titles='${jsonAttr(docTitles)}'>▶ 继续上次任务</a>`
             : `<form method="post" action="/new" style="display:inline"><button class="cta" type="submit">＋ 新建第一份简历</button></form>`}
           <button type="button" class="cta-alt" id="jobToggle" aria-expanded="false" aria-controls="jobCard">🎯 针对岗位生成</button>
         </div>
@@ -588,8 +592,13 @@ function listPage(showArchived = false) {
         });
         var btn = document.getElementById('continueBtn');
         if (!btn) return;                                    // 无文档时渲染的是「新建第一份简历」，无此按钮
-        var ids = JSON.parse(btn.getAttribute('data-doc-ids') || '[]');
-        var titles = JSON.parse(btn.getAttribute('data-doc-titles') || '{}');
+        // 解析必须非致命：属性损坏时抛出的 SyntaxError 会中断整段内联脚本（含 localStorage 陈旧键清理）。
+        // 兜底 = 服务端已渲染好的 mtime 链接与原文案，故此处直接 return，不走下面的隐藏分支。
+        // 修复轮1 起 jsonAttr() 已保证属性不可能被 ' 截断，本分支只是纵深防御，正常路径永不触发。
+        var ids = null, titles = null;
+        try { ids = JSON.parse(btn.getAttribute('data-doc-ids') || '[]'); } catch (e) { ids = null; }
+        try { titles = JSON.parse(btn.getAttribute('data-doc-titles') || '{}'); } catch (e) { titles = null; }
+        if (!Array.isArray(ids) || !titles || typeof titles !== 'object') return;
         var fb = btn.getAttribute('data-fallback') || '';
         var last = '';
         try { last = localStorage.getItem('resume-last-active-doc') || ''; } catch (e) { last = ''; }

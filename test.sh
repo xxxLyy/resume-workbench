@@ -148,6 +148,113 @@ echo "$HOME_HTML" | grep -qF '<svg' || fail '插画未内联为 SVG（禁止外�
 if printf '%s' "$HOME_HTML" | grep -qE 'https?://[^"'"'"']*\.(png|jpg|jpeg|svg)'; then fail '首页出现外链图片'; fi
 echo '✅ S2-T3 首页结构（hero/折叠岗位表单/一行状态摘要/继续上次任务）'
 
+# S2-T3 修复轮1：撇号标题回归 —— data-doc-titles 单引号属性不得被 ' 截断，内联脚本不得抛未捕获异常
+# 夹具为假数据（Jane's Resume）；块末删除夹具，后续段落看到的文档集合与本块之前一致。
+cat > "$TEST_DIR/apos-attr-check.cjs" << 'EOF'
+// 按浏览器口径校验：单引号属性值 = 开引号到下一个单引号，随后实体解码，再 JSON.parse。
+// 并把承载回退链的内联 <script> 放进最小 DOM 桩真跑一遍 —— 抛未捕获异常即失败。
+// 零依赖（不引 jsdom、不起浏览器）。输入 = 隔离根上被测服务自己渲染的首页（假夹具，非不可信输入）。
+'use strict';
+const fs = require('fs');
+const html = fs.readFileSync(process.argv[2], 'utf8'), fid = process.argv[3];
+const die = (m) => { console.error('   ❌ ' + m); process.exit(1); };
+// 实体解码顺序：&amp; 必须最后，否则 &amp;#39; 会被二次解码成 '
+const decode = (s) => String(s).replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+  .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+// 引号感知取出某 id 所在开始标签原文（引号内的 > 不结束标签 —— 与 HTML 解析器同口径）
+function tagOf(idv) {
+  const at = html.indexOf('id="' + idv + '"');
+  if (at < 0) return null;
+  let i = at, q = null;
+  for (; i < html.length; i++) {
+    const c = html[i];
+    if (q) { if (c === q) q = null; continue; }
+    if (c === '"' || c === "'") { q = c; continue; }
+    if (c === '>') break;
+  }
+  return html.slice(html.lastIndexOf('<', at), i + 1);
+}
+// 引号感知属性扫描：单引号属性在下一个 ' 处结束（这正是本缺陷的截断点）
+function attrsOf(tag) {
+  const out = {};
+  const re = /([A-Za-z_:][-A-Za-z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>=`]+))/g;
+  let m;
+  while ((m = re.exec(tag))) {
+    out[m[1]] = decode(m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4]);
+  }
+  return out;
+}
+const btnTag = tagOf('continueBtn');
+if (!btnTag) die('首页缺 id="continueBtn"（撇号夹具应使 hero 走非空态）');
+const btnAttrs = attrsOf(btnTag);
+for (const n of ['data-doc-ids', 'data-doc-titles', 'data-fallback']) {
+  if (!(n in btnAttrs)) die('继续按钮缺 ' + n);
+}
+// (a) 属性端到端可解析
+let ids, titles;
+try { ids = JSON.parse(btnAttrs['data-doc-ids']); } catch (e) {
+  die('data-doc-ids 按浏览器口径解析失败：' + e.message + '\n      属性值=' + JSON.stringify(btnAttrs['data-doc-ids']));
+}
+try { titles = JSON.parse(btnAttrs['data-doc-titles']); } catch (e) {
+  die('data-doc-titles 按浏览器口径解析失败：' + e.message + '\n      属性值=' + JSON.stringify(btnAttrs['data-doc-titles']));
+}
+if (!Array.isArray(ids) || ids.indexOf(fid) < 0) die('data-doc-ids 未含夹具 id：' + JSON.stringify(ids));
+if (!titles || typeof titles !== 'object') die('data-doc-titles 不是对象：' + JSON.stringify(titles));
+if (titles[fid] !== "Jane's Resume") die('撇号标题未端到端还原：' + JSON.stringify(titles[fid]));
+// (b) 内联脚本真跑（最小 DOM 桩）
+const scripts = [...html.matchAll(/<script(?![^>]*\ssrc=)[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1]);
+const target = scripts.filter((s) => s.includes('continueBtn')).pop();
+if (!target) die('未找到承载「继续上次任务」回退链的内联脚本');
+const els = new Map();
+function makeEl(idv) {
+  const t = tagOf(idv), a = t ? attrsOf(t) : {};
+  return {
+    id: idv, style: {}, open: false, value: '', files: [], textContent: '', innerHTML: '',
+    href: a.href || '', _a: a,
+    classList: { toggle() {}, add() {}, remove() {}, contains() { return false; } },
+    getAttribute(n) { return Object.prototype.hasOwnProperty.call(this._a, n) ? this._a[n] : null; },
+    setAttribute(n, v) { this._a[n] = String(v); },
+    removeAttribute(n) { delete this._a[n]; },
+    addEventListener() {}, removeEventListener() {}, appendChild() {}, focus() {},
+    contains() { return false; }
+  };
+}
+const sandbox = {
+  document: {
+    getElementById(idv) { if (!els.has(idv)) els.set(idv, makeEl(idv)); return els.get(idv); },
+    querySelectorAll() { return []; },
+    addEventListener() {},
+    createElement() { return makeEl('__created__'); }
+  },
+  localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+  window: {}, location: { href: '' },
+  fetch() { return Promise.resolve({ json() { return Promise.resolve(null); }, text() { return Promise.resolve(''); } }); },
+  confirm() { return false; }, alert() {}, encodeURIComponent, JSON, console
+};
+try {
+  new Function(...Object.keys(sandbox), target)(...Object.values(sandbox));
+} catch (e) {
+  die('首页内联脚本抛出未捕获异常 → ' + (e && e.name) + ': ' + (e && e.message));
+}
+const btn = els.get('continueBtn');
+if (!btn) die('内联脚本未触达 continueBtn');
+if (btn.style.display === 'none') die('属性可解析却把继续按钮隐藏了（回退链未生效）');
+const fb = btn.getAttribute('data-fallback') || '';
+if (!btn.textContent.includes(titles[fb] || fb)) {
+  die('回退链未改写按钮文案（个性化未生效）：' + JSON.stringify(btn.textContent));
+}
+console.log('   ↳ data-doc-titles 解析成功（' + Object.keys(titles).length + ' 项，撇号原样）；按钮文案=' + JSON.stringify(btn.textContent));
+EOF
+APOS_ID=$(curl -s -X POST "$B/new" -o /dev/null -w '%{redirect_url}' | sed 's/.*id=//')
+[ -n "$APOS_ID" ] && [ -f "$RESUME_ROOT/docs/$APOS_ID.html" ] || fail '撇号标题夹具未建成'
+curl -s -X POST "$B/save?id=$APOS_ID" --data-binary "$(sed "s|<h1>未命名</h1>|<h1>Jane's Resume</h1>|" "$RESUME_ROOT/docs/$APOS_ID.html")" | grep -q '"ok":true' || fail '撇号标题夹具保存失败'
+grep -qF "<h1>Jane's Resume</h1>" "$RESUME_ROOT/docs/$APOS_ID.html" || fail '撇号标题未落盘'
+curl -s "$B/" > "$TEST_DIR/home-apos.html"
+node "$TEST_DIR/apos-attr-check.cjs" "$TEST_DIR/home-apos.html" "$APOS_ID" || fail "撇号标题（${APOS_ID}）使 data-doc-titles 属性截断或内联脚本抛异常"
+curl -s -X POST "$B/delete?id=$APOS_ID" -o /dev/null
+[ -f "$RESUME_ROOT/docs/$APOS_ID.html" ] && fail '撇号标题夹具未清理（污染后续段落）'
+echo "✅ S2-T3 修复轮1 撇号标题（data-doc-titles 属性完整 + 内联脚本不抛）"
+
 # 写入基线内容
 curl -s -X POST "$B/save?id=$DOCID" --data-binary "$(sed 's/点击开始编辑…/文本A/' "$RESUME_ROOT/docs/$DOCID.html")" | grep -q '"ok":true' || fail '基线保存失败'
 grep -q '文本A' "$RESUME_ROOT/docs/$DOCID.html" || fail '基线未落盘'
