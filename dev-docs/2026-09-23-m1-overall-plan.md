@@ -64,9 +64,18 @@
   6. 顺带修掉三个既有缺陷：`/save` 每次保存净增 3 换行导致冻结件永不到稳态；离线恢复与撤销栈相撞可致**永久内容丢失**；1280×720 下纸张遮住状态条使「↩ 撤销」不可点。
 - **上线遗留（T7 唯一开放门槛）**：`:7766` 仍跑修复前的内存代码，需一次 `launchctl kickstart -k` 重启，`/save` 换行修复才对真实文档生效。
 
-### S3 区域绑定与区域级分析
+### S3 区域绑定与区域级分析（已完成 · 2026-09-29）
 - 进入：S1 退出（与 S2 可并行，但建议 S2 后以免预览层冲突）。退出：绑定持久化；自动初绑进待确认；段落拆分/合并/复制/排序/撤销/回滚后绑定"正确保持，或明确失效且不误改"（失效语义在设计文档定：无法判定归属→待重新绑定）；未确认绑定不阻止手动编辑与普通导出；区域级分析与修改模式可用；事实与表达分离的素材模型迁移完成。
 - 先验证绑定模型（小切片），再扩展区域分析面板（计划拆两个任务组）。
+- **实际结果（commits `d7838f8`..`c03489d`，13 个实现提交）**：六块交付 —— ① 数据层 `zone.mjs`（zid 规范/初绑启发式/zoneSync/素材迁移纯函数）；② 服务端 `/zones` + `/zones/init` 端点、`/save` zid 归一与 zoneSync；③ 编辑器 zid 生命周期（未保存阶段确定性内容哈希、加载/input/paste/克隆四口打点、初绑客户端触发）；④ 区域 Tab UI（列表/定位/着色/改绑弹窗，`ZONE-INJECT` 注入链）；⑤ 区域级 AI（分析/改写端点，受约束解析 + 请求最小化）与修改模式接受链路（严格 S2 撤销顺序，S2 撤销块零回归）；⑥ 素材事实层（facts/factStatus 三态 + `/materials` 事实表单 + `migrate-meta.mjs` 幂等迁移）。验证：`test.sh` 219 ✅ / 0 ❌（S2 收官 194 → 219）、`test-structure.sh`/`test-render.sh`/`privacy-check.sh` 全 exit 0；冻结面（`template.html`/`themes/`/`render.mjs`）diff 为空；PDF 等价抽验（detached worktree `e87a4c9` 基线 vs S3 后，同一夹具 + zid 打点变体）双 ratio 0.000000。AI 结论均为本地 stub 模拟验证。
+- **与原计划的偏差（均已回写设计 §3.2 与本文件，不是静默偏离）**：
+  1. `freeze.mjs` 新增 `stripZid`（授权偏差，S3-D pin）：`renderInputId` 只度量视觉输入，`data-zid` 属非视觉 bookkeeping，bodyHash 前摘除——这是 S1-C-2（渲染身份不含非视觉属性）不放宽的唯一修法；冻结 html 逐字节不变。
+  2. zid 计入内容哈希的口径代价：旧文档首次打点保存会使 reviewed 草稿一次性降级 draft（contentHash 变化触发既有"来源较旧"语义；可逆，重新导出即恢复）。S4a 前决定是否对齐口径。
+  3. `/zones` 与 `/zones/init` 对不存在的 doc id 会创建孤儿 meta 条目（前端仅 `/edit` 场景调用，低风险）；建议 S4a 前补 docPath 存在性检查。
+  4. 区域改写为纯文本替换，会拍平段内 inline 标记（已知限制，diff 预览可见、事实护栏仍生效）。
+  5. 真实 `materials.json` 持久迁移待用户手动跑 `node migrate-meta.mjs`（读时视图兼容已生效：`loadMats()` 即时推导，未迁移不影响使用）；回滚快照 `backups/pre-s3-mats-<ts>/`。
+  6. T8 遗留登记（不修，供后续）：escAttr 存量 `server.mjs:2537-2538` 同病；`matConfirmAll` 会把 outdated 刷成 confirmed（confirm 门控）；素材页 fetch 无错误分支；`migrate-meta.mjs` 头注释未提素材段；factGuard 中文数字盲区（S2 共享）；digest per 调优须联动 MARKERZZ canary 夹具；S3D 测试走回落臂未覆盖 detail 主臂（生产主臂经 T6 quality 探针补证）；instruction 服务端无长度上限；接受后定位/文案 UX 微瑕；手写 HTML 双 data-zid 极端形状（`zone.mjs:4` 已文档化包络）。
+- **上线遗留（T8）**：`:7766` 常驻服务需一次重启加载 S3 代码；可选：用户手动跑素材持久迁移（见偏差 5）。
 
 ### S4a 岗位适配核心：生成→审阅→导出
 - 进入：S3 退出。退出：证据对应表四态可用且可定位/可追溯；定制要求卡与预设；局部重生成与手改保护；有终点的审阅面板；排版问题定位；确定性检查三级；§3.2 AI 任务管理最小集首落地；事实层校验生效。
