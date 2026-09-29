@@ -400,6 +400,7 @@ function zoneBlock(id) {
 }
 
 const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const escAttr = (s) => escHtml(s).replace(/"/g, '&quot;');   // 属性值转义（value="..." 防双引号截断）
 // 单引号属性内嵌 JSON：沿用本文件既有 JSON.stringify(...).replace(...) 写法（见 shellBlock 的 __MATS__/__JOB_INFO__、
 // 备份页 DATA），把唯一能截断单引号属性的 ' 换成 JSON 转义 \u0027 —— 属性里不再出现裸 '，JSON.parse 原样还原为 '。
 // 值（docInfo.title）已过 escHtml：& < > 以实体形式存在并由属性解析还原，故此处绝不能再转 &（会把 &amp; 变成 &amp;amp;）。
@@ -1351,7 +1352,7 @@ async function handler(req, res) {
           <button class="secondary" onclick="matEdit('${m.id}')">✏️ 编辑</button> <button class="danger" onclick="matDel('${m.id}')">🗑 删除</button></div>
         <details style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--mut)">事实层</summary>
           <form class="mat-facts" style="margin-top:6px;font-size:13px" onsubmit="return matFacts(event,'${m.id}')">
-            ${FACT_KEYS.map((k) => `<p style="margin:2px 0">${FACT_LABELS[k]} <input name="f_${k}" value="${escHtml(m.facts ? m.facts[k] : '')}" style="width:60%"></p>`).join('')}
+            ${FACT_KEYS.map((k) => `<p style="margin:2px 0">${FACT_LABELS[k]} <input name="f_${k}" value="${escAttr((m.facts || {})[k] || '')}" style="width:60%"></p>`).join('')}
             <p style="margin:2px 0">状态 <select name="f_factStatus">
               <option value="pending"${m.factStatus === 'pending' ? ' selected' : ''}>待确认</option>
               <option value="confirmed"${m.factStatus === 'confirmed' ? ' selected' : ''}>已确认</option>
@@ -1396,9 +1397,6 @@ async function handler(req, res) {
         fetch('/mat/update', { method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id: id, facts: facts, factStatus: factStatus }) }).then(function () { location.reload(); });
         return false;
-      }
-      function matConfirm(id, on) {
-        fetch('/mat/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [id], confirmed: on }) }).then(function () { location.reload(); });
       }
       function matConfirmAll() {
         if (!confirm('把全部 ' + MATS.length + ' 条素材标记为已确认？先确认事实层与表达层内容准确再操作。')) return;

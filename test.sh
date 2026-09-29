@@ -605,6 +605,13 @@ MATID=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"
 curl -s -X POST "$B/mat/update" -H 'Content-Type: application/json' -d '{"id":"'"$MATID"'","factStatus":"outdated"}' | grep -q '"ok":true' || fail 'S3 mat/update 三态'
 node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const x=m.find(v=>v.title==="事实素材");if(!x||x.factStatus!=="outdated"||!x.facts||x.facts.metrics!=="P99 800ms→210ms"){console.error("❌ S3 三态落盘");process.exit(1)}' "$RESUME_ROOT/materials.json" || fail 'S3 factStatus/facts 落盘'
 pass "S3 素材事实层三态"
+# /mat/confirm 兼容映射：confirmed:false → outdated 落盘 pending（旧前端形状垫片）
+curl -s -X POST "$B/mat/confirm" -H 'Content-Type: application/json' -d "{\"ids\":[\"$MATID\"],\"confirmed\":false}" | grep -q '"ok":true' || fail 'S3 mat/confirm 兼容请求'
+node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const x=m.find(v=>v.title==="事实素材");if(!x||x.factStatus!=="pending"){console.error("❌ S3 confirm 映射");process.exit(1)}' "$RESUME_ROOT/materials.json" || fail 'S3 mat/confirmed:false→pending 落盘'
+# /mat/update facts 白名单整替：白名单外键丢弃、值 String 化
+curl -s -X POST "$B/mat/update" -H 'Content-Type: application/json' -d '{"id":"'"$MATID"'","facts":{"metrics":210,"hacker":"x"}}' | grep -q '"ok":true' || fail 'S3 mat/update facts 整替'
+node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const x=m.find(v=>v.title==="事实素材");const ks=Object.keys(x.facts);if(!x.facts||ks.length!==8||x.facts.metrics!=="210"||ks.includes("hacker")){console.error("❌ S3 facts 白名单 "+JSON.stringify(ks));process.exit(1)}' "$RESUME_ROOT/materials.json" || fail 'S3 facts 白名单整替落盘'
+pass "S3 mat/confirm 兼容映射与 facts 白名单"
 
 # ===== 16. 浏览器级保存语义（可选，需要本机 Chromium）=====
 if node test-editor.mjs "$B" "$DOCID" "$RESUME_ROOT"; then
