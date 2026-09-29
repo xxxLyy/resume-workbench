@@ -946,7 +946,7 @@ async function handler(req, res) {
       const entries = Array.isArray(body.entries) ? body.entries.filter((e) => e && /^z[0-9a-f]{8}$/.test(e.zid)) : [];
       if (!entries.length) return sendJson(400, { ok: false, error: 'entries 必填' });
       let created = null;
-      updateMeta(root, id, (m) => {
+      const w = updateMeta(root, id, (m) => {
         if (m && m.zones && Object.keys(m.zones).length) { created = 'exists'; return m; }   // 已有 zones：幂等不动
         const zones = {};
         for (const e of entries) {
@@ -955,7 +955,7 @@ async function handler(req, res) {
         created = 'created';
         return { ...(m || {}), zones, zoneOrder: ['personal', 'work', 'project', 'skill', 'education', 'award', 'summary', 'other'] };
       });
-      return sendJson(200, { ok: true, zones: loadMeta()[id].zones });
+      return sendJson(200, { ok: true, zones: w.zones });   // 用写入后返回值，不回读磁盘
     }
     // 生成建议（LLM 可选；失败不影响已有草稿与母版）
     if (req.method === 'POST' && url.pathname === '/job/generate') {

@@ -80,6 +80,7 @@ function bodyInner(html) {
 
 // S3：data-zid 是非视觉属性（区域绑定的 bookkeeping），不属于渲染输入。
 // bodyHash 前先摘除，避免首存打点把「PDF 同步」误判为「较旧」（renderInputId 只度量视觉）。
+// zid 格式与 zone.mjs 的 ZID_SRC 同源约定（z[0-9a-f]{8}），格式变更须两处同步——freeze.mjs 刻意零本地依赖故不共享常量。
 function stripZid(html) {
   return String(html).replace(/\sdata-zid="[^"]*"/g, "");
 }
