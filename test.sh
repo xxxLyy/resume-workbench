@@ -18,7 +18,7 @@ mkdir -p "$RESUME_ROOT/docs" "$RESUME_ROOT/snapshots" "$RESUME_ROOT/pdfs"
 cleanup() {
   kill $SRV $LLM $JDSTUB 2>/dev/null || true
   rm -rf "$TEST_DIR"
-  rm -f /tmp/resume-test-stub.log
+  rm -f /tmp/resume-test-stub.log /tmp/resume-test-llm-last.json
 }
 trap cleanup EXIT
 
@@ -93,14 +93,25 @@ cat > "$TEST_DIR/llm-stub.mjs" << EOF
 import http from 'node:http';
 import fs from 'node:fs';
 const reply = fs.readFileSync('$TEST_DIR/stub-response.json', 'utf8');
+// 区域级 AI（S3-T5）：所有 AI 端点共用 /chat/completions，按 system 关键词分流；
+// 最后请求体落盘供泄漏断言（区域文本最小化：只带本区域段落 + 有界全文摘要）。
+const zoneAnalyze = JSON.stringify({ echoes: ['与项目经历呼应'], reminder: '注意量化指标', suggestion: '可以合并前两条', chips: ['这个区域和项目经历如何呼应？', '量化数据够吗？'] });
+const zoneRewrite = JSON.stringify({ rewrites: [{ zid: 'zdeadbeef', candidate: '负责交易系统稳定性，P99 800ms' }] });
 http.createServer((q, s) => {
   let b = '';
   q.on('data', (c) => b += c);
   q.on('end', () => {
     fs.writeFileSync('$TEST_DIR/llm-last.json', b.slice(0, 200000));
+    fs.copyFileSync('$TEST_DIR/llm-last.json', '/tmp/resume-test-llm-last.json');
     s.writeHead(200, { 'Content-Type': 'application/json' });
     if (q.url.includes('/models')) return s.end(JSON.stringify({ data: [{ id: 'stub-model' }] }));
-    s.end(JSON.stringify({ choices: [{ message: { content: reply } }] }));
+    let content = reply;
+    try {
+      const sys = JSON.parse(b).messages.find((m) => m.role === 'system').content;
+      if (String(sys).includes('区域分析顾问')) content = zoneAnalyze;
+      else if (String(sys).includes('区域改写器')) content = zoneRewrite;
+    } catch {}
+    s.end(JSON.stringify({ choices: [{ message: { content } }] }));
   });
 }).listen(17900, '127.0.0.1');
 EOF
@@ -530,7 +541,7 @@ echo '✅ JD 链接读取'
 cat > "$TEST_DIR/s3-doc.html" << 'EOF'
 <body><div class="sheet"><div class="contact">测试员 s3@t.cn</div>
 <section class="section"><div class="section-title">个人总结</div><p>五年后端经验</p></section>
-<section class="section"><div class="section-title">专业技能</div><p>技能一：Go 与调度系统</p></section>
+<section class="section"><div class="section-title">专业技能</div><p>技能一：Go 与调度系统，配套说明文字用于把摘要窗口填满，确保后续标记不会进入其他区域的请求体 MARKERZZ</p></section>
 <section class="section"><div class="section-title">工作经历</div><p>负责交易系统，P99 800ms</p></section>
 <section class="section"><div class="section-title">项目经历</div><p>项目甲：数据管道重设计</p></section>
 </div></body>
@@ -573,6 +584,17 @@ const orphan = Object.keys(zs).filter((z) => !inDoc.includes(z));
 if (missing.length || orphan.length) { console.error("❌ S3 zones 同步 missing=" + missing + " orphan=" + orphan); process.exit(1); }
 console.log("zones=" + inDoc.length);' "$RESUME_ROOT/docs-meta.json" "$S3DOC" "$TEST_DIR/s3-doc.html" || fail 'S3 /save 后 zones 同步'
 echo '✅ S3 /save 后 zones 与正文一致（孤儿清/缺失补）'
+# S3-T5 区域级 AI（stub 模拟验证）：端点结构 / 请求最小化 / 改写候选
+AZ=$(curl -s -X POST "$B/ai/zone-analyze?id=$S3DOC" -H 'Content-Type: application/json' -d '{"zone":"work"}')
+echo "$AZ" | grep -q '"echoes"' || fail "S3 zone-analyze 返回结构化意见（模拟验证）: $(echo "$AZ" | head -c 160)"
+if grep -q 'MARKERZZ' /tmp/resume-test-llm-last.json 2>/dev/null; then fail 'S3 zone-analyze 请求泄漏其他区域全文（超出摘要窗口）'; fi
+pass() { echo "✅ $1"; }
+pass "S3 zone-analyze 请求最小化（模拟验证）"
+RW=$(curl -s -X POST "$B/ai/zone-rewrite?id=$S3DOC" -H 'Content-Type: application/json' -d '{"zone":"work","instruction":"更精简"}')
+echo "$RW" | grep -q '"rewrites"' || fail "S3 zone-rewrite 返回候选（模拟验证）: $(echo "$RW" | head -c 160)"
+pass "S3 zone-rewrite（模拟验证）"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/ai/zone-analyze?id=$S3DOC" -H 'Content-Type: application/json' -d '{"zone":"nope"}')
+[ "$CODE" = "400" ] || fail "S3 zone-analyze 坏区域应 400 得 $CODE"
 
 # ===== 16. 浏览器级保存语义（可选，需要本机 Chromium）=====
 if node test-editor.mjs "$B" "$DOCID" "$RESUME_ROOT"; then

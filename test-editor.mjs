@@ -2531,6 +2531,32 @@ try {
     await ctx.close();
   }
 
+  // ===== S3 块 A2：无模型降级（拦截 409 → 按钮置灰 + 降级说明，绑定功能不受影响）=====
+  //     复用 ed-fixture-zone（S3B 已保存落盘 zid 与 zones）；page.route 拦 /ai/zone-analyze 回 409 模拟未配置 LLM。
+  {
+    const S3_DOC = 'ed-fixture-zone';
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await page.route('**/ai/zone-analyze*', (route) => route.fulfill({ status: 409, contentType: 'text/plain', body: 'no llm' }));
+    await page.goto(`${base}/edit?id=${S3_DOC}`, { waitUntil: 'networkidle' });
+    await page.click('#ed-rtabs button[data-pane="zone"]');
+    await page.waitForTimeout(300);
+    await page.click('.zp-row[data-zone="work"]');
+    await page.waitForTimeout(600);                       // analyze fetch（409）落地 → 降级态渲染
+    const degr = await page.evaluate(() => document.querySelector('#ed-pane-zone').textContent);
+    if (/未配置大模型/.test(degr)) ok('S3A2 无模型降级说明'); else bad('S3A2 降级说明缺失', degr.slice(0, 60));
+    const dis = await page.evaluate(() => ({
+      a: (document.getElementById('zp-analyze') || {}).disabled,
+      r: (document.getElementById('zp-rewrite') || {}).disabled
+    }));
+    if (dis.a === true && dis.r === true) ok('S3A2 分析/改写按钮置灰'); else bad('S3A2 按钮未置灰', JSON.stringify(dis));
+    // 绑定功能不受影响：着色开关仍可切换
+    await page.click('#zp-color');
+    const pressed = await page.evaluate(() => document.getElementById('zp-color').getAttribute('aria-pressed'));
+    if (pressed === 'true') ok('S3A2 降级不影响绑定功能'); else bad('S3A2 绑定功能受影响');
+    await ctx.close();
+  }
+
   // ===== S3 块 C：改绑整条回写契约（locked 不丢；复用 ed-fixture-zone：S3B 结束时 zones 全 pending 且已落盘 zid）=====
   {
     const S3_DOC = 'ed-fixture-zone';

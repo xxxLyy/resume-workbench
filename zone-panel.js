@@ -1,4 +1,5 @@
-// zone-panel.js — 区域 Tab：区域列表 / 定位 / 着色 / 改绑 / 待绑定队列（区域级 AI 与修改模式由 T5/T6 增补）
+// zone-panel.js — 区域 Tab：区域列表 / 定位 / 着色 / 改绑 / 待绑定队列 / 区域级 AI（分析意见 + 改写候选，T5）
+// 由 server /edit 对所有文档幂等注入（ZONE-INJECT 注释对），/save 时剥离，文档零污染（正文只落 data-zid）。
 // 由 server /edit 对所有文档幂等注入（ZONE-INJECT 注释对），/save 时剥离，文档零污染（正文只落 data-zid）。
 (function () {
   var DOC_ID = document.currentScript.getAttribute('data-doc');
@@ -36,6 +37,19 @@
     + '.zp-modal .zp-card{background:var(--ed-panel);border:1px solid var(--ed-line);border-radius:14px;box-shadow:0 18px 50px rgba(60,45,25,.16);padding:16px;width:min(320px,92vw);display:flex;flex-direction:column;gap:8px;font-size:13px}'
     + '.zp-modal button.zp-sel[aria-pressed="true"]{background:var(--ed-accent);border-color:var(--ed-accent);color:var(--ed-accent-ink)}'
     + '.zp button:focus-visible{outline:2px solid var(--ed-accent);outline-offset:1px}'
+    + '.zp-ai{border-top:1px solid var(--ed-line);padding-top:8px;display:flex;flex-direction:column;gap:6px}'
+    + '.zp-ai[hidden]{display:none}'
+    + '.zp-ai .zp-echo{margin:0;padding-left:16px;color:var(--ed-ink)}'
+    + '.zp-ai .zp-remind{color:var(--ed-warn);margin:0}'
+    + '.zp-ai .zp-sugg{margin:0;color:var(--ed-mut)}'
+    + '.zp-chips{display:flex;flex-wrap:wrap;gap:4px}'
+    + '.zp-chips button{min-height:22px;padding:0 8px;font-size:11px;border-radius:6px;cursor:pointer;border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink)}'
+    + '.zp-ai textarea{width:100%;min-height:44px;resize:vertical;border:1px solid var(--ed-line);border-radius:7px;background:var(--ed-panel);color:var(--ed-ink);font:inherit;padding:4px 6px;box-sizing:border-box}'
+    + '.zp-cand{border:1px dashed var(--ed-line);border-radius:7px;padding:6px;font-size:11px;color:var(--ed-mut)}'
+    + '.zp-cand .zp-cand-new{color:var(--ed-ink)}'
+    + '.zp-cand.conflict{border-color:var(--ed-warn)}'
+    + '.zp-cand.conflict .zp-cand-flag{color:var(--ed-warn)}'
+    + '.zp-degr{color:var(--ed-mut);margin:0}'
     // 8 条区域着色通道（CSS Custom Highlight：只存在于内存 Range，不落盘、不给正文挂 class）
     + '::highlight(zone-personal){background-color:hsla(28,80%,55%,.14)}'
     + '::highlight(zone-education){background-color:hsla(45,85%,55%,.16)}'
@@ -57,7 +71,7 @@
     });
   }
 
-  var state = { zones: {}, zoneOrder: null, zoneRounds: {}, colorOn: false };
+  var state = { zones: {}, zoneOrder: null, zoneRounds: {}, colorOn: false, aiZone: null, aiDegraded: false, lastAnalysis: null };
   var root = document.createElement('div');
   root.id = 'zp-root';
   root.className = 'zp';
@@ -100,7 +114,180 @@
     root.querySelector('#zp-color').addEventListener('click', toggleColor);
     if (root.querySelector('#zp-pend')) root.querySelector('#zp-pend').addEventListener('click', confirmNextPending);
     Array.prototype.forEach.call(root.querySelectorAll('.zp-row'), function (row) {
-      row.addEventListener('click', function () { locate(row.getAttribute('data-zone')); });
+      row.addEventListener('click', function () {
+        locate(row.getAttribute('data-zone'));
+        openAi(row.getAttribute('data-zone'));
+      });
+    });
+    // 保留已展开的 AI 区（render() 由 load() 回调触发重绘时不把意见卡打回）
+    if (state.aiZone) renderAi();
+  }
+
+  // ===== 区域级 AI（T5）：意见卡 + chips 追问 + 修改模式输入 + 改写候选预览 =====
+  // 改写候选经 ed-zone-preview 事件交给外壳/后续任务（T6 接撤销后启用接受按钮）；本轮 disabled。
+  function openAi(zoneKey) {
+    state.aiZone = zoneKey;
+    state.aiDegraded = false;
+    state.lastAnalysis = null;
+    renderAi();
+    analyze(zoneKey, '');
+  }
+  function aiBox() { return document.getElementById('zp-ai'); }
+  function setBusy(busy) {
+    var a = document.getElementById('zp-analyze'), r = document.getElementById('zp-rewrite');
+    if (a) a.disabled = busy || state.aiDegraded;
+    if (r) r.disabled = busy || state.aiDegraded;
+  }
+  function degrade(msg) {
+    state.aiDegraded = true;
+    var box = aiBox();
+    if (box) {
+      var note = document.createElement('p');
+      note.className = 'zp-degr';
+      note.textContent = (msg || '未配置大模型') + '，绑定/确认/锁定不受影响';
+      box.insertBefore(note, box.firstChild);
+    }
+    setBusy(false);
+  }
+  function renderAi() {
+    var old = aiBox();
+    if (old) old.remove();
+    var zoneKey = state.aiZone;
+    if (!zoneKey) return;
+    var name = (ZONES.filter(function (z) { return z[0] === zoneKey; })[0] || ['', zoneKey])[1];
+    var box = document.createElement('div');
+    box.id = 'zp-ai';
+    box.className = 'zp-ai';
+    var head = document.createElement('div');
+    head.textContent = 'AI 意见 · ' + name + (state.zoneRounds[zoneKey] ? '（第 ' + (state.zoneRounds[zoneKey] + 1) + ' 轮）' : '');
+    box.appendChild(head);
+    var out = document.createElement('div');
+    out.id = 'zp-ai-out';
+    out.textContent = '分析中…';
+    box.appendChild(out);
+    var acts = document.createElement('div');
+    acts.className = 'zp-chips';
+    var reBtn = document.createElement('button');
+    reBtn.type = 'button';
+    reBtn.id = 'zp-analyze';
+    reBtn.textContent = '重新分析';
+    reBtn.addEventListener('click', function () { analyze(zoneKey, ''); });
+    acts.appendChild(reBtn);
+    box.appendChild(acts);
+    var ta = document.createElement('textarea');
+    ta.id = 'zp-instr';
+    ta.placeholder = '修改意见，如：更精简、突出量化结果';
+    box.appendChild(ta);
+    var rwBtn = document.createElement('button');
+    rwBtn.type = 'button';
+    rwBtn.id = 'zp-rewrite';
+    rwBtn.textContent = '生成改写';
+    rwBtn.addEventListener('click', function () {
+      var v = (document.getElementById('zp-instr').value || '').trim();
+      if (!v) { out.textContent = '请先填写修改意见'; return; }
+      rewrite(zoneKey, v);
+    });
+    box.appendChild(rwBtn);
+    var prev = document.createElement('div');
+    prev.id = 'zp-preview';
+    box.appendChild(prev);
+    root.appendChild(box);
+    if (state.lastAnalysis && state.lastAnalysis.zone === zoneKey) showAnalysis(state.lastAnalysis.data);
+    setBusy(state.aiDegraded);
+  }
+  function showAnalysis(d) {
+    var out = document.getElementById('zp-ai-out');
+    if (!out) return;
+    out.innerHTML = '';
+    (d.echoes || []).forEach(function (t) {
+      var li = document.createElement('li');
+      li.className = 'zp-echo';
+      li.textContent = t;
+      out.appendChild(li);
+    });
+    if (d.reminder) {
+      var p1 = document.createElement('p');
+      p1.className = 'zp-remind';
+      p1.textContent = '⚠ ' + d.reminder;
+      out.appendChild(p1);
+    }
+    if (d.suggestion) {
+      var p2 = document.createElement('p');
+      p2.className = 'zp-sugg';
+      p2.textContent = '✎ ' + d.suggestion;
+      out.appendChild(p2);
+    }
+    if (!(d.echoes || []).length && !d.reminder && !d.suggestion) out.textContent = '（本轮无具体意见）';
+    var chips = document.querySelector('#zp-ai .zp-chips');
+    (d.chips || []).forEach(function (t) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = t;
+      b.addEventListener('click', function () {
+        var ta = document.getElementById('zp-instr');
+        if (ta) ta.value = t;
+        analyze(state.aiZone, t);       // chips 追问 = 以 chip 文本再请求（轮次服务端自增）
+      });
+      chips.appendChild(b);
+    });
+  }
+  function analyze(zoneKey, extra) {
+    if (state.aiDegraded) return;
+    setBusy(true);
+    var out = document.getElementById('zp-ai-out');
+    if (out) out.textContent = '分析中…';
+    api('/ai/zone-analyze?id=' + encodeURIComponent(DOC_ID), { zone: zoneKey, extra: extra }).then(function (d) {
+      setBusy(false);
+      if (d._status === 409) { degrade('未配置大模型'); return; }
+      if (!d.ok) { if (out) out.textContent = d.error || '分析失败，稍后再试'; return; }
+      state.lastAnalysis = { zone: zoneKey, data: d };
+      load();                          // 轮次自增后刷新行内计数（load 重绘保留 AI 区）
+      showAnalysis(d);
+    }).catch(function () { setBusy(false); if (out) out.textContent = '分析失败，稍后再试'; });
+  }
+  function rewrite(zoneKey, instruction) {
+    if (state.aiDegraded) return;
+    setBusy(true);
+    var prev = document.getElementById('zp-preview');
+    if (prev) prev.textContent = '生成中…';
+    api('/ai/zone-rewrite?id=' + encodeURIComponent(DOC_ID), { zone: zoneKey, instruction: instruction }).then(function (d) {
+      setBusy(false);
+      if (d._status === 409) { degrade('未配置大模型'); if (prev) prev.textContent = ''; return; }
+      if (!d.ok) { if (prev) prev.textContent = d.error || '改写失败，稍后再试'; return; }
+      renderPreview(d.rewrites || []);
+    }).catch(function () { setBusy(false); if (prev) prev.textContent = '改写失败，稍后再试'; });
+  }
+  // 改写候选预览：接受按钮本轮 disabled（T6 接撤销后启用）；数据经 ed-zone-preview 派发给外壳
+  function renderPreview(rewrites) {
+    var prev = document.getElementById('zp-preview');
+    if (!prev) return;
+    prev.innerHTML = '';
+    if (!rewrites.length) { prev.textContent = '（无可应用的改写候选）'; }
+    window.__zpPreview = rewrites;
+    try { window.dispatchEvent(new CustomEvent('ed-zone-preview', { detail: { doc: DOC_ID, zone: state.aiZone, rewrites: rewrites } })); } catch (e) {}
+    rewrites.forEach(function (r) {
+      var card = document.createElement('div');
+      card.className = 'zp-cand' + (r.level === 'conflict' ? ' conflict' : '');
+      var orig = document.createElement('div');
+      orig.textContent = '原：' + (r.before || '').slice(0, 60);
+      var neu = document.createElement('div');
+      neu.className = 'zp-cand-new';
+      neu.textContent = '改：' + (r.candidate || '').slice(0, 60);
+      card.appendChild(orig);
+      card.appendChild(neu);
+      if (r.level === 'conflict') {
+        var flag = document.createElement('div');
+        flag.className = 'zp-cand-flag';
+        flag.textContent = r.reason || '事实冲突，需人工核对';
+        card.appendChild(flag);
+      }
+      var acc = document.createElement('button');
+      acc.type = 'button';
+      acc.textContent = '接受';
+      acc.disabled = true;             // T6 接撤销后启用（本轮占位）
+      acc.title = '撤销栈接入后开放';
+      card.appendChild(acc);
+      prev.appendChild(card);
     });
   }
 

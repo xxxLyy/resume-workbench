@@ -13,7 +13,7 @@ import { loadProfiles, hasLLM, chat, chatMsgs, listModels } from './llm.mjs';
 import { buildRewrite, buildChat, parseChanges, buildReview, buildMatch, parseReport } from './ai.mjs';
 import { buildJobPrompt, parseJobOps, pageSuggestions } from './job.mjs';
 import { docToLines, docToText, contentHash, sectionsOf } from './extract.mjs';
-import { normalizeZids, zoneSync, guessZone, ZONE_KEYS } from './zone.mjs';
+import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, digestOf, buildZoneAnalyzePrompt, parseZoneAnalysis, buildZoneRewritePrompt, parseZoneRewrites } from './zone.mjs';
 import { rotateLogIfNeeded } from './logrotate.mjs';
 import { freezeHtml, normalizeToCurrent, splitDoc, staleInfo } from './freeze.mjs';
 import { beginTx, commitTx, dropSupersededTx, recoverPending, withDocLock, updateMeta, rootLock, atomicWrite, LockHeld } from './tx.mjs';
@@ -887,7 +887,7 @@ async function handler(req, res) {
       // 兼容视图（S1-T8）：响应里的 status 为派生旧词汇（reviewed→deliverable，其余→draft），flow 为存储单源；
       // schemaVersion<2 时 flowOf 由 job.status 即时推导，绝不写回。
       const job = m.job ? { ...m.job, status: legacyFlowStatus(m), flow: flowOf(m) } : null;
-      return sendJson(200, { ok: true, job, zones: m.zones || null, zoneOrder: m.zoneOrder || null, doc: { id, parent: m.parent || '', company: m.company || '', role: m.role || '', jd: m.jd || '', jdSource: m.jdSource || '' } });
+      return sendJson(200, { ok: true, job, zones: m.zones || null, zoneOrder: m.zoneOrder || null, zoneRounds: m.zoneRounds || null, doc: { id, parent: m.parent || '', company: m.company || '', role: m.role || '', jd: m.jd || '', jdSource: m.jdSource || '' } });
     }
     if (req.method === 'POST' && url.pathname === '/job/changes') {
       const body = JSON.parse(await readBody(req));
@@ -2064,6 +2064,40 @@ async function handler(req, res) {
       const raw = await chat(root, p.sys, p.user);
       const parsed = parseReport(raw);
       return sendJson(200, parsed ? { ok: true, report: parsed } : { ok: true, reply: raw });
+    }
+    // ===== S3-T5：区域级 AI（analyze 意见 / rewrite 候选；只带本区域段落 + 有界全文摘要）=====
+    const ZONE_KEYS_SET = new Set(ZONE_KEYS);
+    if (req.method === 'POST' && url.pathname === '/ai/zone-analyze') {
+      if (!hasLLM(root)) return send(409, '未配置大模型，请先到设置页配置', 'text/plain');
+      const body = JSON.parse(await readBody(req));
+      if (!ZONE_KEYS_SET.has(body.zone)) return send(400, 'invalid zone', 'text/plain');
+      const html = fs.existsSync(docPath(id)) ? fs.readFileSync(docPath(id), 'utf8') : '';
+      const meta = loadMeta()[id] || {};
+      const zoneText = zoneParas(html, meta, body.zone).map((p) => p.text).join('\n');
+      const rounds = meta.zoneRounds ? (meta.zoneRounds[body.zone] || 0) : 0;
+      const p = buildZoneAnalyzePrompt({ zoneName: ZONE_LABELS[body.zone], zoneText, digest: digestOf(html), rounds });
+      const raw = await chat(root, p.sys, p.user);
+      const parsed = parseZoneAnalysis(raw);
+      if (parsed) {
+        updateMeta(root, id, (m) => { const b = { ...(m || {}) }; b.zoneRounds = { ...(b.zoneRounds || {}) }; b.zoneRounds[body.zone] = (b.zoneRounds ? (b.zoneRounds[body.zone] || 0) : 0) + 1; return b; });
+      }
+      return sendJson(200, parsed ? { ok: true, ...parsed } : { ok: false, error: '分析失败，稍后再试' });
+    }
+    if (req.method === 'POST' && url.pathname === '/ai/zone-rewrite') {
+      if (!hasLLM(root)) return send(409, '未配置大模型，请先到设置页配置', 'text/plain');
+      const body = JSON.parse(await readBody(req));
+      if (!ZONE_KEYS_SET.has(body.zone)) return send(400, 'invalid zone', 'text/plain');
+      if (!body.instruction || typeof body.instruction !== 'string') return send(400, 'instruction 必填', 'text/plain');
+      const html = fs.existsSync(docPath(id)) ? fs.readFileSync(docPath(id), 'utf8') : '';
+      const meta = loadMeta()[id] || {};
+      const all = zoneParas(html, meta, body.zone);
+      const locked = new Set(all.filter((x) => meta.zones[x.zid] && meta.zones[x.zid].locked === true).map((x) => x.zid));
+      const free = all.filter((x) => !locked.has(x.zid));       // locked 段落跳过（段级保留标记）
+      if (!free.length) return sendJson(200, { ok: true, rewrites: [], skipped: [...locked] });
+      const p = buildZoneRewritePrompt({ zoneName: ZONE_LABELS[body.zone], paras: free, instruction: body.instruction });
+      const raw = await chat(root, p.sys, p.user);
+      const parsed = parseZoneRewrites(raw, free);
+      return sendJson(200, parsed ? { ok: true, rewrites: parsed, skipped: [...locked] } : { ok: false, error: '改写失败，稍后再试' });
     }
     // ===== 标签 / 关联 =====
     if (req.method === 'POST' && url.pathname === '/tag') {

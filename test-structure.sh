@@ -1982,6 +1982,7 @@ fs.readFileSync(F, 'utf8').split('\n').forEach((ln, i) => {
 // 路由集合不变（任何新增 pathname 字面量都会红）。初值 = S2 开工前实测冻结的 54 个字面量
 const sm = fs.readFileSync(F, 'utf8');
 const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','/ai/prep','/ai/review','/ai/rewrite','/ai/test',
+  '/ai/zone-analyze','/ai/zone-rewrite',
   '/api/extract','/app','/app/add','/app/archive-regenerate','/app/del','/app/ics','/app/jd','/app/update','/applications',
   '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf',
   '/job-panel.js','/job/changes','/job/create','/job/generate','/link','/mat/add','/mat/confirm','/mat/del','/mat/update',
@@ -2150,7 +2151,7 @@ EOF
 # —— S3-B：区域纯函数（启发式 / zoneSync / 8 类枚举）——
 echo "── S3-B: 区域纯函数 ──"
 node --input-type=module << 'EOF'
-import { guessZone, zoneSync, ZONE_KEYS, normalizeZids, parasOf } from './zone.mjs';
+import { guessZone, zoneSync, ZONE_KEYS, normalizeZids, parasOf, parseZoneAnalysis, parseZoneRewrites, digestOf } from './zone.mjs';
 const assert = (c, m) => { if (!c) { console.error('❌ S3-B ' + m); process.exit(1); } };
 assert(ZONE_KEYS.join(',') === 'personal,education,work,project,skill,award,summary,other', '8 类枚举');
 assert(guessZone('工作经历') === 'work' && guessZone('项目经历') === 'project', '章节映射');
@@ -2170,7 +2171,16 @@ assert(!('zd4444444' in mt.zones) && mt.zones.ze5555555.zone === 'work', 'sectio
 const contactDoc = '<div class="sheet"><div class="contact" data-zid="zf6666666">张三</div><section class="section"><div class="section-title">技能</div><p data-zid="zg7777777">JS</p></section></div>';
 const mc = zoneSync(contactDoc, {});
 assert(mc.zones.zf6666666.zone === 'personal', 'sections 外（contact）→ personal');
-console.log('✅ S3-B 区域纯函数');
+// —— S3-B2：区域级 AI 纯函数（分析解析 / 改写解析 + factGuard / 全文摘要）——
+const good = parseZoneAnalysis('```json\n{"echoes":["与项目经历呼应"],"reminder":"一个提醒","suggestion":"这样改","chips":["问A","问B"]}\n```');
+assert(good && good.echoes.length === 1 && good.chips.length === 2, 'zone 分析解析（含代码围栏清洗）');
+assert(parseZoneAnalysis('不是json') === null, '坏输出返回 null');
+const rw = parseZoneRewrites('{"rewrites":[{"zid":"za1111111","candidate":"改写后"}]}', [{ zid: 'za1111111', text: '原文 800ms' }]);
+assert(rw && rw.length === 1 && rw[0].zid === 'za1111111', '改写解析');
+const rwBad = parseZoneRewrites('{"rewrites":[{"zid":"za1111111","candidate":"延迟降到 210ms"}]}', [{ zid: 'za1111111', text: '原文 800ms' }]);
+assert(rwBad[0].level === 'conflict', '改写引入新数字 → factGuard conflict（复用 job.mjs）');
+assert(digestOf('<div class="sheet"><section class="section"><div class="section-title">技能</div><p data-zid="za8777777">Go</p></section></div>').includes('【技能】Go'), 'digestOf 全文摘要含章节与文本');
+console.log('✅ S3-B 区域纯函数（含 S3-B2 区域级 AI 解析）');
 EOF
 
 # —— S3-D：renderInputId 忽略 data-zid（登记偏差 pin：非视觉属性不进渲染标识；摘除须连前导空白）——
