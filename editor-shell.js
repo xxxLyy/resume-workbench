@@ -357,6 +357,45 @@
   }
   if (!secStyle.textContent.includes(SEC_HIDE_CLS)) secStyle.textContent = hideCss;
 
+  // ===== S3：zid 生命周期（唯一生成点 = 本注入层；服务端 /save 归一是兜底）=====
+  var ZID_SEL = '.sheet p, .sheet li, .sheet h1, .sheet h2, .sheet h3, .sheet h4, .sheet .entry-head, .sheet .contact';
+  function edNewZid() { return 'z' + ('00000000' + (Math.random() * 0xffffffff >>> 0).toString(16)).slice(-8); }
+  // 确定性 zid：内容哈希派生（全局约束 21）。未保存阶段两次加载生成相同 zid，
+  // meta 已落的初绑 zones 不失配；落盘后 zid 固化在正文属性，textContent 再变也不重算。
+  function edHashZid(text) {
+    var h = 5381;
+    for (var i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) >>> 0;
+    return 'z' + ('00000000' + h.toString(16)).slice(-8);
+  }
+  window.__edEnsureZids = function () {
+    var seen = {};
+    Array.prototype.forEach.call(document.querySelectorAll(ZID_SEL), function (el) {
+      var z = el.getAttribute('data-zid');
+      if (!z) z = edHashZid(el.textContent || '');        // 缺失 → 内容哈希（确定性）
+      if (seen[z]) z = edNewZid();                         // 重复（同内容段落/粘贴克隆）→ 随机重打
+      el.setAttribute('data-zid', z);
+      seen[z] = 1;
+    });
+  };
+  __edEnsureZids();
+  // 初绑：meta 无 zones 时收集段落上送服务端启发式（全 pending，不静默生效）。参数名 ?id=（全局约束 19）
+  fetch('/job/changes?id=' + encodeURIComponent(DOC_ID)).then(function (r) { return r.json(); }).then(function (d) {
+    if (d && d.zones && Object.keys(d.zones).length) return;
+    var secs = Array.prototype.map.call(document.querySelectorAll('.sheet section.section'), function (sec) {
+      return { title: (sec.querySelector('.section-title') || {}).textContent || '', el: sec };
+    });
+    var entries = [];
+    Array.prototype.forEach.call(document.querySelectorAll(ZID_SEL), function (el) {
+      var sec = null;
+      for (var i = 0; i < secs.length; i++) if (secs[i].el.contains(el)) { sec = secs[i]; break; }
+      entries.push({ zid: el.getAttribute('data-zid'), sectionTitle: sec ? sec.title : '个人信息' });
+    });
+    return fetch('/zones/init?id=' + encodeURIComponent(DOC_ID), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entries: entries })
+    });
+  }).catch(function () {});
+
   function scanSections() {
     var list = [];
     var header = sheet.querySelector('.header');
@@ -445,7 +484,10 @@
     if (e.inputType === 'historyUndo') nativeInputCount = Math.max(0, nativeInputCount - 1);
     else nativeInputCount++;
     if (window.__edRefreshFind) window.__edRefreshFind();   // 内容一变即重算查找命中
+    __edEnsureZids();                                       // S3：拆段/删段后补打点（无变化时是 no-op getAttribute 循环，微秒级）
   });
+  // S3：粘贴插入的节点不在 input 事件里 → paste 后下一拍补打点
+  sheet.addEventListener('paste', function () { setTimeout(__edEnsureZids, 0); });
 
   // ===== S2-T7 C1：离线恢复（template.html「恢复这份修改」）× 撤销栈重排基线 =====
   // 恢复路径整片替换 sheet.innerHTML 且不派发任何事件（template.html 冻结，无法在里面通知外壳），
@@ -668,6 +710,7 @@
     var headCopy = en.head.cloneNode(true); stripIds(headCopy);
     parent.insertBefore(headCopy, ref);
     if (en.ul) { var ulCopy = en.ul.cloneNode(true); stripIds(ulCopy); parent.insertBefore(ulCopy, headCopy.nextSibling); }
+    __edEnsureZids();                                     // 克隆带原 zid → 去重逻辑随机重打副本
     undoToast('已复制条目');                              // 无 opId → 绑定刚压入的栈顶
   }
   function delEntry(en) {

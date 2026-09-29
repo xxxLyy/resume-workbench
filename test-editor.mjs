@@ -2434,6 +2434,58 @@ try {
     }
     await ctx17.close();
   }
+
+  // ===== S3 块 A：zid 生命周期（加载即打点 / Enter 拆分 / 输入后唯一 / 未保存重开确定性）=====
+  //     独立夹具（§7.7 夹具纪律）：ED_DOC 已被块 8-11 改写并经 /save normalizeZids 落盘 zid，
+  //     无法验证「编辑器加载即打点」与「未保存重开确定性」——两者都要求磁盘正文零 zid 且全程不触发保存。
+  {
+    const S3_DOC = 'ed-fixture-zid';
+    let tpl = assembleTemplate('classic');
+    tpl = tpl.replaceAll('{{NAME}}', () => '测试员').replaceAll('{{CONTACT}}', () => 'test@example.com')
+      .replaceAll('{{INTENT}}', () => '测试').replaceAll('{{SUMMARY}}', () => '摘要文本').replaceAll('{{SKILLS}}', () => '<p>技能一：内容</p>')
+      .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => '<div class="entry-head"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024</div></div>\n<ul><li>项目A描述</li></ul>')
+      .replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => S3_DOC);
+    fs.writeFileSync(path.join(dataRoot, 'docs', S3_DOC + '.html'), tpl);
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await page.goto(`${base}/edit?id=${S3_DOC}`, { waitUntil: 'networkidle' });
+    // 确定性基线必须在任何编辑前采集：下方拆分/打字只改内存，磁盘正文不变（全程未触发保存），
+    // 未保存重开应从同一磁盘正文重新生成同一 zid 集合（全局约束 21）。
+    // [S3T3-ADJ] 计划原稿在编辑后采集 zids1 再与重开集合比对——编辑后集合含新拆分段的哈希，与磁盘原文恒不等，断言不可满足；改为「首载基线 vs 重开」。
+    const zids0 = await page.evaluate(() => Array.from(document.querySelectorAll('.sheet [data-zid]')).map((el) => el.getAttribute('data-zid')).sort().join(','));
+    const count = await page.evaluate(() => ({
+      units: document.querySelectorAll('.sheet p[data-zid], .sheet li[data-zid], .sheet h1[data-zid], .sheet h2[data-zid], .sheet h3[data-zid], .sheet h4[data-zid], .sheet .entry-head[data-zid], .sheet .contact[data-zid]').length,
+      bare: document.querySelectorAll('.sheet p:not([data-zid]), .sheet li:not([data-zid])').length,
+      titleTagged: !!document.querySelector('.section-title[data-zid]'),
+      zids: Array.from(document.querySelectorAll('.sheet [data-zid]')).map((el) => el.getAttribute('data-zid'))
+    }));
+    if (count.units > 0 && count.bare === 0 && !count.titleTagged) ok('S3A 加载即全量打点且 section-title 不打'); else bad('S3A 加载即全量打点', JSON.stringify(count).slice(0, 120));
+    if (new Set(count.zids).size === count.zids.length) ok('S3A zid 无重复'); else bad('S3A zid 无重复');
+    // Enter 拆分：首条 li 内定位光标回车 → 新段有 zid 且全文唯一
+    await page.evaluate(() => {
+      const li = document.querySelectorAll('.sheet li')[0];
+      const r = document.createRange(); r.setStart(li.firstChild, 2); r.collapse(true);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+    });
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(150);
+    const afterSplit = await page.evaluate(() => Array.from(document.querySelectorAll('.sheet li')).map((el) => el.getAttribute('data-zid')));
+    if (afterSplit.length && afterSplit.every(Boolean) && new Set(afterSplit).size === afterSplit.length) ok('S3A 拆分后新段有 zid 且唯一'); else bad('S3A 拆分后 zid', JSON.stringify(afterSplit));
+    // 输入与合成 paste 事件后仍全量唯一
+    await page.evaluate(() => { document.querySelectorAll('.sheet li')[0].dispatchEvent(new ClipboardEvent('paste', { bubbles: true })); });
+    await page.keyboard.type('追加');
+    await page.waitForTimeout(150);
+    const zAfter = await page.evaluate(() => {
+      const all = Array.from(document.querySelectorAll('.sheet [data-zid]')).map((el) => el.getAttribute('data-zid'));
+      return { n: all.length, u: new Set(all).size };
+    });
+    if (zAfter.n === zAfter.u) ok('S3A 输入后 zid 仍全量唯一'); else bad('S3A 输入后 zid 唯一性', JSON.stringify(zAfter));
+    // 未保存重开：确定性 zid（同一磁盘正文两次加载生成相同 zid 集合——全局约束 21）
+    await page.reload({ waitUntil: 'networkidle' });
+    const zids2 = await page.evaluate(() => Array.from(document.querySelectorAll('.sheet [data-zid]')).map((el) => el.getAttribute('data-zid')).sort().join(','));
+    if (zids0 && zids0 === zids2) ok('S3A 未保存重开 zid 确定性一致'); else bad('S3A 未保存重开 zid 漂移', zids0.slice(0, 40) + ' vs ' + zids2.slice(0, 40));
+    await ctx.close();
+  }
 } finally {
   await browser.close();
 }
