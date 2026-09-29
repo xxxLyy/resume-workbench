@@ -598,6 +598,14 @@ pass "S3 zone-rewrite（模拟验证）"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/ai/zone-analyze?id=$S3DOC" -H 'Content-Type: application/json' -d '{"zone":"nope"}')
 [ "$CODE" = "400" ] || fail "S3 zone-analyze 坏区域应 400 得 $CODE"
 
+# ===== S3-T7：素材事实层三态 =====
+curl -s -X POST "$B/mat/add" -H 'Content-Type: application/json' -d '{"title":"事实素材","brief":"b","facts":{"metrics":"P99 800ms→210ms"},"factStatus":"confirmed"}' | grep -q '"ok":true' || fail 'S3 mat/add 带 facts'
+MATID=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const x=m.find(v=>v.title==="事实素材");console.log(x?x.id:"")' "$RESUME_ROOT/materials.json")
+[ -n "$MATID" ] || fail 'S3 素材夹具读取'
+curl -s -X POST "$B/mat/update" -H 'Content-Type: application/json' -d '{"id":"'"$MATID"'","factStatus":"outdated"}' | grep -q '"ok":true' || fail 'S3 mat/update 三态'
+node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const x=m.find(v=>v.title==="事实素材");if(!x||x.factStatus!=="outdated"||!x.facts||x.facts.metrics!=="P99 800ms→210ms"){console.error("❌ S3 三态落盘");process.exit(1)}' "$RESUME_ROOT/materials.json" || fail 'S3 factStatus/facts 落盘'
+pass "S3 素材事实层三态"
+
 # ===== 16. 浏览器级保存语义（可选，需要本机 Chromium）=====
 if node test-editor.mjs "$B" "$DOCID" "$RESUME_ROOT"; then
   echo '✅ 浏览器级保存/恢复/冲突/审阅验证'

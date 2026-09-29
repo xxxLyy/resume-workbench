@@ -32,6 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { freezeHtml, normalizeToCurrent, splitDoc } from './freeze.mjs';
 import { beginTx, commitTx, recoverPending, withDocLock, updateMeta, rootLock, atomicWrite, LockHeld } from './tx.mjs';
 import { comparePdfs, assertCheckers, DEFAULT_DPI, DEFAULT_THRESHOLD } from './tools/pixel-diff.mjs';
+import { migrateMats } from './zone.mjs';
 import { resolveChromium } from './chromium.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -370,6 +371,28 @@ async function migrateDoc(root, docId, chk, backupDir, lockInfo) {
   });
 }
 
+// ===== 素材事实层迁移（S3-T7，幂等）=====
+// 无待迁文档时也可能有旧形状素材 → 独立探测；有变化先快照再原子写（沿用全量副本模式）。
+// 幂等判据：migrateMats 后 JSON.stringify 逐条比对（旧形状 confirmed/缺 facts 必变；已迁移原样返回必不变）。
+function migrateMaterials(root, report) {
+  const f = path.join(root, 'materials.json');
+  if (!fs.existsSync(f)) return;
+  let raw;
+  try { raw = fs.readFileSync(f, 'utf8'); } catch { return; }
+  let mats;
+  try { mats = JSON.parse(raw); } catch {
+    const e = new Error('数据文件损坏，素材迁移已跳过（不覆盖）：materials.json（请先人工修复后重跑）');
+    e.code = 'CORRUPT'; throw e;
+  }
+  const migrated = migrateMats(mats);
+  if (JSON.stringify(migrated) === JSON.stringify(mats)) return;   // 无变化：不写盘
+  const snapRel = path.join('backups', 'pre-s3-mats-' + timestamp());
+  fs.mkdirSync(path.join(root, snapRel), { recursive: true });
+  atomicWrite(path.join(root, snapRel, 'materials.json'), raw);
+  atomicWrite(f, JSON.stringify(migrated));
+  report.materials = { migrated: true, snapshot: snapRel };
+}
+
 // ===== 整轮迁移 =====
 export async function runMigration(root, opts = {}) {
   root = path.resolve(root);
@@ -386,7 +409,10 @@ export async function runMigration(root, opts = {}) {
     // 半完成识别 = tx 记录 + schemaVersion 联合：schemaVersion<2 或 有 tx 记录（含"done 写入后、commitTx 前被杀"）
     const pending = ids.filter((id) => schemaOf(metaAll[id]) < 2 || txIds.includes(id));
     report.snapshotAudit = auditSnapshots(root, metaAll);   // 快照 typo 预检（只读）
-    if (!pending.length) { report.ok = true; return report; }   // 无可迁：不备份、不持锁、不动任何东西
+    if (!pending.length) {
+      migrateMaterials(root, report);   // 素材事实层（S3-T7，幂等；无文档可迁时独立跑：不需要渲染检查器）
+      report.ok = true; return report;   // 无可迁：不备份、不持锁、不动文档
+    }
 
     if (!opts.checkers) await preflightReal();   // 真实检查器预检（注入模拟检查器的单元测试路径跳过）
 
@@ -407,6 +433,8 @@ export async function runMigration(root, opts = {}) {
         return report;
       }
       const chk = { ...realCheckers(root), ...(opts.checkers || {}) };
+      migrateMaterials(root, report);   // 素材事实层（S3-T7，幂等；锁内执行，与文档迁移互斥写）
+      if (report.materials && report.materials.migrated === true) console.error('[migrate] 素材事实层迁移完成（快照 ' + report.materials.snapshot + '）');
       for (const id of pending) {
         // 恢复可能回滚了 meta → 逐文档重读；schemaVersion 是唯一完成判据
         const cur = readMetaAll(root)[id] || null;

@@ -13,7 +13,7 @@ import { loadProfiles, hasLLM, chat, chatMsgs, listModels } from './llm.mjs';
 import { buildRewrite, buildChat, parseChanges, buildReview, buildMatch, parseReport } from './ai.mjs';
 import { buildJobPrompt, parseJobOps, pageSuggestions } from './job.mjs';
 import { docToLines, docToText, contentHash, sectionsOf } from './extract.mjs';
-import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, digestOf, buildZoneAnalyzePrompt, parseZoneAnalysis, buildZoneRewritePrompt, parseZoneRewrites } from './zone.mjs';
+import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, digestOf, buildZoneAnalyzePrompt, parseZoneAnalysis, buildZoneRewritePrompt, parseZoneRewrites, FACT_KEYS, MAT_STATES, migrateMats } from './zone.mjs';
 import { rotateLogIfNeeded } from './logrotate.mjs';
 import { freezeHtml, normalizeToCurrent, splitDoc, staleInfo } from './freeze.mjs';
 import { beginTx, commitTx, dropSupersededTx, recoverPending, withDocLock, updateMeta, rootLock, atomicWrite, LockHeld } from './tx.mjs';
@@ -82,7 +82,8 @@ function writeJson(name, data) {
   fs.renameSync(tmp, dataFile(name));
 }
 const loadMeta = () => readJson('meta', {});
-const loadMats = () => { const a = readJson('mats', []); return Array.isArray(a) ? a : []; };
+// 读时迁移视图（S3-T7）：旧形状（confirmed 布尔/缺 facts）在读取时补齐，不写盘；saveMats 往返自然渐进迁移
+const loadMats = () => migrateMats(readJson('mats', []));
 const loadApps = () => { const a = readJson('apps', []); return Array.isArray(a) ? a : []; };
 const saveMats = (mats) => writeJson('mats', mats);
 const saveApps = (apps) => writeJson('apps', apps);
@@ -384,7 +385,7 @@ function aiBlock(id) {
 }
 function shellBlock(id, mtimeMs) {
   const mats = loadMats().map((m) => ({ id: m.id, title: m.title, tags: m.tags || [],
-    brief: m.brief, technical: m.technical || '', interview: m.interview || '', confirmed: m.confirmed === true }));
+    brief: m.brief, technical: m.technical || '', interview: m.interview || '', confirmed: m.factStatus === 'confirmed' }));
   const meta = loadMeta()[id] || {};
   const job = meta.job
     ? { hasJob: true, status: flowOf(meta), company: meta.company || '', role: meta.role || '', materials: meta.job.materials || [] }
@@ -973,7 +974,7 @@ async function handler(req, res) {
       if (!m0 || !m0.job) return sendJson(404, { ok: false, error: '该文档不是岗位草稿' });
       if (!fs.existsSync(docPath(id))) return sendJson(404, { ok: false, error: 'doc not found' });
       const docText = docToText(fs.readFileSync(docPath(id), 'utf8'), { includeHidden: false });
-      const confirmedMats = loadMats().filter((x) => x.confirmed === true && m0.job.materials.includes(x.id));
+      const confirmedMats = loadMats().filter((x) => x.factStatus === 'confirmed' && m0.job.materials.includes(x.id));
       const p = buildJobPrompt({ docText, jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: confirmedMats, twoPage: true });
       let raw;
       try { raw = await chat(root, p.sys, p.user); }
@@ -1331,23 +1332,38 @@ async function handler(req, res) {
     // ===== 素材库（确认状态）=====
     if (req.method === 'GET' && url.pathname === '/materials') {
       const mats = loadMats();
-      const unconfirmed = mats.filter((m) => m.confirmed !== true).length;
+      const unconfirmed = mats.filter((m) => m.factStatus !== 'confirmed').length;
+      const FACT_LABELS = { company: '公司', role: '职位', dates: '日期', education: '学历', metrics: '成果指标', contribution: '个人贡献', conditions: '条件', source: '来源' };
+      const matBadge = (s) => s === 'confirmed' ? '<span class="badge ok">已确认</span>' : s === 'outdated' ? '<span class="badge warn">已过时</span>' : '<span class="badge warn">待确认</span>';
       const matCard = (m) => `<div class="card mat-card" data-mat="${escHtml(m.id)}" style="margin:10px 0">
-        <b>${escHtml(m.title)}</b>${(m.tags || []).map((t) => `<span class="badge">${escHtml(t)}</span>`).join('')}${m.confirmed === true ? '<span class="badge ok">已确认</span>' : '<span class="badge warn">待确认</span>'}
+        <b>${escHtml(m.title)}</b>${(m.tags || []).map((t) => `<span class="badge">${escHtml(t)}</span>`).join('')}${matBadge(m.factStatus)}
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin-top:8px;font-size:13px">
           <div><b style="font-size:12px;color:var(--mut)">精简表达</b><div class="mat-brief">${escHtml(m.brief)}</div><button class="secondary" style="padding:2px 8px;font-size:12px" onclick="copyMat(this,'brief')">复制</button></div>
           <div><b style="font-size:12px;color:var(--mut)">技术表达</b><div class="mat-tech">${escHtml(m.technical || '')}</div><button class="secondary" style="padding:2px 8px;font-size:12px" onclick="copyMat(this,'tech')">复制</button></div>
           <div><b style="font-size:12px;color:var(--mut)">面试讲述</b><div class="mat-itv">${escHtml(m.interview || '')}</div><button class="secondary" style="padding:2px 8px;font-size:12px" onclick="copyMat(this,'itv')">复制</button></div>
         </div>
+        ${(m.facts && Object.entries(m.facts).filter(([k, v]) => v).map(([k, v]) => `<div style="font-size:12px;color:var(--mut);margin-top:4px"><b style="color:var(--fg)">${escHtml(FACT_LABELS[k] || k)}</b>：${escHtml(v)}</div>`).join('')) || ''}
         ${m.attach ? `<div style="font-size:12px;color:var(--mut);margin-top:4px">附件：${escHtml(m.attach)}</div>` : ''}
-        <div style="margin-top:6px;font-size:12px">${m.confirmed === true
-          ? `<button class="secondary" onclick="matConfirm('${m.id}',false)">取消确认</button>`
-          : `<button onclick="matConfirm('${m.id}',true)">确认可用于生成</button>`}
+        <div style="margin-top:6px;font-size:12px">${m.factStatus === 'confirmed'
+          ? `<button class="secondary" onclick="matStatus('${m.id}','pending')">取消确认</button>`
+          : `<button onclick="matStatus('${m.id}','confirmed')">确认可用于生成</button>`}
+          ${m.factStatus !== 'outdated' ? `<button class="secondary" onclick="matStatus('${m.id}','outdated')">标记过时</button>` : `<button class="secondary" onclick="matStatus('${m.id}','pending')">恢复待确认</button>`}
           <button class="secondary" onclick="matEdit('${m.id}')">✏️ 编辑</button> <button class="danger" onclick="matDel('${m.id}')">🗑 删除</button></div>
+        <details style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--mut)">事实层</summary>
+          <form class="mat-facts" style="margin-top:6px;font-size:13px" onsubmit="return matFacts(event,'${m.id}')">
+            ${FACT_KEYS.map((k) => `<p style="margin:2px 0">${FACT_LABELS[k]} <input name="f_${k}" value="${escHtml(m.facts ? m.facts[k] : '')}" style="width:60%"></p>`).join('')}
+            <p style="margin:2px 0">状态 <select name="f_factStatus">
+              <option value="pending"${m.factStatus === 'pending' ? ' selected' : ''}>待确认</option>
+              <option value="confirmed"${m.factStatus === 'confirmed' ? ' selected' : ''}>已确认</option>
+              <option value="outdated"${m.factStatus === 'outdated' ? ' selected' : ''}>已过时</option>
+            </select></p>
+            <button class="secondary" style="padding:2px 8px;font-size:12px">保存事实层</button>
+          </form>
+        </details>
       </div>`;
       return send(200, page('素材库', `<h1>🧱 素材库</h1>
     ${corruptBanner()}
-    <p style="font-size:13px;color:var(--mut)">只有「已确认」的素材会参与岗位草稿生成；旧素材默认待确认，需你预览后确认。${unconfirmed ? ` 当前 ${unconfirmed} 条待确认。` : ''}
+    <p style="font-size:13px;color:var(--mut)">事实层确认后才建议用于生成：只有「已确认」的素材会参与岗位草稿生成；旧素材默认待确认，需你预览后确认。${unconfirmed ? ` 当前 ${unconfirmed} 条未确认。` : ''}
     ${unconfirmed ? `<button class="secondary" onclick="matConfirmAll()">全部标记已确认（先预览再用）</button>` : ''}</p>
     <input id="matSearch" placeholder="搜索素材（标题/标签/内容）" style="width:100%;margin-bottom:10px" aria-label="搜索素材">
     <details class="card"><summary style="cursor:pointer;font-weight:700">＋ 新增素材</summary>
@@ -1369,11 +1385,23 @@ async function handler(req, res) {
         var sel = card.querySelector(key === 'brief' ? '.mat-brief' : key === 'tech' ? '.mat-tech' : '.mat-itv');
         navigator.clipboard.writeText(sel.textContent).then(function () { btn.textContent = '✓'; setTimeout(function () { btn.textContent = '复制'; }, 800); });
       }
+      function matStatus(id, s) {
+        fetch('/mat/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id, factStatus: s }) }).then(function () { location.reload(); });
+      }
+      function matFacts(e, id) {
+        e.preventDefault();
+        var f = new FormData(e.target), facts = {};
+        for (var en of f.entries()) if (en[0].indexOf('f_') === 0) facts[en[0].slice(2)] = en[1];
+        var factStatus = facts.factStatus; delete facts.factStatus;
+        fetch('/mat/update', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: id, facts: facts, factStatus: factStatus }) }).then(function () { location.reload(); });
+        return false;
+      }
       function matConfirm(id, on) {
         fetch('/mat/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [id], confirmed: on }) }).then(function () { location.reload(); });
       }
       function matConfirmAll() {
-        if (!confirm('把全部 ' + MATS.length + ' 条素材标记为已确认？先确认内容准确再操作。')) return;
+        if (!confirm('把全部 ' + MATS.length + ' 条素材标记为已确认？先确认事实层与表达层内容准确再操作。')) return;
         fetch('/mat/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: MATS.map(function (m) { return m.id; }), confirmed: true }) }).then(function () { location.reload(); });
       }
       function matEdit(id) {
@@ -1414,12 +1442,17 @@ async function handler(req, res) {
         return send(400, 'title 和 brief 必填', 'text/plain');
       const now = timestamp();
       const mats = loadMats();
+      // 事实层（S3-T7）：facts 按 FACT_KEYS 白名单逐键 String()；factStatus 三态枚举，缺省 pending
+      const facts = body.facts && typeof body.facts === 'object'
+        ? Object.fromEntries(FACT_KEYS.map((k) => [k, body.facts[k] === undefined || body.facts[k] === null ? '' : String(body.facts[k])])) : null;
+      const factStatus = MAT_STATES.includes(body.factStatus) ? body.factStatus
+        : body.confirm === true ? 'confirmed' : 'pending';
       mats.push({ id: now, title: body.title.trim(), brief: body.brief.trim(),
         technical: typeof body.technical === 'string' ? body.technical.trim() : '',
         interview: typeof body.interview === 'string' ? body.interview.trim() : '',
         attach: typeof body.attach === 'string' ? body.attach.trim() : '',
         tags: Array.isArray(body.tags) ? body.tags.filter((t) => typeof t === 'string') : [],
-        confirmed: body.confirm === true,
+        ...(facts ? { facts } : {}), factStatus,
         createdAt: now, updatedAt: now });
       saveMats(mats);
       return sendJson(200, { ok: true, id: now });
@@ -1431,6 +1464,10 @@ async function handler(req, res) {
       const m = mats.find((x) => x.id === body.id);
       if (!m) return send(404, 'mat not found', 'text/plain');
       for (const k of ['title', 'brief', 'technical', 'interview', 'attach', 'tags']) if (body[k] !== undefined) m[k] = body[k];
+      // 事实层（S3-T7）：提供 facts 就按白名单整替；factStatus 走三态枚举
+      if (body.facts && typeof body.facts === 'object')
+        m.facts = Object.fromEntries(FACT_KEYS.map((k) => [k, body.facts[k] === undefined || body.facts[k] === null ? '' : String(body.facts[k])]));
+      if (MAT_STATES.includes(body.factStatus)) m.factStatus = body.factStatus;
       m.updatedAt = timestamp();
       saveMats(mats);
       return sendJson(200, { ok: true });
@@ -1440,7 +1477,8 @@ async function handler(req, res) {
       if (!Array.isArray(body.ids)) return send(400, 'ids 必填数组', 'text/plain');
       const mats = loadMats();
       let n = 0;
-      for (const m of mats) if (body.ids.includes(m.id)) { m.confirmed = body.confirmed === true; m.updatedAt = timestamp(); n++; }
+      // 端点名/请求形状兼容既有前端（confirmed 布尔）——落盘走三态 factStatus
+      for (const m of mats) if (body.ids.includes(m.id)) { m.factStatus = body.confirmed === true ? 'confirmed' : 'pending'; m.updatedAt = timestamp(); n++; }
       saveMats(mats);
       return sendJson(200, { ok: true, confirmed: n });
     }

@@ -165,3 +165,20 @@ export function parseZoneRewrites(raw, paras) {
   }
   return out;
 }
+
+// ===== S3-T7：素材事实层（事实与表达分离）=====
+export const FACT_KEYS = ['company', 'role', 'dates', 'education', 'metrics', 'contribution', 'conditions', 'source'];
+export const MAT_STATES = ['pending', 'confirmed', 'outdated'];
+
+// 旧素材迁移为事实层形状：confirmed 布尔 → factStatus（幂等：已迁移条目原样返回，不复制）。
+// facts 按 FACT_KEYS 置空/补齐（旧键 brief/technical/interview 是表达层，不动）。
+export function migrateMats(mats) {
+  return (Array.isArray(mats) ? mats : []).map((m) => {
+    if (m && m.factStatus && m.facts && !('confirmed' in m)) return m;   // 已迁移
+    const out = { ...m };
+    delete out.confirmed;
+    if (!FACT_KEYS.every((k) => typeof (out.facts || {})[k] === 'string')) out.facts = Object.fromEntries(FACT_KEYS.map((k) => [k, (out.facts && out.facts[k]) || '']));
+    if (!MAT_STATES.includes(out.factStatus)) out.factStatus = m && m.confirmed === true ? 'confirmed' : 'pending';
+    return out;
+  });
+}

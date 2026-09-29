@@ -2183,6 +2183,24 @@ assert(digestOf('<div class="sheet"><section class="section"><div class="section
 console.log('✅ S3-B 区域纯函数（含 S3-B2 区域级 AI 解析）');
 EOF
 
+# —— S3-B3：素材事实层迁移（confirmed→factStatus / 幂等 / 无状态→pending+facts 置空）——
+echo "── S3-B3: 素材事实层迁移 ──"
+node --input-type=module << 'EOF'
+import { migrateMats, FACT_KEYS } from './zone.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ S3-B3 ' + m); process.exit(1); } };
+assert(FACT_KEYS.join(',') === 'company,role,dates,education,metrics,contribution,conditions,source', '8 事实键');
+const old1 = [{ id: 'm-1', title: 'T', brief: 'b', technical: '', interview: '', attach: '', tags: [], createdAt: '', updatedAt: '', confirmed: true }];
+const mig1 = migrateMats(old1);
+assert(mig1[0].factStatus === 'confirmed' && mig1[0].facts && !('confirmed' in mig1[0]), 'confirmed→factStatus 且删旧键');
+assert(JSON.stringify(migrateMats(mig1)) === JSON.stringify(mig1), '迁移幂等');
+const old2 = [{ id: 'm-2', title: 'T2', brief: 'b' }];
+assert(migrateMats(old2)[0].factStatus === 'pending' && migrateMats(old2)[0].facts, '无状态→pending+facts 置空');
+const d0 = { id: 'm-3', factStatus: 'outdated', facts: { metrics: 'x' } };
+assert(migrateMats([d0])[0] === d0, '已迁移条目原样返回');
+assert(JSON.stringify(migrateMats('x')) === '[]', '非数组→空数组');
+console.log('✅ S3-B3 素材事实层迁移');
+EOF
+
 # —— S3-D：renderInputId 忽略 data-zid（登记偏差 pin：非视觉属性不进渲染标识；摘除须连前导空白）——
 echo "── S3-D: renderInputId 忽略 data-zid ──"
 node --input-type=module << 'EOF'
