@@ -13,6 +13,7 @@ import { loadProfiles, hasLLM, chat, chatMsgs, listModels } from './llm.mjs';
 import { buildRewrite, buildChat, parseChanges, buildReview, buildMatch, parseReport } from './ai.mjs';
 import { buildJobPrompt, parseJobOps, pageSuggestions } from './job.mjs';
 import { docToLines, docToText, contentHash, sectionsOf } from './extract.mjs';
+import { normalizeZids, zoneSync, guessZone, ZONE_KEYS } from './zone.mjs';
 import { rotateLogIfNeeded } from './logrotate.mjs';
 import { freezeHtml, normalizeToCurrent, splitDoc, staleInfo } from './freeze.mjs';
 import { beginTx, commitTx, dropSupersededTx, recoverPending, withDocLock, updateMeta, rootLock, atomicWrite, LockHeld } from './tx.mjs';
@@ -406,7 +407,7 @@ function docInfo(id, m) {
   const stat = fs.statSync(f);
   return {
     id,
-    title: escHtml((content.match(/<h1>([^<]+)<\/h1>/) || [])[1] || id),
+    title: escHtml((content.match(/<h1[^>]*>([^<]+)<\/h1>/) || [])[1] || id),
     mtime: stat.mtime.toLocaleString('zh-CN'),   // 仅展示（陈旧判定一律走 renderInputId）
     mtimeMs: stat.mtimeMs,
     degraded: content.includes('以下为 PDF 提取的原文'),
@@ -878,7 +879,7 @@ async function handler(req, res) {
       // 兼容视图（S1-T8）：响应里的 status 为派生旧词汇（reviewed→deliverable，其余→draft），flow 为存储单源；
       // schemaVersion<2 时 flowOf 由 job.status 即时推导，绝不写回。
       const job = m.job ? { ...m.job, status: legacyFlowStatus(m), flow: flowOf(m) } : null;
-      return sendJson(200, { ok: true, job, doc: { id, parent: m.parent || '', company: m.company || '', role: m.role || '', jd: m.jd || '', jdSource: m.jdSource || '' } });
+      return sendJson(200, { ok: true, job, zones: m.zones || null, zoneOrder: m.zoneOrder || null, doc: { id, parent: m.parent || '', company: m.company || '', role: m.role || '', jd: m.jd || '', jdSource: m.jdSource || '' } });
     }
     if (req.method === 'POST' && url.pathname === '/job/changes') {
       const body = JSON.parse(await readBody(req));
@@ -909,6 +910,52 @@ async function handler(req, res) {
       });
       if (!isJob) return sendJson(404, { ok: false, error: '该文档不是岗位草稿' });
       return sendJson(200, { ok: true, job: jobOut });
+    }
+    // ===== S3：区域绑定（zones 存 meta；归属与状态由用户操作回写，一致性由 /save zoneSync 兜底）=====
+    if (req.method === 'POST' && url.pathname === '/zones') {
+      const body = JSON.parse(await readBody(req));
+      const zonesIn = body.zones && typeof body.zones === 'object' ? body.zones : null;
+      if (!zonesIn) return sendJson(400, { ok: false, error: 'zones 必填' });
+      for (const [zid, z] of Object.entries(zonesIn)) {
+        if (!/^z[0-9a-f]{8}$/.test(zid) || !z || typeof z !== 'object'
+          || !ZONE_KEYS.includes(z.zone) || !['pending', 'confirmed'].includes(z.status)) {
+          return sendJson(400, { ok: false, error: `非法条目 ${zid}` });
+        }
+      }
+      updateMeta(root, id, (m) => {
+        const base = { ...(m || {}) };
+        const zones = { ...(base.zones || {}) };
+        for (const [zid, z] of Object.entries(zonesIn)) {
+          zones[zid] = { zone: z.zone, status: z.status, ...(z.locked === true ? { locked: true } : (z.locked === false ? { locked: false } : {})) };
+        }
+        base.zones = zones;
+        if (Array.isArray(body.zoneOrder) && body.zoneOrder.every((z) => ZONE_KEYS.includes(z)) && new Set(body.zoneOrder).size === body.zoneOrder.length) {
+          base.zoneOrder = body.zoneOrder;
+        }
+        if (body.zoneRounds && typeof body.zoneRounds === 'object') {
+          const r = { ...(base.zoneRounds || {}) };
+          for (const k of Object.keys(body.zoneRounds)) if (ZONE_KEYS.includes(k) && Number.isFinite(body.zoneRounds[k])) r[k] = body.zoneRounds[k];
+          base.zoneRounds = r;
+        }
+        return base;
+      });
+      return sendJson(200, { ok: true });
+    }
+    if (req.method === 'POST' && url.pathname === '/zones/init') {
+      const body = JSON.parse(await readBody(req));
+      const entries = Array.isArray(body.entries) ? body.entries.filter((e) => e && /^z[0-9a-f]{8}$/.test(e.zid)) : [];
+      if (!entries.length) return sendJson(400, { ok: false, error: 'entries 必填' });
+      let created = null;
+      updateMeta(root, id, (m) => {
+        if (m && m.zones && Object.keys(m.zones).length) { created = 'exists'; return m; }   // 已有 zones：幂等不动
+        const zones = {};
+        for (const e of entries) {
+          zones[e.zid] = { zone: guessZone(e.sectionTitle || ''), status: 'pending' };
+        }
+        created = 'created';
+        return { ...(m || {}), zones, zoneOrder: ['personal', 'work', 'project', 'skill', 'education', 'award', 'summary', 'other'] };
+      });
+      return sendJson(200, { ok: true, zones: loadMeta()[id].zones });
     }
     // 生成建议（LLM 可选；失败不影响已有草稿与母版）
     if (req.method === 'POST' && url.pathname === '/job/generate') {
@@ -968,6 +1015,8 @@ async function handler(req, res) {
           const keep = String(cls).trim().split(/\s+/).filter((c) => c && !EDITOR_ONLY_BODY_CLASS.has(c));
           return keep.length ? ` class="${keep.join(' ')}"` : '';
         }));
+      // S3：zid 归一（补缺/去重/坏值重打）必须在剥离注入块之后执行；meta zones 同步在下方 updateMeta 回调里做
+      html = normalizeZids(html);
       if (!html.trim()) return send(400, 'empty save rejected', 'text/plain');
       if (!fs.existsSync(docPath(id))) return send(404, 'doc not found', 'text/plain');
       // 跨进程排他锁：保存与迁移互斥（被他人持有 → 503）。持锁贯穿整个事务，覆盖两次 rename 之间被杀的窗口。
@@ -1008,6 +1057,8 @@ async function handler(req, res) {
                 base.flow = 'draft';
                 if (base.job) base.job = { ...base.job, invalidatedAt: new Date().toISOString() };
               }
+              // S3：zones 同步（正文为准；多余清/缺失补 pending+启发式/已有归属不动）
+              Object.assign(base, zoneSync(newHtml, base));
               return base;
             });
             commitTx(root, txId);                           // 成功：删事务记录
@@ -2285,7 +2336,7 @@ async function handler(req, res) {
       if (!rst.pdfExists) return send(500, '渲染失败：PDF 未生成，请到导出页重试（详见服务日志）', 'text/plain');
       const meta = rst.meta;
       const docHtml = fs.readFileSync(docPath(id), 'utf8');
-      const name = decodeName((docHtml.match(/<h1>([^<]*)<\/h1>/) || [])[1] || id);
+      const name = decodeName((docHtml.match(/<h1[^>]*>([^<]*)<\/h1>/) || [])[1] || id);
       const date = new Date().toISOString().slice(0, 10);
       const parts = meta.parent ? [name, meta.role || '', meta.company || '', date] : [name, id, date];
       const fileName = sanitizeFileName(parts.filter(Boolean).join('_')) + (rst.stale ? '_旧版本' : '') + '.pdf';

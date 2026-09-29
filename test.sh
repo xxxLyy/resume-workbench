@@ -248,7 +248,7 @@ EOF
 APOS_ID=$(curl -s -X POST "$B/new" -o /dev/null -w '%{redirect_url}' | sed 's/.*id=//')
 [ -n "$APOS_ID" ] && [ -f "$RESUME_ROOT/docs/$APOS_ID.html" ] || fail '撇号标题夹具未建成'
 curl -s -X POST "$B/save?id=$APOS_ID" --data-binary "$(sed "s|<h1>未命名</h1>|<h1>Jane's Resume</h1>|" "$RESUME_ROOT/docs/$APOS_ID.html")" | grep -q '"ok":true' || fail '撇号标题夹具保存失败'
-grep -qF "<h1>Jane's Resume</h1>" "$RESUME_ROOT/docs/$APOS_ID.html" || fail '撇号标题未落盘'
+grep -qF "Jane's Resume</h1>" "$RESUME_ROOT/docs/$APOS_ID.html" || fail '撇号标题未落盘'
 curl -s "$B/" > "$TEST_DIR/home-apos.html"
 node "$TEST_DIR/apos-attr-check.cjs" "$TEST_DIR/home-apos.html" "$APOS_ID" || fail "撇号标题（${APOS_ID}）使 data-doc-titles 属性截断或内联脚本抛异常"
 curl -s -X POST "$B/delete?id=$APOS_ID" -o /dev/null
@@ -317,7 +317,7 @@ echo '✅ 渲染失败不冒充成功'
 POL=$(node -e "
 const fs=require('fs');
 let h=fs.readFileSync('$RESUME_ROOT/docs/$DOCID.html','utf8');
-h=h.replace('<p class=\"summary\">文本B</p>','<p class=\"summary\">文本B</p><section class=\"section ed-sec-hidden\"><div class=\"section-title\">隐藏节</div><p>隐藏内容XYZ</p></section>');
+h=h.replace(/<p class=\"summary\"[^>]*>文本B<\/p>/,'<p class=\"summary\">文本B</p><section class=\"section ed-sec-hidden\"><div class=\"section-title\">隐藏节</div><p>隐藏内容XYZ</p></section>');
 fs.writeFileSync('$RESUME_ROOT/docs/$DOCID.html',h);
 ")
 TXT=$(curl -s "$B/api/extract?id=$DOCID")
@@ -525,6 +525,54 @@ echo "$JDR" | grep -q 'var a=1' && fail 'JD 提取未剔脚本'
 CODE=$(curl -s -X POST "$B/ai/jd-text" -H 'Content-Type: application/json' -d '{"url":"file:///etc/passwd"}' -o /dev/null -w '%{http_code}')
 [ "$CODE" = "400" ] || fail '非 http 协议未拦'
 echo '✅ JD 链接读取'
+
+# ===== S3：区域绑定（已知正文 → /zones/init → /zones → /save 同步）=====
+cat > "$TEST_DIR/s3-doc.html" << 'EOF'
+<body><div class="sheet"><div class="contact">测试员 s3@t.cn</div>
+<section class="section"><div class="section-title">个人总结</div><p>五年后端经验</p></section>
+<section class="section"><div class="section-title">专业技能</div><p>技能一：Go 与调度系统</p></section>
+<section class="section"><div class="section-title">工作经历</div><p>负责交易系统，P99 800ms</p></section>
+<section class="section"><div class="section-title">项目经历</div><p>项目甲：数据管道重设计</p></section>
+</div></body>
+EOF
+S3DOC=$(curl -s -X POST "$B/new" -o /dev/null -w '%{redirect_url}' | sed 's/.*id=//')
+[ -n "$S3DOC" ] && [ -f "$RESUME_ROOT/docs/$S3DOC.html" ] || fail 'S3 夹具文档创建'
+curl -s -X POST "$B/save?id=$S3DOC" --data-binary "@$TEST_DIR/s3-doc.html" | grep -q '"ok":true' || fail 'S3 夹具正文保存'
+# /zones/init：按客户端形状构造 entries（zid + sectionTitle，sectionsOf 分组；服务端只认形状）
+node --input-type=module -e '
+import { normalizeZids, parasOf } from "./zone.mjs";
+import { sectionsOf } from "./extract.mjs";
+import { readFileSync, writeFileSync } from "node:fs";
+const f = process.argv[1];
+const html = normalizeZids(readFileSync(f, "utf8"));
+writeFileSync(f, html);
+const entries = [];
+for (const s of sectionsOf(html)) for (const p of parasOf(s.html)) entries.push({ zid: p.zid, sectionTitle: s.title, text: p.text.slice(0, 40) });
+for (const p of parasOf(html.replace(/<section[\s\S]*$/, ""))) entries.push({ zid: p.zid, sectionTitle: "个人信息", text: p.text.slice(0, 40) });
+writeFileSync(process.argv[2], JSON.stringify(entries));' "$TEST_DIR/s3-doc.html" "$TEST_DIR/s3-entries.json" || fail 'S3 夹具 entries 构造'
+S3Z=$(curl -s -X POST "$B/zones/init?id=$S3DOC" -H 'Content-Type: application/json' -d "{\"entries\":$(cat "$TEST_DIR/s3-entries.json")}")
+echo "$S3Z" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const zs=Object.values(j.zones||{});if(!j.ok||!zs.length||!zs.every(z=>z.status==="pending")){console.error("❌ S3 zones/init "+JSON.stringify(j).slice(0,200));process.exit(1)}})' || fail 'S3 /zones/init 全 pending'
+echo '✅ S3 /zones/init 全 pending'
+Z1=$(node -e 'console.log("z"+"1".repeat(8))')
+curl -s -X POST "$B/zones?id=$S3DOC" -H 'Content-Type: application/json' \
+  -d "{\"zones\":{\"$Z1\":{\"zone\":\"work\",\"status\":\"confirmed\",\"locked\":true}},\"zoneOrder\":[\"work\",\"personal\",\"education\",\"project\",\"skill\",\"award\",\"summary\",\"other\"]}" \
+  | grep -q '"ok":true' || fail 'S3 /zones 回写'
+curl -s -X POST "$B/zones?id=$S3DOC" -H 'Content-Type: application/json' \
+  -d "{\"zones\":{\"$Z1\":{\"zone\":\"nope\",\"status\":\"confirmed\"}}}" | grep -q '"ok":false' || fail 'S3 /zones 坏枚举拒绝'
+echo '✅ S3 /zones 回写与枚举校验'
+# /save 同步：打点正文再保存 → meta zones 与正文 zid 一致（补 pending / 清孤儿：Z1 不在正文，预期被清）
+curl -s -X POST "$B/save?id=$S3DOC" --data-binary "@$TEST_DIR/s3-doc.html" | grep -q '"ok":true' || fail 'S3 /save 打点正文'
+node -e '
+const fs = require("fs");
+const meta = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))[process.argv[2]] || {};
+const docHtml = fs.readFileSync(process.argv[3], "utf8");
+const inDoc = [...docHtml.matchAll(/data-zid="(z[0-9a-f]{8})"/g)].map((m) => m[1]);
+const zs = meta.zones || {};
+const missing = inDoc.filter((z) => !zs[z]);
+const orphan = Object.keys(zs).filter((z) => !inDoc.includes(z));
+if (missing.length || orphan.length) { console.error("❌ S3 zones 同步 missing=" + missing + " orphan=" + orphan); process.exit(1); }
+console.log("zones=" + inDoc.length);' "$RESUME_ROOT/docs-meta.json" "$S3DOC" "$TEST_DIR/s3-doc.html" || fail 'S3 /save 后 zones 同步'
+echo '✅ S3 /save 后 zones 与正文一致（孤儿清/缺失补）'
 
 # ===== 16. 浏览器级保存语义（可选，需要本机 Chromium）=====
 if node test-editor.mjs "$B" "$DOCID" "$RESUME_ROOT"; then

@@ -78,6 +78,12 @@ function bodyInner(html) {
   return m ? m[1] : html;                                    // 无 body 标签的片段：整体视为正文
 }
 
+// S3：data-zid 是非视觉属性（区域绑定的 bookkeeping），不属于渲染输入。
+// bodyHash 前先摘除，避免首存打点把「PDF 同步」误判为「较旧」（renderInputId 只度量视觉）。
+function stripZid(html) {
+  return String(html).replace(/\sdata-zid="[^"]*"/g, "");
+}
+
 // —— 资源引用收集 ——
 // 会实际加载资源的标签/属性（<a href> 是导航链接、不加载资源，绝不收集——否则含超链接的简历会被误判不可复现）
 // 标签体允许引号内 '>'（如 <img alt="a > b" src="x.png">）：逐段跳过成对引号，避免在属性值处截断漏收 src
@@ -200,7 +206,7 @@ export function freezeHtml(html, meta) {
       : block + out;                                          // 无 head 的片段：前置兜底
   }
   const styles = mainStyles(out);
-  const bodyHash = sha1(bodyInner(out).trim());
+  const bodyHash = sha1(stripZid(bodyInner(out)).trim());
   const cssHash = styles.length ? sha1(styles.map((s) => s.css).join('\n')) : sha1('');
   const typoHash = sha1(typo);
   const fp = resourceFingerprint(out);

@@ -1986,7 +1986,8 @@ const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','
   '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf',
   '/job-panel.js','/job/changes','/job/create','/job/generate','/link','/mat/add','/mat/confirm','/mat/del','/mat/update',
   '/materials','/new','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings',
-  '/snapshot/baseline','/snapshot/note','/snapshot/pdf','/snapshot/view','/snapshots','/stats','/tag','/version/create'].sort();
+  '/snapshot/baseline','/snapshot/note','/snapshot/pdf','/snapshot/view','/snapshots','/stats','/tag','/version/create',
+  '/zones','/zones/init'].sort();
 const got = [...new Set([...sm.matchAll(/url\.pathname === '([^']+)'/g)].map((m) => m[1]))].sort();
 const missing = ROUTES_FROZEN.filter((r) => !got.includes(r));
 const extra = got.filter((r) => !ROUTES_FROZEN.includes(r));
@@ -2169,4 +2170,16 @@ const contactDoc = '<div class="sheet"><div class="contact" data-zid="zf6666666"
 const mc = zoneSync(contactDoc, {});
 assert(mc.zones.zf6666666.zone === 'personal', 'sections 外（contact）→ personal');
 console.log('✅ S3-B 区域纯函数');
+EOF
+
+# —— S3-D：renderInputId 忽略 data-zid（登记偏差 pin：非视觉属性不进渲染标识；摘除须连前导空白）——
+echo "── S3-D: renderInputId 忽略 data-zid ──"
+node --input-type=module << 'EOF'
+import { freezeHtml } from './freeze.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ S3-D ' + m); process.exit(1); } };
+const withZid = freezeHtml('<p data-zid="z12345678">x</p>', { typo: '' });
+const noZid = freezeHtml('<p>x</p>', { typo: '' });
+assert(withZid.renderInputId === noZid.renderInputId, 'renderInputId 应忽略 data-zid');
+assert(withZid.html === '<p data-zid="z12345678">x</p>', '冻结 html 应逐字节保留 data-zid');
+console.log('✅ S3-D renderInputId 忽略 data-zid（冻结 html 不变）');
 EOF
