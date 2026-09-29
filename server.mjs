@@ -2076,6 +2076,8 @@ async function handler(req, res) {
       const zoneText = zoneParas(html, meta, body.zone).map((p) => p.text).join('\n');
       const rounds = meta.zoneRounds ? (meta.zoneRounds[body.zone] || 0) : 0;
       const p = buildZoneAnalyzePrompt({ zoneName: ZONE_LABELS[body.zone], zoneText, digest: digestOf(html), rounds });
+      // S3-T6：chips 追问文本（可选字符串）拼进 user prompt；压单行 + 截断，防经换行伪造 prompt 段落结构
+      if (typeof body.extra === 'string' && body.extra.trim()) p.user += '\n\n【追问】' + body.extra.trim().replace(/\s+/g, ' ').slice(0, 200);
       const raw = await chat(root, p.sys, p.user);
       const parsed = parseZoneAnalysis(raw);
       if (parsed) {
@@ -2088,13 +2090,15 @@ async function handler(req, res) {
       const body = JSON.parse(await readBody(req));
       if (!ZONE_KEYS_SET.has(body.zone)) return send(400, 'invalid zone', 'text/plain');
       if (!body.instruction || typeof body.instruction !== 'string') return send(400, 'instruction 必填', 'text/plain');
+      const instruction = body.instruction.replace(/\s+/g, ' ').trim();   // S3-T6：服务端同压单行（curl 直打也过；instruction 在 prompt 独占一行，换行可伪造段落行）
+      if (!instruction) return send(400, 'instruction 必填', 'text/plain');
       const html = fs.existsSync(docPath(id)) ? fs.readFileSync(docPath(id), 'utf8') : '';
       const meta = loadMeta()[id] || {};
       const all = zoneParas(html, meta, body.zone);
       const locked = new Set(all.filter((x) => meta.zones[x.zid] && meta.zones[x.zid].locked === true).map((x) => x.zid));
       const free = all.filter((x) => !locked.has(x.zid));       // locked 段落跳过（段级保留标记）
       if (!free.length) return sendJson(200, { ok: true, rewrites: [], skipped: [...locked] });
-      const p = buildZoneRewritePrompt({ zoneName: ZONE_LABELS[body.zone], paras: free, instruction: body.instruction });
+      const p = buildZoneRewritePrompt({ zoneName: ZONE_LABELS[body.zone], paras: free, instruction });
       const raw = await chat(root, p.sys, p.user);
       const parsed = parseZoneRewrites(raw, free);
       return sendJson(200, parsed ? { ok: true, rewrites: parsed, skipped: [...locked] } : { ok: false, error: '改写失败，稍后再试' });

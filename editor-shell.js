@@ -1326,6 +1326,7 @@
     requestAnimationFrame(function () { t.style.opacity = '1'; });
     setTimeout(function () { t.style.opacity = '0'; setTimeout(function () { t.remove(); }, 400); }, 5000);
   }
+  window.__edUndoToast = undoToast;   // S3-T6：区域改写接受链路复用（Toast 与工具条消费同一条 op 记录，面板不自建 toast）
 
   // ===== 画布工具条：缩放 =====
   var tools = document.createElement('div');

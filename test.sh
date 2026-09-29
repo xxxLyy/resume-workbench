@@ -585,9 +585,11 @@ if (missing.length || orphan.length) { console.error("❌ S3 zones 同步 missin
 console.log("zones=" + inDoc.length);' "$RESUME_ROOT/docs-meta.json" "$S3DOC" "$TEST_DIR/s3-doc.html" || fail 'S3 /save 后 zones 同步'
 echo '✅ S3 /save 后 zones 与正文一致（孤儿清/缺失补）'
 # S3-T5 区域级 AI（stub 模拟验证）：端点结构 / 请求最小化 / 改写候选
-AZ=$(curl -s -X POST "$B/ai/zone-analyze?id=$S3DOC" -H 'Content-Type: application/json' -d '{"zone":"work"}')
+# S3-T6：带 extra（chips 追问）请求——同一次捕获体上同时断言「最小化」与「追问进 prompt」
+AZ=$(curl -s -X POST "$B/ai/zone-analyze?id=$S3DOC" -H 'Content-Type: application/json' -d '{"zone":"work","extra":"量化数据够吗"}')
 echo "$AZ" | grep -q '"echoes"' || fail "S3 zone-analyze 返回结构化意见（模拟验证）: $(echo "$AZ" | head -c 160)"
 if grep -q 'MARKERZZ' /tmp/resume-test-llm-last.json 2>/dev/null; then fail 'S3 zone-analyze 请求泄漏其他区域全文（超出摘要窗口）'; fi
+grep -q '【追问】量化数据够吗' /tmp/resume-test-llm-last.json || fail 'S3 zone-analyze 追问文本未进 prompt'
 pass() { echo "✅ $1"; }
 pass "S3 zone-analyze 请求最小化（模拟验证）"
 RW=$(curl -s -X POST "$B/ai/zone-rewrite?id=$S3DOC" -H 'Content-Type: application/json' -d '{"zone":"work","instruction":"更精简"}')

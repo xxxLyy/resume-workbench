@@ -72,6 +72,7 @@
   }
 
   var state = { zones: {}, zoneOrder: null, zoneRounds: {}, colorOn: false, aiZone: null, aiDegraded: false, lastAnalysis: null };
+  var preview = [];   // S3-T6：当前可接受候选集（非 conflict；renderPreview 维护，accept 消费）
   var root = document.createElement('div');
   root.id = 'zp-root';
   root.className = 'zp';
@@ -124,7 +125,7 @@
   }
 
   // ===== 区域级 AI（T5）：意见卡 + chips 追问 + 修改模式输入 + 改写候选预览 =====
-  // 改写候选经 ed-zone-preview 事件交给外壳/后续任务（T6 接撤销后启用接受按钮）；本轮 disabled。
+  // 改写候选经 ed-zone-preview 事件进 renderPreview（T6 起事件是正式消费通道），接受走 S2 统一撤销链路。
   function openAi(zoneKey) {
     state.aiZone = zoneKey;
     state.aiDegraded = false;
@@ -137,6 +138,9 @@
     var a = document.getElementById('zp-analyze'), r = document.getElementById('zp-rewrite');
     if (a) a.disabled = busy || state.aiDegraded;
     if (r) r.disabled = busy || state.aiDegraded;
+    // S3-T6（T5 移交）：in-flight 时 chips 一并置灰，防连点双请求后到覆盖先到
+    // （#zp-analyze 也在 .zp-chips 内 → 必须同带 aiDegraded 判定，否则降级态会被本行重新点亮）
+    Array.prototype.forEach.call(document.querySelectorAll('#zp-ai .zp-chips button'), function (b) { b.disabled = busy || state.aiDegraded; });
   }
   function degrade(msg) {
     state.aiDegraded = true;
@@ -151,6 +155,7 @@
   }
   function renderAi() {
     var old = aiBox();
+    var keepInstr = old ? ((document.getElementById('zp-instr') || {}).value || '') : '';   // S3-T6（T5 移交）：重绘不吞已输入的修改意见
     if (old) old.remove();
     var zoneKey = state.aiZone;
     if (!zoneKey) return;
@@ -177,6 +182,7 @@
     var ta = document.createElement('textarea');
     ta.id = 'zp-instr';
     ta.placeholder = '修改意见，如：更精简、突出量化结果';
+    ta.value = keepInstr;
     box.appendChild(ta);
     var rwBtn = document.createElement('button');
     rwBtn.type = 'button';
@@ -188,9 +194,9 @@
       rewrite(zoneKey, v);
     });
     box.appendChild(rwBtn);
-    var prev = document.createElement('div');
-    prev.id = 'zp-preview';
-    box.appendChild(prev);
+    var prev = document.getElementById('zp-preview');
+    if (prev) box.appendChild(prev);   // 认领事件通道已建的预览容器（保持单实例，避免双 id）
+    else { prev = document.createElement('div'); prev.id = 'zp-preview'; box.appendChild(prev); }
     root.appendChild(box);
     if (state.lastAnalysis && state.lastAnalysis.zone === zoneKey) showAnalysis(state.lastAnalysis.data);
     setBusy(state.aiDegraded);
@@ -248,6 +254,7 @@
   }
   function rewrite(zoneKey, instruction) {
     if (state.aiDegraded) return;
+    instruction = String(instruction || '').replace(/\s+/g, ' ').trim();   // S3-T6（T5 移交）：压单行，闭合经换行伪造段落行的注入面
     setBusy(true);
     var prev = document.getElementById('zp-preview');
     if (prev) prev.textContent = '生成中…';
@@ -256,17 +263,20 @@
       if (d._status === 409) { degrade('未配置大模型'); if (prev) prev.textContent = ''; return; }
       if (!d.ok) { if (prev) prev.textContent = d.error || '改写失败，稍后再试'; return; }
       if (state.aiZone !== zoneKey) return;   // 慢响应守卫：旧候选不渲染、不派发 ed-zone-preview
-      renderPreview(d.rewrites || []);
+      window.dispatchEvent(new CustomEvent('ed-zone-preview', { detail: { doc: DOC_ID, zone: zoneKey, rewrites: d.rewrites || [] } }));
     }).catch(function () { setBusy(false); if (prev) prev.textContent = '改写失败，稍后再试'; });
   }
-  // 改写候选预览：接受按钮本轮 disabled（T6 接撤销后启用）；数据经 ed-zone-preview 派发给外壳
+  // 改写候选预览（S3-T6）：非 conflict 候选整体接受（一条撤销 op）；conflict 项只展示 ⚠ 理由，不计入可接受集合
   function renderPreview(rewrites) {
     var prev = document.getElementById('zp-preview');
-    if (!prev) return;
+    if (!prev) {                    // 事件通道不依赖 AI 卡开合：容器缺失时自建在面板根（renderAi 开卡时认领）
+      prev = document.createElement('div');
+      prev.id = 'zp-preview';
+      root.appendChild(prev);
+    }
     prev.innerHTML = '';
-    if (!rewrites.length) { prev.textContent = '（无可应用的改写候选）'; }
-    window.__zpPreview = rewrites;
-    try { window.dispatchEvent(new CustomEvent('ed-zone-preview', { detail: { doc: DOC_ID, zone: state.aiZone, rewrites: rewrites } })); } catch (e) {}
+    preview = (rewrites || []).filter(function (r) { return r.level !== 'conflict'; });
+    if (!(rewrites || []).length) { prev.textContent = '（无可应用的改写候选）'; return; }
     rewrites.forEach(function (r) {
       var card = document.createElement('div');
       card.className = 'zp-cand' + (r.level === 'conflict' ? ' conflict' : '');
@@ -280,17 +290,38 @@
       if (r.level === 'conflict') {
         var flag = document.createElement('div');
         flag.className = 'zp-cand-flag';
-        flag.textContent = r.reason || '事实冲突，需人工核对';
+        flag.textContent = '⚠ ' + (r.reason || '事实冲突，需人工核对');
         card.appendChild(flag);
       }
-      var acc = document.createElement('button');
-      acc.type = 'button';
-      acc.textContent = '接受';
-      acc.disabled = true;             // T6 接撤销后启用（本轮占位）
-      acc.title = '撤销栈接入后开放';
-      card.appendChild(acc);
       prev.appendChild(card);
     });
+    if (preview.length) {
+      var acc = document.createElement('button');
+      acc.type = 'button';
+      acc.id = 'zp-accept';
+      acc.textContent = preview.length > 1 ? '接受（' + preview.length + ' 段）' : '接受';
+      acc.addEventListener('click', accept);
+      prev.appendChild(acc);
+    }
+  }
+  // 接受区域改写：严格走 S2 统一撤销链路——快照先压栈 → 改 DOM → 标记程序化 → Toast 绑 opId（与工具条同一条 op）
+  function accept() {
+    var todo = preview.filter(function (it) { return sheet.querySelector('[data-zid="' + it.zid + '"]'); });
+    var stale = preview.length - todo.length;
+    if (!todo.length) {
+      var p = document.getElementById('zp-preview');
+      if (p) p.textContent = '段落已变化，请重新生成';
+      return;
+    }
+    var opId = window.__edPushUndo('区域改写');
+    todo.forEach(function (it) {
+      var el = sheet.querySelector('[data-zid="' + it.zid + '"]');
+      el.textContent = it.candidate;      // 纯文本替换：整段拍平 inline 标记是 S3 已知限制（diff 预览可见原文与候选）
+    });
+    window.__edMarkProgrammatic();
+    if (window.__edUndoToast) window.__edUndoToast('已应用区域改写' + (stale ? '（' + stale + ' 段已变化跳过）' : ''), opId);
+    preview = [];
+    renderPreview([]);
   }
 
   // 定位与闪烁（CSS Custom Highlight，不给正文挂 class）
@@ -384,4 +415,8 @@
   load();
   // 外壳 Tab 切换到「区域」时刷新（shell 初绑 /zones/init 与本面板 load 并发，切 Tab 时拿最新落盘状态）
   window.addEventListener('ed-zone-refresh', load);
+  // S3-T6：ed-zone-preview 是 renderPreview 的正式消费入口（rewrite fetch 回调与外部注入都走它；detail 优先，回落 __zpPreview）
+  window.addEventListener('ed-zone-preview', function (e) {
+    renderPreview((e && e.detail && e.detail.rewrites) || window.__zpPreview || []);
+  });
 })();

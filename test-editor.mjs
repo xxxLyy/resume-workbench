@@ -2589,6 +2589,35 @@ try {
       await ctx.close();
     }
   }
+  // ===== S3 块 D：修改模式接受 → 统一撤销（⌘Z 语义与 S2 基线一致）=====
+  //     [S3T6-ADJ] 计划原稿标签「S3 块 C」与 T2 改绑契约块撞名，顺延为 D；复用 ed-fixture-zone（S3B 已落盘 zid）。
+  {
+    const S3_DOC = 'ed-fixture-zone';
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await page.goto(`${base}/edit?id=${S3_DOC}`, { waitUntil: 'networkidle' });
+    await page.click('#ed-rtabs button[data-pane="zone"]');
+    await page.waitForTimeout(300);
+    // 经正式事件入口注入一条假候选（ed-zone-preview 通道；接受链路是本块被测对象，不依赖 LLM）
+    await page.evaluate(function () {
+      window.__zpPreview = [{ zid: document.querySelector('.sheet li[data-zid]').getAttribute('data-zid'),
+        before: '旧', candidate: '浏览器测试改写候选', level: 'normal' }];
+      window.dispatchEvent(new Event('ed-zone-preview'));
+    });
+    await page.waitForTimeout(150);
+    await page.click('#zp-accept');
+    await page.waitForTimeout(250);
+    const applied = await page.evaluate(() => document.querySelector('.sheet li[data-zid]').textContent);
+    if (applied.includes('浏览器测试改写候选')) ok('S3D 接受后正文替换'); else bad('S3D 接受后正文替换', String(applied).slice(0, 60));
+    const toastTxt = await page.evaluate(() => Array.from(document.querySelectorAll('.toast')).map((x) => x.textContent).join('|'));
+    if (/撤销/.test(toastTxt)) ok('S3D Toast 带撤销入口'); else bad('S3D Toast 撤销入口缺失', toastTxt.slice(0, 60));
+    await page.evaluate(() => document.querySelector('.sheet').focus());   // S2 既有块先例：程序化 op 消费前聚焦正文
+    await page.keyboard.press('Meta+z');   // 程序化 op 消费路径（S2 语义：栈顶是区域改写且其后无受信任输入）
+    await page.waitForTimeout(250);
+    const undone = await page.evaluate(() => !document.querySelector('.sheet li[data-zid]').textContent.includes('浏览器测试改写候选'));
+    if (undone) ok('S3D ⌘Z 撤销区域改写'); else bad('S3D ⌘Z 撤销失败');
+    await ctx.close();
+  }
 } finally {
   await browser.close();
 }
