@@ -378,6 +378,7 @@ ${inner}
 const AI_MARK = '<!--AI-INJECT-->';
 const SHELL_MARK = '<!--SHELL-INJECT-->';
 const JOB_MARK = '<!--JOB-INJECT-->';
+const ZONE_MARK = '<!--ZONE-INJECT-->';
 function aiBlock(id) {
   return `\n${AI_MARK}<script src="/ai-panel.js" data-doc="${id}" defer></script><!--/AI-INJECT-->\n`;
 }
@@ -392,6 +393,9 @@ function shellBlock(id, mtimeMs) {
 }
 function jobBlock(id) {
   return `\n${JOB_MARK}<script src="/job-panel.js" data-doc="${id}" defer></script><!--/JOB-INJECT-->\n`;
+}
+function zoneBlock(id) {
+  return `\n${ZONE_MARK}<script src="/zone-panel.js" data-doc="${id}" defer></script><!--/ZONE-INJECT-->\n`;
 }
 
 const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -673,6 +677,9 @@ async function handler(req, res) {
     if (req.method === 'GET' && url.pathname === '/job-panel.js') {
       return send(200, fs.readFileSync(path.join(APP_ROOT, 'job-panel.js'), 'utf8'), 'application/javascript; charset=utf-8');
     }
+    if (req.method === 'GET' && url.pathname === '/zone-panel.js') {
+      return send(200, fs.readFileSync(path.join(APP_ROOT, 'zone-panel.js'), 'utf8'), 'application/javascript; charset=utf-8');
+    }
     // ===== 首页 =====
     if (req.method === 'GET' && url.pathname === '/') return send(200, listPage(url.searchParams.get('archived') === '1'));
     // 正文提取 API（统一出口的只读视图，便于验证与调试）
@@ -714,6 +721,7 @@ async function handler(req, res) {
       if (!html.includes(SHELL_MARK)) html = html.replace('</body>', shellBlock(id, mtimeMs) + '</body>');
       if (!html.includes(AI_MARK)) html = html.replace('</body>', aiBlock(id) + '</body>');
       if (!html.includes(JOB_MARK)) html = html.replace('</body>', jobBlock(id) + '</body>');
+      if (!html.includes(ZONE_MARK)) html = html.replace('</body>', zoneBlock(id) + '</body>');
       return send(200, html);
     }
     // ===== 文档创建/复制/删除 =====
@@ -1004,10 +1012,15 @@ async function handler(req, res) {
         .replace(/\n?<!--AI-INJECT-->[\s\S]*?<!--\/AI-INJECT-->\n?/g, '')
         .replace(/\n?<!--SHELL-INJECT-->[\s\S]*?<!--\/SHELL-INJECT-->\n?/g, '')
         .replace(/\n?<!--JOB-INJECT-->[\s\S]*?<!--\/JOB-INJECT-->\n?/g, '')
+        .replace(/\n?<!--ZONE-INJECT-->[\s\S]*?<!--\/ZONE-INJECT-->\n?/g, '')
         // 运行时面板样式（head 中，不在注释对里）也要剥离
         .replace(/<style[^>]*data-ai-panel[^>]*>[\s\S]*?<\/style>/g, '')
         .replace(/<style[^>]*data-ed-shell[^>]*>[\s\S]*?<\/style>/g, '')
         .replace(/<style[^>]*data-job-panel[^>]*>[\s\S]*?<\/style>/g, '')
+        // 区域面板运行时样式（data-zone-panel）与弹窗标记同款剥离，与注入对称
+        .replace(/<style[^>]*data-zone-panel[^>]*>[\s\S]*?<\/style>/g, '')
+        // 改绑弹窗挂 body 末尾（fixed 遮罩不受窄屏浮层祖先影响）；旧文档内联 doSave 预清理选择器无 data-zone-panel，服务端兜底剥整元素
+        .replace(/<div[^>]*class="zp-modal"[^>]*>[\s\S]*?<\/div>\s*<\/div>(?=\s*<\/body>)/g, '')
         // body class 归一化（S2-T5，设计 §6.2）：只删编辑器瞬态项，其余属性与内容原样保留。
         // ed-focus 是注入层加的聚焦态，旧文档 doSave 的内联清理选择器不认它 → 服务端兜底。
         // 幂等：无 class 的 <body> 原样返回；save(serve(D)) === D 的字节稳定性不受影响。

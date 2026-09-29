@@ -1987,7 +1987,7 @@ const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','
   '/job-panel.js','/job/changes','/job/create','/job/generate','/link','/mat/add','/mat/confirm','/mat/del','/mat/update',
   '/materials','/new','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings',
   '/snapshot/baseline','/snapshot/note','/snapshot/pdf','/snapshot/view','/snapshots','/stats','/tag','/version/create',
-  '/zones','/zones/init'].sort();
+  '/zones','/zones/init','/zone-panel.js'].sort();
 const got = [...new Set([...sm.matchAll(/url\.pathname === '([^']+)'/g)].map((m) => m[1]))].sort();
 const missing = ROUTES_FROZEN.filter((r) => !got.includes(r));
 const extra = got.filter((r) => !ROUTES_FROZEN.includes(r));
@@ -2100,7 +2100,8 @@ echo "── S2-B2: 编辑器与面板设计变量统一（三个注入文件字
 node --input-type=module << 'EOF'
 import fs from 'node:fs';
 const fail = (m) => { console.error('❌ ' + m); process.exit(1); };
-const FILES = { 'editor-shell.js': [/body\.ed-on\{--ed-/], 'ai-panel.js': [], 'job-panel.js': [] };
+// S3-T4 登记：zone-panel.js 入列（其 8 条 hsla 区域色带不走 hex 形态，HEX/COLD 扫描天然不命中，无需逐条排除）
+const FILES = { 'editor-shell.js': [/body\.ed-on\{--ed-/], 'ai-panel.js': [], 'job-panel.js': [], 'zone-panel.js': [] };
 const HEX = /#[0-9a-fA-F]{3,8}\b/;
 for (const [f, allow] of Object.entries(FILES)) {
   fs.readFileSync(f, 'utf8').split('\n').forEach((ln, i) => {
@@ -2182,4 +2183,22 @@ const noZid = freezeHtml('<p>x</p>', { typo: '' });
 assert(withZid.renderInputId === noZid.renderInputId, 'renderInputId 应忽略 data-zid');
 assert(withZid.html === '<p data-zid="z12345678">x</p>', '冻结 html 应逐字节保留 data-zid');
 console.log('✅ S3-D renderInputId 忽略 data-zid（冻结 html 不变）');
+EOF
+
+# —— S3-C：区域注入纪律（ZONE-INJECT 对称剥离 / data-zone-panel 双防线 / 着色不落盘）——
+echo "── S3-C: 区域注入纪律 ──"
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const srv = readFileSync('./server.mjs', 'utf8');
+const ext = readFileSync('./extract.mjs', 'utf8');
+const zp = readFileSync('./zone-panel.js', 'utf8');
+const assert = (c, m) => { if (!c) { console.error('❌ S3-C ' + m); process.exit(1); } };
+const stripCount = (x) => (x.match(/ZONE-INJECT/g) || []).length;
+assert(stripCount(srv) >= 3, '/edit 注入 + /save 剥离 + 常量定义对称引用 ZONE-INJECT');
+assert((srv.match(/data-zone-panel/g) || []).length >= 2, '/save 剥离 data-zone-panel 样式块（与注入对称）');
+assert(ext.includes('data-zone-panel'), 'extract CHROME_MARKERS 含 data-zone-panel（第二道防线）');
+assert(!/classList\.add\(['"]zone-/.test(zp), 'zone-panel 不给正文节点挂 zone class');
+assert(!zp.includes('!important'), 'zone-panel 无 !important');
+assert(zp.includes('CSS.highlights') && zp.includes('::highlight(zone-'), '着色走 CSS Custom Highlight API');
+console.log('✅ S3-C 区域注入纪律');
 EOF

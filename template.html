@@ -227,7 +227,7 @@
     if (saving) { queued = true; return false; }   // 保存中再次触发 → 排队
     var submittingRev = editRev;                    // 本次提交所代表的编辑修订
     var clone = document.documentElement.cloneNode(true);
-    clone.querySelectorAll('.page-line, .toast, .recovery-bar, [data-ai-panel], [data-ed-shell], [data-ed-inj], [data-job-panel]').forEach(function (el) { el.remove(); });
+    clone.querySelectorAll('.page-line, .toast, .recovery-bar, [data-ai-panel], [data-ed-shell], [data-ed-inj], [data-job-panel], .zp-modal').forEach(function (el) { el.remove(); });
     var cbody = clone.querySelector('body');
     if (cbody) { cbody.classList.remove('ed-on', 'ed-preview'); cbody.style.cssText = ''; }
     var csheet = clone.querySelector('.sheet');

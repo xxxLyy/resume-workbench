@@ -2486,6 +2486,39 @@ try {
     if (zids0 && zids0 === zids2) ok('S3A 未保存重开 zid 确定性一致'); else bad('S3A 未保存重开 zid 漂移', zids0.slice(0, 40) + ' vs ' + zids2.slice(0, 40));
     await ctx.close();
   }
+
+  // ===== S3 块 B：区域 Tab（列表 / 定位 / 着色不落盘 / 待绑定计数）=====
+  //     独立夹具 ed-fixture-zone（S3A 的 S3_DOC 是块内 const 且语义相反：A 要求全程不保存，B 要求保存落盘）。
+  {
+    const S3_DOC = 'ed-fixture-zone';
+    let tpl = assembleTemplate('classic');
+    tpl = tpl.replaceAll('{{NAME}}', () => '测试员').replaceAll('{{CONTACT}}', () => 'test@example.com')
+      .replaceAll('{{INTENT}}', () => '测试').replaceAll('{{SUMMARY}}', () => '摘要文本').replaceAll('{{SKILLS}}', () => '<p>技能一：内容</p>')
+      .replaceAll('{{WORK}}', () => '<div class="entry-head"><div class="entry-title">公司甲</div><div class="entry-role">工程师</div><div class="entry-date">2024</div></div>\n<ul><li>公司甲职责</li></ul>')
+      .replaceAll('{{PROJECTS}}', () => '<div class="entry-head"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024</div></div>\n<ul><li>项目A描述</li></ul>')
+      .replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => S3_DOC);
+    fs.writeFileSync(path.join(dataRoot, 'docs', S3_DOC + '.html'), tpl);
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await page.goto(`${base}/edit?id=${S3_DOC}`, { waitUntil: 'networkidle' });
+    await page.click('#ed-rtabs button[data-pane="zone"]');
+    // Tab 切换触发 ed-zone-refresh → load() 异步 fetch 落地后再断言（本地毫秒级，300ms 余量足够）
+    await page.waitForTimeout(300);
+    if (await page.$('#ed-pane-zone #zp-root')) ok('S3B 区域 Tab 渲染面板'); else bad('S3B 区域 Tab 渲染面板');
+    const listTxt = await page.evaluate(() => document.querySelector('#ed-pane-zone').textContent);
+    if (/(待绑定|绑定完成)/.test(listTxt) && /工作/.test(listTxt)) ok('S3B 区域列表含计数'); else bad('S3B 区域列表', listTxt.slice(0, 60));
+    // 着色开 → CSS.highlights 注册（-1 = 浏览器不支持，跳过不算失败）
+    await page.click('#zp-color');
+    const hl = await page.evaluate(() => (window.CSS && CSS.highlights) ? Array.from(CSS.highlights.keys()).filter((k) => k.indexOf('zone-') === 0).length : -1);
+    if (hl > 0) ok('S3B 着色注册 Highlight'); else if (hl === 0) bad('S3B 着色未注册');
+    // 保存后：落盘无 zone 痕迹（ZONE-INJECT / data-zone-panel / ::highlight 均剥离），zid 已固化
+    await page.click('#saveBtn');
+    await page.waitForTimeout(800);
+    const disk = fs.readFileSync(path.join(dataRoot, 'docs', S3_DOC + '.html'), 'utf8');
+    if (!disk.includes('data-zone-panel') && !disk.includes('ZONE-INJECT') && !disk.includes('::highlight')) ok('S3B 保存后落盘无 zone 痕迹'); else bad('S3B 落盘 zone 痕迹泄漏');
+    if (disk.includes('data-zid')) ok('S3B zid 随保存落盘'); else bad('S3B zid 未落盘');
+    await ctx.close();
+  }
 } finally {
   await browser.close();
 }

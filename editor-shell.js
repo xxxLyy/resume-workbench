@@ -108,7 +108,7 @@
     // 右栏
     + '#ed-right{grid-row:2/4;grid-column:3;background:var(--ed-panel);border-left:1px solid var(--ed-line);display:flex;flex-direction:column;min-width:0;overflow:hidden}'
     + '#ed-right.ed-hidden{display:none}'
-    + '#ed-rtabs{display:flex;gap:2px;border-bottom:1px solid var(--ed-line);padding:8px 8px 0;flex:none}'
+    + '#ed-rtabs{display:flex;gap:2px;border-bottom:1px solid var(--ed-line);padding:8px 8px 0;flex:none;overflow-x:auto}'
     + '#ed-rtabs button{flex:1;min-height:32px;padding:0 4px;border:none;background:transparent;font-size:12px;font-weight:600;color:var(--ed-mut);cursor:pointer;border-radius:7px 7px 0 0;box-shadow:inset 0 0 0 transparent}'
     + '#ed-rtabs button[aria-selected="true"]{color:var(--ed-accent);box-shadow:inset 0 -2px 0 var(--ed-accent)}'
     + '#ed-rtabs button:hover{background:var(--ed-bg)}'
@@ -999,6 +999,7 @@
     p.textContent = '点击编辑内容…';
     sec.appendChild(t); sec.appendChild(p);
     sheet.appendChild(sec);
+    __edEnsureZids();                                   // S3：程序化插入的段落补打点（T3 quality Note 1）
     notifyEdit(); renderNav(); observeTitles();
     sec.scrollIntoView({ block: 'start', behavior: 'smooth' });
   });
@@ -1285,6 +1286,7 @@
       node.textContent = text;
       secEl.appendChild(node);
     }
+    __edEnsureZids();                                   // S3：程序化插入的段落补打点（T3 quality Note 1）
     notifyEdit();
     node.scrollIntoView({ block: 'center', behavior: 'smooth' });
     flashEl(node);
@@ -1367,11 +1369,13 @@
   right.setAttribute('aria-label', '辅助面板');
   right.innerHTML = '<div id="ed-rtabs" role="tablist">'
     + (JOB_INFO.hasJob ? '<button type="button" role="tab" data-pane="review" aria-selected="true">审阅</button>' : '')
+    + '<button type="button" role="tab" data-pane="zone" aria-selected="false">区域</button>'
     + '<button type="button" role="tab" data-pane="ai" aria-selected="' + (JOB_INFO.hasJob ? 'false' : 'true') + '">AI 助手</button>'
     + '<button type="button" role="tab" data-pane="typo" aria-selected="false">排版</button>'
     + '<button type="button" role="tab" data-pane="match" aria-selected="false">岗位匹配</button>'
     + '</div>'
     + (JOB_INFO.hasJob ? '<div id="ed-pane-review" class="ed-pane on" role="tabpanel" aria-label="修改清单"></div>' : '')
+    + '<div id="ed-pane-zone" class="ed-pane" role="tabpanel" aria-label="区域分析"></div>'
     + '<div id="ed-pane-ai" class="ed-pane' + (JOB_INFO.hasJob ? '' : ' on') + '" role="tabpanel" aria-label="AI 助手"></div>'
     + '<div id="ed-pane-typo" class="ed-pane" role="tabpanel" aria-label="排版设置"></div>'
     + '<div id="ed-pane-match" class="ed-pane" role="tabpanel" aria-label="岗位匹配"></div>';
@@ -1399,6 +1403,7 @@
       p.classList.toggle('on', p.id === 'ed-pane-' + name);
     });
     if (name === 'review') window.dispatchEvent(new Event('ed-review-refresh'));
+    if (name === 'zone') window.dispatchEvent(new Event('ed-zone-refresh'));
     persistSoon();                       // S2-T6：活动面板属会话状态
   }
   // 供 ai-panel / 外部切换（jdfrom 桥等）

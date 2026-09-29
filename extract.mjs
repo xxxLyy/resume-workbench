@@ -14,7 +14,8 @@ const CHROME_MARKERS = [
   /\bdata-ai-panel\b/, /\bdata-ed-shell\b/, /\bdata-ed-inj\b/,
   /\bdata-ed-shot\b/, /\bed-seltb\b/, /\bed-matpop\b/, /\bed-matmask\b/,
   /\bed-left\b/, /\bed-right\b/, /\bed-status\b/, /\bed-canvas-tools\b/,
-  /\bed-jobpop\b/, /\bed-jobmask\b/, /\bed-keys\b/, /\bed-find\b/, /\bed-focus\b/
+  /\bed-jobpop\b/, /\bed-jobmask\b/, /\bed-keys\b/, /\bed-find\b/, /\bed-focus\b/,
+  /\bdata-zone-panel\b/
 ];
 
 const HIDDEN_CLASS = /\b(?:ed-sec-hidden|ed-entry-hidden)\b/;
