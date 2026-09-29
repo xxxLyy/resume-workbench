@@ -145,7 +145,7 @@ export function sectionsOf(html) {
   return out;
 }
 
-function matchingClose(html, openStart, tag) {
+export function matchingClose(html, openStart, tag) {
   let depth = 0;
   let i = openStart;
   const n = html.length;

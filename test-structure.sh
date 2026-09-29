@@ -2116,3 +2116,42 @@ for (const f of Object.keys(FILES)) {
 }
 console.log('✅ S2-B2 编辑器与面板设计变量统一');
 EOF
+
+# —— S3-A：zid 纪律（打点单位 / 幂等 / 去重 / section-title 不打）——
+echo "── S3-A: zid 纪律 ──"
+node --input-type=module << 'EOF'
+import { normalizeZids, zidsOf, parasOf } from './zone.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ S3-A ' + m); process.exit(1); } };
+const doc = '<div class="sheet"><div class="contact">张三 test@x.com</div><section class="section"><div class="section-title">工作经历</div><p>段落一</p><ul><li>要点A</li></ul><h3>标题行</h3></section></div>';
+const a = normalizeZids(doc);
+assert(zidsOf(a).length === 4, 'p/li/h3/contact 四个打点单位');
+assert(!/section-title[^>]*data-zid/.test(a), 'section-title 不打点');
+const b = normalizeZids(a);
+assert(a === b, '归一幂等');
+const dup = '<p data-zid="z11111111">A</p><p data-zid="z11111111">B</p>';
+const dedup = normalizeZids(dup);
+const got = zidsOf(dedup);
+assert(got.length === 2 && got[0] === 'z11111111', '重复 zid 保首重打');
+assert(parasOf(dedup).every(p => p.text.length > 0), 'parasOf 出文本');
+console.log('✅ S3-A zid 纪律');
+EOF
+
+# —— S3-B：区域纯函数（启发式 / zoneSync / 8 类枚举）——
+echo "── S3-B: 区域纯函数 ──"
+node --input-type=module << 'EOF'
+import { guessZone, zoneSync, ZONE_KEYS, normalizeZids, parasOf } from './zone.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ S3-B ' + m); process.exit(1); } };
+assert(ZONE_KEYS.join(',') === 'personal,education,work,project,skill,award,summary,other', '8 类枚举');
+assert(guessZone('工作经历') === 'work' && guessZone('项目经历') === 'project', '章节映射');
+assert(guessZone('个人总结') === 'summary', '个人总结→summary（先于 personal 匹配）');
+assert(guessZone('个人信息') === 'personal' && guessZone('获奖荣誉') === 'award' && guessZone('乱七八糟') === 'other', '其余映射');
+const doc = '<div class="sheet"><section class="section"><div class="section-title">项目经历</div><p data-zid="za1111111">项目段落</p></section></div>';
+const m1 = zoneSync(doc, {});
+assert(m1.zones.za1111111.zone === 'project' && m1.zones.za1111111.status === 'pending', '新 zid 补 pending+启发式');
+const m2 = zoneSync(doc, m1);
+assert(m2.zones.za1111111.status === 'pending', '同步幂等');
+const m3 = zoneSync(doc, { zones: { za1111111: { zone: 'work', status: 'confirmed' }, zdead9999: { zone: 'work', status: 'confirmed' } } });
+assert(m3.zones.za1111111.zone === 'work' && m3.zones.za1111111.status === 'confirmed', '同步不改已有归属/状态');
+assert(!('zdead9999' in m3.zones), '正文不存在的 zid 清理');
+console.log('✅ S3-B 区域纯函数');
+EOF
