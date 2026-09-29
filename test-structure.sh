@@ -2133,6 +2133,15 @@ const dedup = normalizeZids(dup);
 const got = zidsOf(dedup);
 assert(got.length === 2 && got[0] === 'z11111111', '重复 zid 保首重打');
 assert(parasOf(dedup).every(p => p.text.length > 0), 'parasOf 出文本');
+const up = normalizeZids('<DIV class="x">a</DIV><DIV class="contact">b</DIV>');
+assert(!/class="x"[^>]*data-zid/.test(up), '大写 DIV 普通层不打点');
+assert(/class="contact"[^>]*data-zid/.test(up), '大写 DIV contact 照常打点');
+const bad = normalizeZids('<p data-zid="bad">x</p>');
+assert(!/data-zid="bad"/.test(bad) && (bad.match(/data-zid="/g) || []).length === 1, '坏 zid 值按缺失重打（不双属性）');
+const nest = '<ul><li data-zid="zb2222222">parent<ul><li data-zid="zc3333333">child</li></ul></li></ul>';
+const ps = parasOf(nest);
+assert(ps.length === 1 && ps[0].text.includes('parent') && ps[0].text.includes('child'), '嵌套单位外层吞内层（text 合并）');
+assert(zidsOf(nest).length === 2, '嵌套单位内外层 zid 都登记');
 console.log('✅ S3-A zid 纪律');
 EOF
 
@@ -2153,5 +2162,11 @@ assert(m2.zones.za1111111.status === 'pending', '同步幂等');
 const m3 = zoneSync(doc, { zones: { za1111111: { zone: 'work', status: 'confirmed' }, zdead9999: { zone: 'work', status: 'confirmed' } } });
 assert(m3.zones.za1111111.zone === 'work' && m3.zones.za1111111.status === 'confirmed', '同步不改已有归属/状态');
 assert(!('zdead9999' in m3.zones), '正文不存在的 zid 清理');
+const titleZid = '<div class="sheet"><section class="section"><div class="section-title" data-zid="zd4444444">工作经历</div><p data-zid="ze5555555">正文</p></section></div>';
+const mt = zoneSync(titleZid, {});
+assert(!('zd4444444' in mt.zones) && mt.zones.ze5555555.zone === 'work', 'section-title 手改 zid 不进 zones');
+const contactDoc = '<div class="sheet"><div class="contact" data-zid="zf6666666">张三</div><section class="section"><div class="section-title">技能</div><p data-zid="zg7777777">JS</p></section></div>';
+const mc = zoneSync(contactDoc, {});
+assert(mc.zones.zf6666666.zone === 'personal', 'sections 外（contact）→ personal');
 console.log('✅ S3-B 区域纯函数');
 EOF
