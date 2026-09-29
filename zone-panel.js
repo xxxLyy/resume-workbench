@@ -240,6 +240,7 @@
       setBusy(false);
       if (d._status === 409) { degrade('未配置大模型'); return; }
       if (!d.ok) { if (out) out.textContent = d.error || '分析失败，稍后再试'; return; }
+      if (state.aiZone !== zoneKey) return;   // 慢响应守卫：用户已切区域，旧意见不得写进新卡
       state.lastAnalysis = { zone: zoneKey, data: d };
       load();                          // 轮次自增后刷新行内计数（load 重绘保留 AI 区）
       showAnalysis(d);
@@ -254,6 +255,7 @@
       setBusy(false);
       if (d._status === 409) { degrade('未配置大模型'); if (prev) prev.textContent = ''; return; }
       if (!d.ok) { if (prev) prev.textContent = d.error || '改写失败，稍后再试'; return; }
+      if (state.aiZone !== zoneKey) return;   // 慢响应守卫：旧候选不渲染、不派发 ed-zone-preview
       renderPreview(d.rewrites || []);
     }).catch(function () { setBusy(false); if (prev) prev.textContent = '改写失败，稍后再试'; });
   }

@@ -2079,7 +2079,7 @@ async function handler(req, res) {
       const raw = await chat(root, p.sys, p.user);
       const parsed = parseZoneAnalysis(raw);
       if (parsed) {
-        updateMeta(root, id, (m) => { const b = { ...(m || {}) }; b.zoneRounds = { ...(b.zoneRounds || {}) }; b.zoneRounds[body.zone] = (b.zoneRounds ? (b.zoneRounds[body.zone] || 0) : 0) + 1; return b; });
+        updateMeta(root, id, (m) => { const b = { ...(m || {}) }; b.zoneRounds = { ...(b.zoneRounds || {}) }; b.zoneRounds[body.zone] = (b.zoneRounds[body.zone] || 0) + 1; return b; });
       }
       return sendJson(200, parsed ? { ok: true, ...parsed } : { ok: false, error: '分析失败，稍后再试' });
     }
