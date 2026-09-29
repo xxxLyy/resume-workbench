@@ -52,7 +52,9 @@
       method: body ? 'POST' : 'GET',
       headers: body ? { 'Content-Type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined
-    }).then(function (r) { return r.json(); });
+    }).then(function (r) {
+      return r.json().catch(function () { return { ok: false, error: 'HTTP ' + r.status }; }).then(function (d) { d._status = r.status; return d; });
+    });
   }
 
   var state = { zones: {}, zoneOrder: null, zoneRounds: {}, colorOn: false };
@@ -63,9 +65,10 @@
 
   function load() {
     return api('/job/changes?id=' + encodeURIComponent(DOC_ID)).then(function (d) {
-      state.zones = (d && d.zones) || {};
-      state.zoneOrder = d && d.zoneOrder;
-      state.zoneRounds = (d && d.zoneRounds) || {};   // T5 前服务端无此字段，兜底空
+      if (!d || !d.ok) return;                        // 错误响应保持上次渲染（防「待绑定 N」误显示为「绑定完成」）
+      state.zones = d.zones || {};
+      state.zoneOrder = d.zoneOrder;
+      state.zoneRounds = d.zoneRounds || {};          // T5 前服务端无此字段，兜底空
       render();
       paint();
     });
@@ -186,7 +189,7 @@
     var ne = { zone: zoneKey, status: confirmed ? 'confirmed' : 'pending' };
     if (typeof next[zid].locked === 'boolean') ne.locked = next[zid].locked;
     next[zid] = ne;
-    api('/zones?id=' + encodeURIComponent(DOC_ID), { zones: next }).then(load);
+    api('/zones?id=' + encodeURIComponent(DOC_ID), { zones: next }).then(load).catch(function () {});
   }
 
   load();

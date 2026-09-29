@@ -1019,8 +1019,9 @@ async function handler(req, res) {
         .replace(/<style[^>]*data-job-panel[^>]*>[\s\S]*?<\/style>/g, '')
         // 区域面板运行时样式（data-zone-panel）与弹窗标记同款剥离，与注入对称
         .replace(/<style[^>]*data-zone-panel[^>]*>[\s\S]*?<\/style>/g, '')
-        // 改绑弹窗挂 body 末尾（fixed 遮罩不受窄屏浮层祖先影响）；旧文档内联 doSave 预清理选择器无 data-zone-panel，服务端兜底剥整元素
-        .replace(/<div[^>]*class="zp-modal"[^>]*>[\s\S]*?<\/div>\s*<\/div>(?=\s*<\/body>)/g, '')
+        // 改绑弹窗挂 body 末尾（fixed 遮罩不受窄屏浮层祖先影响）；旧文档内联 doSave 预清理选择器无 data-zone-panel，服务端兜底剥整元素。
+        // 双锚 class+data-zone-panel：面板创建恒先 className 后 setAttribute（序列化顺序确定），与全链按运行时标记锚定的纪律一致，防误删用户手写同形状 div
+        .replace(/<div[^>]*class="zp-modal"[^>]*data-zone-panel[^>]*>[\s\S]*?<\/div>\s*<\/div>(?=\s*<\/body>)/g, '')
         // body class 归一化（S2-T5，设计 §6.2）：只删编辑器瞬态项，其余属性与内容原样保留。
         // ed-focus 是注入层加的聚焦态，旧文档 doSave 的内联清理选择器不认它 → 服务端兜底。
         // 幂等：无 class 的 <body> 原样返回；save(serve(D)) === D 的字节稳定性不受影响。

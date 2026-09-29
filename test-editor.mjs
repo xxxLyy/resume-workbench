@@ -2512,12 +2512,56 @@ try {
     const hl = await page.evaluate(() => (window.CSS && CSS.highlights) ? Array.from(CSS.highlights.keys()).filter((k) => k.indexOf('zone-') === 0).length : -1);
     if (hl > 0) ok('S3B 着色注册 Highlight'); else if (hl === 0) bad('S3B 着色未注册');
     // 保存后：落盘无 zone 痕迹（ZONE-INJECT / data-zone-panel / ::highlight 均剥离），zid 已固化
-    await page.click('#saveBtn');
-    await page.waitForTimeout(800);
+    const saveOnce = async () => {
+      await page.click('#saveBtn');
+      await page.waitForFunction(() => (document.getElementById('saveState') || {}).dataset?.state === 'saved', { timeout: 10000 });
+    };
+    await saveOnce();
     const disk = fs.readFileSync(path.join(dataRoot, 'docs', S3_DOC + '.html'), 'utf8');
     if (!disk.includes('data-zone-panel') && !disk.includes('ZONE-INJECT') && !disk.includes('::highlight')) ok('S3B 保存后落盘无 zone 痕迹'); else bad('S3B 落盘 zone 痕迹泄漏');
     if (disk.includes('data-zid')) ok('S3B zid 随保存落盘'); else bad('S3B zid 未落盘');
+    // 弹窗开着保存：mask 元素由服务端 zp-modal 兜底正则剥离（客户端 doSave 无 zone 相关选择器，正则是唯一通道）
+    await page.click('#zp-pend');
+    if (await page.$('.zp-modal')) {
+      await page.keyboard.press('Meta+s');            // 遮罩挡鼠标，⌘S 走键盘
+      await page.waitForFunction(() => (document.getElementById('saveState') || {}).dataset?.state === 'saved', { timeout: 10000 });
+      const disk2 = fs.readFileSync(path.join(dataRoot, 'docs', S3_DOC + '.html'), 'utf8');
+      if (!/class="zp-modal"/.test(disk2)) ok('S3B 弹窗开着保存落盘无 zp-modal'); else bad('S3B 落盘 zp-modal 残留');
+    } else bad('S3B 改绑弹窗未打开');
     await ctx.close();
+  }
+
+  // ===== S3 块 C：改绑整条回写契约（locked 不丢；复用 ed-fixture-zone：S3B 结束时 zones 全 pending 且已落盘 zid）=====
+  {
+    const S3_DOC = 'ed-fixture-zone';
+    const metaFile = path.join(dataRoot, 'docs-meta.json');
+    const readZones = () => (JSON.parse(fs.readFileSync(metaFile, 'utf8'))[S3_DOC] || {}).zones || {};
+    // 预置一条 locked（走产品通道 /zones，语义 = 用户确认过且锁定的段落）
+    const zones0 = readZones();
+    const zidLocked = Object.keys(zones0)[0];
+    const rest = Object.keys(zones0).slice(1).map((k) => zones0[k]);
+    if (!zidLocked || !rest.length) { bad('S3C 夹具 zones 不足', JSON.stringify(Object.keys(zones0))); }
+    else {
+      zones0[zidLocked] = { zone: zones0[zidLocked].zone, status: 'confirmed', locked: true };
+      const ctx = await browser.newContext();
+      const page = await ctx.newPage();
+      await page.goto(`${base}/edit?id=${S3_DOC}`, { waitUntil: 'networkidle' });
+      await page.evaluate((z) => fetch('/zones?id=ed-fixture-zone', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ zones: z })
+      }).then((r) => r.json()), zones0);
+      await page.reload({ waitUntil: 'networkidle' });
+      // 面板改绑另一段（待绑定队头 ≠ zidLocked）
+      await page.click('#ed-rtabs button[data-pane="zone"]');
+      await page.waitForTimeout(300);
+      await page.click('#zp-pend');
+      await page.click('.zp-modal .zp-sel');          // 选第一类（个人）
+      await page.waitForTimeout(500);
+      const zones1 = readZones();
+      const lockedKept = zones1[zidLocked] && zones1[zidLocked].locked === true && zones1[zidLocked].status === 'confirmed';
+      const otherRebound = Object.keys(zones1).some((k) => k !== zidLocked && zones1[k].status === 'confirmed');
+      if (lockedKept && otherRebound) ok('S3C 改绑整条回写保留 locked'); else bad('S3C locked 丢失或未改绑', JSON.stringify(zones1[zidLocked]));
+      await ctx.close();
+    }
   }
 } finally {
   await browser.close();
