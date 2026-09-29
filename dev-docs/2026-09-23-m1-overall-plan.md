@@ -73,6 +73,7 @@
   2. zid 计入内容哈希的口径代价：旧文档首次打点保存会使 reviewed 草稿一次性降级 draft（contentHash 变化触发既有"来源较旧"语义；可逆，重新导出即恢复）。S4a 前决定是否对齐口径。
   3. `/zones` 与 `/zones/init` 对不存在的 doc id 会创建孤儿 meta 条目（前端仅 `/edit` 场景调用，低风险）；建议 S4a 前补 docPath 存在性检查。
   4. 区域改写为纯文本替换，会拍平段内 inline 标记（已知限制，diff 预览可见、事实护栏仍生效）。
+  4a. 设计 §3.4「粘贴/克隆后 meta 侧继承原 zone」实现为启发式近似：新 zid 不在 meta，`zoneSync` 按所在章节启发式补 pending。同章节粘贴语义等价；跨章节粘贴落到启发式 zone（仍 pending 需确认），实际影响可忽略——终审裁决明确接受。
   5. 真实 `materials.json` 持久迁移待用户手动跑 `node migrate-meta.mjs`（读时视图兼容已生效：`loadMats()` 即时推导，未迁移不影响使用）；回滚快照 `backups/pre-s3-mats-<ts>/`。
   6. T8 遗留登记（不修，供后续）：escAttr 存量 `server.mjs:2537-2538` 同病；`matConfirmAll` 会把 outdated 刷成 confirmed（confirm 门控）；素材页 fetch 无错误分支；`migrate-meta.mjs` 头注释未提素材段；factGuard 中文数字盲区（S2 共享）；digest per 调优须联动 MARKERZZ canary 夹具；S3D 测试走回落臂未覆盖 detail 主臂（生产主臂经 T6 quality 探针补证）；instruction 服务端无长度上限；接受后定位/文案 UX 微瑕；手写 HTML 双 data-zid 极端形状（`zone.mjs:4` 已文档化包络）。
 - **上线遗留（T8）**：`:7766` 常驻服务需一次重启加载 S3 代码；可选：用户手动跑素材持久迁移（见偏差 5）。
