@@ -437,7 +437,7 @@ function listPage(showArchived = false) {
   // 陈旧计数按 staleInfo（渲染标识），mtime 不参与
   const staleCount = infos.filter((d) => staleInfo(meta[d.id] || {}, { renderInputId: d.renderInputId, pdfExists: fs.existsSync(pdfPath(d.id)) }).state === 'stale').length;
   const degradedCount = infos.filter((d) => d.degraded).length;
-  const pdfCount = infos.filter((d) => fs.existsSync(pdfPath(d.id))).length;
+  const pdfCount = infos.filter((d) => staleInfo(meta[d.id] || {}, { renderInputId: d.renderInputId, pdfExists: fs.existsSync(pdfPath(d.id)) }).state === 'fresh').length;
   const jobDocs = infos.filter((d) => meta[d.id] && (meta[d.id].parent || meta[d.id].job));
   const nowMs = Date.now();
   const upcoming = loadApps().filter((a) => {
@@ -453,7 +453,7 @@ function listPage(showArchived = false) {
     { p: 1, t: staleCount && `🔄 ${staleCount} 份 PDF 较旧，导出时重渲` },
     { p: 2, t: upcoming.length && `⏰ ${upcoming.length} 份逾期/近期面试提醒` },
     { p: 3, t: activeApps && `📋 ${activeApps} 份投递中` },
-    { p: 4, t: `📑 PDF ${pdfCount}/${docs.length} 同步` },
+    { p: 4, t: infos.length === 0 ? '' : pdfCount === infos.length ? '📑 PDF 全部同步' : `📑 PDF ${pdfCount}/${infos.length} 已同步` },
     { p: 5, t: cfg ? `🤖 AI：${escHtml(cfg.name || '')}` : '🤖 AI 未配置（岗位草稿仍可手动生成）' }
   ].filter((b) => b.t).sort((a, b) => a.p - b.p).map((b) => b.t);
   // 岗位状态徽章 = 全部派生（S1-T8）：已投递 ← applications.json（权威）；可投递 ← flow+冲突+stale 三条件；其余按 flow
