@@ -2487,7 +2487,7 @@ try {
     await ctx.close();
   }
 
-  // ===== S3 块 B：区域 Tab（列表 / 定位 / 着色不落盘 / 待绑定计数）=====
+  // ===== S3 块 B：区域 Tab（列表 / 定位 / 着色不落盘 / 待确认分类计数）=====
   //     独立夹具 ed-fixture-zone（S3A 的 S3_DOC 是块内 const 且语义相反：A 要求全程不保存，B 要求保存落盘）。
   {
     const S3_DOC = 'ed-fixture-zone';
@@ -2506,7 +2506,7 @@ try {
     await page.waitForTimeout(300);
     if (await page.$('#ed-pane-zone #zp-root')) ok('S3B 区域 Tab 渲染面板'); else bad('S3B 区域 Tab 渲染面板');
     const listTxt = await page.evaluate(() => document.querySelector('#ed-pane-zone').textContent);
-    if (/(待绑定|绑定完成)/.test(listTxt) && /工作/.test(listTxt)) ok('S3B 区域列表含计数'); else bad('S3B 区域列表', listTxt.slice(0, 60));
+    if (/(待确认分类|绑定完成)/.test(listTxt) && /工作/.test(listTxt)) ok('S3B 区域列表含计数'); else bad('S3B 区域列表', listTxt.slice(0, 60));
     // 着色开 → CSS.highlights 注册（-1 = 浏览器不支持，跳过不算失败）
     await page.click('#zp-color');
     const hl = await page.evaluate(() => (window.CSS && CSS.highlights) ? Array.from(CSS.highlights.keys()).filter((k) => k.indexOf('zone-') === 0).length : -1);
@@ -2528,6 +2528,90 @@ try {
       const disk2 = fs.readFileSync(path.join(dataRoot, 'docs', S3_DOC + '.html'), 'utf8');
       if (!/class="zp-modal"/.test(disk2)) ok('S3B 弹窗开着保存落盘无 zp-modal'); else bad('S3B 落盘 zp-modal 残留');
     } else bad('S3B 改绑弹窗未打开');
+    await ctx.close();
+  }
+
+  // ===== S4a-T2 块 F2：区域确认流（取消=纯关+焦点返回 / 跳过游标推进 / Esc / 结束不回绕 / 文案空态）=====
+  //     独立夹具 ed-fixture-f2（夹具纪律同 S3B：全新文档，避免与 S3 块的 zones 落盘状态互相污染）。
+  //     zones 经 /zones/init 全 pending；zones0 全 pending → Z1 用 head 段（工作经历 li 属 skill 类夹带段）。
+  {
+    const S3_DOC = 'ed-fixture-f2';
+    let tpl = assembleTemplate('classic');
+    tpl = tpl.replaceAll('{{NAME}}', () => '测试员').replaceAll('{{CONTACT}}', () => 'test@example.com')
+      .replaceAll('{{INTENT}}', () => '测试').replaceAll('{{SUMMARY}}', () => '摘要文本').replaceAll('{{SKILLS}}', () => '<p>技能一：内容</p>')
+      .replaceAll('{{WORK}}', () => '<div class="entry-head"><div class="entry-title">公司甲</div><div class="entry-role">工程师</div><div class="entry-date">2024</div></div>\n<ul><li>公司甲职责一</li><li>公司甲职责二</li></ul>')
+      .replaceAll('{{PROJECTS}}', () => '<div class="entry-head"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024</div></div>\n<ul><li>项目A描述</li></ul>')
+      .replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => S3_DOC);
+    fs.writeFileSync(path.join(dataRoot, 'docs', S3_DOC + '.html'), tpl);
+    const zonesOf = () => (JSON.parse(fs.readFileSync(path.join(dataRoot, 'docs-meta.json'), 'utf8'))[S3_DOC] || {}).zones || {};
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await page.goto(`${base}/edit?id=${S3_DOC}`, { waitUntil: 'networkidle' });
+    await page.click('#ed-rtabs button[data-pane="zone"]');
+    await page.waitForTimeout(300);
+    // 文案与空态（D5）：「待确认分类 N 段」+ 不含「待绑定」+ 空 zone（获奖/教育/自评…模板未填）有「暂无内容」说明
+    const listTxt0 = await page.evaluate(() => document.querySelector('#ed-pane-zone').textContent);
+    if (/待确认分类 \d+ 段/.test(listTxt0) && !/待绑定/.test(listTxt0)) ok('F2 文案待确认分类'); else bad('F2 文案待确认分类', listTxt0.slice(0, 80));
+    if (/暂无内容/.test(listTxt0)) ok('F2 空 zone 空态说明'); else bad('F2 空 zone 空态说明', listTxt0.slice(0, 80));
+    // (a) 取消 = 纯关闭：不重开 + 焦点回 #zp-pend
+    await page.click('#zp-pend');
+    if (!(await page.$('.zp-modal'))) { bad('F2 弹窗未打开（夹具无 pending）'); }
+    else {
+      await page.click('.zp-card button.zp-cancel');
+      await page.waitForTimeout(150);
+      const closedAndNoReopen = await page.evaluate(() => !document.querySelector('.zp-modal'));
+      const focusBack = await page.evaluate(() => (document.activeElement || {}).id === 'zp-pend');
+      if (closedAndNoReopen) ok('F2 取消关闭且不重开'); else bad('F2 取消后弹窗重开（取消循环仍在）');
+      if (focusBack) ok('F2 取消后焦点返回触发按钮'); else bad('F2 焦点未返回 #zp-pend');
+      // (b) 跳过 = 游标推进：弹窗 data-zid 变化
+      await page.click('#zp-pend');
+      const zidA = await page.evaluate(() => { const c = document.querySelector('.zp-card'); return c ? c.getAttribute('data-zid') : null; });
+      if (zidA) {
+        await page.click('.zp-card .zp-skip');
+        await page.waitForTimeout(150);
+        const openAfterSkip = await page.evaluate(() => !!document.querySelector('.zp-modal'));
+        const zidB = await page.evaluate(() => { const c = document.querySelector('.zp-card'); return c ? c.getAttribute('data-zid') : null; });
+        if (openAfterSkip && zidB && zidB !== zidA) ok('F2 跳过推进到下一段'); else bad('F2 跳过未推进', 'zidA=' + zidA + ' zidB=' + zidB);
+        // (c) Esc 关闭
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(100);
+        const escClosed = await page.evaluate(() => !document.querySelector('.zp-modal'));
+        if (escClosed) ok('F2 Esc 关闭弹窗'); else bad('F2 Esc 未关闭');
+        // (f) 中途确认一条：队列重排后跳过仍顺移（不跳到已确认段）
+        await page.click('#zp-pend');
+        const confirmedZid = await page.evaluate(() => document.querySelector('.zp-card').getAttribute('data-zid'));
+        await page.click('.zp-modal .zp-sel');          // 选第一类（个人）→ bindOne confirmed
+        await page.waitForTimeout(500);
+        const afterConfirm = zonesOf();
+        if (afterConfirm[confirmedZid] && afterConfirm[confirmedZid].status === 'confirmed') { /* 前置成立 */ } else bad('F2 中途确认未落盘', JSON.stringify(afterConfirm[confirmedZid]));
+        await page.click('#zp-pend');
+        const zidC = await page.evaluate(() => { const c = document.querySelector('.zp-card'); return c ? c.getAttribute('data-zid') : null; });
+        await page.click('.zp-card .zp-skip');
+        await page.waitForTimeout(150);
+        const zidD = await page.evaluate(() => { const c = document.querySelector('.zp-card'); return c ? c.getAttribute('data-zid') : null; });
+        const notConfirmedAgain = zidD !== confirmedZid;
+        if (zidD && zidD !== zidC && notConfirmedAgain) ok('F2 确认后队列重排游标顺移'); else bad('F2 游标顺移异常', 'zidC=' + zidC + ' zidD=' + zidD);
+        // (d) 连续跳过至队尾：关闭 + 本轮已看完提示 + 不自动重开（游标从当前 zid 继续推进）
+        let guard = 0;
+        while ((await page.$('.zp-modal')) && guard < 40) { await page.click('.zp-card .zp-skip'); await page.waitForTimeout(120); guard++; }
+        const atEnd = await page.evaluate(() => ({
+          open: !!document.querySelector('.zp-modal'),
+          txt: document.querySelector('#ed-pane-zone').textContent
+        }));
+        if (!atEnd.open && /本轮已看完/.test(atEnd.txt)) ok('F2 队尾关闭且提示本轮已看完'); else bad('F2 队尾行为', atEnd.txt.slice(-80));
+        await page.waitForTimeout(400);
+        if (!(await page.$('.zp-modal'))) ok('F2 本轮结束不自动重开'); else bad('F2 队尾后自动重开');
+        // (e) 重新查看入口有效：头部按钮仍在（pending 未清零）→ 再开即从头
+        const pendBtn = await page.$('#zp-pend');
+        if (pendBtn) {
+          await page.click('#zp-pend');
+          const reopen = await page.evaluate(() => !!document.querySelector('.zp-modal'));
+          if (reopen) ok('F2 重新查看入口有效'); else bad('F2 重新查看未开弹窗');
+          await page.click('.zp-card button.zp-cancel');
+          await page.waitForTimeout(100);
+        } else bad('F2 缺重新查看入口（#zp-pend 不存在）');
+      }
+    }
     await ctx.close();
   }
 
@@ -2576,7 +2660,7 @@ try {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ zones: z })
       }).then((r) => r.json()), zones0);
       await page.reload({ waitUntil: 'networkidle' });
-      // 面板改绑另一段（待绑定队头 ≠ zidLocked）
+      // 面板改绑另一段（待确认分类队头 ≠ zidLocked）
       await page.click('#ed-rtabs button[data-pane="zone"]');
       await page.waitForTimeout(300);
       await page.click('#zp-pend');

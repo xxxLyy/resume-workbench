@@ -1,4 +1,4 @@
-// zone-panel.js — 区域 Tab：区域列表 / 定位 / 着色 / 改绑 / 待绑定队列 / 区域级 AI（分析意见 + 改写候选，T5）
+// zone-panel.js — 区域 Tab：区域列表 / 定位 / 着色 / 改绑 / 待确认分类队列 / 区域级 AI（分析意见 + 改写候选，T5）
 // 由 server /edit 对所有文档幂等注入（ZONE-INJECT 注释对），/save 时剥离，文档零污染（正文只落 data-zid）。
 // 由 server /edit 对所有文档幂等注入（ZONE-INJECT 注释对），/save 时剥离，文档零污染（正文只落 data-zid）。
 (function () {
@@ -33,6 +33,7 @@
     + '.zp-row .zp-n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
     + '.zp-c{font-size:10px;color:var(--ed-mut)}'
     + '.zp-c.warn{color:var(--ed-warn)}'
+    + '.zp-empty{font-size:11px;color:var(--ed-mut);padding:2px 2px 4px 16px}'
     + '.zp-modal{position:fixed;inset:0;background:rgba(60,45,25,.24);display:flex;align-items:center;justify-content:center;z-index:105}'
     + '.zp-modal .zp-card{background:var(--ed-panel);border:1px solid var(--ed-line);border-radius:14px;box-shadow:0 18px 50px rgba(60,45,25,.16);padding:16px;width:min(320px,92vw);display:flex;flex-direction:column;gap:8px;font-size:13px}'
     + '.zp-modal button.zp-sel[aria-pressed="true"]{background:var(--ed-accent);border-color:var(--ed-accent);color:var(--ed-accent-ink)}'
@@ -80,7 +81,7 @@
 
   function load() {
     return api('/job/changes?id=' + encodeURIComponent(DOC_ID)).then(function (d) {
-      if (!d || !d.ok) return;                        // 错误响应保持上次渲染（防「待绑定 N」误显示为「绑定完成」）
+      if (!d || !d.ok) return;                        // 错误响应保持上次渲染（防「待确认分类 N」误显示为「绑定完成」）
       state.zones = d.zones || {};
       state.zoneOrder = d.zoneOrder;
       state.zoneRounds = d.zoneRounds || {};          // T5 前服务端无此字段，兜底空
@@ -103,13 +104,15 @@
     var pend = Object.keys(state.zones).filter(function (zid) { return state.zones[zid].status === 'pending'; }).length;
     var order = state.zoneOrder && state.zoneOrder.length ? state.zoneOrder : ZONES.map(function (z) { return z[0]; });
     var html = '<div class="zp-head"><button type="button" id="zp-color" aria-pressed="' + (state.colorOn ? 'true' : 'false') + '">🎨 着色</button>'
-      + (pend ? '<button type="button" class="zp-c warn" id="zp-pend">待绑定 ' + pend + ' 个段落</button>' : '<span class="zp-c">绑定完成</span>') + '</div>';
+      + (pend ? '<button type="button" class="zp-c warn" id="zp-pend">待确认分类 ' + pend + ' 段</button>' : '<span class="zp-c">绑定完成</span>') + '</div>';
     order.forEach(function (k) {
       if (!ZONE_HUES[k]) return;
       var name = (ZONES.filter(function (z) { return z[0] === k; })[0] || ['', '?'])[1];
       html += '<div class="zp-row" data-zone="' + k + '"><span class="zp-dot" style="background:' + ZONE_HUES[k] + '"></span>'
         + '<span class="zp-n">' + name + (state.zoneRounds[k] ? ' · 轮次' + state.zoneRounds[k] : '') + '</span>'
-        + '<span class="zp-c">' + (c[k].ok ? '✓' + c[k].ok : '') + (c[k].pend ? ' ⚠' + c[k].pend : '') + '</span></div>';
+        + '<span class="zp-c">' + (c[k].ok ? '✓' + c[k].ok : '') + (c[k].pend ? ' ⚠' + c[k].pend : '') + '</span></div>'
+        // 空 zone 空态（D5）：无任何段落的区域行给一行说明（正文添加后自动进入待确认）
+        + (!c[k].ok && !c[k].pend ? '<div class="zp-empty">' + name + '区域暂无内容——正文添加相关段落后会自动进入待确认</div>' : '');
     });
     root.innerHTML = html;
     root.querySelector('#zp-color').addEventListener('click', toggleColor);
@@ -364,20 +367,39 @@
     });
   }
 
-  // 逐段确认：定位第一个 pending 段落 → 弹窗选 8 类（取消 = 跳过这段看下一段）→ POST /zones 整条回写 → 下一段
+  // 逐段确认：按 zid 游标取当前 pending 段 → 弹窗选 8 类（跳过 = 游标推进；取消 = 纯关闭）→ POST /zones 整条回写 → 下一段
+  // 游标语义（S4a-F2）：state.pendQueue = 当前全部 pending zid（含游标），state.pendCursor = 具体 zid；
+  // 每次打开弹窗按当前 pending 集合重排队列；游标 zid 已不在队列（被确认/删除）→ 顺移旧队列中的下一条；
+  // 无游标或其后无存活段 → 从队头重启（「待确认分类 N 段」按钮即重新查看入口）；越过队尾 → 本轮结束不回绕。
+  function rebuildPendQueue() {
+    var zids = Object.keys(state.zones).filter(function (k) { return state.zones[k].status === 'pending'; });
+    var cur = state.pendCursor, old = state.pendQueue;
+    if (cur && zids.indexOf(cur) >= 0) { state.pendQueue = zids; return; }   // 续轮：游标仍有效，原地续看
+    if (cur && old) {                                                        // 游标段被确认/删除 → 旧队列中其后第一条存活段
+      var i = old.indexOf(cur);
+      for (var j = i + 1; i >= 0 && j < old.length; j++) {
+        if (zids.indexOf(old[j]) >= 0) { state.pendCursor = old[j]; state.pendQueue = zids; return; }
+      }
+    }
+    state.pendCursor = zids[0] || null;                                      // 新一轮（或游标后无存活段）→ 从头
+    state.pendQueue = zids;
+  }
   function confirmNextPending() {
-    var zid = Object.keys(state.zones).filter(function (k) { return state.zones[k].status === 'pending'; })[0];
+    rebuildPendQueue();
+    var zid = state.pendCursor;
     if (!zid) return;
     var el = sheet.querySelector('[data-zid="' + zid + '"]');
     if (el) { el.scrollIntoView({ block: 'center' }); flash(el); }
     openPicker(zid, el ? (el.textContent || '').slice(0, 30) : '');
   }
   function openPicker(zid, preview) {
+    var opener = document.activeElement;                  // F2：记录实际触发元素，关闭后焦点返回
     var mask = document.createElement('div');
     mask.className = 'zp-modal';
     mask.setAttribute('data-zone-panel', '1');          // 运行时标记（extract 第二道防线同款）
     var card = document.createElement('div');
     card.className = 'zp-card';
+    card.setAttribute('data-zid', zid);
     var head = document.createElement('div');
     head.textContent = '段落：' + preview + '…';
     card.appendChild(head);
@@ -388,14 +410,51 @@
       b.addEventListener('click', function () { closePicker(); bindOne(zid, z[0], true); });
       card.appendChild(b);
     });
+    var skip = document.createElement('button');
+    skip.type = 'button'; skip.className = 'zp-skip'; skip.textContent = '跳过本段';
+    skip.addEventListener('click', function () {
+      var i = state.pendQueue.indexOf(zid);
+      var next = i >= 0 ? state.pendQueue[i + 1] || null : null;
+      if (next) {
+        state.pendCursor = next;
+        mask.remove();                    // 换段 = 旧弹窗直接退场（新弹窗 opener 指向已移除按钮，focus 空转无害）
+        var el = sheet.querySelector('[data-zid="' + next + '"]');
+        if (el) { el.scrollIntoView({ block: 'center' }); flash(el); }
+        openPicker(next, el ? (el.textContent || '').slice(0, 30) : '');
+      } else finishRound();
+    });
+    card.appendChild(skip);
     var cancel = document.createElement('button');
-    cancel.type = 'button'; cancel.textContent = '取消';
-    cancel.addEventListener('click', function () { closePicker(); confirmNextPending(); });   // 跳过这段看下一段
+    cancel.type = 'button'; cancel.className = 'zp-cancel'; cancel.textContent = '取消';
+    cancel.addEventListener('click', closePicker);        // F2：取消 = 纯关闭，不再重开下一段
     card.appendChild(cancel);
     mask.appendChild(card);
-    function closePicker() { mask.remove(); }
+    function closePicker() { mask.remove(); if (opener && opener.focus) opener.focus(); }
+    function finishRound() {
+      closePicker();
+      var remain = Object.keys(state.zones).filter(function (k) { return state.zones[k].status === 'pending'; }).length;
+      state.pendQueue = []; state.pendCursor = null;      // 本轮结束；重开 = 从头（#zp-pend 即重新查看入口）
+      var note = document.getElementById('zp-round-note');
+      if (note) note.remove();
+      note = document.createElement('div');
+      note.id = 'zp-round-note';
+      note.className = 'zp-empty';
+      note.textContent = '本轮已看完（' + remain + ' 段仍待确认分类）';
+      root.appendChild(note);
+    }
+    // Esc 同效取消；Tab 圈定在弹窗内（复用 editor-shell trapTab 模式，zone-panel 内简版）
+    mask.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { e.preventDefault(); closePicker(); return; }
+      if (e.key !== 'Tab') return;
+      var focusables = card.querySelectorAll('button');
+      if (!focusables.length) return;
+      var first = focusables[0], last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    });
     document.body.appendChild(mask);
     mask.addEventListener('click', function (e) { if (e.target === mask) closePicker(); });
+    cancel.focus();                                       // F2：初始聚焦取消按钮
   }
   function bindOne(zid, zoneKey, confirmed) {
     // 整条回写契约（T2 quality Note 3）：/zones 是整体替换，必须带上已有 locked 字段，漏传会静默丢锁
