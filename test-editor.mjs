@@ -2572,11 +2572,20 @@ try {
         const openAfterSkip = await page.evaluate(() => !!document.querySelector('.zp-modal'));
         const zidB = await page.evaluate(() => { const c = document.querySelector('.zp-card'); return c ? c.getAttribute('data-zid') : null; });
         if (openAfterSkip && zidB && zidB !== zidA) ok('F2 跳过推进到下一段'); else bad('F2 跳过未推进', 'zidA=' + zidA + ' zidB=' + zidB);
-        // (c) Esc 关闭
+        // (c) Esc 关闭 + 不连带关抽屉：右栏抽屉只在 <768px 真实存在（shell resize 处理器 ≥768 会剥 ed-open）
+        await page.setViewportSize({ width: 700, height: 800 });
+        await page.evaluate(() => { document.getElementById('ed-right').classList.add('ed-open'); });
+        await page.evaluate(() => document.querySelector('.zp-card .zp-cancel').focus());   // 保持焦点在弹窗内（真实路径 openPicker 已聚焦取消按钮）
         await page.keyboard.press('Escape');
         await page.waitForTimeout(100);
-        const escClosed = await page.evaluate(() => !document.querySelector('.zp-modal'));
-        if (escClosed) ok('F2 Esc 关闭弹窗'); else bad('F2 Esc 未关闭');
+        const escState = await page.evaluate(() => ({
+          modal: !!document.querySelector('.zp-modal'),
+          drawer: document.getElementById('ed-right').classList.contains('ed-open'),
+          ae: (document.activeElement || {}).className || (document.activeElement || {}).tagName
+        }));
+        if (!escState.modal && escState.drawer) ok('F2 Esc 关闭弹窗'); else bad('F2 Esc 未关闭', JSON.stringify(escState));
+        if (escState.drawer) ok('F2 Esc 不连带关窄屏抽屉'); else bad('F2 Esc 连带关了抽屉（stopImmediatePropagation 缺失）');
+        await page.setViewportSize({ width: 1280, height: 800 });  // 还原宽屏（resize 会清 ed-open）
         // (f) 中途确认一条：队列重排后跳过仍顺移（不跳到已确认段）
         await page.click('#zp-pend');
         const confirmedZid = await page.evaluate(() => document.querySelector('.zp-card').getAttribute('data-zid'));

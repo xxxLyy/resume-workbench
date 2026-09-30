@@ -444,7 +444,9 @@
     }
     // Esc 同效取消；Tab 圈定在弹窗内（复用 editor-shell trapTab 模式，zone-panel 内简版）
     mask.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') { e.preventDefault(); closePicker(); return; }
+      // stopImmediatePropagation（S2-T7 M6 先例）：同一次 Esc 只关本弹层，不冒泡触发 document 级
+      // 窄屏浮层监听（editor-shell 关 ed-open 抽屉）——窄屏下关 picker 不得连带关抽屉。
+      if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); closePicker(); return; }
       if (e.key !== 'Tab') return;
       var focusables = card.querySelectorAll('button');
       if (!focusables.length) return;
