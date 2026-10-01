@@ -434,10 +434,13 @@ function listPage(showArchived = false) {
   const activeApps = loadApps().filter((a) => !APP_TERMINAL.includes(a.status)).length;
   const { active, profiles } = loadProfiles(root);
   const cfg = profiles[active];
-  // 陈旧计数按 staleInfo（渲染标识），mtime 不参与
-  const staleCount = infos.filter((d) => staleInfo(meta[d.id] || {}, { renderInputId: d.renderInputId, pdfExists: fs.existsSync(pdfPath(d.id)) }).state === 'stale').length;
+  // 陈旧计数按 staleInfo（渲染标识），mtime 不参与；PDF 摘要单 chip 三态 = fresh/stale/none 计数
+  const siState = (d) => staleInfo(meta[d.id] || {}, { renderInputId: d.renderInputId, pdfExists: fs.existsSync(pdfPath(d.id)) }).state;
   const degradedCount = infos.filter((d) => d.degraded).length;
-  const pdfCount = infos.filter((d) => staleInfo(meta[d.id] || {}, { renderInputId: d.renderInputId, pdfExists: fs.existsSync(pdfPath(d.id)) }).state === 'fresh').length;
+  const pdfStates = infos.map(siState);
+  const pdfFresh = pdfStates.filter((s) => s === 'fresh').length;
+  const pdfStale = pdfStates.filter((s) => s === 'stale').length;
+  const pdfNone = pdfStates.length - pdfFresh - pdfStale;
   const jobDocs = infos.filter((d) => meta[d.id] && (meta[d.id].parent || meta[d.id].job));
   const nowMs = Date.now();
   const upcoming = loadApps().filter((a) => {
@@ -447,13 +450,19 @@ function listPage(showArchived = false) {
     const ivs = Array.isArray(a.interviews) ? a.interviews : [];
     return ivs.some((iv) => { const t = iv.time ? new Date(iv.time).getTime() : null; return t && t - nowMs < 48 * 3600 * 1000; });
   });
-  // 状态摘要：一行、按优先级排序（告警 > 时限 > 进行中 > 同步口径 > 配置）；PDF 口径单一
+  // 状态摘要：一行、按优先级排序（告警 > 时限 > 进行中 > 同步口径 > 配置）；PDF 单 chip 三态（§7.2，零项段省略）
+  const pdfChip = infos.length === 0 ? ''
+    : pdfFresh === infos.length ? '📑 PDF 全部同步'
+    : '📑 PDF ' + [
+      pdfFresh > 0 && `已同步 ${pdfFresh}`,
+      pdfStale > 0 && `较旧 ${pdfStale}`,
+      pdfNone > 0 && `未生成 ${pdfNone}`
+    ].filter(Boolean).join(' · ');
   const todoBits = [
     { p: 1, t: degradedCount && `⚠️ ${degradedCount} 份待结构化` },
-    { p: 1, t: staleCount && `🔄 ${staleCount} 份 PDF 较旧，导出时重渲` },
     { p: 2, t: upcoming.length && `⏰ ${upcoming.length} 份逾期/近期面试提醒` },
     { p: 3, t: activeApps && `📋 ${activeApps} 份投递中` },
-    { p: 4, t: infos.length === 0 ? '' : pdfCount === infos.length ? '📑 PDF 全部同步' : `📑 PDF ${pdfCount}/${infos.length} 已同步` },
+    { p: 4, t: pdfChip },
     { p: 5, t: cfg ? `🤖 AI：${escHtml(cfg.name || '')}` : '🤖 AI 未配置（岗位草稿仍可手动生成）' }
   ].filter((b) => b.t).sort((a, b) => a.p - b.p).map((b) => b.t);
   // 岗位状态徽章 = 全部派生（S1-T8）：已投递 ← applications.json（权威）；可投递 ← flow+冲突+stale 三条件；其余按 flow

@@ -159,26 +159,27 @@ echo "$HOME_HTML" | grep -qF '<svg' || fail '插画未内联为 SVG（禁止外�
 if printf '%s' "$HOME_HTML" | grep -qE 'https?://[^"'"'"']*\.(png|jpg|jpeg|svg)'; then fail '首页出现外链图片'; fi
 echo '✅ S2-T3 首页结构（hero/折叠岗位表单/一行状态摘要/继续上次任务）'
 
-# S4a-T1 F1: 首页 PDF 状态口径（分子=fresh 数与卡片同判断、分母=infos 同集合、空列表不显示 chip）
+# S4a-T1b F1: 首页 PDF 单摘要 chip 三态（已同步/较旧/未生成，零项省略）；空列表隐藏 chip；独立「份 PDF 较旧」行撤除
 # 夹具 = 当前唯一文档 DOCID，走 未生成→最新→较旧→归档筛选→空列表 全周期；结尾还原内容与归档态。
 HOME_HTML=$(curl -s "$B/")
-echo "$HOME_HTML" | grep -qF '📑 PDF 0/1 已同步' || fail "F1 未生成口径（fresh 应为 0）: $(echo "$HOME_HTML" | grep -oE '📑 PDF[^<]*' | head -1)"
+echo "$HOME_HTML" | grep -qF '📑 PDF 未生成 1' || fail "F1 未生成口径: $(printf '%s' "$HOME_HTML" | grep -oE '📑 PDF[^<]*' | head -1)"
 echo "$HOME_HTML" | grep -qF 'PDF 全部同步' && fail 'F1 存在未生成文档却显示「全部同步」'
 curl -s -X POST "$B/render?id=$DOCID" | grep -q '"ok":true' || fail 'F1 渲染夹具失败'
 HOME_HTML=$(curl -s "$B/")
 echo "$HOME_HTML" | grep -qF '📑 PDF 全部同步' || fail "F1 全同步应显示「全部同步」: $(echo "$HOME_HTML" | grep -oE '📑 PDF[^<]*' | head -1)"
-echo "$HOME_HTML" | grep -qF '📑 PDF 1/1 已同步' && fail 'F1 全同步不应再显示分数 chip'
-# 较旧：保存新内容但不渲染 → fresh 回 0，p:1 较旧行出现
+# 较旧：保存新内容但不渲染 → 单 chip 含「较旧 1」段，独立较旧行不再出现
 curl -s -X POST "$B/save?id=$DOCID" --data-binary "$(sed 's/点击开始编辑…/F1-STALE-MARKER/' "$RESUME_ROOT/docs/$DOCID.html")" | grep -q '"ok":true' || fail 'F1 较旧夹具保存失败'
-HOME_HTML=$(curl -s "$B/")
-echo "$HOME_HTML" | grep -qF '📑 PDF 0/1 已同步' || fail "F1 较旧口径（fresh 应回 0）: $(echo "$HOME_HTML" | grep -oE '📑 PDF[^<]*' | head -1)"
-echo "$HOME_HTML" | grep -qF '1 份 PDF 较旧' || fail 'F1 摘要缺「X 份 PDF 较旧」行'
+HOME_HTML=$(curl -s "$B")
+CHIP=$(printf '%s' "$HOME_HTML" | grep -oE '📑 PDF[^<]*' | head -1)
+[ "$CHIP" = '📑 PDF 较旧 1' ] || fail "F1 较旧口径（零项省略后应恰为「较旧 1」）: $CHIP"
+printf '%s' "$HOME_HTML" | grep -qF '份 PDF 较旧，导出时重渲' && fail 'F1 独立较旧行应已撤除'
 # 归档筛选 + 空列表：归档唯一文档后默认视图为空 → chip 不显示；?archived=1 → 分母含归档文档
 curl -s -X POST "$B/archive" -H 'Content-Type: application/json' -d "{\"id\":\"$DOCID\",\"archived\":true}" | grep -q '"ok":true' || fail 'F1 归档夹具失败'
 HOME_HTML=$(curl -s "$B/")
-if echo "$HOME_HTML" | grep -qF '📑 PDF'; then fail 'F1 空列表不应显示 PDF chip（不得出现 0/0）'; fi
+if echo "$HOME_HTML" | grep -qF '📑 PDF'; then fail 'F1 空列表不应显示 PDF chip'; fi
 ARCH_HTML=$(curl -s "$B/?archived=1")
-echo "$ARCH_HTML" | grep -qF '📑 PDF 0/1 已同步' || fail "F1 归档筛选分母应含归档文档: $(echo "$ARCH_HTML" | grep -oE '📑 PDF[^<]*' | head -1)"
+ARCH_CHIP=$(printf '%s' "$ARCH_HTML" | grep -oE '📑 PDF[^<]*' | head -1)
+[ "$ARCH_CHIP" = '📑 PDF 较旧 1' ] || fail "F1 归档筛选分母应含归档文档: $ARCH_CHIP"
 # 还原夹具：取消归档 + 内容还原（还原后 renderInputId 与渲染基线一致 → fresh，与卡片徽章口径自洽）
 curl -s -X POST "$B/archive" -H 'Content-Type: application/json' -d "{\"id\":\"$DOCID\",\"archived\":false}" -o /dev/null
 curl -s -X POST "$B/save?id=$DOCID" --data-binary "$(sed 's/F1-STALE-MARKER/点击开始编辑…/' "$RESUME_ROOT/docs/$DOCID.html")" | grep -q '"ok":true' || fail 'F1 夹具内容还原失败'
