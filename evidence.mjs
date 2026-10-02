@@ -117,14 +117,15 @@ export function candidatesState(change, ctx = {}) {
     if (typeof c.baseSnapshot === 'string' && cur && cur.text !== normText(c.baseSnapshot)) hits.add('needs-compare');
     if (refBad && refIds.length) hits.add('needs-compare');
   }
-  // hand-edited：accepted 后手改。add 的落点是新段落（newZid），容器文本与本候选无关——用 newZid 查
-  const accCur = (c.acceptedAt && c.kind === 'add' && c.newZid)
+  // add 的落点是新段落（newZid），容器文本与本候选无关——hand-edited / resolvedText 都按 tracked 比较
+  const tracked = (c.kind === 'add' && c.newZid)
     ? (ctx.paras || []).find((p) => p && p.zid === c.newZid)
     : cur;
-  if (c.acceptedAt && accCur && typeof c.appliedText === 'string' && accCur.text !== normText(c.appliedText)) hits.add('hand-edited');
+  // hand-edited：accepted 后手改。resolve 后由 resolvedText 分支接管检测（设计 §4.2 状态机：resolve → []，再变才回待核对）
+  if (c.acceptedAt && !c.resolvedAt && tracked && typeof c.appliedText === 'string' && tracked.text !== normText(c.appliedText)) hits.add('hand-edited');
   // 「保留当前版本」（v1.4）：resolvedText/resolvedRefs 绑定确认时内容，之后再变 → 重新进待核对（resolvedAt 保留）
   if (c.resolvedAt) {
-    if (typeof c.resolvedText === 'string' && cur && cur.text !== normText(c.resolvedText)) hits.add('needs-compare');
+    if (typeof c.resolvedText === 'string' && tracked && tracked.text !== normText(c.resolvedText)) hits.add('needs-compare');
     if (c.resolvedRefs && typeof c.resolvedRefs === 'object') {
       for (const [rid, hash] of Object.entries(c.resolvedRefs)) {
         const ref = evMap.get(rid);

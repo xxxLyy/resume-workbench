@@ -2499,6 +2499,20 @@ const nlAcc = applyOps([ { operationId: 'fx-nl-a', changeId: 'fx-nl1', action: '
 assert(nlAcc.ok === true, '修复轮：含原始换行的 origText 接受通过（归一比较）');
 const nlRev = applyOps([ { operationId: 'fx-nl-r', changeId: 'fx-nl1', action: 'revert', origText: '第一行\n第二行' } ], nlAcc.job, '<p data-zid="za1111111">第一行\n第二行</p>');
 assert(nlRev.ok === true && nlRev.job.changes[0].status === 'pending', '修复轮：含换行 origText 撤回通过（与 candidatesState 同口径）');
+// —— 修复轮2：resolve 清 hand-edited + resolved add 的 resolvedText 锚点（tracked=newZid）——
+// A. accepted replace → 手改命中 hand-edited → resolve（绑定当前文本）→ []（再变才经 resolvedText 分支回待核对）
+const rvAcc = { ...baseChange, status: 'accepted', acceptedAt: '2026-10-02T00:00:00Z', origText: '负责交易系统，P99 800ms', appliedText: '负责交易系统重构，P99 800ms' };
+assert(candidatesState(rvAcc, mkCtx({ paras: parasOf('<p data-zid="za1111111">被手改的当前文本</p>') })).includes('hand-edited'), '修复轮2 前置：手改先命中 hand-edited');
+const rvResolved = transitionOp(rvAcc, 'resolve', { now: '2026-10-02T01:00:00Z', text: '被手改的当前文本', refs: {} });
+assert(JSON.stringify(candidatesState(rvResolved, mkCtx({ paras: parasOf('<p data-zid="za1111111">被手改的当前文本</p>') }))) === '[]', '修复轮2：resolve 后 hand-edited 清空（[]）');
+assert(candidatesState(rvResolved, mkCtx({ paras: parasOf('<p data-zid="za1111111">又改了一次</p>') })).includes('needs-compare'), '修复轮2 阴性对照：resolve 后再变 → resolvedText 分支命中回待核对');
+// B. resolved add：resolvedText 绑新段文本，比较按 newZid（非容器）→ []
+const rvAddAcc = hsAcc.job.changes.find((x) => x.id === 'fx-a1');   // accepted add（newZid=z9f000001，appliedText=新增要点行）
+const rvAddResolved = transitionOp(rvAddAcc, 'resolve', { now: '2026-10-02T01:00:00Z', text: '新增要点行', refs: {} });
+assert(JSON.stringify(candidatesState(rvAddResolved, mkCtx({ paras: parasOf(accHtml) }))) === '[]', '修复轮2：resolved add 后 []（resolvedText 按 newZid 比较）');
+assert(candidatesState(rvAddResolved, mkCtx({ paras: parasOf(accHtml.replace('新增要点行', '新段被改')) })).includes('needs-compare'), '修复轮2 阴性对照：resolved add 新段再变 → 回待核对');
+const ecFix2 = exportChecks({ changes: [rvResolved, rvAddResolved], evidence: [] }, {});
+assert(ecFix2.reviewComplete === true, '修复轮2：resolve 路径不再卡整体完成');
 
 // —— buildJobPrompt：facts 进素材块 / brief 三档 / JD 边界声明 ——
 const p = buildJobPrompt({ docText: '正文', jd: 'JD 内容', company: '测试公司', role: '后端', materials: mats.filter((m) => m.factStatus === 'confirmed') });
