@@ -17,6 +17,7 @@ mkdir -p "$RESUME_ROOT/docs" "$RESUME_ROOT/snapshots" "$RESUME_ROOT/pdfs"
 
 cleanup() {
   kill $SRV $LLM $JDSTUB 2>/dev/null || true
+  kill ${SRV2:-} ${SRV3:-} 2>/dev/null || true
   rm -rf "$TEST_DIR"
   rm -f /tmp/resume-test-stub.log /tmp/resume-test-llm-last.json
 }
@@ -638,6 +639,201 @@ node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
 curl -s -X POST "$B/mat/update" -H 'Content-Type: application/json' -d '{"id":"'"$MATID"'","facts":{"metrics":210,"hacker":"x"}}' | grep -q '"ok":true' || fail 'S3 mat/update facts 整替'
 node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const x=m.find(v=>v.title==="事实素材");const ks=Object.keys(x.facts);if(!x.facts||ks.length!==8||x.facts.metrics!=="210"||ks.includes("hacker")){console.error("❌ S3 facts 白名单 "+JSON.stringify(ks));process.exit(1)}' "$RESUME_ROOT/materials.json" || fail 'S3 facts 白名单整替落盘'
 pass "S3 mat/confirm 兼容映射与 facts 白名单"
+
+# ===== S4a-T3：v1.6 JSON 保存协议（四反例 + 三附加；设计 §4.2 复审批定顺序）=====
+# 夹具：独立岗位草稿 T3DOC + 三段已知正文 + 手工注入三条带 zid 的候选（t3-c1/c2/c3）。
+# JSON 体 = {requestId, baseRev, html, ops}；正文由客户端先行应用（html 已含改后段落），服务端对「当前磁盘正文」校验 origText。
+JOB2=$(curl -s -X POST "$B/job/create" -H 'Content-Type: application/json' -d "{\"from\":\"$DOCID\",\"company\":\"协议测试公司\",\"role\":\"后端\",\"jd\":\"S4a 保存协议验证\"}" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch{console.log('')}})")
+[ -n "$JOB2" ] && [ -f "$RESUME_ROOT/docs/$JOB2.html" ] || fail 'S4a 保存协议夹具岗位草稿创建'
+cat > "$TEST_DIR/t3-body.html" << 'EOF'
+<html><head><title>T3</title></head><body><div class="sheet">
+<section class="section"><div class="section-title">工作经历</div><p>T3段落甲：负责结算系统，日均百万单</p><p>T3段落乙：负责库存中台</p><p>T3段落丙：主导灰度发布平台</p></section>
+</div></body></html>
+EOF
+# 旧 HTML 路径回归（无 JSON CT 的保存现行为不变；后续四反例全部依赖这条基线落盘）
+curl -s -X POST "$B/save?id=$JOB2" --data-binary "@$TEST_DIR/t3-body.html" | grep -q '"ok":true' || fail 'S4a 旧 HTML 保存路径回归失败'
+T3REV=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]].rev||0)' "$RESUME_ROOT/docs-meta.json" "$JOB2")
+# 注入三条候选（zid 取自落盘正文的归一化打点；baseSnapshot = 段落当前文本）
+node -e '
+const fs = require("fs");
+const docId = process.argv[2];
+const h = fs.readFileSync(process.argv[3], "utf8");
+const zids = [...h.matchAll(/data-zid="(z[0-9a-f]{8})"/g)].map((m) => m[1]);
+if (zids.length < 3) { console.error("❌ S4a 夹具段落不足: " + zids.length); process.exit(1); }
+const f = process.argv[1];
+const meta = JSON.parse(fs.readFileSync(f, "utf8"));
+const T3D = `第一行：负责库存中台重构\n第二行："引用"与 \u0027单引号\u0027 🎉\n含分隔符 <!-- 开头与 --> 结尾及 </div> 字面量`;
+meta[docId].job.changes.push(
+  { id: "t3-c1", gen: 9, kind: "replace", zid: zids[0], section: "工作经历", before: "T3段落甲：负责结算系统，日均百万单", after: "T3段落甲：负责结算清算中台，日均百万单（定制）", reason: "对齐 JD", source: "母版", level: "normal", status: "pending", baseSnapshot: "T3段落甲：负责结算系统，日均百万单" },
+  { id: "t3-c2", gen: 9, kind: "replace", zid: zids[1], section: "工作经历", before: "T3段落乙：负责库存中台", after: T3D, reason: "中文长文本", source: "母版", level: "normal", status: "pending", baseSnapshot: "T3段落乙：负责库存中台" },
+  { id: "t3-c3", gen: 9, kind: "replace", zid: zids[2], section: "工作经历", before: "T3段落丙：主导灰度发布平台", after: "T3段落丙：主导灰度平台（精简）", reason: "精简", source: "母版", level: "normal", status: "pending", baseSnapshot: "T3段落丙：主导灰度发布平台" }
+);
+fs.writeFileSync(f, JSON.stringify(meta));
+fs.writeFileSync(process.argv[4], JSON.stringify(zids));
+' "$RESUME_ROOT/docs-meta.json" "$JOB2" "$RESUME_ROOT/docs/$JOB2.html" "$TEST_DIR/t3-zids.json" || fail 'S4a 夹具候选注入'
+T3ZA=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[0])' "$TEST_DIR/t3-zids.json")
+T3ZB=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[1])' "$TEST_DIR/t3-zids.json")
+T3ZC=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[2])' "$TEST_DIR/t3-zids.json")
+# 组装 JSON 保存体：按 zid 替换段落内容 → {requestId, baseRev, html, ops}（走 argv，不经环境/内插）
+t3_body() { # $1=输出文件 $2=requestId $3=baseRev $4=zid::新文本 $5=ops(JSON)；正文基线 = $TEST_DIR/t3-cur.html
+  node -e '
+  const fs = require("fs");
+  const [out, rid, baseRev, reps, ops, src] = process.argv.slice(1);
+  let h = fs.readFileSync(src, "utf8");
+  for (const pair of reps.split(";;")) {
+    if (!pair) continue;
+    const [zid, txt] = pair.split("::", 2);
+    h = h.replace(new RegExp(`(<p[^>]*data-zid="${zid}"[^>]*>)[\\s\\S]*?(</p>)`), (mm, a, b) => a + txt + b);
+  }
+  fs.writeFileSync(out, JSON.stringify({ requestId: rid, baseRev: Number(baseRev), html: h, ops: JSON.parse(ops) }));
+  ' "$1" "$2" "$3" "$4" "$5" "$TEST_DIR/t3-cur.html"
+}
+cp "$RESUME_ROOT/docs/$JOB2.html" "$TEST_DIR/t3-cur.html"
+
+# —— 反例 a：接受成功 → 撤回成功 → 旧接受重试（同 requestId 同内容）→ 只回执不重放 ——
+t3_body "$TEST_DIR/t3-acc.json" "t3-req-acc" "$T3REV" "$T3ZA::T3段落甲：负责结算清算中台，日均百万单（定制）" '[{"operationId":"t3-op-1","changeId":"t3-c1","action":"accept","origText":"T3段落甲：负责结算系统，日均百万单"}]'
+R=$(curl -s -X POST "$B/save?id=$JOB2" -H 'Content-Type: application/json' --data-binary "@$TEST_DIR/t3-acc.json")
+echo "$R" | grep -q '"ok":true' || fail "S4a 反例a 接受失败: $(echo "$R" | head -c 200)"
+echo "$R" | grep -q '"appliedOps":\["t3-op-1"\]' || fail 'S4a 反例a 回执缺 appliedOps'
+node -e '
+const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const c = m.job.changes.find((x) => x.id === "t3-c1");
+if (c.status !== "accepted" || c.origText !== "T3段落甲：负责结算系统，日均百万单" || c.appliedText !== "T3段落甲：负责结算清算中台，日均百万单（定制）" || !c.acceptedAt) { console.error("❌ S4a 接受快照: " + JSON.stringify(c)); process.exit(1); }
+' "$RESUME_ROOT/docs-meta.json" "$JOB2" || fail 'S4a 反例a 接受快照落账'
+cp "$RESUME_ROOT/docs/$JOB2.html" "$TEST_DIR/t3-cur.html"   # 撤回基于接受后的磁盘正文
+t3_body "$TEST_DIR/t3-rev.json" "t3-req-rev" "$((T3REV+1))" "$T3ZA::T3段落甲：负责结算系统，日均百万单" '[{"operationId":"t3-op-2","changeId":"t3-c1","action":"revert","origText":"T3段落甲：负责结算清算中台，日均百万单（定制）"}]'
+R=$(curl -s -X POST "$B/save?id=$JOB2" -H 'Content-Type: application/json' --data-binary "@$TEST_DIR/t3-rev.json")
+echo "$R" | grep -q '"ok":true' || fail "S4a 反例a 撤回失败: $(echo "$R" | head -c 200)"
+node -e '
+const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const c = m.job.changes.find((x) => x.id === "t3-c1");
+if (c.status !== "pending" || c.origText !== undefined || c.appliedText !== undefined || c.acceptedAt !== undefined) { console.error("❌ S4a 撤回清快照: " + JSON.stringify(c)); process.exit(1); }
+' "$RESUME_ROOT/docs-meta.json" "$JOB2" || fail 'S4a 反例a 撤回清快照回 pending'
+REV_AFTER_REVERT=$((T3REV+2))
+MTIME_BEFORE=$(node -e 'console.log(require("fs").statSync(process.argv[1]).mtimeMs)' "$RESUME_ROOT/docs/$JOB2.html")
+SNAPS_BEFORE=$(find "$RESUME_ROOT/snapshots/$JOB2" -maxdepth 1 -name '*.html' 2>/dev/null | wc -l | tr -d ' ')
+# 旧接受请求重试：同 requestId 同内容 → 只回执，零重写（正文/change/rev/mtime/快照数全部保持撤回后状态）
+R=$(curl -s -X POST "$B/save?id=$JOB2" -H 'Content-Type: application/json' --data-binary "@$TEST_DIR/t3-acc.json")
+echo "$R" | grep -q '"deduped":true' || fail "S4a 反例a 重试未走回执: $(echo "$R" | head -c 200)"
+echo "$R" | grep -q "\"rev\":$((T3REV+1))" || fail 'S4a 反例a 重试应返回旧回执的 rev'
+node -e '
+const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const c = m.job.changes.find((x) => x.id === "t3-c1");
+if (c.status !== "pending" || c.origText !== undefined || m.rev !== Number(process.argv[3])) { console.error("❌ S4a 反例a 重试重放了操作: status=" + c.status + " rev=" + m.rev); process.exit(1); }
+' "$RESUME_ROOT/docs-meta.json" "$JOB2" "$REV_AFTER_REVERT" || fail 'S4a 反例a 重试不得重放'
+MTIME_AFTER=$(node -e 'console.log(require("fs").statSync(process.argv[1]).mtimeMs)' "$RESUME_ROOT/docs/$JOB2.html")
+[ "$MTIME_AFTER" = "$MTIME_BEFORE" ] || fail 'S4a 反例a 重试改动了正文 mtime（零重写被破坏）'
+SNAPS_AFTER=$(find "$RESUME_ROOT/snapshots/$JOB2" -maxdepth 1 -name '*.html' 2>/dev/null | wc -l | tr -d ' ')
+[ "$SNAPS_AFTER" = "$SNAPS_BEFORE" ] || fail "S4a 反例a 重试改动了快照数（$SNAPS_BEFORE→$SNAPS_AFTER）"
+echo '✅ S4a 反例a：接受→撤回→旧接受重试只回执零重写（正文/状态/rev/mtime/快照数全不变）'
+
+# —— 反例 b：同 requestId 不同内容 → 400 ——
+node -e 'const fs=require("fs");const b=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));b.html+=" ";fs.writeFileSync(process.argv[2],JSON.stringify(b));' "$TEST_DIR/t3-acc.json" "$TEST_DIR/t3-acc-diff.json"
+CODE=$(curl -s -o "$TEST_DIR/t3-b-resp.json" -w '%{http_code}' -X POST "$B/save?id=$JOB2" -H 'Content-Type: application/json' --data-binary "@$TEST_DIR/t3-acc-diff.json")
+[ "$CODE" = "400" ] || fail "S4a 反例b 同 ID 不同内容应 400 得 $CODE"
+grep -q '不同' "$TEST_DIR/t3-b-resp.json" || fail 'S4a 反例b 错误信息应指明内容不同'
+echo '✅ S4a 反例b：重复 requestId 不同内容 → 400'
+
+# —— 反例 c：baseRev 未来值 → 409（与落后区分）——
+CODE=$(curl -s -o "$TEST_DIR/t3-c-resp.json" -w '%{http_code}' -X POST "$B/save?id=$JOB2" -H 'Content-Type: application/json' -d "{\"requestId\":\"t3-req-fut\",\"baseRev\":$((REV_AFTER_REVERT+5)),\"html\":\"<html><body>x</body></html>\",\"ops\":[]}")
+[ "$CODE" = "409" ] || fail "S4a 反例c 未来 baseRev 应 409 得 $CODE"
+grep -q '未来' "$TEST_DIR/t3-c-resp.json" || fail "S4a 反例c 错误信息应区分未来: $(cat "$TEST_DIR/t3-c-resp.json")"
+CODE=$(curl -s -o "$TEST_DIR/t3-c2-resp.json" -w '%{http_code}' -X POST "$B/save?id=$JOB2" -H 'Content-Type: application/json' -d "{\"requestId\":\"t3-req-old\",\"baseRev\":$((REV_AFTER_REVERT-1)),\"html\":\"<html><body>x</body></html>\",\"ops\":[]}")
+[ "$CODE" = "409" ] || fail "S4a 反例c 落后 baseRev 应 409 得 $CODE"
+grep -q '落后' "$TEST_DIR/t3-c2-resp.json" || fail "S4a 反例c 错误信息应区分落后: $(cat "$TEST_DIR/t3-c2-resp.json")"
+echo '✅ S4a 反例c：baseRev 严格相等（未来与落后 409 且信息区分）'
+
+# —— 附加 e：坏操作整份拒绝（400 + 正文未保存 + 指明坏 op）——
+T3DISK_MD5=$(md5 -q "$RESUME_ROOT/docs/$JOB2.html")
+T3DISK_REV=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]].rev)' "$RESUME_ROOT/docs-meta.json" "$JOB2")
+T3ZB_AFTER=$(node -e 'console.log(JSON.stringify(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]].job.changes.find(c=>c.id==="t3-c2").after))' "$RESUME_ROOT/docs-meta.json" "$JOB2")
+cp "$RESUME_ROOT/docs/$JOB2.html" "$TEST_DIR/t3-cur.html"
+# 多段落替换的 JSON 体组装（反例 d 与附加 e 共用形状；差别只在 ops）
+t3_multi_body() { # $1=输出文件 $2=requestId $3=baseRev $4=ops(JSON)；正文 = t3-cur.html 三段替换（甲回原文、乙=T3ZB_AFTER、丙=精简版）
+  node -e '
+  const fs = require("fs");
+  const [out, rid, baseRev, ops, za, zb, zc, afterB, src] = process.argv.slice(1);
+  let h = fs.readFileSync(src, "utf8");
+  for (const [zid, txt] of [[za, "T3段落甲：负责结算系统，日均百万单"], [zb, JSON.parse(afterB)], [zc, "T3段落丙：主导灰度平台（精简）"]])
+    h = h.replace(new RegExp(`(<p[^>]*data-zid="${zid}"[^>]*>)[\\s\\S]*?(</p>)`), (mm, a, b) => a + txt + b);
+  fs.writeFileSync(out, JSON.stringify({ requestId: rid, baseRev: Number(baseRev), html: h, ops: JSON.parse(ops) }));
+  ' "$1" "$2" "$3" "$4" "$T3ZA" "$T3ZB" "$T3ZC" "$T3ZB_AFTER" "$TEST_DIR/t3-cur.html"
+}
+t3_multi_body "$TEST_DIR/t3-bad.json" "t3-req-badmulti" "$REV_AFTER_REVERT" '[{"operationId":"t3-op-b1","changeId":"t3-c2","action":"accept","origText":"T3段落乙：负责库存中台"},{"operationId":"t3-op-b2","changeId":"幽灵候选","action":"accept","origText":"x"}]'
+CODE=$(curl -s -o "$TEST_DIR/t3-e-resp.json" -w '%{http_code}' -X POST "$B/save?id=$JOB2" -H 'Content-Type: application/json' --data-binary "@$TEST_DIR/t3-bad.json")
+[ "$CODE" = "400" ] || fail "S4a 附加e 坏操作整份应 400 得 $CODE"
+grep -q '"badOp":"t3-op-b2"' "$TEST_DIR/t3-e-resp.json" || fail "S4a 附加e 应指明坏 op: $(cat "$TEST_DIR/t3-e-resp.json")"
+grep -q 'changeId 不存在' "$TEST_DIR/t3-e-resp.json" || fail 'S4a 附加e 应给出失败原因'
+[ "$(md5 -q "$RESUME_ROOT/docs/$JOB2.html")" = "$T3DISK_MD5" ] || fail 'S4a 附加e 坏操作保存仍写了正文'
+T3REV_NOW=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]].rev)' "$RESUME_ROOT/docs-meta.json" "$JOB2")
+[ "$T3REV_NOW" = "$T3DISK_REV" ] || fail "S4a 附加e 坏操作推进了 rev（$T3DISK_REV→$T3REV_NOW）"
+node -e '
+const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+if (m.job.changes.some((x) => x.id === "t3-c2" && x.status !== "pending")) { console.error("❌ S4a 附加e 整份拒绝仍应用了第一条"); process.exit(1); }
+' "$RESUME_ROOT/docs-meta.json" "$JOB2" || fail 'S4a 附加e 整份拒绝不得应用任何一条'
+echo '✅ S4a 附加e：坏操作整份拒绝（400 + 正文未保存 + rev 不动 + 指明坏 op）'
+
+# —— 反例 d：中文长文本（换行/引号/emoji）+ 含 <!-- 、--> 、</div> 字面量经 JSON 体安全往返 + 批量多 op ——
+t3_multi_body "$TEST_DIR/t3-multi.json" "t3-req-multi" "$REV_AFTER_REVERT" '[{"operationId":"t3-op-d1","changeId":"t3-c2","action":"accept","origText":"T3段落乙：负责库存中台"},{"operationId":"t3-op-d2","changeId":"t3-c3","action":"accept","origText":"T3段落丙：主导灰度发布平台"}]'
+R=$(curl -s -X POST "$B/save?id=$JOB2" -H 'Content-Type: application/json' --data-binary "@$TEST_DIR/t3-multi.json")
+echo "$R" | grep -q '"appliedOps":\["t3-op-d1","t3-op-d2"\]' || fail "S4a 反例d 批量多 op 失败: $(echo "$R" | head -c 240)"
+grep -qF '<!-- 开头与 --> 结尾及 </div> 字面量' "$RESUME_ROOT/docs/$JOB2.html" || fail 'S4a 反例d 分隔符字面量未落盘正文'
+grep -q '🎉' "$RESUME_ROOT/docs/$JOB2.html" || fail 'S4a 反例d emoji 未落盘'
+node -e '
+const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const c2 = m.job.changes.find((x) => x.id === "t3-c2");
+const c3 = m.job.changes.find((x) => x.id === "t3-c3");
+const expect = "第一行：负责库存中台重构\n第二行：\"引用\"与 \u0027单引号\u0027 🎉\n含分隔符 <!-- 开头与 --> 结尾及 </div> 字面量";
+if (c2.status !== "accepted" || c2.appliedText !== expect) { console.error("❌ S4a 反例d appliedText 往返失真: " + JSON.stringify(c2.appliedText)); process.exit(1); }
+if (!c3.acceptedAt) { console.error("❌ S4a 反例d 第二条未落账"); process.exit(1); }
+' "$RESUME_ROOT/docs-meta.json" "$JOB2" || fail 'S4a 反例d 长文本/emoji/分隔符经 JSON 体往返失真'
+echo '✅ S4a 反例d：中文长文本+HTML 分隔符字面量+emoji 经 JSON 体安全往返（单请求批量 2 op）'
+
+# —— /job/changes GET 新字段渐进默认（旧草稿无字段全功能可用）——
+curl -s "$B/job/changes?id=$JOB2" | node -e '
+let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => {
+  const j = JSON.parse(s).job;
+  const bad = (c, m) => { console.error("❌ S4a /job/changes 默认值 " + m); process.exit(1); };
+  if (!j.brief || j.brief.degree !== "refocus" || j.brief.pages !== 2 || !Array.isArray(j.brief.focus)) bad(0, "brief");
+  if (!Array.isArray(j.evidence) || j.evidenceGen !== 0) bad(0, "evidence/evidenceGen");
+  if (!j.genTasks || j.genTasks.evidence.status !== "idle" || j.genTasks.changes.taskId !== null) bad(0, "genTasks");
+  if (!j.saveReceipts || typeof j.saveReceipts.count !== "number" || j.saveReceipts.lastRequestId !== "t3-req-multi") bad(0, "saveReceipts 摘要: " + JSON.stringify(j.saveReceipts));
+  if (!j.reviewPos || j.reviewPos.changeId !== null || j.reviewPos.filter !== "all") bad(0, "reviewPos");
+});' || fail 'S4a /job/changes GET 新字段默认值'
+echo '✅ S4a /job/changes GET 新字段渐进默认（brief/evidence/genTasks/saveReceipts 摘要/reviewPos）'
+
+# —— 附加 f：事务失败共同恢复（RESUME_TEST_SAVE_GAP_MS 模拟两次 rename 之间被杀 → 重启恢复正文与 meta 一致）——
+# kill -9 只针对本测试自起的夹具服务（模拟进程崩溃，无 trap 可走）；主服务与真实数据不涉及。
+GAPDOC=$(curl -s -X POST "$B/new" -o /dev/null -w '%{redirect_url}' | sed 's/.*id=//')
+[ -n "$GAPDOC" ] && [ -f "$RESUME_ROOT/docs/$GAPDOC.html" ] || fail 'S4a 附加f 夹具文档创建'
+curl -s -X POST "$B/save?id=$GAPDOC" --data-binary "<html><body><p>GAP-BASE 基线</p></body></html>" | grep -q '"ok":true' || fail 'S4a 附加f 基线保存'
+GAPREV=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]].rev)' "$RESUME_ROOT/docs-meta.json" "$GAPDOC")
+PORT2=17902
+RESUME_TEST_SAVE_GAP_MS=2500 PORT=$PORT2 node server.mjs > "$TEST_DIR/s4a-srv2.log" 2>&1 & SRV2=$!
+sleep 0.6
+kill -0 $SRV2 2>/dev/null || fail 'S4a 附加f 夹具服务启动失败'
+node -e '
+const fs = require("fs");
+const h = fs.readFileSync(process.argv[2], "utf8").replace("GAP-BASE 基线", "GAP-MARKER 已写入新正文");
+fs.writeFileSync(process.argv[1], JSON.stringify({ requestId: "t3-req-gap", baseRev: Number(process.argv[3]), html: h, ops: [] }));
+' "$TEST_DIR/t3-gap.json" "$RESUME_ROOT/docs/$GAPDOC.html" "$GAPREV"
+curl -s --max-time 20 -X POST "http://localhost:$PORT2/save?id=$GAPDOC" -H 'Content-Type: application/json' --data-binary "@$TEST_DIR/t3-gap.json" > "$TEST_DIR/t3-gap-resp.json" 2>/dev/null &
+GAPCURL=$!
+sleep 0.9          # 停在 rename#1（正文已写）与 rename#2（meta 未写）之间
+kill -9 $SRV2 2>/dev/null
+wait $GAPCURL 2>/dev/null || true   # 被杀服务的响应必然失败（curl 非零）——这正是夹具要的形态
+grep -q '"ok":true' "$TEST_DIR/t3-gap-resp.json" && fail 'S4a 附加f 中断的保存不应有成功响应'
+grep -q 'GAP-MARKER' "$RESUME_ROOT/docs/$GAPDOC.html" || fail 'S4a 附加f 夹具未进入「正文已写、meta 未写」窗口（调整时序）'
+GAPREV_MID=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]].rev)' "$RESUME_ROOT/docs-meta.json" "$GAPDOC")
+[ "$GAPREV_MID" = "$GAPREV" ] || fail "S4a 附加f 中断点 meta rev 应未推进（$GAPREV→$GAPREV_MID）"
+PORT=$PORT2 node server.mjs > "$TEST_DIR/s4a-srv3.log" 2>&1 & SRV3=$!
+sleep 0.8
+grep -q 'GAP-MARKER' "$RESUME_ROOT/docs/$GAPDOC.html" && fail 'S4a 附加f 重启后未恢复旧正文'
+GAPREV_AFTER=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]].rev)' "$RESUME_ROOT/docs-meta.json" "$GAPDOC")
+[ "$GAPREV_AFTER" = "$GAPREV" ] || fail "S4a 附加f 恢复后 rev 应回到基线（$GAPREV→$GAPREV_AFTER）"
+TXLEFT=$(find "$RESUME_ROOT/.tx" -name '*.json' ! -name '*.meta.json' 2>/dev/null | wc -l | tr -d ' ')
+[ "$TXLEFT" = "0" ] || fail "S4a 附加f 恢复后 .tx 应清空（剩 $TXLEFT 条）"
+echo '✅ S4a 附加f：保存中断后重启恢复（旧正文+旧 meta 一致、.tx 清空）'
 
 # ===== 16. 浏览器级保存语义（可选，需要本机 Chromium）=====
 if node test-editor.mjs "$B" "$DOCID" "$RESUME_ROOT"; then

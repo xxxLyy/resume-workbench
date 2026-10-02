@@ -4,7 +4,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { importPdfText } from './importer.mjs';
@@ -17,6 +17,7 @@ import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, 
 import { rotateLogIfNeeded } from './logrotate.mjs';
 import { freezeHtml, normalizeToCurrent, splitDoc, staleInfo } from './freeze.mjs';
 import { beginTx, commitTx, dropSupersededTx, recoverPending, withDocLock, updateMeta, rootLock, atomicWrite, LockHeld } from './tx.mjs';
+import { applyOps, reviewConsistency } from './evidence.mjs';
 import { assembleTemplate, themeRegistration } from './template.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -112,6 +113,27 @@ function flowOf(m) {
 const kindOf = (m) => ((m && (m.kind === 'job' || (!m.kind && m.job))) ? 'job' : 'master');
 // 兼容视图（旧词汇，仅供 API 响应展示）：reviewed→'deliverable'，其余→'draft'；投递历史由 deliveredRefs 派生，不再有存储的 'delivered'
 const legacyFlowStatus = (m) => (flowOf(m) === 'reviewed' ? 'deliverable' : 'draft');
+// ===== S4a-T3：meta.job 新字段渐进默认（计划约束 22——旧草稿无字段全功能可用，读取时补、不迁移）=====
+// genTasks 两类 AI 任务各自独立（设计 §4.1/§6）；baseHash 仅任务记录，不参与候选失效判定。
+const mkGenTask = () => ({ taskId: null, status: 'idle', startedAt: null, baseHash: null, error: null, scope: null });
+// /job/changes GET 兼容视图：新字段带默认值；saveReceipts 只回摘要（最近 requestId，完整回执表仅供服务端判重）。
+function jobView(m) {
+  if (!m || !m.job) return null;
+  const j = m.job;
+  const receipts = Array.isArray(j.saveReceipts) ? j.saveReceipts : [];
+  return {
+    ...j,
+    brief: j.brief || { focus: [], keepProjects: [], deemphasize: [], degree: 'refocus', pages: 2, preset: null },
+    evidence: Array.isArray(j.evidence) ? j.evidence : [],
+    evidenceGen: Number(j.evidenceGen) || 0,
+    genTasks: j.genTasks
+      ? { evidence: { ...mkGenTask(), ...(j.genTasks.evidence || {}) }, changes: { ...mkGenTask(), ...(j.genTasks.changes || {}) } }
+      : { evidence: mkGenTask(), changes: mkGenTask() },
+    saveReceipts: { count: receipts.length, lastRequestId: receipts.length ? receipts[receipts.length - 1].requestId : null },
+    reviewPos: j.reviewPos || { changeId: null, filter: 'all' },
+    status: legacyFlowStatus(m), flow: flowOf(m)
+  };
+}
 const exportsOf = (m) => (Array.isArray(m && m.exports) ? m.exports : []);
 const deliveredRefs = (docId) => loadApps().filter((a) => a && a.docId === docId);                     // 该文档全部投递引用（每条 = 一次投递）
 const usedByExport = (exportId) => loadApps().filter((a) => a && a.exportId && a.exportId === exportId); // 使用某导出的投递
@@ -658,6 +680,157 @@ function readMetaSnapshotAt(f) {
   return parsed;
 }
 
+// ===== /save 剥离归一链（HTML 路径与 JSON 协议共用，抽出保持两路径字节同口径）=====
+// 注释对剥离必须与 serve 注入对称（注入 `\nPAIR\n`、剥离归 ''）：save(serve(D)) === D 逐字节成立。
+// 若剥离归 '\n'，每次保存净增 3 个换行（S2-T2 块 6c 冻结件不变性断言实测抓到的漂移），绝不可回改。
+function stripInjections(html) {
+  return String(html)
+    .replace(/\n?<!--AI-INJECT-->[\s\S]*?<!--\/AI-INJECT-->\n?/g, '')
+    .replace(/\n?<!--SHELL-INJECT-->[\s\S]*?<!--\/SHELL-INJECT-->\n?/g, '')
+    .replace(/\n?<!--JOB-INJECT-->[\s\S]*?<!--\/JOB-INJECT-->\n?/g, '')
+    .replace(/\n?<!--ZONE-INJECT-->[\s\S]*?<!--\/ZONE-INJECT-->\n?/g, '')
+    // 运行时面板样式（head 中，不在注释对里）也要剥离
+    .replace(/<style[^>]*data-ai-panel[^>]*>[\s\S]*?<\/style>/g, '')
+    .replace(/<style[^>]*data-ed-shell[^>]*>[\s\S]*?<\/style>/g, '')
+    .replace(/<style[^>]*data-job-panel[^>]*>[\s\S]*?<\/style>/g, '')
+    // 区域面板运行时样式（data-zone-panel）与弹窗标记同款剥离，与注入对称
+    .replace(/<style[^>]*data-zone-panel[^>]*>[\s\S]*?<\/style>/g, '')
+    // 改绑弹窗挂 body 末尾（fixed 遮罩不受窄屏浮层祖先影响）；旧文档内联 doSave 预清理选择器无 data-zone-panel，服务端兜底剥整元素。
+    // 双锚 class+data-zone-panel：面板创建恒先 className 后 setAttribute（序列化顺序确定），与全链按运行时标记锚定的纪律一致，防误删用户手写同形状 div
+    .replace(/<div[^>]*class="zp-modal"[^>]*data-zone-panel[^>]*>[\s\S]*?<\/div>\s*<\/div>(?=\s*<\/body>)/g, '')
+    // body class 归一化（S2-T5，设计 §6.2）：只删编辑器瞬态项，其余属性与内容原样保留。
+    // ed-focus 是注入层加的聚焦态，旧文档 doSave 的内联清理选择器不认它 → 服务端兜底。
+    // 幂等：无 class 的 <body> 原样返回；save(serve(D)) === D 的字节稳定性不受影响。
+    .replace(/<body\b[^>]*>/g, (tag) => tag.replace(/\sclass="([^"]*)"/, (m, cls) => {
+      const keep = String(cls).trim().split(/\s+/).filter((c) => c && !EDITOR_ONLY_BODY_CLASS.has(c));
+      return keep.length ? ` class="${keep.join(' ')}"` : '';
+    }));
+}
+
+// ===== S4a-T3：JSON 保存协议（设计 §4.2 v1.6，复审批定顺序：全部校验通过前零写入）=====
+// ① 请求指纹 = 转换前原始请求体的规范化序列化 sha1（键序无关；重试方重发原文即同指纹；
+//    "转换"指 html 剥离归一——指纹绝不受其影响）→ ② saveReceipts 判重（同 requestId 同内容 → 只回执零重写；
+// 不同内容 → 400）→ ③ baseRev 严格相等（落后/未来均 409，错误信息区分两种情况；JSON 路径不携带 baseMtime）
+// → ④ ops 逐条校验（对服务器当前正文；任一失败整份 400，正文不保存）→ 四步全过才 ⑤ 旧版快照 + beginTx
+// 单事务：剥离归一 → 正文 atomicWrite → zoneSync → applyOps → rev+1 → saveReceipts 环形 ≤50 → commitTx。
+// 恢复顺序沿用既有（事务异常：旧正文 + 旧 meta 副本双恢复，机制不改）。旧 HTML 路径不经此函数，行为零改动。
+function canonicalJson(v) {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null';
+  if (Array.isArray(v)) return '[' + v.map(canonicalJson).join(',') + ']';
+  return '{' + Object.keys(v).sort().map((k) => JSON.stringify(k) + ':' + canonicalJson(v[k])).join(',') + '}';
+}
+
+async function saveJsonProtocol(req, id, url) {
+  const raw = await readBody(req);
+  let body;
+  try { body = JSON.parse(raw); } catch { return { status: 400, body: { ok: false, error: 'bad JSON body' } }; }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return { status: 400, body: { ok: false, error: '请求体必须是 {requestId, baseRev, html, ops} 对象' } };
+  if (typeof body.requestId !== 'string' || !body.requestId.trim() || body.requestId.length > 128)
+    return { status: 400, body: { ok: false, error: 'requestId 必填（非空字符串 ≤128 字符）' } };
+  if (typeof body.html !== 'string') return { status: 400, body: { ok: false, error: 'html 必填（整页字符串）' } };
+  if (!Array.isArray(body.ops)) body.ops = [];
+  if (typeof body.baseRev !== 'number' || !Number.isInteger(body.baseRev) || body.baseRev < 0)
+    return { status: 400, body: { ok: false, error: 'baseRev 必须是非负整数（客户端所见的 meta.rev）' } };
+  if (!fs.existsSync(docPath(id))) return { status: 404, body: { ok: false, error: 'doc not found' } };
+  const reqHash = createHash('sha1').update(canonicalJson(body)).digest('hex');
+  try { rootLock.acquire(root); }
+  catch (e) { if (e instanceof LockHeld) return { status: 503, body: { ok: false, error: '另一保存/迁移正在进行（.migrate.lock），请稍后重试' } }; throw e; }
+  let out;
+  try {
+    out = await withDocLock(root, id, async () => {
+      const oldMeta = loadMeta()[id] ?? null;
+      const job = (oldMeta && oldMeta.job) ? oldMeta.job : null;
+      // ② 判重先于 baseRev：同 ID 同内容 → 只返回已存回执，任何文件、版本、快照零重写（事务不写）；
+      //    接受成功→撤回成功→旧接受重试走这里：正文与状态保持撤回后版本（baseRev 已落后是双保险，非依赖）。
+      const receipts = (job && Array.isArray(job.saveReceipts)) ? job.saveReceipts : [];
+      const hit = receipts.find((r) => r && r.requestId === body.requestId);
+      if (hit) {
+        if (hit.contentHash === reqHash) return { status: 200, body: { ok: true, deduped: true, ...hit.receipt } };
+        return { status: 400, body: { ok: false, error: '重复 requestId 但请求内容不同：同 ID 必须重发完全相同的内容' } };
+      }
+      // ③ 严格基线（严格相等——落后或未来都 409）
+      const curRev = Number(oldMeta && oldMeta.rev) || 0;
+      if (body.baseRev !== curRev) {
+        return { status: 409, body: { ok: false, conflict: true, rev: curRev, error: body.baseRev < curRev
+          ? `baseRev 落后（请求 ${body.baseRev}，当前 ${curRev}）：正文已被其他保存更新，请载入最新版本后重试`
+          : `baseRev 来自未来（请求 ${body.baseRev}，当前 ${curRev}）：客户端版本状态异常，请刷新页面` } };
+      }
+      // ④ ops 全量校验（任一失败整份 400，正文不保存——快照与事务尚未开启）
+      const stripped = normalizeZids(stripInjections(body.html));
+      if (!stripped.trim()) return { status: 400, body: { ok: false, error: 'empty save rejected' } };
+      const oldHtml = fs.readFileSync(docPath(id), 'utf8');
+      if (body.ops.length && !job) return { status: 400, body: { ok: false, error: '该文档不是岗位草稿（无 changes 可操作）' } };
+      const pre = applyOps(body.ops, job, oldHtml);
+      if (!pre.ok) return { status: 400, body: { ok: false, badOp: pre.badOp, reason: pre.reason, error: '操作校验失败，整份拒绝（正文未保存）：' + pre.reason } };
+      // ⑤ 四步全过 → 旧版快照（既有手动快照）+ beginTx 写入
+      const autosave = !!url.searchParams.get('autosave');
+      const norm = normalizeToCurrent(stripped);
+      const newHtml = norm.html, newTypo = norm.typo;
+      const oldSnapTs = autosave ? '' : snapshot(id);
+      const txId = beginTx(root, id, 'save', oldSnapTs);
+      let receipt = null;
+      try {
+        atomicWrite(docPath(id), newHtml);              // rename #1：正文
+        const gapMs = Number(process.env.RESUME_TEST_SAVE_GAP_MS || 0);
+        if (gapMs > 0) await new Promise((r) => setTimeout(r, gapMs));   // 测试钩子：模拟两次 rename 之间被杀
+        const prevHash = contentHash(oldHtml), newHash = contentHash(newHtml);
+        updateMeta(root, id, (m) => {                   // rename #2：meta（读最新→只 patch 本文档→原子写）
+          const base = { ...(m || {}) };
+          base.typo = newTypo;
+          base.rev = (Number(base.rev) || 0) + 1;
+          // 改稿使「可投递」失效（既有口径，与 HTML 路径一致）
+          if (prevHash && prevHash !== newHash && flowOf(base) === 'reviewed') {
+            base.flow = 'draft';
+            if (base.job) base.job = { ...base.job, invalidatedAt: new Date().toISOString() };
+          }
+          Object.assign(base, zoneSync(newHtml, base));
+          if (base.job) {
+            // 审阅状态与正文同事务（v1.6）：applyOps 在锁内新鲜 meta 上复核（④已过，兜底极小并发窗口；
+            // 失败抛错走既有双恢复）；reviewConsistency 正文维度逐条写 consistency（zoneSync 之后、同一事务）；
+            // saveReceipts 环形 ≤50 记进 meta.job。非 job 文档（母版）不记回执——meta.job 是岗位草稿子树，
+            // 不为其造壳（kindOf 会把带 job 的母版误判成岗位草稿）。
+            const re = applyOps(body.ops, base.job, oldHtml);
+            if (!re.ok) throw new Error('操作校验失败（并发状态变化，已整份回滚）：' + re.reason);
+            base.job = reviewConsistency(re.job, newHtml, { zones: base.zones, mats: loadMats() });
+            const rec = {
+              requestId: body.requestId, contentHash: reqHash,
+              receipt: { mtime: fs.statSync(docPath(id)).mtimeMs, hash: newHash, rev: base.rev, appliedOps: pre.applied.map((a) => a.operationId) }
+            };
+            base.job.saveReceipts = [...(Array.isArray(base.job.saveReceipts) ? base.job.saveReceipts : []), rec].slice(-50);
+            receipt = rec.receipt;
+          }
+          return base;
+        });
+        commitTx(root, txId);                           // 成功：删事务记录
+      } catch (e2) {
+        // 任一异常：用旧正文 + 旧 meta 副本恢复两者，再抛（外层映射状态码）——与 HTML 路径同机制。
+        let htmlBack = false, metaBack = false;
+        try { atomicWrite(docPath(id), oldHtml); htmlBack = true; } catch {}
+        try { updateMeta(root, id, () => oldMeta); metaBack = true; } catch {}
+        if (htmlBack && metaBack) { try { commitTx(root, txId); } catch {} }
+        throw e2;
+      }
+      // 本次保存成功 → 同文档更早的未完成记录已被取代（留着会在下次启动恢复时回滚掉这次成功保存）
+      try {
+        const stale = dropSupersededTx(root, id);
+        if (stale) console.error(`[tx] 同文档过期事务记录已清理 ${stale} 条：${id}`);
+      } catch {}
+      const st = fs.statSync(docPath(id));
+      const savedRid = freezeHtml(newHtml, { typo: newTypo }).renderInputId;
+      const saveSi = staleInfo(loadMeta()[id] || {}, { renderInputId: savedRid, pdfExists: fs.existsSync(pdfPath(id)) });
+      const newRev = (Number(oldMeta && oldMeta.rev) || 0) + 1;
+      if (!receipt) receipt = { mtime: st.mtimeMs, hash: contentHash(newHtml), rev: newRev, appliedOps: [] };   // 非 job 文档：回执只在本次响应，不落盘判重
+      return { status: 200, body: { ok: true, mtime: st.mtimeMs, hash: contentHash(newHtml), pdfStale: saveSi.stale, rev: newRev, receipt } };
+    });
+  } catch (e) {
+    if (e instanceof LockHeld) return { status: 409, body: { ok: false, retry: true, error: '该文档正在被另一保存/回滚/复制处理，请稍后重试' } };
+    throw e;
+  } finally {
+    try { rootLock.release(root); } catch {}
+  }
+  return out;
+}
+
 async function handler(req, res) {
   const url = new URL(req.url, 'http://localhost');
   const id = url.searchParams.get('id') || 'linghaoxiang';
@@ -897,7 +1070,8 @@ async function handler(req, res) {
       const m = metaAll[id] || {};
       // 兼容视图（S1-T8）：响应里的 status 为派生旧词汇（reviewed→deliverable，其余→draft），flow 为存储单源；
       // schemaVersion<2 时 flowOf 由 job.status 即时推导，绝不写回。
-      const job = m.job ? { ...m.job, status: legacyFlowStatus(m), flow: flowOf(m) } : null;
+      // S4a-T3：jobView 附带 brief/evidence/genTasks/saveReceipts 摘要/reviewPos 渐进默认值。
+      const job = jobView(m);
       return sendJson(200, { ok: true, job, zones: m.zones || null, zoneOrder: m.zoneOrder || null, zoneRounds: m.zoneRounds || null, doc: { id, parent: m.parent || '', company: m.company || '', role: m.role || '', jd: m.jd || '', jdSource: m.jdSource || '' } });
     }
     if (req.method === 'POST' && url.pathname === '/job/changes') {
@@ -1016,30 +1190,14 @@ async function handler(req, res) {
     // ===== 保存（正文与 PDF 分离；revision 冲突检测）=====
     if (req.method === 'POST' && url.pathname === '/save') {
       if (!url.searchParams.get('id')) return send(400, 'id required', 'text/plain');
+      // S4a-T3（设计 §4.2 v1.6）：按 Content-Type 分流——application/json 走 JSON 保存协议
+      // （{requestId, baseRev, html, ops}：整次保存幂等 + ops 与正文单事务提交）；其余 Content-Type 走既有 HTML 路径（零改动）。
+      if ((req.headers['content-type'] || '').toLowerCase().includes('application/json')) {
+        const out = await saveJsonProtocol(req, id, url);
+        return sendJson(out.status, out.body);
+      }
       let html = await readBody(req);
-      // 注释对剥离必须与 serve 注入对称（注入 `\nPAIR\n`、剥离归 ''）：save(serve(D)) === D 逐字节成立。
-      // 若剥离归 '\n'，每次保存净增 3 个换行（S2-T2 块 6c 冻结件不变性断言实测抓到的漂移），绝不可回改。
-      html = html
-        .replace(/\n?<!--AI-INJECT-->[\s\S]*?<!--\/AI-INJECT-->\n?/g, '')
-        .replace(/\n?<!--SHELL-INJECT-->[\s\S]*?<!--\/SHELL-INJECT-->\n?/g, '')
-        .replace(/\n?<!--JOB-INJECT-->[\s\S]*?<!--\/JOB-INJECT-->\n?/g, '')
-        .replace(/\n?<!--ZONE-INJECT-->[\s\S]*?<!--\/ZONE-INJECT-->\n?/g, '')
-        // 运行时面板样式（head 中，不在注释对里）也要剥离
-        .replace(/<style[^>]*data-ai-panel[^>]*>[\s\S]*?<\/style>/g, '')
-        .replace(/<style[^>]*data-ed-shell[^>]*>[\s\S]*?<\/style>/g, '')
-        .replace(/<style[^>]*data-job-panel[^>]*>[\s\S]*?<\/style>/g, '')
-        // 区域面板运行时样式（data-zone-panel）与弹窗标记同款剥离，与注入对称
-        .replace(/<style[^>]*data-zone-panel[^>]*>[\s\S]*?<\/style>/g, '')
-        // 改绑弹窗挂 body 末尾（fixed 遮罩不受窄屏浮层祖先影响）；旧文档内联 doSave 预清理选择器无 data-zone-panel，服务端兜底剥整元素。
-        // 双锚 class+data-zone-panel：面板创建恒先 className 后 setAttribute（序列化顺序确定），与全链按运行时标记锚定的纪律一致，防误删用户手写同形状 div
-        .replace(/<div[^>]*class="zp-modal"[^>]*data-zone-panel[^>]*>[\s\S]*?<\/div>\s*<\/div>(?=\s*<\/body>)/g, '')
-        // body class 归一化（S2-T5，设计 §6.2）：只删编辑器瞬态项，其余属性与内容原样保留。
-        // ed-focus 是注入层加的聚焦态，旧文档 doSave 的内联清理选择器不认它 → 服务端兜底。
-        // 幂等：无 class 的 <body> 原样返回；save(serve(D)) === D 的字节稳定性不受影响。
-        .replace(/<body\b[^>]*>/g, (tag) => tag.replace(/\sclass="([^"]*)"/, (m, cls) => {
-          const keep = String(cls).trim().split(/\s+/).filter((c) => c && !EDITOR_ONLY_BODY_CLASS.has(c));
-          return keep.length ? ` class="${keep.join(' ')}"` : '';
-        }));
+      html = stripInjections(html);
       // S3：zid 归一（补缺/去重/坏值重打）必须在剥离注入块之后执行；meta zones 同步在下方 updateMeta 回调里做
       html = normalizeZids(html);
       if (!html.trim()) return send(400, 'empty save rejected', 'text/plain');
@@ -2659,6 +2817,8 @@ if (foreignMigrateLock) {
   try {
     // 默认恢复（tx.mjs defaultRestoreDoc）：首选事务内旧正文副本（精确旧字节）；仅 oldHtml 载荷缺失时走快照兜底，
     // 兜底按热修 a7eb561 裁决 legacy-safe（oldMeta.typo 未定义 → 保留快照内联排版；已迁移 → 归一化正文）。
+    // S4a-T4 锚点（占位）：启动恢复时还应把各岗位草稿 genTasks.{evidence,changes} 的 running →
+    // error("应用重启中断，可重试") 并置 taskId=null（设计 §6 重启恢复，使任何在途回调失效）——实际逻辑 T4 落地。
     const recovered = recoverPending(root);
     const done = recovered.filter((r) => r.ok);
     if (done.length) console.error(`[tx] 启动恢复未完成事务 ${done.length} 条：` + done.map((r) => `${r.docId}(${r.phase})`).join('、'));

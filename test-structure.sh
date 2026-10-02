@@ -2230,3 +2230,314 @@ assert(!zp.includes('!important'), 'zone-panel 无 !important');
 assert(zp.includes('CSS.highlights') && zp.includes('::highlight(zone-'), '着色走 CSS Custom Highlight API');
 console.log('✅ S3-C 区域注入纪律');
 EOF
+
+# —— S4a-A：岗位适配数据层纯函数（指纹/证据解析 ID 匹配/三时态多命中/guardOps/exportChecks/状态机）——
+echo "── S4a-A: 岗位适配数据层纯函数 ──"
+node --input-type=module << 'EOF'
+import { createHash } from 'node:crypto';
+import { contentFingerprint, paraFingerprint, parseEvidence, refFresh, candidatesState,
+         reviewConsistency, applyOps, guardOps, exportChecks, transitionOp } from './evidence.mjs';
+import { buildJobPrompt } from './job.mjs';
+import { pageSuggestions } from './job.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ S4a-A ' + m); process.exit(1); } };
+
+const mkFacts = (o) => Object.assign({ company: '', role: '', dates: '', education: '', metrics: '', contribution: '', conditions: '', source: '' }, o);
+const mats = [
+  { id: 'm-1', title: '订单系统', factStatus: 'confirmed', facts: mkFacts({ company: '甲公司', role: '后端工程师', metrics: 'P99 210ms' }) },
+  { id: 'm-2', title: '订单系统', factStatus: 'confirmed', facts: mkFacts({ company: '乙公司', role: '前端工程师', metrics: '首屏 1.2s' }) },   // 与 m-1 同名
+  { id: 'm-3', title: '风控系统', factStatus: 'pending', facts: mkFacts({ company: '丙公司', role: '风控' }) },                              // 未确认
+];
+const paras = [
+  { zid: 'za1111111', text: '负责交易系统，P99 800ms' },
+  { zid: 'zb2222222', text: '负责交易系统，P99 800ms' },   // 与 za 正文相同
+  { zid: 'zc3333333', text: '项目甲：数据管道重设计' },
+];
+
+// —— 指纹：稳定 / 变化检测（facts 键序无关；para 空白归一）——
+const fp1 = contentFingerprint(mats[0].facts);
+assert(/^[0-9a-f]{40}$/.test(fp1), 'contentFingerprint sha1 十六进制');
+assert(fp1 === contentFingerprint(mkFacts({ role: '后端工程师', company: '甲公司', metrics: 'P99 210ms' })), '指纹与 facts 键序无关');
+assert(fp1 !== contentFingerprint(mkFacts({ company: '甲公司', role: '后端工程师', metrics: 'P99 211ms' })), 'facts 变化指纹必变');
+const pf1 = paraFingerprint('负责交易系统，P99 800ms');
+assert(pf1 === paraFingerprint('负责交易系统，P99   800ms'), 'paraFingerprint 空白归一稳定（连续空白折叠）');
+assert(pf1 !== paraFingerprint('负责交易系统，P99 801ms'), '段落文本变化指纹必变');
+
+// —— parseEvidence：ID 精确匹配（反例1 双同名素材 / 双相同正文段落 → 各归其位；title/quote 不参与）+ refId 请求前分配 + 五态校正 ——
+const raw1 = JSON.stringify({ evidence: [
+  { req: '高并发经验', status: 'covered', refHints: [ { type: 'mat', id: 'm-1', title: '错误引导：乙公司素材', quote: '假引文' }, { type: 'para', zid: 'za1111111' } ] },
+  { req: '前端经验', status: 'covered', refHints: [ { type: 'mat', id: 'm-2' } ] },                                        // covered 无 para ref → 降 sourced
+  { req: '风控经验', status: 'sourced', refHints: [ { type: 'mat', id: 'm-3' } ] },                                        // 未确认素材 → drop → todo
+  { req: '乱 ID', status: 'covered', refHints: [ { type: 'mat', id: 'm-99' }, { type: 'para', zid: 'znope999' } ] },      // ID 不在集合 → drop → todo
+  { req: '同名素材按 ID', status: 'sourced', refHints: [ { type: 'mat', id: 'm-2', title: '甲公司的那个' } ] },             // title 不参与 → 仍命中 m-2（乙公司）
+  { req: '同文段落按 zid', status: 'covered', refHints: [ { type: 'para', zid: 'zb2222222' } ] },
+  { req: '均未匹配', status: 'none', refHints: [] }
+] });
+const evd = parseEvidence(raw1, { gen: 2, mats, paras });
+assert(Array.isArray(evd) && evd.length === 7, 'parseEvidence 返回 evidence 数组');
+const e0 = evd[0];
+assert(e0.id === 'e1' && e0.req === '高并发经验', '条目 id/req 保留');
+assert(e0.status === 'covered', 'para ref 存在 → covered 保持');
+assert(e0.refs.length === 2, '两条 refHint 都按 ID 命中');
+assert(e0.refs[0].refId === 'b2r1' && e0.refs[0].type === 'mat' && e0.refs[0].id === 'm-1' && e0.refs[0].zid === null, 'mat ref 形状（refId=b<gen>r<n>）');
+assert(e0.refs[0].srcStatus === 'confirmed' && e0.refs[0].hash === fp1, 'mat ref 带来源快照与 facts 指纹');
+assert(e0.refs[0].title === '错误引导：乙公司素材', 'title 仅保留展示（不参与匹配）');
+assert(e0.refs[1].refId === 'b2r2' && e0.refs[1].type === 'para' && e0.refs[1].zid === 'za1111111' && e0.refs[1].id === null, 'para ref 形状');
+assert(e0.refs[1].hash === paraFingerprint(paras[0].text), 'para ref 带段落文本指纹');
+assert(evd[1].status === 'sourced' && evd[1].refs[0].id === 'm-2', '反例5：模型 covered 无有效 para ref → 有 mat 降 sourced');
+assert(evd[2].refs.length === 0 && evd[2].status === 'todo', '未确认素材不进 refs → 降 todo');
+assert(evd[3].refs.length === 0 && evd[3].status === 'todo', 'ID 不在输入集合 → ref 丢弃 + 降 todo');
+assert(evd[4].refs[0].id === 'm-2' && evd[4].refs[0].hash === contentFingerprint(mats[1].facts), '反例1：同名素材按 ID 各归其位（title 引导不生效）');
+assert(evd[4].status === 'sourced', '仅 mat ref → sourced');
+assert(evd[5].refs[0].zid === 'zb2222222', '反例1：相同正文段落按 zid 归位');
+const allRefIds = evd.flatMap((e) => e.refs.map((r) => r.refId));
+assert(new Set(allRefIds).size === allRefIds.length && allRefIds.every((r) => /^b2r\d+$/.test(r)), 'refId 全局唯一且批次前缀统一（跨批次隔离基础）');
+assert(evd[6].status === 'none', '模型明示均未匹配 → none 保留（不降 todo）');
+assert(evd.every((e) => e.note === '' && e.noteConfirmed === false), 'note/noteConfirmed 默认两维度分离');
+assert(parseEvidence('不是json', { gen: 1, mats, paras }) === null, '坏输出返回 null');
+
+// —— refFresh：validity 含 factStatus（hash 未变但取消确认也失效）——
+const matRef = { type: 'mat', id: 'm-1', srcStatus: 'confirmed', hash: fp1 };
+assert(refFresh(matRef, { mats }) === true, '指纹匹配且 confirmed → 有效');
+assert(refFresh(matRef, { mats: mats.map((m) => m.id === 'm-1' ? { ...m, facts: mkFacts({ company: '甲公司', role: '后端工程师', metrics: 'P99 999ms' }) } : m) }) === false, 'facts 指纹变化 → 失效');
+assert(refFresh(matRef, { mats: mats.map((m) => m.id === 'm-1' ? { ...m, factStatus: 'outdated' } : m) }) === false, '反例6：factStatus≠confirmed 即使 hash 未变也失效');
+assert(refFresh(matRef, { mats: mats.filter((m) => m.id !== 'm-1') }) === false, '素材被删 → 失效');
+const paraRef = { type: 'para', zid: 'za1111111', hash: pf1 };
+assert(refFresh(paraRef, { paras }) === true, 'para 指纹匹配 → 有效');
+assert(refFresh(paraRef, { paras: paras.map((p) => p.zid === 'za1111111' ? { ...p, text: '改过的段落' } : p) }) === false, 'para 文本变化 → 失效');
+assert(refFresh(paraRef, { paras: paras.filter((p) => p.zid !== 'za1111111') }) === false, '段落删除 → 失效');
+
+// —— candidatesState：三时态多命中集合（[] = ok；顺序 = 主标签优先级）——
+const mkCtx = (over = {}) => Object.assign({ paras, gen: 2, evidence: evd, mats, locked: new Set() }, over);
+const baseChange = { id: 'c1', status: 'pending', kind: 'replace', zid: 'za1111111', baseSnapshot: '负责交易系统，P99 800ms' };
+assert(JSON.stringify(candidatesState(baseChange, mkCtx())) === '[]', '锚点未变无依赖 → ok 空集合');
+assert(candidatesState({ ...baseChange, zid: 'zgone9999' }, mkCtx()).includes('anchor-gone'), 'replace 落点消失 → anchor-gone');
+// add 锚点=插入容器（反例4）：容器在 → ok；新段落 zid 尚不存在不构成失效；容器删 → anchor-gone
+const addChange = { id: 'c2', status: 'pending', kind: 'add', zid: 'zc3333333', after: '新增要点', baseSnapshot: '项目甲：数据管道重设计' };
+assert(JSON.stringify(candidatesState(addChange, mkCtx())) === '[]', 'add 容器在 → ok（容器是锚点）');
+assert(candidatesState({ ...addChange, zid: 'zgone9999' }, mkCtx()).includes('anchor-gone'), 'add 容器删 → anchor-gone');
+// batch-stale：旧批次引用 ≠ 当前 evidenceGen
+assert(candidatesState({ ...baseChange, evidenceRefs: ['b1r1'] }, mkCtx()).includes('batch-stale'), '旧批次 refId → batch-stale');
+// ref-stale + needs-compare（依赖失效联动 → 多命中）
+const staleRef = { ...baseChange, evidenceRefs: ['b2r1'] };
+const staledMats = mats.map((m) => m.id === 'm-1' ? { ...m, factStatus: 'outdated' } : m);
+const multiHit = candidatesState(staleRef, mkCtx({ mats: staledMats }));
+assert(multiHit.includes('ref-stale'), 'mat 来源失效 → ref-stale');
+assert(multiHit.includes('needs-compare'), '依赖失效 → needs-compare 联动（多命中集合）');
+// 反例9：手改 + 证据失效 → consistency 含两项
+const multiHit2 = candidatesState({ ...staleRef, baseSnapshot: '生成时的旧文本' }, mkCtx({ mats: staledMats }));
+assert(multiHit2.includes('needs-compare') && multiHit2.includes('ref-stale') && multiHit2.length === 2, '反例9：同时手改+证据失效 → 两项全落');
+assert(multiHit2[0] === 'ref-stale' || multiHit2[0] === 'needs-compare', '命中顺序按优先级表');
+// needs-compare 仅候选锚点（无关段落改动不影响本候选）
+const otherChanged = paras.map((p) => p.zid === 'zb2222222' ? { ...p, text: '别的段落被改了' } : p);
+assert(JSON.stringify(candidatesState(baseChange, mkCtx({ paras: otherChanged }))) === '[]', '无关段落改动不触发 needs-compare（v1.4 锚点化）');
+assert(candidatesState({ ...baseChange, baseSnapshot: '生成时的旧文本' }, mkCtx()).includes('needs-compare'), '锚点文本 ≠ baseSnapshot → needs-compare');
+// locked-now：pending 且当前 locked（生成后加锁同样拦截）
+const lockedCtx = mkCtx({ locked: new Set(['za1111111']) });
+assert(candidatesState(baseChange, lockedCtx).includes('locked-now'), 'pending 候选遇锁定 → locked-now');
+assert(!candidatesState({ ...baseChange, status: 'accepted', acceptedAt: 't', appliedText: 'x' }, lockedCtx).includes('locked-now'), '非 pending 不计 locked-now');
+// hand-edited：accepted 后手改（回滚降级同机理）
+const acc = { ...baseChange, status: 'accepted', acceptedAt: '2026-10-01T00:00:00Z', appliedText: '负责交易系统重构，P99 800ms', origText: '负责交易系统，P99 800ms' };
+assert(candidatesState(acc, mkCtx()).includes('hand-edited'), 'accepted 且当前文本 ≠ appliedText → hand-edited');
+assert(JSON.stringify(candidatesState({ ...acc, appliedText: acc.origText }, mkCtx())) === '[]', 'accepted 未被手改 → ok');
+
+// —— 反例3：接受 A 不影响 B（落点外且无依赖的候选状态不变）——
+const jobAB = { evidenceGen: 2, evidence: evd, changes: [
+  { ...baseChange, id: 'cA' },
+  { id: 'cB', status: 'pending', kind: 'replace', zid: 'zc3333333', baseSnapshot: '项目甲：数据管道重设计' }
+] };
+const htmlBefore = '<div class="sheet"><p data-zid="za1111111">负责交易系统，P99 800ms</p><p data-zid="zc3333333">项目甲：数据管道重设计</p></div>';
+const htmlAfter = '<div class="sheet"><p data-zid="za1111111">接受 A 后的文本</p><p data-zid="zc3333333">项目甲：数据管道重设计</p></div>';
+const stB1 = candidatesState(jobAB.changes[1], mkCtx({ paras: [{ zid: 'za1111111', text: '负责交易系统，P99 800ms' }, { zid: 'zc3333333', text: '项目甲：数据管道重设计' }] }));
+const stB2 = candidatesState(jobAB.changes[1], mkCtx({ paras: [{ zid: 'za1111111', text: '接受 A 后的文本' }, { zid: 'zc3333333', text: '项目甲：数据管道重设计' }] }));
+assert(JSON.stringify(stB1) === JSON.stringify(stB2), '反例3：接受 A 后 candidatesState(B) 不变');
+void htmlBefore; void htmlAfter;
+
+// —— reviewConsistency：正文维度逐条写 change.consistency ——
+const rcJob = reviewConsistency({ ...jobAB }, '<div class="sheet"><p data-zid="za1111111">被手改过</p><p data-zid="zc3333333">项目甲：数据管道重设计</p></div>', { zones: {}, mats });
+assert(Array.isArray(rcJob.changes[0].consistency) && rcJob.changes[0].consistency.includes('needs-compare'), 'reviewConsistency 逐条写 consistency（锚点已变 → needs-compare）');
+assert(JSON.stringify(rcJob.changes[1].consistency) === '[]', '未变候选 consistency 为空');
+assert(jobAB.changes[0].consistency === undefined, 'reviewConsistency 纯函数不改入参');
+
+// —— applyOps：校验（operationId/changeId/action/前置/origText 锚点匹配）+ 应用 + 整份拒绝 ——
+const job1 = { changes: [ { ...baseChange, after: '负责交易系统重构，P99 800ms' } ] };
+const opsOk = [ { operationId: 'o-1', changeId: 'c1', action: 'accept', origText: '负责交易系统，P99 800ms' } ];
+const r1 = applyOps(opsOk, job1, '<div class="sheet"><p data-zid="za1111111">负责交易系统，P99 800ms</p></div>');
+assert(r1.ok === true, 'accept 校验通过');
+assert(r1.job.changes[0].status === 'accepted' && r1.job.changes[0].origText === '负责交易系统，P99 800ms' && r1.job.changes[0].appliedText === '负责交易系统重构，P99 800ms' && typeof r1.job.changes[0].acceptedAt === 'string', 'accept 落 origText/appliedText/acceptedAt 快照');
+assert(job1.changes[0].status === 'pending', 'applyOps 纯函数不改入参 job');
+const badAnchor = applyOps([ { operationId: 'o-2', changeId: 'c1', action: 'accept', origText: '并发已改的别的文本' } ], job1, '<div class="sheet"><p data-zid="za1111111">负责交易系统，P99 800ms</p></div>');
+assert(badAnchor.ok === false && badAnchor.reason && badAnchor.badOp === 'o-2', 'origText 与当前锚点不匹配 → 拒');
+assert(applyOps([ { operationId: 'o-3', changeId: 'nope', action: 'accept', origText: 'x' } ], job1, '<p data-zid="za1111111">x</p>').ok === false, 'changeId 不存在 → 拒');
+assert(applyOps([ { operationId: 'o-4', changeId: 'c1', action: '魔法', origText: '负责交易系统，P99 800ms' } ], job1, '<p data-zid="za1111111">负责交易系统，P99 800ms</p>').ok === false, 'action 枚举外 → 拒');
+assert(applyOps([ { operationId: '', changeId: 'c1', action: 'accept', origText: '负责交易系统，P99 800ms' } ], job1, '<p data-zid="za1111111">负责交易系统，P99 800ms</p>').ok === false, 'operationId 空 → 拒');
+assert(applyOps([ { operationId: 'o-5', changeId: 'c1', action: 'accept', origText: '负责交易系统，P99 800ms' }, { operationId: 'o-5', changeId: 'c1', action: 'accept', origText: '负责交易系统，P99 800ms' } ], job1, '<p data-zid="za1111111">负责交易系统，P99 800ms</p>').ok === false, '同请求内 operationId 防重');
+const accJob = { changes: [ { ...baseChange, status: 'accepted', acceptedAt: 't', origText: '负责交易系统，P99 800ms', appliedText: '负责交易系统重构，P99 800ms' } ] };
+assert(applyOps([ { operationId: 'o-6', changeId: 'c1', action: 'accept', origText: '负责交易系统，P99 800ms' } ], accJob, '<p data-zid="za1111111">负责交易系统，P99 800ms</p>').ok === false, '前置：非 pending 不可接受');
+assert(applyOps([ { operationId: 'o-7', changeId: 'c1', action: 'revert', origText: '负责交易系统，P99 800ms' } ], job1, '<p data-zid="za1111111">负责交易系统，P99 800ms</p>').ok === false, '前置：非 accepted 不可撤回');
+const lockedJob = { changes: [ { ...baseChange, after: '新文' } ] };
+assert(applyOps([ { operationId: 'o-8', changeId: 'c1', action: 'accept', origText: '负责交易系统，P99 800ms' } ], lockedJob, '<p data-zid="za1111111">负责交易系统，P99 800ms</p>', { locked: new Set(['za1111111']) }).ok === false, 'locked-now 不可接受');
+const goneJob = { changes: [ { ...baseChange, zid: 'zgone9999', after: '新文' } ] };
+assert(applyOps([ { operationId: 'o-9', changeId: 'c1', action: 'accept', origText: 'x' } ], goneJob, '<p data-zid="za1111111">x</p>').ok === false, 'anchor-gone 不可接受');
+// add 接受：容器锚点 + op.newZid 记录
+const addJob = { changes: [ { ...addChange } ] };
+const rAdd = applyOps([ { operationId: 'o-10', changeId: 'c2', action: 'accept', origText: '项目甲：数据管道重设计', newZid: 'z9e000001' } ], addJob, '<div class="sheet"><p data-zid="zc3333333">项目甲：数据管道重设计</p></div>');
+assert(rAdd.ok === true && rAdd.job.changes[0].newZid === 'z9e000001' && rAdd.job.changes[0].status === 'accepted', 'add 接受：容器锚点校验 + newZid 记录');
+// add 撤回：锚点切到 newZid
+const rRevertAdd = applyOps([ { operationId: 'o-11', changeId: 'c2', action: 'revert', origText: '新增要点' } ], rAdd.job, '<div class="sheet"><p data-zid="zc3333333">项目甲：数据管道重设计</p><p data-zid="z9e000001">新增要点</p></div>');
+assert(rRevertAdd.ok === true && rRevertAdd.job.changes[0].status === 'pending' && rRevertAdd.job.changes[0].origText === undefined && rRevertAdd.job.changes[0].appliedText === undefined && rRevertAdd.job.changes[0].acceptedAt === undefined && rRevertAdd.job.changes[0].newZid === undefined, '撤回：清 origText/appliedText/acceptedAt/newZid 回 pending');
+// 整份拒绝：两 op 第二个坏 → 第一个也不应用
+const twoOps = [ { operationId: 'o-a', changeId: 'c1', action: 'accept', origText: '负责交易系统，P99 800ms' }, { operationId: 'o-b', changeId: '幽灵', action: 'accept', origText: 'x' } ];
+const rTwo = applyOps(twoOps, job1, '<div class="sheet"><p data-zid="za1111111">负责交易系统，P99 800ms</p></div>');
+assert(rTwo.ok === false && rTwo.badOp === 'o-b', '任一失败整份拒绝并指明坏 op');
+assert(job1.changes.every((c) => c.status === 'pending'), '整份拒绝不动任何候选状态');
+
+// —— guardOps：范围全操作 / 锁定 / hide 展开∩保留 / 受保护 token ——
+const zonesMap = { za1111111: { zone: 'work', status: 'confirmed' }, zb2222222: { zone: 'work', status: 'confirmed' }, zc3333333: { zone: 'project', status: 'confirmed' }, ze1111111: { zone: 'work', status: 'confirmed' }, ze2222222: { zone: 'project', status: 'confirmed' }, 'zs-head-1': { zone: 'work', status: 'confirmed' } };
+const gctx = {
+  scope: 'zone:work', zones: zonesMap, locked: new Set(['zb2222222']), keepZids: new Set(['ze2222222']),
+  expand: (zid) => (zid === 'zs-head-1' ? ['ze1111111', 'ze2222222'] : [zid]),
+  protectedTokens: ['甲公司', '后端工程师']
+};
+const gOps = [
+  { id: 'g1', kind: 'replace', zid: 'za1111111', before: '文本', after: '改写' },          // work 内 → 过
+  { id: 'g2', kind: 'replace', zid: 'zc3333333', before: '文本', after: '改写' },          // project → 越界
+  { id: 'g3', kind: 'add', zid: 'zc3333333', after: '新增' },                              // add 容器越界
+  { id: 'g4', kind: 'hide', zid: 'zc3333333', entry: '老项目' },                           // hide 越界
+  { id: 'g5', kind: 'reorder', zid: 'zc3333333', toZid: 'za1111111', entry: 'X' },         // reorder 起点越界
+  { id: 'g6', kind: 'reorder', zid: 'za1111111', toZid: 'zc3333333', entry: 'X' },         // reorder 终点越界
+  { id: 'g7', kind: 'replace', zid: 'zb2222222', before: '文本', after: '改写' },          // locked
+  { id: 'g8', kind: 'hide', zid: 'zs-head-1', entry: '某章节' },                           // 反例8：展开含 keepZids
+  { id: 'g9', kind: 'replace', zid: 'za1111111', before: '甲公司 2024 后端工程师', after: '乙公司 2025 前端' },  // 受保护 token 丢失 → conflict
+  { id: 'g10', kind: 'replace', zid: 'za1111111', before: '甲公司 2024 后端工程师', after: '甲公司 2024 后端工程师（精简）' }  // 原值保留 → 过
+];
+const g = guardOps(gOps, gctx);
+const droppedIds = g.dropped.map((d) => d.op.id).sort();
+assert(JSON.stringify(droppedIds) === JSON.stringify(['g2', 'g3', 'g4', 'g5', 'g6', 'g7', 'g8']), 'guardOps 全操作范围/锁定/hide 展开拒收: ' + JSON.stringify(droppedIds));
+assert(g.dropped.every((d) => d.reason), '每条拒收带理由');
+const g8rule = g.dropped.find((d) => d.op.id === 'g8');
+assert(/保留|锁定/.test(g8rule.reason), '反例8：hide 展开含必须保留/锁定内容 → 拒');
+const keptIds = g.kept.map((o) => o.id).sort();
+assert(JSON.stringify(keptIds) === JSON.stringify(['g1', 'g10', 'g9']), '通过候选含受保护字段强制 conflict 项: ' + JSON.stringify(keptIds));
+const g9 = g.kept.find((o) => o.id === 'g9');
+assert(g9.level === 'conflict' && /受保护字段/.test(g9.reason || ''), '受保护 token（日期/公司/职位）原值丢失 → 强制 conflict');
+const g10 = g.kept.find((o) => o.id === 'g10');
+assert(g10.level !== 'conflict', '受保护 token 原值保留 → 不误标');
+const gNoScope = guardOps([{ id: 'g1', kind: 'replace', zid: 'zc3333333', before: '文本', after: '改写' }], { ...gctx, scope: null });
+assert(gNoScope.dropped.length === 0, '无 scope（全文生成）不做区域拒绝');
+
+// —— transitionOp 状态机（撤回清快照 / resolved 绑定）——
+const tc = { id: 't1', status: 'pending' };
+assert(transitionOp(tc, 'accept').status === 'accepted', 'pending→accepted');
+assert(transitionOp(tc, 'reject').status === 'rejected', 'pending→rejected');
+assert(transitionOp({ ...tc, status: 'rejected' }, 'unreject').status === 'pending', 'rejected→pending（改主意）');
+assert(transitionOp(tc, 'skip').status === 'skipped', 'pending→skipped');
+assert(transitionOp({ ...tc, status: 'skipped' }, 'unskip').status === 'pending', 'skipped→pending');
+const accSnap = { id: 't1', status: 'accepted', origText: '旧', appliedText: '新', acceptedAt: '2026-10-01T00:00:00Z' };
+const reverted = transitionOp(accSnap, 'revert');
+assert(reverted.status === 'pending' && reverted.origText === undefined && reverted.appliedText === undefined && reverted.acceptedAt === undefined, '撤回清 origText/appliedText/acceptedAt 回 pending');
+assert(accSnap.status === 'accepted', 'transitionOp 纯函数不改入参');
+const resolved = transitionOp({ ...baseChange, status: 'pending' }, 'resolve', { now: '2026-10-02T00:00:00Z', text: '当前正文', refs: { 'b2r1': fp1 } });
+assert(resolved.status === 'resolved' && resolved.resolvedAt === '2026-10-02T00:00:00Z' && resolved.resolvedText === '当前正文' && resolved.resolvedRefs['b2r1'] === fp1, '反例10：resolve 绑定 resolvedText/resolvedRefs');
+assert(transitionOp(accSnap, 'reject') === null, '非法转换返回 null');
+// resolved 再变 → 重新进待核对（needs-compare 重现，resolvedAt 保留）
+const resolvedChange = { ...resolved, baseSnapshot: '项目甲：数据管道重设计', zid: 'zc3333333' };
+const reHit = candidatesState(resolvedChange, mkCtx());
+assert(reHit.includes('needs-compare'), 'resolved 后正文再变 → 重新进待核对');
+const resolvedOk = candidatesState({ ...resolvedChange, resolvedText: '项目甲：数据管道重设计' }, mkCtx());
+assert(!resolvedOk.includes('needs-compare'), 'resolvedText 与当前一致 → 退出待核对（豁免）');
+
+// —— exportChecks：三级分类 + 整体完成（skipped 未决口径）+ 历史态豁免 ——
+const ckJob = {
+  changes: [
+    { id: 'k1', level: 'conflict', status: 'pending' },        // 未解决冲突 → 阻断
+    { id: 'k2', level: 'conflict', status: 'skipped' },        // skipped 冲突 → 仍阻断（不解冲突）
+    { id: 'k3', level: 'normal', status: 'pending', consistency: ['needs-compare'] },  // 待核对
+    { id: 'k4', level: 'important', status: 'rejected', consistency: ['ref-stale'] },  // 历史态豁免
+    { id: 'k5', level: 'normal', status: 'superseded' }
+  ],
+  evidence: [ { id: 'e1', status: 'thin', refs: [] }, { id: 'e2', status: 'sourced', refs: [matRef] } ]
+};
+const ck = exportChecks(ckJob, { mats: staledMats, lines: ['这条要点很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长', '这条要点很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长'], projects: 4 });
+assert(ck.blocking.length === 2 && ck.blocking.every((c) => ['k1', 'k2'].includes(c.id)), '阻断 = pending+skipped 的 conflict');
+assert(ck.canExport === false, '未解决冲突 → 不可导出');
+assert(ck.check.thin.length === 1, 'thin 证据进建议核对');
+assert(ck.check.stale.length === 1, '来源失效证据进建议核对（读取时即时算）');
+assert(ck.check.toVerify.length === 1 && ck.check.toVerify[0].id === 'k3', '待核对集合不含 rejected/superseded（历史态豁免）');
+assert(ck.style.length >= 2 && ck.style.some((s) => s.key === 'dup') && ck.style.some((s) => s.key === 'projects'), '风格建议 = pageSuggestions 输出');
+assert(ck.reviewComplete === false, '有 pending → 整体未完成');
+const ck2 = exportChecks({ changes: [ { id: 'k4', level: 'important', status: 'rejected', consistency: ['ref-stale'] } ], evidence: [] }, {});
+assert(ck2.canExport === true && ck2.reviewComplete === true, 'rejected 历史不阻塞导出与完成');
+const ck3 = exportChecks({ changes: [ { id: 'k6', level: 'normal', status: 'skipped' } ], evidence: [] }, {});
+assert(ck3.canExport === true && ck3.reviewComplete === false, '整体完成含 skipped 未决口径（skipped 不计完成）');
+
+// —— buildJobPrompt：facts 进素材块 / brief 三档 / JD 边界声明 ——
+const p = buildJobPrompt({ docText: '正文', jd: 'JD 内容', company: '测试公司', role: '后端', materials: mats.filter((m) => m.factStatus === 'confirmed') });
+assert(p.sys.includes('JD 是岗位要求来源，不得作为经历或技能的事实来源'), 'JD 边界声明进系统提示');
+assert(p.user.includes('公司：甲公司') && p.user.includes('职位：后端工程师') && p.user.includes('指标：P99 210ms'), '素材块含事实字段');
+assert(p.user.includes('表达：'), '素材块保留表达层');
+assert(!p.user.includes('丙公司'), '未确认素材不进 prompt（调用方过滤 + 事实字段只在已确认集）');
+const degLight = buildJobPrompt({ docText: 'x', jd: 'j', company: 'c', role: 'r', brief: { degree: 'light' } });
+const degRefocus = buildJobPrompt({ docText: 'x', jd: 'j', company: 'c', role: 'r', brief: { degree: 'refocus' } });
+const degRestruct = buildJobPrompt({ docText: 'x', jd: 'j', company: 'c', role: 'r', brief: { degree: 'restructure' } });
+assert(degLight.sys.includes('轻度精简') && degRefocus.sys.includes('聚焦') && degRestruct.sys.includes('重组'), 'brief.degree 三档指令（light/refocus/restructure）');
+assert(buildJobPrompt({ docText: 'x', jd: 'j', company: 'c', role: 'r' }).sys === degRefocus.sys, '无 brief 默认 refocus 档');
+const pBrief = buildJobPrompt({ docText: 'x', jd: 'j', company: 'c', role: 'r', brief: { focus: ['高并发'], keepProjects: ['订单系统'], deemphasize: ['行政实习'], degree: 'light', pages: 2 } });
+assert(pBrief.user.includes('高并发') && pBrief.user.includes('订单系统') && pBrief.user.includes('行政实习') && pBrief.user.includes('2 页'), '要求卡进 user prompt（focus/keepProjects/deemphasize/pages）');
+void pageSuggestions; void createHash;
+console.log('✅ S4a-A 岗位适配数据层纯函数（指纹/ID 匹配/三时态/guardOps/exportChecks/状态机/brief 三档）');
+EOF
+
+# —— S4a-A2：updateMetaAll 全表事务（两进程并发原子 / mutator 抛错不落盘 / null 放弃）——
+echo "── S4a-A2: updateMetaAll 全表事务 ──"
+node --input-type=module << 'EOF'
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+import { updateMetaAll, updateMeta } from './tx.mjs';
+const fail = (m) => { console.error('❌ S4a-A2 ' + m); process.exit(1); };
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 's4a-meta-all-'));
+const metaFile = path.join(tmp, 'docs-meta.json');
+fs.writeFileSync(metaFile, JSON.stringify({ docA: { rev: 1 }, docB: { rev: 1 } }));
+// ① 两进程并发全表读改写 → 两文档字段全在（无丢失更新）
+const txUrl = pathToFileURL(path.join(process.cwd(), 'tx.mjs')).href;
+const childFile = path.join(tmp, 'child.mjs');
+fs.writeFileSync(childFile, `import { updateMetaAll } from '${txUrl}';
+const root = process.argv[2], docId = process.argv[3], prefix = process.argv[4], n = Number(process.argv[5]);
+for (let i = 0; i < n; i++) {
+  updateMetaAll(root, (all) => { const m = { ...(all[docId] || {}) }; m[prefix + i] = i; return { ...all, [docId]: m }; });
+  const sab = new SharedArrayBuffer(4); Atomics.wait(new Int32Array(sab), 0, 0, 1 + (i % 3));
+}
+`);
+const runChild = (docId, prefix, n) => new Promise((resolve, reject) => {
+  const c = spawn(process.execPath, [childFile, tmp, docId, prefix, String(n)], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let err = ''; c.stderr.on('data', (d) => err += d);
+  c.on('error', reject); c.on('exit', (code) => code === 0 ? resolve() : reject(new Error('child exit ' + code + ': ' + err)));
+});
+await Promise.all([runChild('docA', 'a', 60), runChild('docB', 'b', 60)]);
+const cm = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+for (let i = 0; i < 60; i++) {
+  if (!(cm.docA && cm.docA['a' + i] === i)) fail('docA 丢失字段 a' + i + '（updateMetaAll 并发丢失更新）');
+  if (!(cm.docB && cm.docB['b' + i] === i)) fail('docB 丢失字段 b' + i + '（updateMetaAll 并发丢失更新）');
+}
+// ② mutator 抛错 → 异常上抛且不落盘
+const before = fs.readFileSync(metaFile, 'utf8');
+let threw = false;
+try { updateMetaAll(tmp, () => { throw new Error('boom'); }); } catch (e) { threw = e.message === 'boom'; }
+if (!threw) fail('mutator 抛错应原样上抛');
+if (fs.readFileSync(metaFile, 'utf8') !== before) fail('mutator 抛错不得落盘');
+// ③ mutator 返回 null → 放弃写入，返回 null
+const r3 = updateMetaAll(tmp, () => null);
+if (r3 !== null) fail('mutator 返回 null → 放弃并返回 null');
+if (fs.readFileSync(metaFile, 'utf8') !== before) fail('null 放弃不得落盘');
+// ④ 全表事务与单文档 updateMeta 同锁共存：交替写不丢
+for (let i = 0; i < 10; i++) {
+  updateMeta(tmp, 'docC', (m) => ({ ...(m || {}), c: i }));
+  updateMetaAll(tmp, (all) => ({ ...all, docD: { d: i } }));
+}
+const cm4 = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+if (cm4.docC.c !== 9 || cm4.docD.d !== 9 || cm4.docA['a59'] !== 59) fail('updateMeta 与 updateMetaAll 交替写共存: ' + JSON.stringify({ c: cm4.docC.c, d: cm4.docD.d }));
+fs.rmSync(tmp, { recursive: true, force: true });
+console.log('✅ S4a-A2 updateMetaAll 全表事务（两进程并发不丢字段 / 抛错不落盘 / null 放弃 / 与 updateMeta 同锁共存）');
+EOF

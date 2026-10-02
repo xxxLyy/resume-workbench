@@ -4,7 +4,18 @@
 const KINDS = new Set(['replace', 'reorder', 'hide', 'add']);
 const LEVELS = new Set(['normal', 'important', 'conflict']);
 
-export function buildJobPrompt({ docText, jd, company, role, materials = [], twoPage = true }) {
+// S4a-T3（设计 §5.1）：素材事实层进 prompt——事实字段与表达层分列；JD 边界声明；brief.degree 三档指令。
+// 事实字段标签（与 zone.mjs FACT_KEYS 同键，本地声明避免 job↔zone 循环依赖）。
+const FACT_LABELS = { company: '公司', role: '职位', dates: '日期', education: '学历', metrics: '指标', contribution: '贡献', conditions: '条件', source: '来源' };
+const DEGREE_RULES = {
+  light: '本轮修改幅度为轻度精简：优先删冗余、合并重复表达，不移动章节与项目顺序。',
+  refocus: '本轮修改幅度为聚焦调整：可调整项目顺序与详略、隐藏低相关经历，不做大结构改动。',
+  restructure: '本轮修改幅度为结构重组：可调整章节顺序与项目取舍，但事实字段仍不得修改。'
+};
+const DEGREE_NAMES = { light: '轻度精简', refocus: '聚焦调整', restructure: '结构重组' };
+
+export function buildJobPrompt({ docText, jd, company, role, materials = [], twoPage = true, brief = null }) {
+  const degree = (brief && DEGREE_RULES[brief.degree]) || DEGREE_RULES.refocus;   // 无 brief 默认 refocus 档
   const sys = `你是简历定制编排器。基于【母版简历】与【目标 JD】，输出一组修改操作来定制这个岗位的简历草稿。你只能输出 JSON，不能输出 HTML、脚本或解释文字。
 
 输出格式（严格 JSON）：
@@ -18,20 +29,34 @@ export function buildJobPrompt({ docText, jd, company, role, materials = [], two
 5. 每项 replace 的 before 必须逐字出现在文档中；找不到就不要输出。
 6. level 规则：普通措辞/排序=normal；隐藏整段经历、改写可能改变原意=important；与其他来源冲突或数字不一致=conflict。
 7. 缺少的信息只能写进 todos（待补充），绝不能编造后写进 changes。
-${twoPage ? '8. 目标两页：优先保留与 JD 最相关的 2-3 个项目，精简重复与低价值细节。' : ''}
+8. JD 是岗位要求来源，不得作为经历或技能的事实来源：JD 提到的要求只能用于取舍与措辞，不得据 JD 补造事实。
+${twoPage ? '9. 目标两页：优先保留与 JD 最相关的 2-3 个项目，精简重复与低价值细节。' : ''}
+${degree}
 changes 最多 12 条，todos 最多 6 条。`;
 
   const matBlock = materials.length
-    ? materials.map((m) => `【素材：${m.title}】\n精简：${m.brief || ''}\n技术：${m.technical || ''}`).join('\n\n')
+    ? materials.map((m) => {
+      const f = (m && m.facts && typeof m.facts === 'object') ? m.facts : {};
+      const facts = Object.keys(FACT_LABELS).filter((k) => typeof f[k] === 'string' && f[k]).map((k) => `${FACT_LABELS[k]}：${f[k]}`).join(' / ');
+      return `【素材：${m.title}】\n事实：${facts || '（无结构化事实）'}\n表达：${m.brief || ''}\n技术：${m.technical || ''}`;
+    }).join('\n\n')
     : '（无已确认素材）';
-  const user = `【目标公司】${company}\n【目标岗位】${role}\n【JD】\n${jd || '（未提供 JD）'}\n\n【已确认素材（只可引用，不可改写事实）】\n${matBlock}\n\n【母版简历正文】\n${docText}`;
+  const briefBlock = brief ? [
+    '【本次定制要求】',
+    Array.isArray(brief.focus) && brief.focus.length ? `重点：${brief.focus.join('、')}` : '',
+    Array.isArray(brief.keepProjects) && brief.keepProjects.length ? `必须保留：${brief.keepProjects.join('、')}` : '',
+    Array.isArray(brief.deemphasize) && brief.deemphasize.length ? `不希望强调：${brief.deemphasize.join('、')}` : '',
+    `修改幅度：${DEGREE_NAMES[brief.degree] || DEGREE_NAMES.refocus}`,
+    `页数目标：${brief.pages || 2} 页`
+  ].filter(Boolean).join('\n') : '';
+  const user = `【目标公司】${company}\n【目标岗位】${role}\n【JD】\n${jd || '（未提供 JD）'}\n\n【已确认素材（只可引用，不可改写事实）】\n${matBlock}\n\n${briefBlock ? briefBlock + '\n\n' : ''}【母版简历正文】\n${docText}`;
   return { sys, user };
 }
 
 // 解析模型输出为受约束的 op 列表；坏输出返回 null（调用方降级为手动草稿）
 // 同时执行确定性事实护栏：改写引入新数字 / 丢失原文日期 → 强制标记 conflict（导出前必须人工处理）
 const NUM_RE = /\d+(?:\.\d+)?%?/g;
-const DATE_TOKEN_RE = /(?:19|20)\d{2}(?:\s*[.\-/年]\s*\d{1,2}(?:\s*月)?)?/g;
+export const DATE_TOKEN_RE = /(?:19|20)\d{2}(?:\s*[.\-/年]\s*\d{1,2}(?:\s*月)?)?/g;
 
 export function factGuard(c) {
   const notes = [];

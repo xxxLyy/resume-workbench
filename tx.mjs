@@ -117,6 +117,21 @@ export const rootLock = {
 };
 
 // ===== docs-meta.json 唯一原子写入者（同步）=====
+// 锁内读最新（损坏抛 CORRUPT，停写不覆盖）。
+function readMetaLocked(mp) {
+  let meta = {};
+  if (fs.existsSync(mp)) {
+    const raw = fs.readFileSync(mp, 'utf8');
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch {
+      const e = new Error(`数据文件损坏，已停止写入：${META_FILE}。请先人工修复或从备份恢复。`);
+      e.httpCode = 500; e.code = 'CORRUPT'; throw e;
+    }
+    meta = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+  }
+  return meta;
+}
+
 // 读最新 → patchFn(目标文档旧 meta 的深拷贝) → 只改目标文档 → 唯一临时 + 原子 rename。
 // 全程持 .meta.lock（跨进程）：两进程交替 patch 不同文档也不丢字段。进程内单线程同步 RMW 天然原子。
 // patchFn 返回 null/undefined → 删除该文档条目；返回对象 → 写入。文件损坏 → 抛 CORRUPT（停写，不覆盖）。
@@ -125,22 +140,28 @@ export function updateMeta(root, docId, patchFn) {
   acquireLockSync(lockPath, { staleMs: 30000, timeoutMs: 8000, retryMs: 2 });
   try {
     const mp = metaPath(root);
-    let meta = {};
-    if (fs.existsSync(mp)) {
-      const raw = fs.readFileSync(mp, 'utf8');
-      let parsed;
-      try { parsed = JSON.parse(raw); } catch {
-        const e = new Error(`数据文件损坏，已停止写入：${META_FILE}。请先人工修复或从备份恢复。`);
-        e.httpCode = 500; e.code = 'CORRUPT'; throw e;
-      }
-      meta = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
-    }
+    const meta = readMetaLocked(mp);
     const oldDoc = Object.prototype.hasOwnProperty.call(meta, docId) ? clone(meta[docId]) : undefined;
     const next = patchFn(oldDoc);
     if (next === null || next === undefined) delete meta[docId];
     else meta[docId] = next;
     atomicWrite(mp, JSON.stringify(meta));
     return (next === null || next === undefined) ? null : next;
+  } finally { releaseLockSync(lockPath); }
+}
+
+// 全表事务版（S4a 设计 §6 v1.4）：与 updateMeta 同锁（.meta.lock）同原子写；mutator 收到整个 meta 对象，
+// 返回新表写入、返回 null/undefined 放弃不写、抛错原样上抛且不落盘。用途：跨文档读改写须原子的操作
+// （如 gen-start 在元数据锁内扫描各文档 genTasks 判全局并发）。
+export function updateMetaAll(root, mutator) {
+  const lockPath = path.join(root, META_LOCK);
+  acquireLockSync(lockPath, { staleMs: 30000, timeoutMs: 8000, retryMs: 2 });
+  try {
+    const mp = metaPath(root);
+    const next = mutator(readMetaLocked(mp));
+    if (next === null || next === undefined) return null;
+    atomicWrite(mp, JSON.stringify(next));
+    return next;
   } finally { releaseLockSync(lockPath); }
 }
 
