@@ -153,6 +153,7 @@ export function updateMeta(root, docId, patchFn) {
 // 全表事务版（S4a 设计 §6 v1.4）：与 updateMeta 同锁（.meta.lock）同原子写；mutator 收到整个 meta 对象，
 // 返回新表写入、返回 null/undefined 放弃不写、抛错原样上抛且不落盘。用途：跨文档读改写须原子的操作
 // （如 gen-start 在元数据锁内扫描各文档 genTasks 判全局并发）。
+// mutator 返回非对象（数组/字符串等）→ 抛错不落盘：否则整表被写成非对象，下次 readMetaLocked 强转 {} 全表丢失。
 export function updateMetaAll(root, mutator) {
   const lockPath = path.join(root, META_LOCK);
   acquireLockSync(lockPath, { staleMs: 30000, timeoutMs: 8000, retryMs: 2 });
@@ -160,6 +161,7 @@ export function updateMetaAll(root, mutator) {
     const mp = metaPath(root);
     const next = mutator(readMetaLocked(mp));
     if (next === null || next === undefined) return null;
+    if (typeof next !== 'object' || Array.isArray(next)) throw new Error('updateMetaAll mutator 必须返回对象新表或 null（放弃），得到：' + typeof next);
     atomicWrite(mp, JSON.stringify(next));
     return next;
   } finally { releaseLockSync(lockPath); }

@@ -2238,6 +2238,7 @@ import { createHash } from 'node:crypto';
 import { contentFingerprint, paraFingerprint, parseEvidence, refFresh, candidatesState,
          reviewConsistency, applyOps, guardOps, exportChecks, transitionOp } from './evidence.mjs';
 import { buildJobPrompt } from './job.mjs';
+import { parasOf } from './zone.mjs';
 import { pageSuggestions } from './job.mjs';
 const assert = (c, m) => { if (!c) { console.error('❌ S4a-A ' + m); process.exit(1); } };
 
@@ -2470,6 +2471,35 @@ assert(ck2.canExport === true && ck2.reviewComplete === true, 'rejected 历史�
 const ck3 = exportChecks({ changes: [ { id: 'k6', level: 'normal', status: 'skipped' } ], evidence: [] }, {});
 assert(ck3.canExport === true && ck3.reviewComplete === false, '整体完成含 skipped 未决口径（skipped 不计完成）');
 
+// —— 修复轮1：hide/reorder/add 接受后不得假 hand-edited（appliedText 语义 + add 落点切 newZid）——
+const hsHtml = '<div class="sheet"><section class="section"><div class="section-title">工作经历</div><p data-zid="za1111111">负责交易系统，P99 800ms</p><p data-zid="ze5555555">条目甲</p><p data-zid="zf6666666">条目乙</p></section></div>';
+const hsJob = { changes: [
+  { id: 'fx-h1', status: 'pending', kind: 'hide', zid: 'ze5555555', after: '', entry: '条目甲', baseSnapshot: '条目甲' },
+  { id: 'fx-r1', status: 'pending', kind: 'reorder', zid: 'zf6666666', after: '', to: 'top', entry: '条目乙', baseSnapshot: '条目乙' },
+  { id: 'fx-a1', status: 'pending', kind: 'add', zid: 'za1111111', after: '新增要点行', baseSnapshot: '负责交易系统，P99 800ms' }
+] };
+const hsAcc = applyOps([
+  { operationId: 'fx-op1', changeId: 'fx-h1', action: 'accept', origText: '条目甲' },
+  { operationId: 'fx-op2', changeId: 'fx-r1', action: 'accept', origText: '条目乙' },
+  { operationId: 'fx-op3', changeId: 'fx-a1', action: 'accept', origText: '负责交易系统，P99 800ms', newZid: 'z9f000001' }
+], hsJob, hsHtml);
+assert(hsAcc.ok === true, '修复轮：hide/reorder/add 三类 op 接受通过');
+const accHtml = '<div class="sheet"><section class="section"><div class="section-title">工作经历</div><p data-zid="za1111111">负责交易系统，P99 800ms</p><p data-zid="ze5555555">条目甲</p><p data-zid="zf6666666">条目乙</p><p data-zid="z9f000001">新增要点行</p></section></div>';
+for (const ch of hsAcc.job.changes) {
+  const st = candidatesState(ch, mkCtx({ paras: parasOf(accHtml) }));
+  assert(JSON.stringify(st) === '[]', '修复轮：' + ch.kind + ' 接受后无假 hand-edited（实得 ' + JSON.stringify(st) + '）');
+}
+assert(candidatesState(hsAcc.job.changes[0], mkCtx({ paras: parasOf(accHtml.replace('条目甲', '条目甲（手改）')) })).includes('hand-edited'), '修复轮：hide 目标真手改仍检出 hand-edited');
+assert(candidatesState(hsAcc.job.changes[2], mkCtx({ paras: parasOf(accHtml.replace('新增要点行', '新增要点行（手改）')) })).includes('hand-edited'), '修复轮：add 新段真手改仍检出 hand-edited');
+const ecFix = exportChecks({ changes: hsAcc.job.changes, evidence: [] }, {});
+assert(ecFix.reviewComplete === true && ecFix.canExport === true, '修复轮：三类 op 接受后整体完成可达 true');
+// —— 修复轮2：applyOps origText 归一口径（含换行的 replace 接受→撤回不再假 400）——
+const nlJob = { changes: [ { id: 'fx-nl1', status: 'pending', kind: 'replace', zid: 'za1111111', after: '第一行\n第二行', baseSnapshot: '负责交易系统，P99 800ms' } ] };
+const nlAcc = applyOps([ { operationId: 'fx-nl-a', changeId: 'fx-nl1', action: 'accept', origText: '负责交易系统，P99\n800ms' } ], nlJob, '<p data-zid="za1111111">负责交易系统，P99 800ms</p>');
+assert(nlAcc.ok === true, '修复轮：含原始换行的 origText 接受通过（归一比较）');
+const nlRev = applyOps([ { operationId: 'fx-nl-r', changeId: 'fx-nl1', action: 'revert', origText: '第一行\n第二行' } ], nlAcc.job, '<p data-zid="za1111111">第一行\n第二行</p>');
+assert(nlRev.ok === true && nlRev.job.changes[0].status === 'pending', '修复轮：含换行 origText 撤回通过（与 candidatesState 同口径）');
+
 // —— buildJobPrompt：facts 进素材块 / brief 三档 / JD 边界声明 ——
 const p = buildJobPrompt({ docText: '正文', jd: 'JD 内容', company: '测试公司', role: '后端', materials: mats.filter((m) => m.factStatus === 'confirmed') });
 assert(p.sys.includes('JD 是岗位要求来源，不得作为经历或技能的事实来源'), 'JD 边界声明进系统提示');
@@ -2538,6 +2568,14 @@ for (let i = 0; i < 10; i++) {
 }
 const cm4 = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
 if (cm4.docC.c !== 9 || cm4.docD.d !== 9 || cm4.docA['a59'] !== 59) fail('updateMeta 与 updateMetaAll 交替写共存: ' + JSON.stringify({ c: cm4.docC.c, d: cm4.docD.d }));
+// ⑤ mutator 返回非对象（数组/字符串）→ 抛错不落盘（防整表被写成非对象 → 下次读取强转 {} 全表丢失）
+const beforeShape = fs.readFileSync(metaFile, 'utf8');
+for (const badRet of [() => ['x'], () => 'oops', () => 42]) {
+  let threw = false;
+  try { updateMetaAll(tmp, badRet); } catch { threw = true; }
+  if (!threw) fail('mutator 返回非对象应抛错（' + typeof badRet() + '）');
+}
+if (fs.readFileSync(metaFile, 'utf8') !== beforeShape) fail('mutator 返回非对象不得落盘');
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('✅ S4a-A2 updateMetaAll 全表事务（两进程并发不丢字段 / 抛错不落盘 / null 放弃 / 与 updateMeta 同锁共存）');
 EOF

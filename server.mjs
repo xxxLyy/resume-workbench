@@ -760,6 +760,7 @@ async function saveJsonProtocol(req, id, url) {
       if (!stripped.trim()) return { status: 400, body: { ok: false, error: 'empty save rejected' } };
       const oldHtml = fs.readFileSync(docPath(id), 'utf8');
       if (body.ops.length && !job) return { status: 400, body: { ok: false, error: '该文档不是岗位草稿（无 changes 可操作）' } };
+      // hide 接受要求目标段落在正文（删除式隐藏会被 anchor-gone 拒）——T4+ UI 必须属性式实现 hide（加隐藏标记类，不删节点）。
       const pre = applyOps(body.ops, job, oldHtml);
       if (!pre.ok) return { status: 400, body: { ok: false, badOp: pre.badOp, reason: pre.reason, error: '操作校验失败，整份拒绝（正文未保存）：' + pre.reason } };
       // ⑤ 四步全过 → 旧版快照（既有手动快照）+ beginTx 写入

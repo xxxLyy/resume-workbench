@@ -117,7 +117,11 @@ export function candidatesState(change, ctx = {}) {
     if (typeof c.baseSnapshot === 'string' && cur && cur.text !== normText(c.baseSnapshot)) hits.add('needs-compare');
     if (refBad && refIds.length) hits.add('needs-compare');
   }
-  if (c.acceptedAt && cur && typeof c.appliedText === 'string' && cur.text !== normText(c.appliedText)) hits.add('hand-edited');
+  // hand-edited：accepted 后手改。add 的落点是新段落（newZid），容器文本与本候选无关——用 newZid 查
+  const accCur = (c.acceptedAt && c.kind === 'add' && c.newZid)
+    ? (ctx.paras || []).find((p) => p && p.zid === c.newZid)
+    : cur;
+  if (c.acceptedAt && accCur && typeof c.appliedText === 'string' && accCur.text !== normText(c.appliedText)) hits.add('hand-edited');
   // 「保留当前版本」（v1.4）：resolvedText/resolvedRefs 绑定确认时内容，之后再变 → 重新进待核对（resolvedAt 保留）
   if (c.resolvedAt) {
     if (typeof c.resolvedText === 'string' && cur && cur.text !== normText(c.resolvedText)) hits.add('needs-compare');
@@ -210,15 +214,18 @@ export function applyOps(ops, job, html, opts = {}) {
       if (c.status !== 'pending') return bad('前置不满足：候选不在 pending（当前 ' + (c.status || '未知') + '）');
       if (!anchor) return bad('前置不满足：落点不存在（anchor-gone）');
       if (locked.has(anchorZid)) return bad('前置不满足：该段已锁定（locked-now）');
-      if (typeof op.origText !== 'string' || anchor.text !== op.origText) return bad('origText 与当前正文锚点不匹配（正文已被并发修改，请刷新后重试）');
+      // origText 与锚点比较走 parasOf 同口径空白归一（客户端快照可能含原始换行；与 candidatesState 口径一致）
+      if (typeof op.origText !== 'string' || anchor.text !== normText(op.origText)) return bad('origText 与当前正文锚点不匹配（正文已被并发修改，请刷新后重试）');
       if (c.kind === 'add' && (typeof op.newZid !== 'string' || !op.newZid.trim())) return bad('add 接受必须携带 newZid（客户端已插入的新段落 ID）');
-      const acc = { ...c, status: 'accepted', origText: op.origText, appliedText: typeof c.after === 'string' ? c.after : '', acceptedAt: now };
+      // appliedText = 接受后锚点文本：replace/add 记 after；hide/reorder 文本不变 → 记 origText
+      // （否则 hand-edited 判定对空 after 永真命中，整体完成被永久卡死）
+      const acc = { ...c, status: 'accepted', origText: op.origText, appliedText: (c.kind === 'hide' || c.kind === 'reorder') ? op.origText : (typeof c.after === 'string' ? c.after : ''), acceptedAt: now };
       if (c.kind === 'add') acc.newZid = op.newZid;
       next[idx] = acc;
     } else {
       if (c.status !== 'accepted') return bad('前置不满足：候选不在 accepted（当前 ' + (c.status || '未知') + '）');
       if (!anchor) return bad('前置不满足：撤回目标不存在');
-      if (typeof op.origText !== 'string' || anchor.text !== op.origText) return bad('origText 与当前正文锚点不匹配（撤回会覆盖你的调整；经确认门后携带当前文本重试）');
+      if (typeof op.origText !== 'string' || anchor.text !== normText(op.origText)) return bad('origText 与当前正文锚点不匹配（撤回会覆盖你的调整；经确认门后携带当前文本重试）');
       const rc = transitionOp(c, 'revert');
       next[idx] = rc;
     }
