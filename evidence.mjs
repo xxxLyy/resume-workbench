@@ -217,7 +217,7 @@ export function applyOps(ops, job, html, opts = {}) {
       if (locked.has(anchorZid)) return bad('前置不满足：该段已锁定（locked-now）');
       // origText 与锚点比较走 parasOf 同口径空白归一（客户端快照可能含原始换行；与 candidatesState 口径一致）
       if (typeof op.origText !== 'string' || anchor.text !== normText(op.origText)) return bad('origText 与当前正文锚点不匹配（正文已被并发修改，请刷新后重试）');
-      if (c.kind === 'add' && (typeof op.newZid !== 'string' || !op.newZid.trim())) return bad('add 接受必须携带 newZid（客户端已插入的新段落 ID）');
+      if (c.kind === 'add' && (typeof op.newZid !== 'string' || !/^z[0-9a-f]{8}$/.test(op.newZid))) return bad('add 接受必须携带 newZid 且形如 z+8 位十六进制（客户端已插入的新段落 ID；坏形状会被 /save 归一重打，与落账 newZid 永久错位）');
       // appliedText = 接受后锚点文本：replace/add 记 after；hide/reorder 文本不变 → 记 origText
       // （否则 hand-edited 判定对空 after 永真命中，整体完成被永久卡死）
       const acc = { ...c, status: 'accepted', origText: op.origText, appliedText: (c.kind === 'hide' || c.kind === 'reorder') ? op.origText : (typeof c.after === 'string' ? c.after : ''), acceptedAt: now };

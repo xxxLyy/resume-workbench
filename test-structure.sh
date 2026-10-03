@@ -1985,7 +1985,7 @@ const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','
   '/ai/zone-analyze','/ai/zone-rewrite',
   '/api/extract','/app','/app/add','/app/archive-regenerate','/app/del','/app/ics','/app/jd','/app/update','/applications',
   '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf',
-  '/job-panel.js','/job/changes','/job/create','/job/generate','/link','/mat/add','/mat/confirm','/mat/del','/mat/update',
+  '/job-panel.js','/job/changes','/job/create','/job/generate','/job/gen-cancel','/job/gen-start','/link','/mat/add','/mat/confirm','/mat/del','/mat/update',
   '/materials','/new','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings',
   '/snapshot/baseline','/snapshot/note','/snapshot/pdf','/snapshot/view','/snapshots','/stats','/tag','/version/create',
   '/zones','/zones/init','/zone-panel.js'].sort();
@@ -2383,6 +2383,9 @@ assert(applyOps([ { operationId: 'o-9', changeId: 'c1', action: 'accept', origTe
 const addJob = { changes: [ { ...addChange } ] };
 const rAdd = applyOps([ { operationId: 'o-10', changeId: 'c2', action: 'accept', origText: '项目甲：数据管道重设计', newZid: 'z9e000001' } ], addJob, '<div class="sheet"><p data-zid="zc3333333">项目甲：数据管道重设计</p></div>');
 assert(rAdd.ok === true && rAdd.job.changes[0].newZid === 'z9e000001' && rAdd.job.changes[0].status === 'accepted', 'add 接受：容器锚点校验 + newZid 记录');
+// [S4a-T4] newZid 形状校验：非 z+8hex 拒收（防 normalizeZids 重打后与落账 newZid 永久错位）
+const rBadZid = applyOps([ { operationId: 'o-10b', changeId: 'c2', action: 'accept', origText: '项目甲：数据管道重设计', newZid: 'BAD-ZID' } ], addJob, '<div class="sheet"><p data-zid="zc3333333">项目甲：数据管道重设计</p></div>');
+assert(rBadZid.ok === false && rBadZid.badOp === 'o-10b' && /newZid/.test(rBadZid.reason || ''), 'add 接受：坏形状 newZid 拒收（' + (rBadZid.reason || '') + '）');
 // add 撤回：锚点切到 newZid
 const rRevertAdd = applyOps([ { operationId: 'o-11', changeId: 'c2', action: 'revert', origText: '新增要点' } ], rAdd.job, '<div class="sheet"><p data-zid="zc3333333">项目甲：数据管道重设计</p><p data-zid="z9e000001">新增要点</p></div>');
 assert(rRevertAdd.ok === true && rRevertAdd.job.changes[0].status === 'pending' && rRevertAdd.job.changes[0].origText === undefined && rRevertAdd.job.changes[0].appliedText === undefined && rRevertAdd.job.changes[0].acceptedAt === undefined && rRevertAdd.job.changes[0].newZid === undefined, '撤回：清 origText/appliedText/acceptedAt/newZid 回 pending');

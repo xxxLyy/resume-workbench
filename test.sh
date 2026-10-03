@@ -104,15 +104,23 @@ http.createServer((q, s) => {
   q.on('end', () => {
     fs.writeFileSync('$TEST_DIR/llm-last.json', b.slice(0, 200000));
     fs.copyFileSync('$TEST_DIR/llm-last.json', '/tmp/resume-test-llm-last.json');
-    s.writeHead(200, { 'Content-Type': 'application/json' });
-    if (q.url.includes('/models')) return s.end(JSON.stringify({ data: [{ id: 'stub-model' }] }));
-    let content = reply;
-    try {
-      const sys = JSON.parse(b).messages.find((m) => m.role === 'system').content;
-      if (String(sys).includes('区域分析顾问')) content = zoneAnalyze;
-      else if (String(sys).includes('区域改写器')) content = zoneRewrite;
-    } catch {}
-    s.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    // S4a-T4 控制文件（不重启服务即可切换）：llm-slow=延迟毫秒（占住 running 窗口）；llm-err=5xx（错误回调路径）
+    const respond = () => {
+      if (q.url.includes('/models')) { s.writeHead(200, { 'Content-Type': 'application/json' }); return s.end(JSON.stringify({ data: [{ id: 'stub-model' }] })); }
+      let content = reply;
+      try {
+        const sys = JSON.parse(b).messages.find((m) => m.role === 'system').content;
+        if (String(sys).includes('区域分析顾问')) content = zoneAnalyze;
+        else if (String(sys).includes('区域改写器')) content = zoneRewrite;
+      } catch {}
+      if (fs.existsSync('$TEST_DIR/llm-err')) { s.writeHead(500, { 'Content-Type': 'text/plain' }); return s.end('stub forced error'); }
+      s.writeHead(200, { 'Content-Type': 'application/json' });
+      s.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    };
+    let slow = 0;
+    try { if (fs.existsSync('$TEST_DIR/llm-slow')) slow = Number(fs.readFileSync('$TEST_DIR/llm-slow', 'utf8')) || 0; } catch {}
+    if (slow > 0) return setTimeout(respond, slow);
+    respond();
   });
 }).listen(17900, '127.0.0.1');
 EOF
@@ -834,6 +842,171 @@ GAPREV_AFTER=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(proces
 TXLEFT=$(find "$RESUME_ROOT/.tx" -name '*.json' ! -name '*.meta.json' 2>/dev/null | wc -l | tr -d ' ')
 [ "$TXLEFT" = "0" ] || fail "S4a 附加f 恢复后 .tx 应清空（剩 $TXLEFT 条）"
 echo '✅ S4a 附加f：保存中断后重启恢复（旧正文+旧 meta 一致、.tx 清空）'
+
+# ===== S4a-T4：AI 任务可靠性（gen-start 锁内扫描 / 三类回调 taskId / 双层超时 / 取消 / 重启恢复）=====
+# 夹具：独立岗位草稿 T4DOC（无历史 changes，计数干净）；跨文档夹具复用 JOB2；stub 延迟/错误走控制文件。
+T4DOC=$(curl -s -X POST "$B/job/create" -H 'Content-Type: application/json' -d "{\"from\":\"$DOCID\",\"company\":\"任务可靠性公司\",\"role\":\"后端\",\"jd\":\"S4a-T4 验证\"}" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch{console.log('')}})")
+[ -n "$T4DOC" ] && [ -f "$RESUME_ROOT/docs/$T4DOC.html" ] || fail 'S4a-T4 夹具岗位草稿创建'
+gt_status() { # $1=doc $2=kind → genTasks[kind].status（经 /job/changes，读取时超时清理随之生效）
+  curl -s "$B/job/changes?id=$1" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s).job;console.log(((j.genTasks||{})[process.argv[1]]||{}).status||"")}catch{console.log("")}})' "$2"
+}
+gt_taskid() { # $1=doc $2=kind → genTasks[kind].taskId
+  curl -s "$B/job/changes?id=$1" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s).job;console.log(((j.genTasks||{})[process.argv[1]]||{}).taskId||"")}catch{console.log("")}})' "$2"
+}
+gt_error() { # $1=doc $2=kind → genTasks[kind].error
+  curl -s "$B/job/changes?id=$1" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s).job;console.log(((j.genTasks||{})[process.argv[1]]||{}).error||"")}catch{console.log("")}})' "$2"
+}
+wait_gt() { # $1=doc $2=kind $3=期望status $4=超时秒（默认 15）
+  local i; for i in $(seq 1 $(( ${4:-15} * 4 ))); do
+    [ "$(gt_status "$1" "$2")" = "$3" ] && return 0
+    sleep 0.25
+  done
+  return 1
+}
+t4_count() { # 直接读 meta（无 GET 副作用）：T4DOC 的 changes 条数
+  node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]];console.log(m&&m.job&&Array.isArray(m.job.changes)?m.job.changes.length:-1)' "$RESUME_ROOT/docs-meta.json" "$T4DOC"
+}
+t4_age_task() { # $1=kind $2=taskId → 把该任务改写为「running 且 startedAt=11 分钟前」（过期残留夹具）
+  node -e 'const fs=require("fs");const f=process.argv[1],doc=process.argv[2],kind=process.argv[3],tid=process.argv[4];
+  const m=JSON.parse(fs.readFileSync(f,"utf8"));
+  const j=m[doc].job; j.genTasks=j.genTasks||{};
+  const t=j.genTasks[kind]||{};
+  j.genTasks[kind]={taskId:tid,status:"running",startedAt:Date.now()-11*60*1000,baseHash:(t.baseHash==null?null:t.baseHash),error:null,scope:(t.scope==null?null:t.scope)};
+  fs.writeFileSync(f,JSON.stringify(m));' "$RESUME_ROOT/docs-meta.json" "$T4DOC" "$1" "$2"
+}
+t4_config_timeout() { # $1=毫秒（空串=移除，恢复默认 120s）
+  node -e 'const fs=require("fs");const f=process.argv[1];const c=JSON.parse(fs.readFileSync(f,"utf8"));
+  if(process.argv[2]){c.profiles[0].timeoutMs=Number(process.argv[2])}else{delete c.profiles[0].timeoutMs}
+  fs.writeFileSync(f,JSON.stringify(c));' "$RESUME_ROOT/config.json" "$1"
+}
+
+# —— a. 原子启动：并发双击同一文档同类 → updateMetaAll 锁内只有一个 running ——
+echo 5000 > "$TEST_DIR/llm-slow"
+curl -s -X POST "$B/job/gen-start?id=$T4DOC&kind=changes" -o "$TEST_DIR/t4-a.json" & CA=$!
+curl -s -X POST "$B/job/gen-start?id=$T4DOC&kind=changes" -o "$TEST_DIR/t4-b.json" & CB=$!
+wait $CA $CB
+OKN=$(grep -hc '"ok":true' "$TEST_DIR/t4-a.json" "$TEST_DIR/t4-b.json" | awk '{s+=$1}END{print s}')
+[ "$OKN" = "1" ] || fail "S4a-T4 并发双击应恰一个成功（得 ${OKN}）: $(cat "$TEST_DIR/t4-a.json") | $(cat "$TEST_DIR/t4-b.json")"
+T4T1=$(node -e 'const fs=require("fs");for(const f of process.argv.slice(1)){try{const j=JSON.parse(fs.readFileSync(f,"utf8"));if(j.ok&&j.taskId){console.log(j.taskId);break}}catch{}}' "$TEST_DIR/t4-a.json" "$TEST_DIR/t4-b.json")
+[ -n "$T4T1" ] || fail 'S4a-T4 成功响应缺 taskId'
+CODE409=$(grep -hc '"ok":false' "$TEST_DIR/t4-a.json" "$TEST_DIR/t4-b.json" | awk '{s+=$1}END{print s}')
+[ "$CODE409" = "1" ] || fail 'S4a-T4 双击的败者应拿到 ok:false（409）'
+grep -h '正在进行中' "$TEST_DIR/t4-a.json" "$TEST_DIR/t4-b.json" | grep -q . || fail 'S4a-T4 同文档同类 409 应说明任务正在进行中'
+[ "$(gt_status "$T4DOC" changes)" = 'running' ] || fail 'S4a-T4 启动后应为 running'
+[ "$(gt_taskid "$T4DOC" changes)" = "$T4T1" ] || fail 'S4a-T4 running 的 taskId 与响应不一致'
+# 坏 kind / 非岗位草稿
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/job/gen-start?id=$T4DOC&kind=nope")
+[ "$CODE" = "400" ] || fail "S4a-T4 坏 kind 应 400 得 $CODE"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/job/gen-start?id=$DOCID&kind=changes")
+[ "$CODE" = "404" ] || fail "S4a-T4 非岗位草稿应 404 得 $CODE"
+echo '✅ S4a-T4 原子启动（并发双击单 running / taskId 返回 / 坏 kind 400 / 非草稿 404）'
+
+# —— b. 跨文档并发：docA running → docB 同类被拒（updateMetaAll 锁内扫描全表）——
+R=$(curl -s -X POST "$B/job/gen-start?id=$JOB2&kind=changes")
+echo "$R" | grep -q '另一文档的任务进行中' || fail "S4a-T4 跨文档同类应被拒: $(echo "$R" | head -c 160)"
+echo '✅ S4a-T4 跨文档并发（锁内扫描各文档 genTasks，同类 ≤1）'
+
+# —— c. 两任务独立：changes running 时 evidence 可启动，互不清除 ——
+R=$(curl -s -X POST "$B/job/gen-start?id=$T4DOC&kind=evidence")
+echo "$R" | grep -q '"ok":true' || fail "S4a-T4 evidence 任务应可独立启动: $(echo "$R" | head -c 160)"
+[ "$(gt_taskid "$T4DOC" changes)" = "$T4T1" ] || fail 'S4a-T4 启动 evidence 清掉了 changes 的 taskId'
+[ "$(gt_status "$T4DOC" changes)" = 'running' ] || fail 'S4a-T4 启动 evidence 干扰了 changes 的 running'
+wait_gt "$T4DOC" evidence error 10 || fail "S4a-T4 evidence 占位任务应落 error（得 $(gt_status "$T4DOC" evidence)）"
+gt_error "$T4DOC" evidence | grep -q 'S4a-T6' || fail 'S4a-T4 evidence 占位错误应说明 T6 接入'
+[ "$(gt_status "$T4DOC" changes)" = 'running' ] || fail 'S4a-T4 evidence 结束后 changes 应仍 running（互不阻塞）'
+echo '✅ S4a-T4 两任务独立（evidence 启动/结束不清 changes 状态）'
+
+# —— d. 取消：taskId 匹配才 cancelled；迟到成功回调被丢弃 ——
+R=$(curl -s -X POST "$B/job/gen-cancel?id=$T4DOC&kind=changes&taskId=$T4T1")
+echo "$R" | grep -q '"ok":true' || fail "S4a-T4 取消失败: $(echo "$R" | head -c 160)"
+CODE=$(curl -s -o "$TEST_DIR/t4-c2.json" -w '%{http_code}' -X POST "$B/job/gen-cancel?id=$T4DOC&kind=changes&taskId=$T4T1")
+[ "$CODE" = "409" ] || fail "S4a-T4 重复取消应 409 得 $CODE"
+sleep 5.6   # 迟到的成功回调（slow=5000）到达 → taskId 校验不过 → 丢弃
+[ "$(gt_status "$T4DOC" changes)" = 'cancelled' ] || fail "S4a-T4 迟到成功回调污染了 cancelled 状态（得 $(gt_status "$T4DOC" changes)）"
+[ "$(t4_count)" = "0" ] || fail "S4a-T4 取消后的迟到成功仍落了 changes（$(t4_count) 条）"
+echo '✅ S4a-T4 取消带 taskId（重复取消 409 / 迟到成功回调丢弃不落盘）'
+
+# —— d2. 迟到错误回调同样丢弃 ——
+rm -f "$TEST_DIR/llm-slow"
+touch "$TEST_DIR/llm-err"
+T4TE=$(curl -s -X POST "$B/job/gen-start?id=$T4DOC&kind=changes" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.ok?j.taskId:"")})')
+[ -n "$T4TE" ] || fail 'S4a-T4 错误路径夹具启动失败'
+curl -s -X POST "$B/job/gen-cancel?id=$T4DOC&kind=changes&taskId=$T4TE" -o /dev/null
+sleep 6   # 5xx 经 withRetry 重试 2 次后错误回调到达 → 已取消 → 丢弃
+[ "$(gt_status "$T4DOC" changes)" = 'cancelled' ] || fail "S4a-T4 迟到错误回调污染 cancelled（得 $(gt_status "$T4DOC" changes)）"
+gt_error "$T4DOC" changes | grep -q . && fail 'S4a-T4 迟到错误回调被落账（error 字段应保持空）'
+rm -f "$TEST_DIR/llm-err"
+echo '✅ S4a-T4 迟到错误回调丢弃（error 不落账）'
+
+# —— e. 取消不误伤新任务：旧 taskId 取消 → 409 且新任务照常完成 ——
+R=$(curl -s -X POST "$B/job/gen-start?id=$T4DOC&kind=changes")
+echo "$R" | grep -q '"ok":true' || fail "S4a-T4 取消后重新启动失败: $(echo "$R" | head -c 160)"
+T4T2=$(echo "$R" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{console.log(JSON.parse(s).taskId)})')
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/job/gen-cancel?id=$T4DOC&kind=changes&taskId=$T4T1")
+[ "$CODE" = "409" ] || fail "S4a-T4 旧 taskId 取消新任务应 409 得 $CODE"
+wait_gt "$T4DOC" changes done 15 || fail "S4a-T4 新任务未完成（得 $(gt_status "$T4DOC" changes)）"
+[ "$(t4_count)" = "2" ] || fail "S4a-T4 成功回调应落 2 条 changes（得 $(t4_count)）"
+echo '✅ S4a-T4 取消不误伤新任务（旧 taskId 409 / 新任务正常完成落账）'
+
+# —— f. 请求级超时：config timeoutMs 覆盖 → 任务 error ——
+t4_config_timeout 1
+R=$(curl -s -X POST "$B/job/gen-start?id=$T4DOC&kind=changes")
+echo "$R" | grep -q '"ok":true' || fail 'S4a-T4 超时夹具启动失败'
+wait_gt "$T4DOC" changes error 25 || fail "S4a-T4 请求级超时应落 error（得 $(gt_status "$T4DOC" changes)）"
+gt_error "$T4DOC" changes | grep -q '模型调用失败' || fail "S4a-T4 请求级超时错误信息异常: $(gt_error "$T4DOC" changes)"
+[ "$(t4_count)" = "2" ] || fail 'S4a-T4 超时不得落 changes'
+t4_config_timeout ''
+R=$(curl -s -X POST "$B/job/gen-start?id=$T4DOC&kind=changes")
+echo "$R" | grep -q '"ok":true' || fail 'S4a-T4 恢复配置后重试启动失败'
+wait_gt "$T4DOC" changes done 15 || fail "S4a-T4 重试未完成（得 $(gt_status "$T4DOC" changes)）"
+[ "$(t4_count)" = "4" ] || fail "S4a-T4 重试应再落 2 条（得 $(t4_count)）"
+echo '✅ S4a-T4 请求级超时（timeoutMs 覆盖 → error）+ 失败重试可用'
+
+# —— g. 任务级总时限·读取时：过期 running 在 /job/changes 组装前被清为 error，且不落账 ——
+CNT_BEFORE=$(t4_count)
+t4_age_task changes t-legacy01
+[ "$(gt_status "$T4DOC" changes)" = 'error' ] || fail "S4a-T4 读取时应清过期 running（得 $(gt_status "$T4DOC" changes)）"
+gt_error "$T4DOC" changes | grep -q '任务超时' || fail 'S4a-T4 读取时清理应标任务超时'
+[ "$(t4_count)" = "$CNT_BEFORE" ] || fail 'S4a-T4 读取时清理不得落 changes'
+echo '✅ S4a-T4 任务级总时限·读取时（过期 running → error 且不落账）'
+
+# —— h. 任务级总时限·完成回调时：过期回调不落账 ——
+echo 2000 > "$TEST_DIR/llm-slow"
+T4T3=$(curl -s -X POST "$B/job/gen-start?id=$T4DOC&kind=changes" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{console.log(JSON.parse(s).taskId)})')
+t4_age_task changes "$T4T3"   # 启动后立刻把 startedAt 改老 → 回调到达时已过期
+rm -f "$TEST_DIR/llm-slow"
+wait_gt "$T4DOC" changes error 15 || fail "S4a-T4 过期回调应判 error（得 $(gt_status "$T4DOC" changes)）"
+gt_error "$T4DOC" changes | grep -q '任务超时' || fail 'S4a-T4 过期回调应标任务超时'
+[ "$(t4_count)" = "$CNT_BEFORE" ] || fail "S4a-T4 过期回调仍落了 changes（$(t4_count) 条）"
+echo '✅ S4a-T4 任务级总时限·完成回调时（过期回调不落账）'
+
+# —— i. 任务级总时限·启动时：过期残留不阻塞新任务（拒过期残留）——
+t4_age_task changes t-old0001
+R=$(curl -s -X POST "$B/job/gen-start?id=$T4DOC&kind=changes")
+echo "$R" | grep -q '"ok":true' || fail "S4a-T4 过期残留阻塞了新任务: $(echo "$R" | head -c 160)"
+wait_gt "$T4DOC" changes done 15 || fail "S4a-T4 残留清理后新任务未完成（得 $(gt_status "$T4DOC" changes)）"
+[ "$(t4_count)" = "$((CNT_BEFORE+2))" ] || fail "S4a-T4 新任务应落 2 条（得 $(t4_count)）"
+echo '✅ S4a-T4 任务级总时限·启动时（过期残留不阻新任务）'
+
+# —— j. 重启恢复：隔离服务杀重启 → running → error(重启中断) 且 taskId=null ——
+echo 3000 > "$TEST_DIR/llm-slow"
+PORT2=17903
+PORT=$PORT2 node server.mjs > "$TEST_DIR/s4a-t4-srv2.log" 2>&1 & SRV2=$!
+sleep 0.6
+kill -0 $SRV2 2>/dev/null || fail 'S4a-T4 重启夹具服务启动失败'
+T4T5=$(curl -s -X POST "http://localhost:$PORT2/job/gen-start?id=$T4DOC&kind=changes" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.ok?j.taskId:"")})')
+[ -n "$T4T5" ] || fail 'S4a-T4 重启夹具任务启动失败'
+sleep 0.5          # 任务仍在 LLM 等待中（slow=3000）
+kill -9 $SRV2 2>/dev/null
+rm -f "$TEST_DIR/llm-slow"
+[ "$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]];const t=m.job.genTasks.changes;console.log(t.status+" "+t.taskId)' "$RESUME_ROOT/docs-meta.json" "$T4DOC")" = "running $T4T5" ] || fail 'S4a-T4 重启夹具未处于 running'
+PORT=$PORT2 node server.mjs > "$TEST_DIR/s4a-t4-srv3.log" 2>&1 & SRV3=$!
+sleep 0.8
+[ "$(gt_taskid "$T4DOC" changes)" = '' ] || fail "S4a-T4 重启恢复应置 taskId=null（得 $(gt_taskid "$T4DOC" changes)）"
+[ "$(gt_status "$T4DOC" changes)" = 'error' ] || fail "S4a-T4 重启恢复应置 error（得 $(gt_status "$T4DOC" changes)）"
+gt_error "$T4DOC" changes | grep -q '重启中断' || fail 'S4a-T4 重启恢复错误应说明中断可重试'
+[ "$(t4_count)" = "$((CNT_BEFORE+2))" ] || fail 'S4a-T4 重启恢复不得改动已落盘 changes'
+echo '✅ S4a-T4 重启恢复（running → error(重启中断) + taskId 置空 + 落盘数据不动）'
 
 # ===== 16. 浏览器级保存语义（可选，需要本机 Chromium）=====
 if node test-editor.mjs "$B" "$DOCID" "$RESUME_ROOT"; then

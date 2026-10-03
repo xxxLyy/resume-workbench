@@ -65,7 +65,8 @@ export async function chatMsgs(root, messages) {
     headers: { Authorization: `Bearer ${c.apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: c.model, messages }),
     // 不带 temperature：Kimi coding 等端点只允许默认值，硬编码会被 400
-    signal: AbortSignal.timeout(60000)
+    // 请求级超时（S4a 设计 §6）：默认 120s，profile 的 timeoutMs 可覆盖
+    signal: AbortSignal.timeout(Number(c.timeoutMs) > 0 ? Number(c.timeoutMs) : 120000)
   }).then(okOrThrow('LLM 请求失败')));
   // r.json() 与结构校验刻意放在 withRetry 外：body 解析/格式错误天然不重试
   const data = await r.json();

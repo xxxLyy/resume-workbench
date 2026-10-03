@@ -1295,6 +1295,36 @@ try {
     await ctx.close();
   }
 
+  // ===== 4b [S4a-T4] AI 任务迷你指示：running 可见、点击回审阅 Tab、非岗位草稿不渲染、结束后隐藏 =====
+  {
+    // 夹具：浏览器外直改 meta 把 changes 任务置 running（页面轮询 2.5s 内应出现「生成中…」）
+    const metaPathB = path.join(dataRoot, 'docs-meta.json');
+    const mkTask = (over) => Object.assign({ taskId: null, status: 'idle', startedAt: null, baseHash: null, error: null, scope: null }, over || {});
+    const metaB = JSON.parse(fs.readFileSync(metaPathB, 'utf8'));
+    metaB[JOB_DOC].job.genTasks = { evidence: mkTask(), changes: mkTask({ taskId: 't-feed001', status: 'running', startedAt: Date.now() }) };
+    fs.writeFileSync(metaPathB, JSON.stringify(metaB));
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await page.goto(base + '/edit?id=' + JOB_DOC);
+    await page.waitForSelector('.ed-gening:not([hidden])', { timeout: 6000 });
+    ok('[S4a-T4] running 态迷你指示可见（生成中…）');
+    await page.evaluate(() => window.__edSelectTab('ai'));
+    await page.click('.ed-gening');
+    await page.waitForFunction(() => document.querySelector('#ed-rtabs button[data-pane="review"]').getAttribute('aria-selected') === 'true', { timeout: 3000 });
+    ok('[S4a-T4] 迷你指示点击回到审阅 Tab');
+    const page2 = await ctx.newPage();
+    await page2.goto(base + '/edit?id=' + ED_DOC);
+    await page2.waitForSelector('#ed-navlist .ed-nav');
+    if (await page2.evaluate(() => !!document.querySelector('.ed-gening'))) bad('[S4a-T4] 非岗位草稿出现了生成指示');
+    else ok('[S4a-T4] 非岗位草稿无迷你指示');
+    const metaB2 = JSON.parse(fs.readFileSync(metaPathB, 'utf8'));
+    metaB2[JOB_DOC].job.genTasks.changes = mkTask();
+    fs.writeFileSync(metaPathB, JSON.stringify(metaB2));
+    await page.waitForSelector('.ed-gening', { state: 'hidden', timeout: 6000 });
+    ok('[S4a-T4] 任务结束（idle）后迷你指示隐藏');
+    await ctx.close();
+  }
+
   // ===== 5. 导航无障碍与交互细节 =====
   {
     const ctx = await browser.newContext();

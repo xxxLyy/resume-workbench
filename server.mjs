@@ -4,7 +4,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { importPdfText } from './importer.mjs';
@@ -16,7 +16,7 @@ import { docToLines, docToText, contentHash, sectionsOf } from './extract.mjs';
 import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, digestOf, buildZoneAnalyzePrompt, parseZoneAnalysis, buildZoneRewritePrompt, parseZoneRewrites, FACT_KEYS, MAT_STATES, migrateMats } from './zone.mjs';
 import { rotateLogIfNeeded } from './logrotate.mjs';
 import { freezeHtml, normalizeToCurrent, splitDoc, staleInfo } from './freeze.mjs';
-import { beginTx, commitTx, dropSupersededTx, recoverPending, withDocLock, updateMeta, rootLock, atomicWrite, LockHeld } from './tx.mjs';
+import { beginTx, commitTx, dropSupersededTx, recoverPending, withDocLock, updateMeta, updateMetaAll, rootLock, atomicWrite, LockHeld } from './tx.mjs';
 import { applyOps, reviewConsistency } from './evidence.mjs';
 import { assembleTemplate, themeRegistration } from './template.mjs';
 
@@ -39,7 +39,7 @@ const MAX_SNAPSHOTS = 50;
 // 迁移互斥（S1-T7 修复轮1 I-3）：这些 GET 名义是读，实际会 renderCurrent → updateMeta(lastRenderInputId/lastRenderAt)
 // 并覆写 pdfs/<id>.pdf、拉起 Chromium；迁移三门禁期间放行它们＝浏览器标签页与迁移并发写 meta / 抢渲染。
 // 故与他人持 .migrate.lock 期间同样 503（纯读 GET 一律不受影响）。新增会写盘的 GET 必须登记到这里。
-const WRITE_ON_GET = new Set(['/pdf', '/export']);
+const WRITE_ON_GET = new Set(['/pdf', '/export', '/job/changes']);   // /job/changes GET 读取时清过期 running 任务（S4a-T4）
 // 编辑器瞬态 body class：旧文档的内联清理选择器不认 ed-focus，必须由服务端兜底（设计 §6.2）
 const EDITOR_ONLY_BODY_CLASS = new Set(['ed-on', 'ed-preview', 'ed-focus']);
 const APP_STATUSES = ['已投递', '笔试', '面试中', 'offer', '已拒', '搁置'];
@@ -116,6 +116,111 @@ const legacyFlowStatus = (m) => (flowOf(m) === 'reviewed' ? 'deliverable' : 'dra
 // ===== S4a-T3：meta.job 新字段渐进默认（计划约束 22——旧草稿无字段全功能可用，读取时补、不迁移）=====
 // genTasks 两类 AI 任务各自独立（设计 §4.1/§6）；baseHash 仅任务记录，不参与候选失效判定。
 const mkGenTask = () => ({ taskId: null, status: 'idle', startedAt: null, baseHash: null, error: null, scope: null });
+// ===== S4a-T4：AI 任务最小可靠性（设计 §6 v1.6——taskId / 原子启动 / 三类回调校验 / 双层超时 / 取消 / 重启恢复）=====
+const GEN_KINDS = ['evidence', 'changes'];
+const GEN_TTL_MS = 10 * 60 * 1000;   // 任务级总时限：启动 / 读取 / 完成回调三点校验（兜底 status 永挂 running）
+const genExpired = (t, now) => !!(t && t.status === 'running' && typeof t.startedAt === 'number' && t.startedAt + GEN_TTL_MS < now);
+const newGenTaskId = () => 't-' + randomBytes(4).toString('hex');
+
+// 读取时校验（三点之二）：/job/changes 组装前扫本文档 genTasks，过期 running → error("任务超时")。
+// 只在确有过期时才写（updateMeta 单文档 patch）；返回可能刷新后的 meta 供响应组装。
+function sweepGenTasks(id, m) {
+  const j = m && m.job;
+  if (!j || !j.genTasks) return m;
+  const now = Date.now();
+  if (!GEN_KINDS.some((k) => genExpired(j.genTasks[k], now))) return m;
+  const next = updateMeta(root, id, (cur) => {
+    if (!cur || !cur.job || !cur.job.genTasks) return cur;
+    for (const k of GEN_KINDS) {
+      const t = cur.job.genTasks[k];
+      if (genExpired(t, now)) cur.job.genTasks[k] = { ...t, status: 'error', error: '任务超时' };
+    }
+    return cur;
+  });
+  return next || m;
+}
+
+// 三类回调统一落账口（成功 / 错误 / 超时）：updateMeta 事务内校验 genTasks[kind].taskId 匹配且 status==='running'
+// ——不匹配（已取消 / 已被新任务取代 / 已重启清空）→ 丢弃不写；过期 → 只标超时、结果不落账。
+// apply(cur) 校验通过后对 cur.job 做成功落账变更，可返回附加响应字段；errMsg 存在则走错误落账。
+function finishGenTask(id, kind, taskId, apply, errMsg) {
+  let out = null;
+  updateMeta(root, id, (cur) => {
+    if (!cur || !cur.job) return cur;
+    const gt = cur.job.genTasks && cur.job.genTasks[kind];
+    if (!gt || gt.taskId !== taskId || gt.status !== 'running') return cur;   // 迟到回调：丢弃（不污染新状态）
+    if (genExpired(gt, Date.now())) { cur.job.genTasks[kind] = { ...gt, status: 'error', error: '任务超时' }; return cur; }   // 过期回调：结果不落账
+    if (errMsg !== undefined) { cur.job.genTasks[kind] = { ...gt, status: 'error', error: errMsg }; out = { ok: false, error: errMsg }; return cur; }
+    const extra = apply ? (apply(cur) || {}) : {};
+    cur.job.genTasks[kind] = { ...gt, status: 'done', error: null };
+    out = { ok: true, job: cur.job, ...extra };
+    return cur;
+  });
+  return out || { dropped: true };
+}
+
+// changes 成功落账（与旧 /job/generate 的 updateMeta 体一致：gen 递增、旧 pending→superseded、新候选入列）
+function applyChangesResult(cur, ops) {
+  const gen = (cur.job.changes.reduce((mx, c) => Math.max(mx, c.gen || 0), 0)) + 1;
+  for (const c of cur.job.changes) if (c.status === 'pending') c.status = 'superseded';   // 不覆盖已接受/已撤销历史
+  let ci = 0;
+  for (const c of ops.changes) cur.job.changes.push({ id: 'g' + gen + '-c' + (++ci), gen, ...c, status: 'pending', createdAt: new Date().toISOString() });
+  cur.job.todos = (cur.job.todos || []).concat(ops.todos.map((t) => ({ ...t, resolved: false })));
+  cur.job.generatedAt = new Date().toISOString();
+  cur.flow = 'reviewing';   // 生成产生 pending 建议 → 审阅中（状态维度单源 flow）
+  cur.job.summary = ops.summary;
+  return { generated: ops.changes.length, todos: ops.todos.length };
+}
+
+// 任务体（node 单进程 fire-and-forget：Promise 即可，不引调度平台）。changes 通道完整复用既有链路；
+// evidence 通道 T6 接入（占位立即失败，不碰旧 evidence/evidenceGen——设计 §5.1 失败不替换）。
+async function runGenTask(id, kind, taskId) {
+  if (kind === 'evidence') return finishGenTask(id, kind, taskId, null, '证据生成通道未接入（S4a-T6 落地）');
+  try {
+    const m0 = loadMeta()[id];
+    if (!m0 || !m0.job) return finishGenTask(id, kind, taskId, null, '文档已不是岗位草稿');
+    const docText = docToText(fs.readFileSync(docPath(id), 'utf8'), { includeHidden: false });
+    const confirmedMats = loadMats().filter((x) => x.factStatus === 'confirmed' && m0.job.materials.includes(x.id));
+    const p = buildJobPrompt({ docText, jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: confirmedMats, twoPage: true });
+    const raw = await chat(root, p.sys, p.user);
+    const ops = parseJobOps(raw);
+    if (!ops) return finishGenTask(id, kind, taskId, null, '模型输出无法解析为修改操作，未应用任何修改');
+    return finishGenTask(id, kind, taskId, (cur) => applyChangesResult(cur, ops));
+  } catch (e) {
+    return finishGenTask(id, kind, taskId, null, '模型调用失败：' + (e.message || e));
+  }
+}
+
+// 原子启动（设计 §6 v1.4：updateMetaAll 全表事务锁内扫描）：全库同类 running ≤1、两类合计 ≤2，超限 409；
+// 过期残留不计入（读取时清）——启动时拒过期残留为三点校验之一。taskId 在事务内生成写入，无检查与写入分离窗口。
+function startGenTask(id, kind) {
+  let baseHash = null;
+  try { baseHash = contentHash(fs.readFileSync(docPath(id), 'utf8')); } catch {}   // 仅任务记录用（设计 §4.1）
+  let taskId = null, reject = null;
+  updateMetaAll(root, (all) => {
+    const m = all[id];
+    if (!m || !m.job) { reject = { status: 404, error: '该文档不是岗位草稿' }; return null; }
+    const now = Date.now();
+    let ownFresh = false, sameKindOther = false, total = 0;
+    for (const [did, dm] of Object.entries(all)) {
+      const gt = dm && dm.job && dm.job.genTasks;
+      if (!gt) continue;
+      for (const k of GEN_KINDS) {
+        const t = gt[k];
+        if (!t || t.status !== 'running' || genExpired(t, now)) continue;   // 过期残留不占并发额度
+        total++;
+        if (k === kind) { if (did === id) ownFresh = true; else sameKindOther = true; }
+      }
+    }
+    if (ownFresh) { reject = { status: 409, error: '该类型任务正在进行中，请稍候' }; return null; }
+    if (sameKindOther) { reject = { status: 409, error: '另一文档的任务进行中，请稍后再试' }; return null; }
+    if (total >= 2) { reject = { status: 409, error: '并发任务已达上限（两类合计 2），请稍后再试' }; return null; }
+    taskId = newGenTaskId();
+    const job = { ...m.job, genTasks: { ...(m.job.genTasks || {}), [kind]: { taskId, status: 'running', startedAt: now, baseHash, error: null, scope: null } } };
+    return { ...all, [id]: { ...m, job } };
+  });
+  return { taskId, reject };
+}
 // /job/changes GET 兼容视图：新字段带默认值；saveReceipts 只回摘要（最近 requestId，完整回执表仅供服务端判重）。
 function jobView(m) {
   if (!m || !m.job) return null;
@@ -1067,8 +1172,8 @@ async function handler(req, res) {
     }
     // 岗位修改清单读/写（状态持久化；应用动作由前端 DOM 执行后回写状态）
     if (req.method === 'GET' && url.pathname === '/job/changes') {
-      const metaAll = loadMeta();
-      const m = metaAll[id] || {};
+      let m = loadMeta()[id] || {};
+      m = sweepGenTasks(id, m);   // S4a-T4 读取时校验：过期 running → error（任务级总时限三点之二）
       // 兼容视图（S1-T8）：响应里的 status 为派生旧词汇（reviewed→deliverable，其余→draft），flow 为存储单源；
       // schemaVersion<2 时 flowOf 由 job.status 即时推导，绝不写回。
       // S4a-T3：jobView 附带 brief/evidence/genTasks/saveReceipts 摘要/reviewPos 渐进默认值。
@@ -1151,42 +1256,49 @@ async function handler(req, res) {
       });
       return sendJson(200, { ok: true, zones: w.zones });   // 用写入后返回值，不回读磁盘
     }
-    // 生成建议（LLM 可选；失败不影响已有草稿与母版）
-    if (req.method === 'POST' && url.pathname === '/job/generate') {
+    // ===== S4a-T4：AI 任务可靠性端点（设计 §6）=====
+    // gen-start：原子启动——updateMetaAll 锁内扫描全表判并发（同类 ≤1 / 合计 ≤2），立即返回 taskId；
+    // LLM 跑在服务端 fire-and-forget，结果只经 finishGenTask 的 taskId 校验落账；客户端轮询 /job/changes。
+    if (req.method === 'POST' && url.pathname === '/job/gen-start') {
+      const kind = url.searchParams.get('kind');
+      if (!GEN_KINDS.includes(kind)) return sendJson(400, { ok: false, error: 'kind 必须是 evidence|changes' });
       if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型：草稿仍可手动编辑，配置后可生成建议' });
-      const body = JSON.parse(await readBody(req));
-      const m0 = loadMeta()[id];
-      if (!m0 || !m0.job) return sendJson(404, { ok: false, error: '该文档不是岗位草稿' });
-      if (!fs.existsSync(docPath(id))) return sendJson(404, { ok: false, error: 'doc not found' });
-      const docText = docToText(fs.readFileSync(docPath(id), 'utf8'), { includeHidden: false });
-      const confirmedMats = loadMats().filter((x) => x.factStatus === 'confirmed' && m0.job.materials.includes(x.id));
-      const p = buildJobPrompt({ docText, jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: confirmedMats, twoPage: true });
-      let raw;
-      try { raw = await chat(root, p.sys, p.user); }
-      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + (e.message || e) }); }
-      const ops = parseJobOps(raw);
-      if (!ops) return sendJson(502, { ok: false, error: '模型输出无法解析为修改操作，未应用任何修改' });
-      let jobOut = null, isJob = false;
+      const { taskId, reject } = startGenTask(id, kind);
+      if (reject) return sendJson(reject.status, { ok: false, error: reject.error });
+      runGenTask(id, kind, taskId).catch(() => {});   // 异步落账；异常不外抛（任务态由回调链路收敛）
+      return sendJson(200, { ok: true, taskId, status: 'running' });
+    }
+    // gen-cancel：taskId 匹配当前 running 才置 cancelled（防误取消刚接棒的新任务）；在途结果被回调校验丢弃。
+    if (req.method === 'POST' && url.pathname === '/job/gen-cancel') {
+      const kind = url.searchParams.get('kind');
+      const taskId = url.searchParams.get('taskId');
+      if (!GEN_KINDS.includes(kind) || !taskId) return sendJson(400, { ok: false, error: 'kind（evidence|changes）与 taskId 必填' });
+      let cancelled = false;
       updateMeta(root, id, (m) => {
         if (!m || !m.job) return m;
-        isJob = true;
-        const gen = (m.job.changes.reduce((mx, c) => Math.max(mx, c.gen || 0), 0)) + 1;
-        // 旧候选未处理的标记为 superseded（不覆盖已接受/已撤销的历史）
-        for (const c of m.job.changes) if (c.status === 'pending') c.status = 'superseded';
-        let ci = 0;
-        for (const c of ops.changes) {
-          ci++;
-          m.job.changes.push({ id: 'g' + gen + '-c' + ci, gen, ...c, status: 'pending', createdAt: new Date().toISOString() });
+        const gt = m.job.genTasks && m.job.genTasks[kind];
+        if (gt && gt.taskId === taskId && gt.status === 'running') {
+          m.job.genTasks = { ...(m.job.genTasks || {}), [kind]: { ...gt, status: 'cancelled' } };
+          cancelled = true;
         }
-        m.job.todos = (m.job.todos || []).concat(ops.todos.map((t) => ({ ...t, resolved: false })));
-        m.job.generatedAt = new Date().toISOString();
-        m.flow = 'reviewing';   // 生成产生 pending 建议 → 审阅中（状态维度单源 flow；job.status 不再写）
-        m.job.summary = ops.summary;
-        jobOut = m.job;
         return m;
       });
-      if (!isJob) return sendJson(404, { ok: false, error: '该文档不是岗位草稿' });
-      return sendJson(200, { ok: true, job: jobOut, generated: ops.changes.length, todos: ops.todos.length });
+      if (!cancelled) return sendJson(409, { ok: false, error: '任务已结束或已被新任务取代（taskId 不匹配当前 running）' });
+      return sendJson(200, { ok: true });
+    }
+    // 生成建议（LLM 可选；失败不影响已有草稿与母版）
+    // S4a-T4：内部转 changes 任务同步等待（响应形状不变，现有 job-panel 调用不破；T9 再切纯异步轮询）。
+    // 结果经与 gen-start 完全相同的 taskId 校验链路落账（并发双击在 startGenTask 锁内只剩一个）。
+    if (req.method === 'POST' && url.pathname === '/job/generate') {
+      if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型：草稿仍可手动编辑，配置后可生成建议' });
+      JSON.parse(await readBody(req));   // 兼容既有调用形状：空对象体；坏 JSON 400 路径保持
+      if (!fs.existsSync(docPath(id))) return sendJson(404, { ok: false, error: 'doc not found' });
+      const { taskId, reject } = startGenTask(id, 'changes');
+      if (reject) return sendJson(reject.status, { ok: false, error: reject.error });
+      const r = await runGenTask(id, 'changes', taskId);
+      if (r.dropped) return sendJson(409, { ok: false, error: '任务已被取消或取代' });
+      if (!r.ok) return sendJson(502, { ok: false, error: r.error });
+      return sendJson(200, { ok: true, job: r.job, generated: r.generated, todos: r.todos });
     }
     // ===== 保存（正文与 PDF 分离；revision 冲突检测）=====
     if (req.method === 'POST' && url.pathname === '/save') {
@@ -2818,13 +2930,27 @@ if (foreignMigrateLock) {
   try {
     // 默认恢复（tx.mjs defaultRestoreDoc）：首选事务内旧正文副本（精确旧字节）；仅 oldHtml 载荷缺失时走快照兜底，
     // 兜底按热修 a7eb561 裁决 legacy-safe（oldMeta.typo 未定义 → 保留快照内联排版；已迁移 → 归一化正文）。
-    // S4a-T4 锚点（占位）：启动恢复时还应把各岗位草稿 genTasks.{evidence,changes} 的 running →
-    // error("应用重启中断，可重试") 并置 taskId=null（设计 §6 重启恢复，使任何在途回调失效）——实际逻辑 T4 落地。
     const recovered = recoverPending(root);
     const done = recovered.filter((r) => r.ok);
     if (done.length) console.error(`[tx] 启动恢复未完成事务 ${done.length} 条：` + done.map((r) => `${r.docId}(${r.phase})`).join('、'));
     const failed = recovered.filter((r) => !r.ok);
     for (const r of failed) console.error(`[tx] 恢复失败（记录保留待重试）：${r.docId} — ${r.error}`);
+    // S4a-T4（设计 §6 重启恢复，T3 锚点处落地）：扫全表 genTasks，running → error("应用重启中断，可重试")
+    // 并置 taskId=null——重启前的在途回调（若进程还活着也回不来了）凭 taskId 校验全部失效。
+    // 已落盘的 changes/todos/evidence 不动（updateMeta 原子性既有保证）；全表单事务（updateMetaAll）。
+    let genInterrupted = 0;
+    updateMetaAll(root, (all) => {
+      for (const dm of Object.values(all)) {
+        const j = dm && dm.job;
+        if (!j || !j.genTasks) continue;
+        for (const k of GEN_KINDS) {
+          const t = j.genTasks[k];
+          if (t && t.status === 'running') { j.genTasks[k] = { ...t, status: 'error', taskId: null, error: '应用重启中断，可重试' }; genInterrupted++; }
+        }
+      }
+      return genInterrupted ? all : null;   // 无 running → 不写
+    });
+    if (genInterrupted) console.error(`[gen] 重启恢复：${genInterrupted} 个 AI 任务标记中断（running → error，taskId 置空）`);
   } catch (e) {
     console.error('[tx] 启动恢复异常：', e && e.message || e);
   }

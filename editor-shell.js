@@ -54,6 +54,7 @@
     + '.ed-on .edit-toolbar button.ed-primary{background:var(--ed-accent);border-color:var(--ed-accent);color:var(--ed-accent-ink)}'
     + '.ed-on .edit-toolbar button.ed-ghost{border-color:transparent;background:transparent;color:var(--ed-mut)}'
     + '.ed-on .edit-toolbar button.ed-ghost:hover{background:var(--ed-bg);color:var(--ed-ink)}'
+    + '.ed-on .edit-toolbar .ed-gening{color:var(--ed-accent);background:var(--ed-accent-soft);border-radius:999px}'
     + '.ed-on .edit-toolbar button:focus-visible{outline:2px solid var(--ed-accent);outline-offset:1px}'
     + '.ed-on .edit-toolbar .save-state{font-size:11px}'
     + '.ed-on .edit-toolbar .badge{margin:0}'
@@ -316,12 +317,38 @@
     toolbar.appendChild(keysBtn);
   }
   if (keysBtn) keysBtn.addEventListener('click', function () { toggleShortcutHelp(); });
+  // ===== S4a-T4：AI 任务迷你指示（岗位草稿专属）：顶部「生成中…」，点击回审阅 Tab =====
+  // 状态源 = /job/changes 轮询（最简：服务端是事实单源，刷新/离开都能找回）；data-ed-inj 保证不落盘。
+  var geningBtn = toolbar && toolbar.querySelector('.ed-gening');
+  if (toolbar && !geningBtn && JOB_INFO.hasJob) {
+    geningBtn = document.createElement('button');
+    geningBtn.type = 'button';
+    geningBtn.className = 'ed-ghost ed-gening';
+    geningBtn.setAttribute('data-ed-inj', '1');
+    geningBtn.setAttribute('aria-label', 'AI 任务进行中，查看审阅');
+    geningBtn.hidden = true;
+    geningBtn.textContent = '生成中…';
+    geningBtn.title = 'AI 任务进行中，点击查看审阅';
+    geningBtn.addEventListener('click', function () { if (window.__edSelectTab) window.__edSelectTab('review'); });
+    toolbar.appendChild(geningBtn);
+  }
+  if (geningBtn) {
+    var pollGening = function () {
+      fetch('/job/changes?id=' + encodeURIComponent(DOC_ID)).then(function (r) { return r.json(); }).then(function (d) {
+        var gt = d && d.job && d.job.genTasks;
+        var run = !!(gt && ((gt.evidence && gt.evidence.status === 'running') || (gt.changes && gt.changes.status === 'running')));
+        geningBtn.hidden = !run;
+      }).catch(function () { /* 轮询失败静默（迁移期 503 等），下一轮再试 */ });
+    };
+    pollGening();
+    setInterval(pollGening, 2500);
+  }
   // 目标顺序（appendChild 移动已有节点，幂等）
   if (toolbar) {
     [ltBtn, homeBtn, docName, verBadge].forEach(function (el) { if (el) toolbar.appendChild(el); });
     var spacer = toolbar.querySelector('.spacer');
     if (spacer) toolbar.appendChild(spacer);
-    [jobBtn, saveState, saveBtn, histBtn, previewBtn, pdfBtn, keysBtn, rtBtn].forEach(function (el) { if (el) toolbar.appendChild(el); });
+    [jobBtn, geningBtn, saveState, saveBtn, histBtn, previewBtn, pdfBtn, keysBtn, rtBtn].forEach(function (el) { if (el) toolbar.appendChild(el); });
   }
 
   // ===== 左栏：章节导航 + 素材 =====
