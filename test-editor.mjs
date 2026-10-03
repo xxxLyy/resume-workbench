@@ -2741,6 +2741,60 @@ try {
     if (undone) ok('S3D ⌘Z 撤销区域改写'); else bad('S3D ⌘Z 撤销失败');
     await ctx.close();
   }
+  // ===== S4a-T5 修复轮：首页内联脚本完整性（script 块终止但 curl 全绿的回归门）=====
+  {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    const consoleErrors = [];
+    page.on('pageerror', (e) => consoleErrors.push(String(e && e.message || e)));
+    page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
+    await page.goto(base + '/');
+    await page.click('#jobCard > summary');                                  // 展开岗位表单
+    await page.evaluate(() => { document.querySelector('#jobCard details').open = true; });   // 要求卡自身也是折叠态（默认收起）
+    await page.waitForSelector('#briefFocusChips');
+    if (consoleErrors.length) bad('T5 首页内联脚本抛未捕获异常（页数段选/预设/提交全失效）', consoleErrors[0]);
+    else ok('T5 首页内联脚本无未捕获异常');
+    // 页数段选：点击「1 页」→ aria-pressed 迁移（segPick 绑定生效的直接证据）
+    await page.click('#briefPages button[data-pages="1"]');
+    const pressed = await page.evaluate(() => ({
+      one: document.querySelector('#briefPages button[data-pages="1"]').getAttribute('aria-pressed'),
+      two: document.querySelector('#briefPages button[data-pages="2"]').getAttribute('aria-pressed')
+    }));
+    if (pressed.one === 'true' && pressed.two === null) ok('T5 页数段选 aria-pressed 迁移');
+    else bad('T5 页数段选未生效（segPick 绑定失效）', JSON.stringify(pressed));
+    // 幅度段选与预设（存→取→删走真 localStorage）
+    await page.click('#briefDegree button[data-deg="light"]');
+    await page.click('#briefFocusChips .chip');
+    page.once('dialog', (d) => d.accept('浏览器预设'));
+    await page.evaluate(() => document.getElementById('briefPresetSave').click());
+    await page.waitForTimeout(200);
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('s4a-presets') || '{}'));
+    if (stored['浏览器预设'] && stored['浏览器预设'].brief.degree === 'light') ok('T5 预设存入 localStorage');
+    else bad('T5 预设未存入', JSON.stringify(stored).slice(0, 80));
+    // 取回：改乱表单 → 选回预设 → 段选恢复
+    await page.click('#briefPages button[data-pages="2"]');
+    await page.selectOption('#briefPresetSel', '浏览器预设');
+    const back = await page.evaluate(() => ({
+      deg: document.querySelector('#briefDegree button[aria-pressed="true"]').getAttribute('data-deg'),
+      pages: document.querySelector('#briefPages button[aria-pressed="true"]').getAttribute('data-pages')
+    }));
+    if (back.deg === 'light' && back.pages === '1') ok('T5 预设取回恢复段选');
+    else bad('T5 预设取回未恢复', JSON.stringify(back));
+    // jobForm submit 处理器在位：填最小必填后提交 → 应发 /job/create（母版下拉首项即夹具文档）
+    await page.fill('#jobCompany', '浏览器要求卡公司');
+    await page.fill('#jobRole', '前端');
+    const [resp] = await Promise.all([
+      page.waitForResponse((r) => r.url().includes('/job/create'), { timeout: 8000 }).catch(() => null),
+      page.click('#jobForm button[type="submit"]')
+    ]);
+    if (resp && resp.ok()) {
+      // 响应体可能因页面立即跳转（location.href）而被浏览器丢弃——创建成功以响应 URL/状态为准，不依赖可读 body
+      const created = await resp.json().catch(() => null);
+      if (created === null || (created.ok && created.id)) ok('T5 jobForm 提交走 /job/create（brief 随单）');
+      else bad('T5 /job/create 响应异常', JSON.stringify(created).slice(0, 80));
+    } else bad('T5 jobForm 提交未发出 /job/create（submit 处理器未绑定）');
+    await ctx.close();
+  }
 } finally {
   await browser.close();
 }

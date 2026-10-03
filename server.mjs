@@ -717,7 +717,7 @@ function listPage(showArchived = false) {
               <button type="button" class="secondary" data-deg="light">轻度精简</button>
               <button type="button" class="secondary" data-deg="refocus" aria-pressed="true">重点调整</button>
               <button type="button" class="secondary" data-deg="restructure">重新组织</button></span></label>
-            <label style="font-size:12px">页数目标<span style="display:flex;gap:6px;margin-top:3px">
+            <label style="font-size:12px">页数目标<span id="briefPages" style="display:flex;gap:6px;margin-top:3px">
               <button type="button" class="secondary" data-pages="1">1 页</button>
               <button type="button" class="secondary" data-pages="2" aria-pressed="true">2 页（默认）</button></span></label>
           </div>
