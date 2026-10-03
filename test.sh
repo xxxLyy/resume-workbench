@@ -117,6 +117,21 @@ http.createServer((q, s) => {
         const sys = JSON.parse(b).messages.find((m) => m.role === 'system').content;
         if (String(sys).includes('区域分析顾问')) content = zoneAnalyze;
         else if (String(sys).includes('区域改写器')) content = zoneRewrite;
+        else if (String(sys).includes('证据分析')) {
+          // S4a-T6：从请求正文动态提取请求内 ID（matId/zid）——验证「refHints 按 ID 原样返回与解析」，
+          // 同时返回幽灵 ID 与空 refHints 各一条，覆盖解析层的丢弃与降级路径。
+          const u = JSON.parse(b).messages.find((m) => m.role === 'user').content;
+          const matIds = [];
+          String(u).replace(/（id：([^）]+)）/g, function (_, x) { matIds.push(x); return _; });
+          const zids = [];
+          String(u).replace(/（zid：(z[0-9a-f]{8})）/g, function (_, x) { if (zids.indexOf(x) < 0) zids.push(x); return _; });
+          content = JSON.stringify({ evidence: [
+            { req: '要求一：后端服务经验', status: 'covered', refHints: [{ type: 'para', zid: zids[0] || 'zdeadbee', title: '工作经历', quote: '负责交易系统' }] },
+            { req: '要求二：订单系统拆分', status: 'sourced', refHints: [{ type: 'mat', id: matIds[0] || 'm-none00', title: '素材甲', quote: '主导订单系统拆分' }] },
+            { req: '要求三：全部无效引用', status: 'covered', refHints: [{ type: 'mat', id: 'm-ghost00', title: '幽灵素材', quote: 'x' }, { type: 'para', zid: 'zdeadbee', title: '幽灵段落', quote: 'y' }] },
+            { req: '要求四：无引用', status: 'covered', refHints: [] }
+          ] });
+        }
       } catch {}
       if (fs.existsSync('$TEST_DIR/llm-err')) { s.writeHead(500, { 'Content-Type': 'text/plain' }); return s.end('stub forced error'); }
       s.writeHead(200, { 'Content-Type': 'application/json' });
@@ -960,14 +975,16 @@ echo "$R" | grep -q '另一文档的任务进行中' || fail "S4a-T4 跨文档�
 echo '✅ S4a-T4 跨文档并发（锁内扫描各文档 genTasks，同类 ≤1）'
 
 # —— c. 两任务独立：changes running 时 evidence 可启动，互不清除 ——
+# （S4a-T6 后 evidence 通道为真实 runner：占位 error 断言随之改为独立完成断言；
+#   先摘 slow 让 evidence 快速完成——d 节取消用例依赖 T4T1（slow=5000 在途）尚未回调）
+rm -f "$TEST_DIR/llm-slow"
 R=$(curl -s -X POST "$B/job/gen-start?id=$T4DOC&kind=evidence")
 echo "$R" | grep -q '"ok":true' || fail "S4a-T4 evidence 任务应可独立启动: $(echo "$R" | head -c 160)"
 [ "$(gt_taskid "$T4DOC" changes)" = "$T4T1" ] || fail 'S4a-T4 启动 evidence 清掉了 changes 的 taskId'
 [ "$(gt_status "$T4DOC" changes)" = 'running' ] || fail 'S4a-T4 启动 evidence 干扰了 changes 的 running'
-wait_gt "$T4DOC" evidence error 10 || fail "S4a-T4 evidence 占位任务应落 error（得 $(gt_status "$T4DOC" evidence)）"
-gt_error "$T4DOC" evidence | grep -q 'S4a-T6' || fail 'S4a-T4 evidence 占位错误应说明 T6 接入'
+wait_gt "$T4DOC" evidence done 15 || fail "S4a-T4 evidence 任务应独立完成（得 $(gt_status "$T4DOC" evidence)）"
 [ "$(gt_status "$T4DOC" changes)" = 'running' ] || fail 'S4a-T4 evidence 结束后 changes 应仍 running（互不阻塞）'
-echo '✅ S4a-T4 两任务独立（evidence 启动/结束不清 changes 状态）'
+echo '✅ S4a-T4 两任务独立（evidence 启动/完成不清 changes 状态）'
 
 # —— d. 取消：taskId 匹配才 cancelled；迟到成功回调被丢弃 ——
 R=$(curl -s -X POST "$B/job/gen-cancel?id=$T4DOC&kind=changes&taskId=$T4T1")
@@ -1075,6 +1092,152 @@ sleep 0.8
 gt_error "$T4DOC" changes | grep -q '重启中断' || fail 'S4a-T4 重启恢复错误应说明中断可重试'
 [ "$(t4_count)" = "$((CNT_BEFORE+2))" ] || fail 'S4a-T4 重启恢复不得改动已落盘 changes'
 echo '✅ S4a-T4 重启恢复（running → error(重启中断) + taskId 置空 + 落盘数据不动）'
+
+# ===== S4a-T6：证据表后端（runner 接入 / ID 匹配 / 批次替换时点 / 来源即时计算 / reviewPos）=====
+# 夹具：独立岗位草稿 T6DOC（挂已确认素材「素材甲」——$MATID 已被 S3 段复用指向他表，按标题重解析；
+# 先保存一次让 zid 归一与 zoneSync 有真实输入）。
+T6MAT=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const x=m.find(v=>v.title==="素材甲");console.log(x?x.id:"")' "$RESUME_ROOT/materials.json")
+[ -n "$T6MAT" ] || fail 'S4a-T6 夹具素材（素材甲）缺失'
+T6DOC=$(curl -s -X POST "$B/job/create" -H 'Content-Type: application/json' -d "{\"from\":\"$DOCID\",\"company\":\"证据公司\",\"role\":\"后端\",\"jd\":\"S4a-T6 JD-EVIDENCE-MARK 验证\",\"materials\":[\"$T6MAT\"]}" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch{console.log('')}})")
+[ -n "$T6DOC" ] && [ -f "$RESUME_ROOT/docs/$T6DOC.html" ] || fail 'S4a-T6 夹具岗位草稿创建'
+curl -s -X POST "$B/save?id=$T6DOC" --data-binary "$(cat "$RESUME_ROOT/docs/$T6DOC.html")" | grep -q '"ok":true' || fail 'S4a-T6 夹具保存（zid 归一 + zoneSync）'
+t6_changes() { # 直接读 meta（无 GET 副作用）：T6DOC 的 changes 条数
+  node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]];console.log(m&&m.job&&Array.isArray(m.job.changes)?m.job.changes.length:-1)' "$RESUME_ROOT/docs-meta.json" "$T6DOC"
+}
+t6_ev_bytes() { # evidence 数组 + evidenceGen 的规范化串（反例2 逐字节不变断言用）
+  node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]];console.log(JSON.stringify({e:m.job.evidence,gen:m.job.evidenceGen}))' "$RESUME_ROOT/docs-meta.json" "$T6DOC"
+}
+
+# —— a. evidence runner 真实接入：prompt 只含已确认素材 facts+区域段落；refHints 按 ID 返回并解析落账 ——
+R=$(curl -s -X POST "$B/job/gen-start?id=$T6DOC&kind=evidence")
+echo "$R" | grep -q '"ok":true' || fail "S4a-T6 evidence 任务启动失败: $(echo "$R" | head -c 160)"
+wait_gt "$T6DOC" evidence done 15 || fail "S4a-T6 evidence 任务未完成（得 $(gt_status "$T6DOC" evidence)）"
+grep -q 'JD-EVIDENCE-MARK' "$TEST_DIR/llm-last.json" || fail 'S4a-T6 证据 prompt 未含 JD'
+grep -q '素材甲' "$TEST_DIR/llm-last.json" || fail 'S4a-T6 证据 prompt 未含已确认素材'
+grep -q '不应参与生成' "$TEST_DIR/llm-last.json" && fail 'S4a-T6 证据 prompt 混入未确认素材'
+grep -q '（id：' "$TEST_DIR/llm-last.json" || fail 'S4a-T6 证据 prompt 素材块缺请求内 id'
+grep -q '（zid：' "$TEST_DIR/llm-last.json" || fail 'S4a-T6 证据 prompt 段落缺请求内 zid'
+grep -q '【区域：' "$TEST_DIR/llm-last.json" || fail 'S4a-T6 证据 prompt 未按区域分组'
+node -e '
+const fs = require("fs");
+const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const bad = (msg) => { console.error("❌ S4a-T6 落账 " + msg); process.exit(1); };
+const ev = m.job.evidence || [];
+if (m.job.evidenceGen !== 1) bad("evidenceGen 应为 1（得 " + m.job.evidenceGen + "）");
+if (ev.length !== 4) bad("evidence 应 4 条（得 " + ev.length + "）");
+const e1 = ev[0], e2 = ev[1], e3 = ev[2], e4 = ev[3];
+if (e1.status !== "covered" || e1.refs.length !== 1 || e1.refs[0].type !== "para" || !/^z[0-9a-f]{8}$/.test(e1.refs[0].zid || "")) bad("条1 para ref: " + JSON.stringify(e1));
+if (e1.refs[0].refId !== "b1r1") bad("条1 refId 应 b1r1（得 " + e1.refs[0].refId + "）");
+if (!fs.readFileSync(process.argv[3], "utf8").includes(e1.refs[0].zid)) bad("条1 zid 不在正文");
+if (e1.refs[0].title !== "工作经历") bad("条1 title/quote 应保留仅展示: " + JSON.stringify(e1.refs[0]));
+if (e2.status !== "sourced" || e2.refs[0].type !== "mat" || e2.refs[0].id !== process.argv[4]) bad("条2 mat ref: " + JSON.stringify(e2));
+if (e2.refs[0].refId !== "b1r2" || e2.refs[0].srcStatus !== "confirmed" || !/^[0-9a-f]{40}$/.test(e2.refs[0].hash || "")) bad("条2 refId/srcStatus/hash: " + JSON.stringify(e2.refs[0]));
+// ID 精确匹配：幽灵 ID（形状合法但不在输入集合）→ ref 丢弃
+if (e3.status !== "todo" || (e3.refs || []).length !== 0) bad("条3 全无效引用应降 todo 且 ref 丢弃: " + JSON.stringify(e3));
+// 六项之六：模型输出 covered 但无任何有效 ref → 解析降 todo（无有效来源不得 sourced/covered）
+if (e4.status !== "todo") bad("条4 无引用 covered 应降 todo（得 " + e4.status + "）");
+for (const e of ev) if (e.note !== "" || e.noteConfirmed !== false || !/^e\d+$/.test(e.id || "")) bad("条目默认字段: " + JSON.stringify(e));
+' "$RESUME_ROOT/docs-meta.json" "$T6DOC" "$RESUME_ROOT/docs/$T6DOC.html" "$T6MAT" || fail 'S4a-T6 证据落账（ID 匹配/五态校正/refId 分配/批次替换）'
+echo '✅ S4a-T6 evidence runner（prompt 只含已确认素材+区域段落；ID 匹配解析；无效引用丢弃与降 todo）'
+
+# —— b. 两任务独立（evidence running 不阻塞 changes；各自落账互不清）——
+echo 2500 > "$TEST_DIR/llm-slow"
+R=$(curl -s -X POST "$B/job/gen-start?id=$T6DOC&kind=evidence")
+echo "$R" | grep -q '"ok":true' || fail "S4a-T6 evidence 二次启动失败: $(echo "$R" | head -c 160)"
+R2=$(curl -s -X POST "$B/job/gen-start?id=$T6DOC&kind=changes")
+echo "$R2" | grep -q '"ok":true' || fail "S4a-T6 evidence running 时 changes 应可独立启动: $(echo "$R2" | head -c 160)"
+wait_gt "$T6DOC" evidence done 15 || fail "S4a-T6 二次 evidence 未完成（得 $(gt_status "$T6DOC" evidence)）"
+wait_gt "$T6DOC" changes done 15 || fail "S4a-T6 changes 未完成（得 $(gt_status "$T6DOC" changes)）"
+rm -f "$TEST_DIR/llm-slow"
+[ "$(t6_changes)" = "2" ] || fail "S4a-T6 changes 应落 2 条（得 $(t6_changes)）"
+node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]];if(m.job.evidenceGen!==2||!(m.job.evidence||[]).every(e=>e.refs.every(r=>String(r.refId).startsWith("b2")))){console.error("❌ S4a-T6 二次生成批次应整批替换为 b2 前缀");process.exit(1)}' "$RESUME_ROOT/docs-meta.json" "$T6DOC" || fail 'S4a-T6 二次证据生成批次替换（b2 前缀整批）'
+echo '✅ S4a-T6 两任务独立（evidence running 不阻塞 changes；新批次整批替换 refId 不复用）'
+
+# —— c. 反例2：取消丢弃迟到回调 / 任务失败——旧 evidence 数组与 evidenceGen 逐字节不变 ——
+EV_BEFORE=$(t6_ev_bytes)
+echo 4000 > "$TEST_DIR/llm-slow"
+T6T1=$(curl -s -X POST "$B/job/gen-start?id=$T6DOC&kind=evidence" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.ok?j.taskId:"")})')
+[ -n "$T6T1" ] || fail 'S4a-T6 取消夹具启动失败'
+curl -s -X POST "$B/job/gen-cancel?id=$T6DOC&kind=evidence&taskId=$T6T1" | grep -q '"ok":true' || fail 'S4a-T6 evidence 取消失败'
+sleep 4.6   # 迟到的成功回调到达 → taskId 校验不过 → 丢弃
+[ "$(gt_status "$T6DOC" evidence)" = 'cancelled' ] || fail "S4a-T6 迟到成功回调污染了 cancelled（得 $(gt_status "$T6DOC" evidence)）"
+[ "$(t6_ev_bytes)" = "$EV_BEFORE" ] || fail 'S4a-T6 取消后旧 evidence/evidenceGen 被改动（反例2）'
+rm -f "$TEST_DIR/llm-slow"
+touch "$TEST_DIR/llm-err"
+R=$(curl -s -X POST "$B/job/gen-start?id=$T6DOC&kind=evidence")
+echo "$R" | grep -q '"ok":true' || fail 'S4a-T6 失败路径夹具启动失败'
+wait_gt "$T6DOC" evidence error 15 || fail "S4a-T6 evidence 失败应落 error（得 $(gt_status "$T6DOC" evidence)）"
+gt_error "$T6DOC" evidence | grep -q '模型调用失败' || fail "S4a-T6 evidence 失败原因异常: $(gt_error "$T6DOC" evidence)"
+[ "$(t6_ev_bytes)" = "$EV_BEFORE" ] || fail 'S4a-T6 失败后旧 evidence/evidenceGen 被改动（反例2）'
+rm -f "$TEST_DIR/llm-err"
+echo '✅ S4a-T6 反例2（取消/失败/迟到回调：旧 evidence 数组与 evidenceGen 逐字节不变）'
+
+# —— d. 来源维度读取时即时计算（反例6：取消素材确认不保存正文 → GET 即见失效）——
+# 挂两条带 evidenceRefs 的候选（程序注入模拟依赖证据的建议）：一条引当前批次 mat ref，一条引旧批次 b0。
+node -e '
+const fs = require("fs");
+const f = process.argv[1], doc = process.argv[2];
+const m = JSON.parse(fs.readFileSync(f, "utf8"));
+const refId = m[doc].job.evidence.find((e) => e.status === "sourced").refs[0].refId;
+const mk = (id, refs) => ({ id, gen: 9, section: "项目经历", entry: "", kind: "replace", before: "x", after: "y", reason: "r", source: "母版", level: "normal", status: "pending", evidenceRefs: refs });
+m[doc].job.changes.push(mk("t6-refdep", [refId]), mk("t6-batchold", ["b0r1"]));
+fs.writeFileSync(f, JSON.stringify(m));
+' "$RESUME_ROOT/docs-meta.json" "$T6DOC"
+# 基线：素材仍 confirmed → mat ref fresh；旧批次 → batch-stale（GET 现算，落盘 consistency 本就为空）
+curl -s "$B/job/changes?id=$T6DOC" | node -e '
+let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => {
+  const j = JSON.parse(s).job;
+  const bad = (m) => { console.error("❌ S4a-T6 即时计算基线 " + m); process.exit(1); };
+  const ev2 = (j.evidence || []).find((e) => e.status === "sourced");
+  if (!ev2 || ev2.refs[0].fresh !== true) bad("mat ref 应 fresh: " + JSON.stringify(ev2 && ev2.refs[0]));
+  if (ev2.stale === true) bad("fresh 时条目不应标 stale");
+  const dep = j.changes.find((c) => c.id === "t6-refdep");
+  const old = j.changes.find((c) => c.id === "t6-batchold");
+  if (!(dep.consistency || []).length) bad("t6-refdep 应无来源失效命中: " + JSON.stringify(dep.consistency));
+  if (!(old.consistency || []).includes("batch-stale")) bad("旧批次引用应命中 batch-stale: " + JSON.stringify(old.consistency));
+});' || fail 'S4a-T6 即时计算基线（fresh/batch-stale GET 现算）'
+# 反例6：取消素材确认（factStatus→outdated，内容指纹未变）→ 不保存简历正文，GET 即见失效
+curl -s -X POST "$B/mat/update" -H 'Content-Type: application/json' -d "{\"id\":\"$T6MAT\",\"factStatus\":\"outdated\"}" | grep -q '"ok":true' || fail 'S4a-T6 素材取消确认失败'
+curl -s "$B/job/changes?id=$T6DOC" | node -e '
+let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => {
+  const j = JSON.parse(s).job;
+  const bad = (m) => { console.error("❌ S4a-T6 反例6 " + m); process.exit(1); };
+  const ev2 = (j.evidence || []).find((e) => e.status === "sourced");
+  if (!ev2 || ev2.refs[0].fresh !== false) bad("取消确认后 mat ref 应失效（factStatus≠confirmed，hash 未变也失效）");
+  if (ev2.stale !== true) bad("条目应标 stale");
+  const dep = j.changes.find((c) => c.id === "t6-refdep");
+  if (!(dep.consistency || []).includes("ref-stale")) bad("依赖候选应命中 ref-stale: " + JSON.stringify(dep.consistency));
+});' || fail 'S4a-T6 反例6（来源维度读取时即时计算，不依赖正文保存）'
+# 来源维度不落盘：GET 现算值不在 meta（期间无 /save）
+node -e '
+const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const dep = m.job.changes.find((c) => c.id === "t6-refdep");
+if (Array.isArray(dep.consistency) && dep.consistency.includes("ref-stale")) { console.error("❌ S4a-T6 来源维度被落盘"); process.exit(1); }
+' "$RESUME_ROOT/docs-meta.json" "$T6DOC" || fail 'S4a-T6 来源维度不落盘'
+# 恢复确认 → GET 即恢复 fresh（无保存动作）
+curl -s -X POST "$B/mat/update" -H 'Content-Type: application/json' -d "{\"id\":\"$T6MAT\",\"factStatus\":\"confirmed\"}" | grep -q '"ok":true' || fail 'S4a-T6 素材恢复确认失败'
+curl -s "$B/job/changes?id=$T6DOC" | node -e '
+let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => {
+  const ev2 = JSON.parse(s).job.evidence.find((e) => e.status === "sourced");
+  if (!ev2 || ev2.refs[0].fresh !== true) { console.error("❌ S4a-T6 恢复确认后应即时恢复 fresh"); process.exit(1); }
+});' || fail 'S4a-T6 即时计算可逆（恢复确认即恢复 fresh）'
+echo '✅ S4a-T6 来源维度即时计算（refFresh/entry stale/候选 ref-stale·batch-stale 均读取时现算不落盘）'
+
+# —— e. reviewPos 持久化（段名+changeId+filter 经 /job/changes POST；非法 400）——
+curl -s -X POST "$B/job/changes?id=$T6DOC" -H 'Content-Type: application/json' -d '{"reviewPos":{"section":"evidence","changeId":"t6-refdep","filter":"important"}}' | grep -q '"ok":true' || fail 'S4a-T6 reviewPos 保存失败'
+node -e '
+const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const r = m.job.reviewPos;
+if (!r || r.section !== "evidence" || r.changeId !== "t6-refdep" || r.filter !== "important") { console.error("❌ S4a-T6 reviewPos 落盘: " + JSON.stringify(r)); process.exit(1); }
+' "$RESUME_ROOT/docs-meta.json" "$T6DOC" || fail 'S4a-T6 reviewPos 落 meta'
+curl -s "$B/job/changes?id=$T6DOC" | node -e '
+let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => {
+  const r = JSON.parse(s).job.reviewPos;
+  if (!r || r.section !== "evidence" || r.filter !== "important") { console.error("❌ S4a-T6 GET reviewPos: " + JSON.stringify(r)); process.exit(1); }
+});' || fail 'S4a-T6 GET 返回 reviewPos'
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/job/changes?id=$T6DOC" -H 'Content-Type: application/json' -d '{"reviewPos":{"section":"nope","filter":"all"}}')
+[ "$CODE" = "400" ] || fail "S4a-T6 非法 reviewPos 应 400 得 $CODE"
+echo '✅ S4a-T6 reviewPos（段名+changeId+filter 经 /job/changes POST 持久化；非法 400）'
 
 # ===== 16. 浏览器级保存语义（可选，需要本机 Chromium）=====
 if node test-editor.mjs "$B" "$DOCID" "$RESUME_ROOT"; then

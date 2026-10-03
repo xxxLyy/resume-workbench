@@ -1118,7 +1118,10 @@ const JOB_DOC = 'ed-fixture-v2';
         { id: 'bt1', gen: 1, section: '项目经历', entry: '项目A', kind: 'replace', before: '旧项目描述', after: '新项目描述（定制）', reason: '对齐 JD', source: '母版', level: 'normal', status: 'pending' },
         { id: 'bt2', gen: 1, section: '项目经历', entry: '项目B', kind: 'hide', before: '', after: '', reason: '低相关', source: 'JD', level: 'important', status: 'pending' }
       ],
-      todos: [{ section: '项目经历', question: '缺少量化指标', why: 'JD 要求数据驱动', resolved: false }]
+      todos: [{ section: '项目经历', question: '缺少量化指标', why: 'JD 要求数据驱动', resolved: false }],
+      // S4a-T6：证据表夹具（sourced 条目 + 不存在的 mat id → GET live 标注 fresh:false/stale:true 的现算路径）
+      evidence: [{ id: 'e1', req: 'React 组件化经验', status: 'sourced', refs: [{ refId: 'b1r1', type: 'mat', id: 'm-none', zid: null, srcStatus: 'confirmed', hash: 'deadbeef' }], note: '', noteConfirmed: false }],
+      evidenceGen: 1
     }
   };
   fs.writeFileSync(metaPath, JSON.stringify(meta));
@@ -1322,6 +1325,58 @@ try {
     fs.writeFileSync(metaPathB, JSON.stringify(metaB2));
     await page.waitForSelector('.ed-gening', { state: 'hidden', timeout: 6000 });
     ok('[S4a-T4] 任务结束（idle）后迷你指示隐藏');
+    await ctx.close();
+  }
+
+  // ===== 4c [S4a-T6] 审阅三段骨架：段切换 / 证据最小渲染 / 任务状态可取消 / 刷新后位置恢复 =====
+  {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await page.goto(base + '/edit?id=' + JOB_DOC);
+    await page.waitForSelector('#ed-pane-review .jp-secs', { timeout: 5000 });
+    const secActive = () => page.evaluate(() => {
+      const b = document.querySelector('#ed-pane-review .jp-secs button.on');
+      return b ? b.dataset.sec : '';
+    });
+    // 夹具有待处理建议且无 reviewPos → 默认段 = 修改清单（既有 jp-item 渲染不破）
+    if (await secActive() !== 'changes') bad('[S4a-T6] 有建议时默认段应为修改清单: ' + await secActive());
+    else ok('[S4a-T6] 三段骨架默认段=修改清单（有建议）');
+    if (!(await page.$('#ed-pane-review .jp-item'))) bad('[S4a-T6] 修改清单段缺既有条目渲染');
+    else ok('[S4a-T6] 修改清单段保留既有渲染');
+    // 要求与证据段：最小只读渲染（条目 + 状态徽章 + 任务状态）
+    await page.click('#ed-pane-review .jp-secs button[data-sec="evidence"]');
+    let evTxt = await page.evaluate(() => document.querySelector('#ed-pane-review').textContent);
+    if (!evTxt.includes('React 组件化经验')) bad('[S4a-T6] 证据段缺条目渲染');
+    else ok('[S4a-T6] 证据段最小渲染（条目可见）');
+    if (!/有据/.test(evTxt)) bad('[S4a-T6] 证据段缺 sourced 徽章文案: ' + evTxt.slice(0, 120));
+    if (!/证据分析未开始|未生成/.test(evTxt)) bad('[S4a-T6] 证据段缺任务状态（idle）');
+    else ok('[S4a-T6] 证据任务状态可见（idle）');
+    // 导出检查段：占位（T10 落地）
+    await page.click('#ed-pane-review .jp-secs button[data-sec="export"]');
+    evTxt = await page.evaluate(() => document.querySelector('#ed-pane-review').textContent);
+    if (!/导出检查/.test(evTxt)) bad('[S4a-T6] 导出检查段缺占位');
+    else ok('[S4a-T6] 导出检查段占位（T10）');
+    // 刷新后位置恢复：切到要求与证据 → reload → 段恢复（reviewPos 服务端持久化）
+    await page.click('#ed-pane-review .jp-secs button[data-sec="evidence"]');
+    await page.waitForTimeout(400);   // 等 reviewPos POST 落盘
+    await page.reload();
+    await page.waitForSelector('#ed-pane-review .jp-secs', { timeout: 5000 });
+    await page.waitForTimeout(600);   // 等 GET 完成后按 reviewPos 定段
+    if (await secActive() !== 'evidence') bad('[S4a-T6] 刷新后未恢复到要求与证据段: ' + await secActive());
+    else ok('[S4a-T6] 刷新后位置恢复（reviewPos.section=evidence）');
+    // 证据任务 running 可见 + 可取消（夹具直写 running；取消走真端点，不依赖 LLM）
+    const metaPathC = path.join(dataRoot, 'docs-meta.json');
+    const mkTaskC = (over) => Object.assign({ taskId: null, status: 'idle', startedAt: null, baseHash: null, error: null, scope: null }, over || {});
+    const metaC = JSON.parse(fs.readFileSync(metaPathC, 'utf8'));
+    metaC[JOB_DOC].job.genTasks.evidence = mkTaskC({ taskId: 't-feed002', status: 'running', startedAt: Date.now() });
+    fs.writeFileSync(metaPathC, JSON.stringify(metaC));
+    await page.reload();
+    await page.waitForSelector('#ed-pane-review .jp-secs', { timeout: 5000 });
+    await page.waitForFunction(() => /正在分析证据/.test(document.querySelector('#ed-pane-review').textContent), { timeout: 6000 });
+    ok('[S4a-T6] 证据任务 running 态可见（正在分析证据）');
+    await page.click('#ed-pane-review button.jp-ev-cancel');
+    await page.waitForFunction(() => /已取消/.test(document.querySelector('#ed-pane-review').textContent), { timeout: 5000 });
+    ok('[S4a-T6] 证据任务可取消（cancelled 态可见）');
     await ctx.close();
   }
 

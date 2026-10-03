@@ -1,8 +1,8 @@
 // evidence.mjs — 岗位适配数据层纯函数（S4a 设计 §4/§5.3：证据表 / 来源有效性 / 三时态失效 / 候选应用校验 / 导出检查）
 // 纪律：零网络零落盘；模型输出只经解析校正入库，判定以程序侧指纹与 ID 为准（title/quote 仅展示）。
 import { createHash } from 'node:crypto';
-import { parasOf } from './zone.mjs';
-import { DATE_TOKEN_RE, pageSuggestions } from './job.mjs';
+import { parasOf, ZONE_LABELS } from './zone.mjs';
+import { DATE_TOKEN_RE, pageSuggestions, FACT_LABELS } from './job.mjs';
 
 const sha1 = (s) => createHash('sha1').update(s).digest('hex');
 
@@ -33,6 +33,46 @@ function resolveStatus(modelStatus, hasPara, hasMat) {
   if (hasPara) return modelStatus === 'thin' ? 'thin' : 'covered';
   if (hasMat) return 'sourced';
   return modelStatus === 'none' ? 'none' : 'todo';
+}
+
+// ===== 证据生成 prompt（设计 §5.1：输入侧携带请求内 ID，模型 refHints 只认 ID 原样返回）=====
+// materials = 已确认素材（带 id/facts/brief/technical）；zones = meta.zones（zid→{zone}）；paras = parasOf 正文段落。
+// 素材块每条带 id、正文段落每条带 zid——匹配只认这些 ID；title/quote 仅作人类可读展示，不参与匹配。
+export function buildEvidencePrompt({ jd = '', company = '', role = '', materials = [], zones = {}, paras = [] }) {
+  const sys = `你是岗位证据分析器（证据分析）。基于【目标 JD】、【已确认素材】与【简历正文段落】，产出「岗位要求—经历证据对应表」。你只能输出 JSON，不能输出 HTML、脚本或解释文字。
+
+输出格式（严格 JSON）：
+{"evidence":[{"req":"从 JD 提取的一条要求","status":"covered|sourced|thin|todo|none","refHints":[{"type":"mat","id":"<素材 id 原样返回>","title":"素材标题（仅展示）","quote":"支撑引文（仅展示）"},{"type":"para","zid":"<段落 zid 原样返回>","title":"所在区域（仅展示）","quote":"段落摘录（仅展示）"}]}]}
+
+硬约束（违反即遭拒）：
+1. refHints 只能引用输入给出的 ID：素材引用其 id、正文段落引用其 zid，原样返回，不得编造、改写或猜测；title/quote 仅供人阅读，与 ID 不一致时以 ID 为准。
+2. status 口径：covered=简历正文已有段落表达该要求（引 para）；sourced=仅已确认素材有据、正文未表达（引 mat）；thin=正文已表达但不充分（引 para）；todo=有来源但证据不足或尚未利用；none=已确认素材与正文中均未找到证据（refHints 留空）。
+3. 无证据不得编造：没有可引用的 ID 就用 none/todo，不得虚构 refHints，不得把 JD 内容当作经历证据引用。
+4. req 逐条拆解 JD 的关键要求（技能/经验/素质），不合并不同维度；JD 是要求来源，不是事实来源。
+evidence 最多 20 条。`;
+  const matBlock = materials.length
+    ? materials.map((m) => {
+      const f = (m && m.facts && typeof m.facts === 'object') ? m.facts : {};
+      const facts = Object.keys(FACT_LABELS).filter((k) => typeof f[k] === 'string' && f[k]).map((k) => `${FACT_LABELS[k]}：${f[k]}`).join(' / ');
+      return `【素材：${m.title}】（id：${m.id}）\n事实：${facts || '（无结构化事实）'}\n表达：${m.brief || ''}\n技术：${m.technical || ''}`;
+    }).join('\n\n')
+    : '（无已确认素材）';
+  // 区域分组：zones 有归属按 ZONE_LABELS，无归属/未知键 → 待确认分类（与区域面板文案同口径）
+  const zoneNameOf = (zid) => {
+    const z = zones[zid] && zones[zid].zone;
+    return ZONE_LABELS[z] || '待确认分类';
+  };
+  const groups = new Map();
+  for (const p of paras) {
+    const label = zoneNameOf(p.zid);
+    if (!groups.has(label)) groups.set(label, []);
+    groups.get(label).push(p);
+  }
+  const paraBlock = groups.size
+    ? [...groups.entries()].map(([label, ps]) => `【区域：${label}】\n` + ps.map((p) => `（zid：${p.zid}）${p.text}`).join('\n')).join('\n\n')
+    : '（正文无段落）';
+  const user = `【目标公司】${company}\n【目标岗位】${role}\n【JD】\n${jd || '（未提供 JD）'}\n\n【已确认素材（可引用，id 用于 refHints）】\n${matBlock}\n\n【简历正文段落（按区域分组，zid 用于 refHints）】\n${paraBlock}`;
+  return { sys, user };
 }
 
 export function parseEvidence(raw, ctx = {}) {

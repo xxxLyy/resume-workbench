@@ -40,6 +40,14 @@
     + '.jp-todo{border-left:3px solid var(--ed-warn);background:var(--ed-warn-soft);border-radius:6px;padding:6px 8px;margin:4px 0}'
     + '.jp-empty{color:var(--ed-mut);text-align:center;padding:16px 8px}'
     + '.jp-msg{font-size:11px;color:var(--ed-warn)}'
+    // S4a-T6 三段骨架（要求与证据｜修改清单｜导出检查）+ 证据表最小渲染
+    + '.jp-secs{display:flex;gap:2px;border-bottom:1px solid var(--ed-line);padding-bottom:8px}'
+    + '.jp-secs button{flex:1;min-height:26px;padding:0 8px;border:none;background:transparent;font-size:12px;font-weight:600;color:var(--ed-mut);cursor:pointer;border-radius:7px}'
+    + '.jp-secs button.on{color:var(--ed-accent);background:var(--ed-accent-soft)}'
+    + '.jp-secs button:focus-visible{outline:2px solid var(--ed-accent);outline-offset:1px}'
+    + '.jp-ev-head{display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap}'
+    + '.jp-ev-head button{min-height:24px;padding:0 8px;border-radius:6px;font-size:11px;cursor:pointer;border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink)}'
+    + '.jp-st.sourced,.jp-st.thin{background:var(--ed-warn-soft);color:var(--ed-warn)}'
     + '.jp button:focus-visible{outline:2px solid var(--ed-accent);outline-offset:1px}';
   document.head.appendChild(css);
 
@@ -49,6 +57,9 @@
   pane.appendChild(root);
 
   var job = null, doc = null, busy = false;
+  // S4a-T6 三段骨架状态：当前段（evidence|changes|export）+ reviewPos 筛选位（T9 落 UI）+ 任务轮询链
+  var curSec = null, posFilter = 'all', pollTimer = null;
+  var SEC_LABELS = { evidence: '要求与证据', changes: '修改清单', export: '导出检查' };
 
   function api(url, body) {
     return fetch(url, {
@@ -344,17 +355,164 @@
     return box;
   }
 
+  // ===== S4a-T6 三段切换（共用岗位上下文；reviewPos 服务端持久化，刷新后恢复）=====
+  function secBar() {
+    var bar = document.createElement('div');
+    bar.className = 'jp-secs';
+    ['evidence', 'changes', 'export'].forEach(function (s) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.setAttribute('data-sec', s);
+      b.textContent = SEC_LABELS[s];
+      if (s === curSec) b.className = 'on';
+      b.addEventListener('click', function () { setSec(s); });
+      bar.appendChild(b);
+    });
+    return bar;
+  }
+  function setSec(sec) {
+    if (!SEC_LABELS[sec] || sec === curSec) return;
+    curSec = sec;
+    savePos();
+    render();
+  }
+  function savePos() {
+    var rp = { section: curSec, changeId: null, filter: posFilter };
+    if (job) job.reviewPos = rp;   // 本地先行，避免下次渲染前丢段
+    api('/job/changes?id=' + DOC_ID, { reviewPos: rp }).then(function (d) { if (d.ok && d.job) job = d.job; }).catch(function () {});
+  }
+  // 初始进入：读 reviewPos 恢复段与筛选；无记录时有建议默认修改清单、未生成默认要求与证据（设计 §5.2 决策 2）
+  function applyReviewPos() {
+    var rp = job && job.reviewPos;
+    posFilter = (rp && rp.filter) || 'all';
+    curSec = (rp && SEC_LABELS[rp.section]) ? rp.section : (((job.changes || []).length) ? 'changes' : 'evidence');
+  }
+  // 数据刷新（含任务 running 时的轮询链：链只在 running 期间自续，任务结束自然停止）
+  function refresh() {
+    return api('/job/changes?id=' + DOC_ID).then(function (d) {
+      if (!d.ok) return;
+      job = d.job; doc = d.doc;
+      render();
+      var gt = job.genTasks || {};
+      if ((gt.evidence && gt.evidence.status === 'running') || (gt.changes && gt.changes.status === 'running')) schedulePoll();
+    }).catch(function () {});
+  }
+  function schedulePoll() {
+    if (pollTimer) return;
+    pollTimer = setTimeout(function () { pollTimer = null; refresh(); }, 2500);
+  }
+
   function render() {
     if (!job) {
       root.innerHTML = '<div class="jp-empty">本文件不是岗位草稿。</div>';
       return;
     }
     root.innerHTML = '';
+    root.appendChild(secBar());
+    if (curSec === 'evidence') renderEvidence();
+    else if (curSec === 'export') renderExport();
+    else renderChanges();
+    var msg = document.createElement('div');
+    msg.className = 'jp-msg';
+    root.appendChild(msg);
+  }
+
+  // ===== 段一「要求与证据」：本任务为最小只读版（任务状态 + 条目列表；完整 UI 见 T7）=====
+  var EV_STATUS = { covered: '简历已覆盖', sourced: '素材有据·简历未表达', thin: '表达不充分', todo: '待补充', none: '未找到证据' };
+  var GT_LABEL = { idle: '未生成', running: '正在分析证据…', done: '已生成', error: '失败', cancelled: '已取消' };
+  function renderEvidence() {
+    var gt = (job.genTasks || {}).evidence || {};
+    var box = document.createElement('div');
+    box.className = 'jp-group';
+    var headEl = document.createElement('div');
+    headEl.className = 'jp-ev-head';
+    var title = document.createElement('h4');
+    title.style.margin = '0';
+    title.textContent = '岗位要求—证据对应（要求来源：JD）';
+    headEl.appendChild(title);
+    var st = document.createElement('span');
+    st.className = 'jp-st ' + gt.status;
+    st.textContent = GT_LABEL[gt.status] || gt.status || '未生成';
+    headEl.appendChild(st);
+    var act = document.createElement('button');
+    act.type = 'button';
+    if (gt.status === 'running') {
+      act.className = 'jp-ev-cancel';
+      act.textContent = '取消';
+      act.addEventListener('click', function () {
+        api('/job/gen-cancel?id=' + DOC_ID + '&kind=evidence&taskId=' + encodeURIComponent(gt.taskId || ''), {}).then(function (d) {
+          note(d.ok ? '已取消' : '⚠️ ' + (d.error || '取消失败'));
+          refresh();
+        });
+      });
+    } else {
+      act.textContent = gt.status === 'done' || gt.status === 'cancelled' ? '重新分析' : (gt.status === 'error' ? '重试' : '生成证据');
+      act.addEventListener('click', function () {
+        api('/job/gen-start?id=' + DOC_ID + '&kind=evidence', {}).then(function (d) {
+          if (!d.ok) { note('⚠️ ' + (d.error || '启动失败')); return; }
+          job.genTasks = job.genTasks || {};
+          job.genTasks.evidence = { taskId: d.taskId, status: 'running', startedAt: Date.now() };
+          note('正在分析证据…');
+          render();
+          schedulePoll();
+        });
+      });
+    }
+    headEl.appendChild(act);
+    box.appendChild(headEl);
+    if (gt.error) { var err = document.createElement('div'); err.className = 'jp-reason'; err.textContent = '失败原因：' + gt.error; box.appendChild(err); }
+    root.appendChild(box);
+
+    var list = job.evidence || [];
+    if (!list.length) {
+      var empty = document.createElement('div');
+      empty.className = 'jp-empty';
+      empty.textContent = '尚未生成证据表：从 JD 提取要求并对照已确认素材与正文段落。';
+      root.appendChild(empty);
+      return;
+    }
+    list.forEach(function (e) {
+      var div = document.createElement('div');
+      div.className = 'jp-item';
+      var title2 = document.createElement('div');
+      title2.innerHTML = '<b>' + esc(short(e.req || '（无要求描述）', 40)) + '</b>'
+        + '<span class="jp-st ' + (e.status || 'todo') + '">' + (EV_STATUS[e.status] || e.status || '待补充') + '</span>'
+        + (e.stale ? '<span class="jp-st conflict">来源已变化</span>' : '');
+      div.appendChild(title2);
+      (e.refs || []).forEach(function (r) {
+        var line = document.createElement('div');
+        line.className = 'jp-reason';
+        var src = r.type === 'mat' ? '素材：' + (r.title || r.id || '') : '正文段落' + (r.title ? '（' + r.title + '）' : '');
+        line.textContent = '· ' + src + (r.quote ? '「' + short(r.quote, 40) + '」' : '') + (r.fresh === false ? '（已失效，需重新核对）' : '');
+        div.appendChild(line);
+      });
+      if (!(e.refs || []).length) {
+        var none = document.createElement('div');
+        none.className = 'jp-reason';
+        none.textContent = e.status === 'none' ? '当前已确认来源中未找到证据。' : '暂无有效引用。';
+        div.appendChild(none);
+      }
+      root.appendChild(div);
+    });
+  }
+
+  // ===== 段三「导出检查」：占位（S4a-T10 落地）=====
+  function renderExport() {
+    var box = document.createElement('div');
+    box.className = 'jp-group';
+    box.innerHTML = '<h4>导出检查（第三步）</h4><div class="jp-meta">导出前的检查清单（事实冲突门控 / 待核对 / 风格建议）将在第三步落地。</div>';
+    root.appendChild(box);
+    var exp = document.createElement('a');
+    exp.href = '/export?id=' + DOC_ID;
+    exp.textContent = '前往导出页';
+    exp.style.cssText = 'font-size:12px';
+    root.appendChild(exp);
+  }
+
+  // ===== 段二「修改清单」：既有渲染原样保留 =====
+  function renderChanges() {
     var head = document.createElement('div');
     head.className = 'jp-head';
-    var title = document.createElement('b');
-    title.textContent = '修改清单';
-    head.appendChild(title);
     var meta = document.createElement('span');
     meta.className = 'jp-meta';
     meta.textContent = (doc && doc.company ? doc.company + '·' + doc.role : '') + (job.generatedAt ? ' · 建议生成于 ' + job.generatedAt.slice(0, 16).replace('T', ' ') : ' · 尚未生成建议');
@@ -387,9 +545,6 @@
       head.appendChild(cmp);
     }
     root.appendChild(head);
-    var msg = document.createElement('div');
-    msg.className = 'jp-msg';
-    root.appendChild(msg);
 
     var changes = job.changes || [];
     var pending = changes.filter(function (c) { return c.status === 'pending'; });
@@ -464,12 +619,16 @@
     root.appendChild(help);
   }
 
+  // 初始进入：读 reviewPos 恢复段与筛选（刷新后位置恢复）
   api('/job/changes?id=' + DOC_ID).then(function (d) {
     if (!d.ok) return;
     job = d.job; doc = d.doc;
+    applyReviewPos();
     render();
+    var gt = job.genTasks || {};
+    if ((gt.evidence && gt.evidence.status === 'running') || (gt.changes && gt.changes.status === 'running')) schedulePoll();
   }).catch(function () {});
 
-  // 外壳 Tab 切换到「审阅」时刷新（反映最新落盘状态）
-  window.addEventListener('ed-review-refresh', function () { api('/job/changes?id=' + DOC_ID).then(function (d) { if (d.ok) { job = d.job; doc = d.doc; render(); } }); });
+  // 外壳 Tab 切换到「审阅」时刷新（反映最新落盘状态；不重置当前段）
+  window.addEventListener('ed-review-refresh', function () { refresh(); });
 })();

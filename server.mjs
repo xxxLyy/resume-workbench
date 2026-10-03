@@ -13,11 +13,11 @@ import { loadProfiles, hasLLM, chat, chatMsgs, listModels } from './llm.mjs';
 import { buildRewrite, buildChat, parseChanges, buildReview, buildMatch, parseReport } from './ai.mjs';
 import { buildJobPrompt, parseJobOps, pageSuggestions } from './job.mjs';
 import { docToLines, docToText, contentHash, sectionsOf } from './extract.mjs';
-import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, digestOf, buildZoneAnalyzePrompt, parseZoneAnalysis, buildZoneRewritePrompt, parseZoneRewrites, FACT_KEYS, MAT_STATES, migrateMats } from './zone.mjs';
+import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, digestOf, buildZoneAnalyzePrompt, parseZoneAnalysis, buildZoneRewritePrompt, parseZoneRewrites, FACT_KEYS, MAT_STATES, migrateMats, parasOf } from './zone.mjs';
 import { rotateLogIfNeeded } from './logrotate.mjs';
 import { freezeHtml, normalizeToCurrent, splitDoc, staleInfo } from './freeze.mjs';
 import { beginTx, commitTx, dropSupersededTx, recoverPending, withDocLock, updateMeta, updateMetaAll, rootLock, atomicWrite, LockHeld } from './tx.mjs';
-import { applyOps, reviewConsistency } from './evidence.mjs';
+import { applyOps, reviewConsistency, refFresh, buildEvidencePrompt, parseEvidence } from './evidence.mjs';
 import { assembleTemplate, themeRegistration } from './template.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -173,9 +173,31 @@ function applyChangesResult(cur, ops) {
 }
 
 // 任务体（node 单进程 fire-and-forget：Promise 即可，不引调度平台）。changes 通道完整复用既有链路；
-// evidence 通道 T6 接入（占位立即失败，不碰旧 evidence/evidenceGen——设计 §5.1 失败不替换）。
+// evidence 通道（S4a-T6）：JD + 已确认素材（facts+表达）+ 区域分组段落（请求内 ID）→ parseEvidence →
+// finishGenTask 校验落账——整批替换与 evidenceGen+1 只在成功落账事务内（设计 §5.1 反例2：失败/取消/超时不碰旧数据）。
 async function runGenTask(id, kind, taskId) {
-  if (kind === 'evidence') return finishGenTask(id, kind, taskId, null, '证据生成通道未接入（S4a-T6 落地）');
+  if (kind === 'evidence') {
+    try {
+      const m0 = loadMeta()[id];
+      if (!m0 || !m0.job) return finishGenTask(id, kind, taskId, null, '文档已不是岗位草稿');
+      const html = fs.readFileSync(docPath(id), 'utf8');
+      const mats = loadMats().filter((x) => x.factStatus === 'confirmed' && m0.job.materials.includes(x.id));
+      const paras = parasOf(html);
+      const p = buildEvidencePrompt({ jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: mats, zones: m0.zones || {}, paras });
+      const raw = await chat(root, p.sys, p.user);
+      // 解析用批次号在锁外读取即可：同 kind 任务被 startGenTask 串行化（running 期间新任务 409），锁内必然一致。
+      const gen = (Number(m0.job.evidenceGen) || 0) + 1;
+      const ev = parseEvidence(raw, { gen, mats, paras });
+      if (!ev || !ev.length) return finishGenTask(id, kind, taskId, null, '模型输出无法解析为证据表，未替换任何证据');
+      return finishGenTask(id, kind, taskId, (cur) => {
+        cur.job.evidence = ev;              // 整批替换 + 批次推进只在本次成功落账事务内（旧 refId 不复用）
+        cur.job.evidenceGen = gen;
+        return { evidence: ev.length, evidenceGen: gen };
+      });
+    } catch (e) {
+      return finishGenTask(id, kind, taskId, null, '模型调用失败：' + (e.message || e));
+    }
+  }
   try {
     const m0 = loadMeta()[id];
     if (!m0 || !m0.job) return finishGenTask(id, kind, taskId, null, '文档已不是岗位草稿');
@@ -255,9 +277,28 @@ function jobView(m) {
       ? { evidence: { ...mkGenTask(), ...(j.genTasks.evidence || {}) }, changes: { ...mkGenTask(), ...(j.genTasks.changes || {}) } }
       : { evidence: mkGenTask(), changes: mkGenTask() },
     saveReceipts: { count: receipts.length, lastRequestId: receipts.length ? receipts[receipts.length - 1].requestId : null },
-    reviewPos: j.reviewPos || { changeId: null, filter: 'all' },
+    reviewPos: j.reviewPos || { section: null, changeId: null, filter: 'all' },
     status: legacyFlowStatus(m), flow: flowOf(m)
   };
+}
+
+// S4a-T6（设计 §4.2 来源维度）：jobView 之上叠加读取时即时计算——不落盘、不依赖正文保存（反例6）。
+// ① 每条 evidence 的 refs 现算 refFresh（含 factStatus）并标注条目 stale；② 每条 change 的 consistency
+// 重算（含 ref-stale/batch-stale 来源维度；正文维度与 /save 落盘的 reviewConsistency 同函数同口径）。
+// 正文不可读时保持落盘视图（不阻断读取）。纯读：任何失败都不写 meta。
+function jobViewLive(id, m) {
+  const job = jobView(m);
+  if (!job) return job;
+  let html;
+  try { html = fs.readFileSync(docPath(id), 'utf8'); } catch { return job; }
+  const mats = loadMats();
+  const out = reviewConsistency(job, html, { zones: (m || {}).zones, mats });
+  const paras = parasOf(html);
+  out.evidence = (out.evidence || []).map((e) => {
+    const refs = (Array.isArray(e.refs) ? e.refs : []).map((r) => ({ ...r, fresh: refFresh(r, { mats, paras }) }));
+    return { ...e, refs, stale: refs.length > 0 && refs.every((r) => !r.fresh) };
+  });
+  return out;
 }
 const exportsOf = (m) => (Array.isArray(m && m.exports) ? m.exports : []);
 const deliveredRefs = (docId) => loadApps().filter((a) => a && a.docId === docId);                     // 该文档全部投递引用（每条 = 一次投递）
@@ -1292,15 +1333,25 @@ async function handler(req, res) {
       // 兼容视图（S1-T8）：响应里的 status 为派生旧词汇（reviewed→deliverable，其余→draft），flow 为存储单源；
       // schemaVersion<2 时 flowOf 由 job.status 即时推导，绝不写回。
       // S4a-T3：jobView 附带 brief/evidence/genTasks/saveReceipts 摘要/reviewPos 渐进默认值。
-      const job = jobView(m);
+      // S4a-T6：jobViewLive 叠加来源维度即时计算（refs fresh / consistency 现算，不落盘）。
+      const job = jobViewLive(id, m);
       return sendJson(200, { ok: true, job, zones: m.zones || null, zoneOrder: m.zoneOrder || null, zoneRounds: m.zoneRounds || null, doc: { id, parent: m.parent || '', company: m.company || '', role: m.role || '', jd: m.jd || '', jdSource: m.jdSource || '' } });
     }
     if (req.method === 'POST' && url.pathname === '/job/changes') {
       const body = JSON.parse(await readBody(req));
       const updates = Array.isArray(body.updates) ? body.updates : [];
-      let jobOut = null, isJob = false;
+      // S4a-T6：reviewPos（审阅位置：段名+changeId+筛选）经本端点持久化；写入前整体校验，坏形状 400。
+      if (body.reviewPos !== undefined) {
+        const rp = body.reviewPos;
+        if (!rp || typeof rp !== 'object' || !['evidence', 'changes', 'export'].includes(rp.section)
+          || !(rp.changeId === null || (typeof rp.changeId === 'string' && rp.changeId))
+          || !['all', 'important', 'new'].includes(rp.filter)) {
+          return sendJson(400, { ok: false, error: 'reviewPos 非法（section∈evidence|changes|export、changeId 字符串或 null、filter∈all|important|new）' });
+        }
+      }
+      let written = null, isJob = false;
       // docs-meta 唯一写入者 updateMeta：读最新→只改本文档 job 子树→原子写（不整表覆盖）
-      updateMeta(root, id, (m) => {
+      written = updateMeta(root, id, (m) => {
         if (!m || !m.job) return m;   // 非岗位草稿：原样返回（下方 404）
         isJob = true;
         for (const u of updates) {
@@ -1313,17 +1364,17 @@ async function handler(req, res) {
           c.updatedAt = new Date().toISOString();
         }
         if (Array.isArray(body.todos)) m.job.todos = body.todos;
+        if (body.reviewPos !== undefined) m.job.reviewPos = { section: body.reviewPos.section, changeId: body.reviewPos.changeId || null, filter: body.reviewPos.filter };
         if (typeof body.status === 'string') {
           // 状态维度单源（S1-T8）：旧词汇映射 deliverable/delivered→reviewed（投递历史改由 applications.json 派生），新词汇直通；
           // 只写 flow，不再写 job.status（迁移会删除它）
           const toFlow = { draft: 'draft', deliverable: 'reviewed', delivered: 'reviewed', reviewing: 'reviewing', reviewed: 'reviewed' };
           if (toFlow[body.status]) m.flow = toFlow[body.status];
         }
-        jobOut = { ...m.job, status: legacyFlowStatus(m), flow: flowOf(m) };   // 响应带派生兼容视图（不存储）
         return m;
       });
       if (!isJob) return sendJson(404, { ok: false, error: '该文档不是岗位草稿' });
-      return sendJson(200, { ok: true, job: jobOut });
+      return sendJson(200, { ok: true, job: jobViewLive(id, written) });   // 响应与 GET 同视图（含 live 标注与渐进默认）
     }
     // ===== S4a-T5：岗位草稿要求卡保存（同 normBrief 校验；普通文档 404）=====
     if (req.method === 'POST' && url.pathname === '/job/brief') {

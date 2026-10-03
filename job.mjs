@@ -6,7 +6,7 @@ const LEVELS = new Set(['normal', 'important', 'conflict']);
 
 // S4a-T3（设计 §5.1）：素材事实层进 prompt——事实字段与表达层分列；JD 边界声明；brief.degree 三档指令。
 // 事实字段标签（与 zone.mjs FACT_KEYS 同键，本地声明避免 job↔zone 循环依赖）。
-const FACT_LABELS = { company: '公司', role: '职位', dates: '日期', education: '学历', metrics: '指标', contribution: '贡献', conditions: '条件', source: '来源' };
+export const FACT_LABELS = { company: '公司', role: '职位', dates: '日期', education: '学历', metrics: '指标', contribution: '贡献', conditions: '条件', source: '来源' };
 const DEGREE_RULES = {
   light: '本轮修改幅度为轻度精简：优先删冗余、合并重复表达，不移动章节与项目顺序。',
   refocus: '本轮修改幅度为聚焦调整：可调整项目顺序与详略、隐藏低相关经历，不做大结构改动。',
