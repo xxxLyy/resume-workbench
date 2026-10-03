@@ -1985,7 +1985,7 @@ const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','
   '/ai/zone-analyze','/ai/zone-rewrite',
   '/api/extract','/app','/app/add','/app/archive-regenerate','/app/del','/app/ics','/app/jd','/app/update','/applications',
   '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf',
-  '/job-panel.js','/job/changes','/job/create','/job/generate','/job/gen-cancel','/job/gen-start','/link','/mat/add','/mat/confirm','/mat/del','/mat/update',
+  '/job-panel.js','/job/brief','/job/changes','/job/create','/job/generate','/job/gen-cancel','/job/gen-start','/link','/mat/add','/mat/confirm','/mat/del','/mat/update',
   '/materials','/new','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings',
   '/snapshot/baseline','/snapshot/note','/snapshot/pdf','/snapshot/view','/snapshots','/stats','/tag','/version/create',
   '/zones','/zones/init','/zone-panel.js'].sort();

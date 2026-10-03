@@ -181,7 +181,7 @@ async function runGenTask(id, kind, taskId) {
     if (!m0 || !m0.job) return finishGenTask(id, kind, taskId, null, '文档已不是岗位草稿');
     const docText = docToText(fs.readFileSync(docPath(id), 'utf8'), { includeHidden: false });
     const confirmedMats = loadMats().filter((x) => x.factStatus === 'confirmed' && m0.job.materials.includes(x.id));
-    const p = buildJobPrompt({ docText, jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: confirmedMats, twoPage: true });
+    const p = buildJobPrompt({ docText, jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: confirmedMats, twoPage: true, brief: m0.job.brief || null });   // S4a-T5：要求卡进 prompt（buildJobPrompt 内部渐进默认）
     const raw = await chat(root, p.sys, p.user);
     const ops = parseJobOps(raw);
     if (!ops) return finishGenTask(id, kind, taskId, null, '模型输出无法解析为修改操作，未应用任何修改');
@@ -221,6 +221,26 @@ function startGenTask(id, kind) {
   });
   return { taskId, reject };
 }
+// ===== S4a-T5 要求卡：brief 归一校验（设计 §4.1/§5.1）=====
+// 输入任意对象 → {brief, error}：渐进默认（缺字段补默认，不整对象覆盖）；非法值 400 由调用方决定。
+const BRIEF_DEGREES = ['light', 'refocus', 'restructure'];
+function normBrief(input) {
+  const b = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+  const strArr = (v) => v === undefined ? [] : (Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim()).slice(0, 20) : null);
+  const focus = strArr(b.focus);
+  const keepProjects = strArr(b.keepProjects);
+  const deemphasize = strArr(b.deemphasize);
+  if (focus === null || keepProjects === null || deemphasize === null) return { error: 'focus/keepProjects/deemphasize 必须是字符串数组' };
+  const degree = BRIEF_DEGREES.includes(b.degree) ? b.degree : null;
+  const pages = b.pages === undefined || b.pages === null || b.pages === '' ? null : b.pages;
+  const preset = b.preset === undefined || b.preset === null || b.preset === '' ? null : b.preset;
+  if (degree === null && b.degree !== undefined && b.degree !== null && b.degree !== '') return { error: 'degree 必须是 light|refocus|restructure' };
+  if ((pages !== null && (typeof pages !== 'number' || !Number.isInteger(pages) || pages < 1)) || typeof pages === 'string')
+    return { error: 'pages 必须是正整数' };
+  if (preset !== null && typeof preset !== 'string') return { error: 'preset 必须是字符串或 null' };
+  return { brief: { focus, keepProjects, deemphasize, degree: degree || 'refocus', pages: pages || 2, preset } };
+}
+
 // /job/changes GET 兼容视图：新字段带默认值；saveReceipts 只回摘要（最近 requestId，完整回执表仅供服务端判重）。
 function jobView(m) {
   if (!m || !m.job) return null;
@@ -451,6 +471,8 @@ select{border:1px solid var(--line);border-radius:8px;padding:7px 10px;backgroun
 button:focus-visible,input:focus-visible,a:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 16px}
 .badge{display:inline-block;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:600;background:var(--bg);color:var(--mut);margin-right:6px}
+.chip{border:1px solid var(--line);border-radius:999px;padding:3px 11px;font-size:12px;background:var(--panel);cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
 .badge.ok{background:var(--ok-soft);color:var(--ok)}.badge.warn{background:var(--warn-soft);color:var(--warn)}.badge.ai{background:var(--ai-soft);color:var(--ai)}.badge.err{background:var(--err-soft);color:var(--err)}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:12px 0}
 .stat{border-radius:var(--radius);padding:12px 14px;box-shadow:var(--shadow);border:1px solid var(--line)}
@@ -652,6 +674,11 @@ function listPage(showArchived = false) {
   const fallbackId = byMtime.length ? byMtime[0].id : '';
   const docIds = byMtime.map((d) => d.id);
   const docTitles = Object.fromEntries(byMtime.map((d) => [d.id, d.title]));
+  // S4a-T5：重点 chips 建议值 = 素材 tags 聚合（首版不做历史 brief 聚合）
+  const tagCount = new Map();
+  for (const mt of loadMats()) for (const t of (Array.isArray(mt.tags) ? mt.tags : [])) if (typeof t === 'string' && t.trim()) tagCount.set(t.trim(), (tagCount.get(t.trim()) || 0) + 1);
+  const tagChips = [...tagCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)
+    .map(([t]) => `<button type="button" class="chip" data-tag="${escAttr(t)}">${escHtml(t)}</button>`).join('');
   return page('简历工作台', `
     <section class="hero">
       <div class="hero-txt">
@@ -676,6 +703,25 @@ function listPage(showArchived = false) {
         <label style="font-size:12px">母版简历<select id="jobFrom" style="width:100%">${infos.map((d) => `<option value="${d.id}">${d.title}（${d.id}）</option>`).join('')}</select></label>
         <label style="font-size:12px">JD 链接（可留空）<input id="jobLink" placeholder="https://…读取失败可改贴文本" style="width:100%"></label>
         <label style="font-size:12px;grid-column:1/-1">JD 文本（可留空，稍后补）<textarea id="jobJd" rows="3" style="width:100%"></textarea></label>
+        <details style="grid-column:1/-1;border:1px solid var(--line);border-radius:8px;background:var(--panel)">
+          <summary style="cursor:pointer;padding:8px 12px;font-size:13px;font-weight:600">本次定制要求（可选，默认已按经验填好）</summary>
+          <div style="padding:2px 12px 12px;display:grid;gap:6px">
+            <label style="font-size:12px">预设<span style="display:flex;gap:6px;margin-top:3px">
+              <select id="briefPresetSel" style="flex:1"><option value="">— 取回常用预设 —</option></select>
+              <button type="button" class="secondary" id="briefPresetSave">存为常用预设</button>
+              <button type="button" class="secondary" id="briefPresetDel">删除</button></span></label>
+            <label style="font-size:12px">本次重点（点击选中/取消；建议来自素材标签）<span id="briefFocusChips" class="chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:3px">${tagChips}</span></label>
+            <label style="font-size:12px">必须保留的项目（一行一个）<textarea id="briefKeep" rows="2" style="width:100%;margin-top:3px"></textarea></label>
+            <label style="font-size:12px">不希望强调（一行一个）<textarea id="briefDeem" rows="2" style="width:100%;margin-top:3px"></textarea></label>
+            <label style="font-size:12px">修改幅度<span id="briefDegree" style="display:flex;gap:6px;margin-top:3px">
+              <button type="button" class="secondary" data-deg="light">轻度精简</button>
+              <button type="button" class="secondary" data-deg="refocus" aria-pressed="true">重点调整</button>
+              <button type="button" class="secondary" data-deg="restructure">重新组织</button></span></label>
+            <label style="font-size:12px">页数目标<span style="display:flex;gap:6px;margin-top:3px">
+              <button type="button" class="secondary" data-pages="1">1 页</button>
+              <button type="button" class="secondary" data-pages="2" aria-pressed="true">2 页（默认）</button></span></label>
+          </div>
+        </details>
         <div style="grid-column:1/-1"><button type="submit">生成岗位草稿</button><span id="jobMsg" style="font-size:12px;color:var(--mut)"></span></div>
       </form>
     </details>
@@ -708,15 +754,81 @@ function listPage(showArchived = false) {
         if (r.redirected) { location.href = r.url; return; }
         document.getElementById('upmsg').textContent = ' ' + (await r.text());
       });
+      // S4a-T5 要求卡：chips 切换 / 幅度与页数段选 / 预设（localStorage，不进 meta）
+      (function () {
+        var lines = function (id) { return document.getElementById(id).value.split(/[\\n]+/).map(function (s) { return s.trim(); }).filter(Boolean); };
+        document.getElementById('briefFocusChips').addEventListener('click', function (e) {
+          var b = e.target.closest('.chip'); if (!b) return;
+          b.setAttribute('aria-pressed', b.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+        });
+        var segPick = function (spanId, attr) {
+          document.getElementById(spanId).addEventListener('click', function (e) {
+            var b = e.target.closest('button[data-' + attr + ']'); if (!b) return;
+            this.querySelectorAll('button[data-' + attr + ']').forEach(function (x) { x.removeAttribute('aria-pressed'); });
+            b.setAttribute('aria-pressed', 'true');
+          });
+        };
+        segPick('briefDegree', 'deg'); segPick('briefPages', 'pages');
+        var PRESET_KEY = 's4a-presets';
+        var loadPresets = function () { try { return JSON.parse(localStorage.getItem(PRESET_KEY) || '{}') || {}; } catch (e) { return {}; } };
+        var savePresets = function (p) { try { localStorage.setItem(PRESET_KEY, JSON.stringify(p)); } catch (e) {} };
+        var briefFromForm = function () {
+          return { focus: Array.prototype.map.call(document.querySelectorAll('#briefFocusChips .chip[aria-pressed="true"]'), function (b) { return b.getAttribute('data-tag'); }),
+            keepProjects: lines('briefKeep'), deemphasize: lines('briefDeem'),
+            degree: (document.querySelector('#briefDegree button[aria-pressed="true"]') || {}).getAttribute ? document.querySelector('#briefDegree button[aria-pressed="true"]').getAttribute('data-deg') : 'refocus',
+            pages: Number((document.querySelector('button[data-pages][aria-pressed="true"]') || {}).getAttribute ? document.querySelector('button[data-pages][aria-pressed="true"]').getAttribute('data-pages') : 2) || 2 };
+        };
+        var applyBrief = function (b) {
+          if (!b) return;
+          document.querySelectorAll('#briefFocusChips .chip').forEach(function (c) {
+            c.setAttribute('aria-pressed', (b.focus || []).indexOf(c.getAttribute('data-tag')) >= 0 ? 'true' : 'false');
+          });
+          document.getElementById('briefKeep').value = (b.keepProjects || []).join('\\n');
+          document.getElementById('briefDeem').value = (b.deemphasize || []).join('\\n');
+          var deg = b.degree || 'refocus';
+          document.querySelectorAll('#briefDegree button[data-deg]').forEach(function (x) {
+            if (x.getAttribute('data-deg') === deg) x.setAttribute('aria-pressed', 'true'); else x.removeAttribute('aria-pressed');
+          });
+          var pg = String(b.pages || 2);
+          document.querySelectorAll('button[data-pages]').forEach(function (x) {
+            if (x.getAttribute('data-pages') === pg) x.setAttribute('aria-pressed', 'true'); else x.removeAttribute('aria-pressed');
+          });
+        };
+        var refreshPresets = function () {
+          var sel = document.getElementById('briefPresetSel'), p = loadPresets();
+          sel.innerHTML = '<option value="">— 取回常用预设 —</option>' + Object.keys(p).map(function (k) {
+            return '<option value="' + k.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;') + '">' + k.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</option>';
+          }).join('');
+        };
+        refreshPresets();
+        document.getElementById('briefPresetSel').addEventListener('change', function () {
+          var p = loadPresets()[this.value]; if (p) applyBrief(p.brief || p);
+        });
+        document.getElementById('briefPresetSave').addEventListener('click', function () {
+          var name = prompt('预设名称', document.getElementById('jobRole').value.trim() || '常用岗位'); if (!name) return;
+          var p = loadPresets(); p[name] = { brief: briefFromForm() }; savePresets(p); refreshPresets();
+          var sel = document.getElementById('briefPresetSel'); sel.value = name;
+        });
+        document.getElementById('briefPresetDel').addEventListener('click', function () {
+          var sel = document.getElementById('briefPresetSel'); if (!sel.value) return;
+          var p = loadPresets(); delete p[sel.value]; savePresets(p); refreshPresets();
+        });
+      })();
       document.getElementById('jobForm').addEventListener('submit', async function (e) {
         e.preventDefault();
         var msg = document.getElementById('jobMsg');
         msg.textContent = ' 创建中…';
         try {
+          var brief = { focus: Array.prototype.map.call(document.querySelectorAll('#briefFocusChips .chip[aria-pressed="true"]'), function (b) { return b.getAttribute('data-tag'); }),
+            keepProjects: document.getElementById('briefKeep').value.split(/[\\n]+/).map(function (s) { return s.trim(); }).filter(Boolean),
+            deemphasize: document.getElementById('briefDeem').value.split(/[\\n]+/).map(function (s) { return s.trim(); }).filter(Boolean),
+            degree: (document.querySelector('#briefDegree button[aria-pressed="true"]') || document.querySelector('#briefDegree button[data-deg="refocus"]')).getAttribute('data-deg'),
+            pages: Number(document.querySelector('button[data-pages][aria-pressed="true"]').getAttribute('data-pages')) || 2,
+            preset: document.getElementById('briefPresetSel').value || null };
           var r = await fetch('/job/create', { method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ from: document.getElementById('jobFrom').value, company: document.getElementById('jobCompany').value.trim(),
               role: document.getElementById('jobRole').value.trim(), jd: document.getElementById('jobJd').value,
-              jdLink: document.getElementById('jobLink').value.trim() }) });
+              jdLink: document.getElementById('jobLink').value.trim(), brief: brief }) });
           var d = await r.json().catch(function () { return null; });
           if (r.redirected) { location.href = r.url; return; }
           if (d && d.existing) { if (confirm('已存在同一母版+岗位的草稿（' + d.existing + '）。打开它？')) location.href = '/edit?id=' + d.existing; return; }
@@ -1090,6 +1202,8 @@ async function handler(req, res) {
       const role = String(body.role || '').trim();
       if (!VALID_ID.test(from)) return sendJson(400, { ok: false, error: 'invalid from' });
       if (!company || !role) return sendJson(400, { ok: false, error: '公司、岗位必填' });
+      const nb = normBrief(body.brief);   // S4a-T5：brief 可选（缺省渐进默认），非法值 400
+      if (nb.error) return sendJson(400, { ok: false, error: nb.error });
       if (!fs.existsSync(docPath(from))) return sendJson(404, { ok: false, error: '母版文档不存在' });
       const metaAll = loadMeta();
       const dup = Object.keys(metaAll).find((k) => {
@@ -1133,6 +1247,7 @@ async function handler(req, res) {
         job: {
           sourceSnap: srcSnap, sourceHash: contentHash(srcHtml),
           materials: Array.isArray(body.materials) ? body.materials.filter((x) => typeof x === 'string') : [],
+          brief: nb.brief,   // S4a-T5 要求卡（渐进默认：无 brief 时字段全默认）
           changes: [], todos: jdError ? [{ section: '岗位信息', question: 'JD 链接读取失败（' + jdError + '），请粘贴 JD 文本', why: '岗位匹配分析需要 JD', resolved: false }] : [],
           generatedAt: null, deliveredAt: null
         }
@@ -1209,6 +1324,21 @@ async function handler(req, res) {
       });
       if (!isJob) return sendJson(404, { ok: false, error: '该文档不是岗位草稿' });
       return sendJson(200, { ok: true, job: jobOut });
+    }
+    // ===== S4a-T5：岗位草稿要求卡保存（同 normBrief 校验；普通文档 404）=====
+    if (req.method === 'POST' && url.pathname === '/job/brief') {
+      const body = JSON.parse(await readBody(req));
+      const nb = normBrief(body);
+      if (nb.error) return sendJson(400, { ok: false, error: nb.error });
+      let isJob = false;
+      updateMeta(root, id, (m) => {
+        if (!m || !m.job) return m;
+        isJob = true;
+        m.job = { ...m.job, brief: nb.brief };
+        return m;
+      });
+      if (!isJob) return sendJson(404, { ok: false, error: '该文档不是岗位草稿' });
+      return sendJson(200, { ok: true, brief: nb.brief });
     }
     // ===== S3：区域绑定（zones 存 meta；归属与状态由用户操作回写，一致性由 /save zoneSync 兜底）=====
     if (req.method === 'POST' && url.pathname === '/zones') {
@@ -1296,7 +1426,12 @@ async function handler(req, res) {
       const { taskId, reject } = startGenTask(id, 'changes');
       if (reject) return sendJson(reject.status, { ok: false, error: reject.error });
       const r = await runGenTask(id, 'changes', taskId);
-      if (r.dropped) return sendJson(409, { ok: false, error: '任务已被取消或取代' });
+      // S4a-T5 转交修 a：dropped 读锁内已写的真实原因（finishGenTask 过期路径已落 error=任务超时），
+      // 真超时不再恒称「已被取消或取代」；error 为空（真被取消/取代）才用兜底文案。
+      if (r.dropped) {
+        const gt = ((loadMeta()[id] || {}).job || {}).genTasks?.changes;
+        return sendJson(409, { ok: false, error: (gt && gt.error) || '任务已被取消或取代' });
+      }
       if (!r.ok) return sendJson(502, { ok: false, error: r.error });
       return sendJson(200, { ok: true, job: r.job, generated: r.generated, todos: r.todos });
     }

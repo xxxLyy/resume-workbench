@@ -18,6 +18,11 @@ mkdir -p "$RESUME_ROOT/docs" "$RESUME_ROOT/snapshots" "$RESUME_ROOT/pdfs"
 cleanup() {
   kill $SRV $LLM $JDSTUB 2>/dev/null || true
   kill ${SRV2:-} ${SRV3:-} 2>/dev/null || true
+  # 按端口兜底清夹具服务：SRV2/SRV3 变量被后面夹具复用（附加f 与 T4-j），cleanup 只杀到最后一个，
+  # 前面夹具的孤儿进程占住 17902/17903 会让下一次整跑「夹具服务启动失败」。只清测试端口，不碰断言。
+  # lsof 双端口必须分开 -i（本机 lsof 4.91 对 `:a :b` 报 status error 退出非零 → 兜底曾整体失效）。
+  lsof -ti :17902 2>/dev/null | xargs kill 2>/dev/null || true
+  lsof -ti :17903 2>/dev/null | xargs kill 2>/dev/null || true
   rm -rf "$TEST_DIR"
   rm -f /tmp/resume-test-stub.log /tmp/resume-test-llm-last.json
 }
@@ -394,6 +399,54 @@ CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/job/create" -H 'Conten
 [ "$CODE" = "409" ] || fail "重复岗位草稿未拦截（${CODE}）"
 ls "$RESUME_ROOT/snapshots/$DOCID"/*.html >/dev/null 2>&1 || fail '创建时未冻结来源快照'
 echo "✅ 岗位草稿独立创建（${JOBLOC}）"
+
+# ===== 8b. S4a-T5 要求卡：create brief 落 meta / 无 brief 默认值 / 校验 / /job/brief 往返 / 旧草稿兼容 =====
+BRIEF0=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const b=(m[process.argv[2]].job||{}).brief;console.log(b?JSON.stringify(b):"")' "$RESUME_ROOT/docs-meta.json" "$JOBLOC")
+[ "$BRIEF0" = '{"focus":[],"keepProjects":[],"deemphasize":[],"degree":"refocus","pages":2,"preset":null}' ] || fail "S4a-T5 无 brief 创建应落渐进默认值: $BRIEF0"
+BRIEFJOB=$(curl -s -X POST "$B/job/create" -H 'Content-Type: application/json' -d "{\"from\":\"$DOCID\",\"company\":\"要求卡公司\",\"role\":\"前端工程师\",\"jd\":\"S4a-T5 验证\",\"brief\":{\"focus\":[\"高并发\",\"\"],\"keepProjects\":[\"订单系统\"],\"deemphasize\":[\"行政实习\"],\"degree\":\"light\",\"pages\":1,\"preset\":\"后端通用\"}}" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch{console.log('')}})")
+[ -n "$BRIEFJOB" ] && [ -f "$RESUME_ROOT/docs/$BRIEFJOB.html" ] || fail 'S4a-T5 带 brief 创建失败'
+BRIEF=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(JSON.stringify(m[process.argv[2]].job.brief))' "$RESUME_ROOT/docs-meta.json" "$BRIEFJOB")
+[ "$BRIEF" = '{"focus":["高并发"],"keepProjects":["订单系统"],"deemphasize":["行政实习"],"degree":"light","pages":1,"preset":"后端通用"}' ] || fail "S4a-T5 create 带 brief 落 meta 异常: $BRIEF"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/job/create" -H 'Content-Type: application/json' -d "{\"from\":\"$DOCID\",\"company\":\"要求卡公司\",\"role\":\"前端工程师二\",\"brief\":{\"degree\":\"huge\"}}")
+[ "$CODE" = "400" ] || fail "S4a-T5 非法 degree 应 400 得 $CODE"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/job/brief?id=$BRIEFJOB" -H 'Content-Type: application/json' -d '{"pages":"two"}')
+[ "$CODE" = "400" ] || fail "S4a-T5 非法 pages 应 400 得 $CODE"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/job/brief?id=$BRIEFJOB" -H 'Content-Type: application/json' -d '{"focus":"高并发"}')
+[ "$CODE" = "400" ] || fail "S4a-T5 非数组 focus 应 400 得 $CODE"
+# /job/brief 往返：省略字段默认补齐（不整对象覆盖语义由 normBrief 保证）
+curl -s -X POST "$B/job/brief?id=$JOBLOC" -H 'Content-Type: application/json' -d '{"focus":["性能优化"],"degree":"restructure"}' | grep -q '"ok":true' || fail 'S4a-T5 /job/brief 更新失败'
+BRIEF=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(JSON.stringify(m[process.argv[2]].job.brief))' "$RESUME_ROOT/docs-meta.json" "$JOBLOC")
+[ "$BRIEF" = '{"focus":["性能优化"],"keepProjects":[],"deemphasize":[],"degree":"restructure","pages":2,"preset":null}' ] || fail "S4a-T5 /job/brief 落 meta 异常: $BRIEF"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/job/brief?id=$DOCID" -H 'Content-Type: application/json' -d '{"degree":"light"}')
+[ "$CODE" = "404" ] || fail "S4a-T5 普通文档 /job/brief 应 404 得 $CODE"
+# 旧草稿兼容：meta 无 brief → /job/changes 渐进默认；/job/brief 可直接补写
+node -e 'const fs=require("fs");const f=process.argv[1];const m=JSON.parse(fs.readFileSync(f,"utf8"));delete m[process.argv[2]].job.brief;fs.writeFileSync(f,JSON.stringify(m));' "$RESUME_ROOT/docs-meta.json" "$BRIEFJOB"
+BRIEFVIEW=$(curl -s "$B/job/changes?id=$BRIEFJOB" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s).job;console.log(j.brief&&j.brief.degree==="refocus"&&j.brief.pages===2&&Array.isArray(j.brief.focus)?"1":"0")})')
+[ "$BRIEFVIEW" = "1" ] || fail 'S4a-T5 旧草稿（无 brief）GET /job/changes 未出渐进默认值'
+curl -s -X POST "$B/job/brief?id=$BRIEFJOB" -H 'Content-Type: application/json' -d '{"focus":["高并发"],"keepProjects":["订单系统"],"deemphasize":["行政实习"],"degree":"light","pages":1,"preset":"后端通用"}' | grep -q '"ok":true' || fail 'S4a-T5 旧草稿补写 brief 失败'
+# 生成消费 brief（stub 记录 prompt）
+curl -s -X POST "$B/job/generate?id=$BRIEFJOB" -H 'Content-Type: application/json' -d '{}' | grep -q '"generated":2' || fail 'S4a-T5 带 brief 生成失败'
+grep -q '重点：高并发' "$TEST_DIR/llm-last.json" || fail 'prompt 未消费 brief.focus'
+grep -q '必须保留：订单系统' "$TEST_DIR/llm-last.json" || fail 'prompt 未消费 brief.keepProjects'
+grep -q '轻度精简' "$TEST_DIR/llm-last.json" || fail 'prompt 未消费 brief.degree'
+grep -q '页数目标：1 页' "$TEST_DIR/llm-last.json" || fail 'prompt 未消费 brief.pages'
+# 转交修 a：/job/generate 同步等待的 dropped 409 读锁内已写 error（真超时如实说「任务超时」，不再恒称「已被取消或取代」）
+echo 3000 > "$TEST_DIR/llm-slow"
+curl -s -X POST "$B/job/generate?id=$JOBLOC" -H 'Content-Type: application/json' -d '{}' -o "$TEST_DIR/t5-gen409.json" -w '%{http_code}' > "$TEST_DIR/t5-gen409.code" & GC=$!
+sleep 0.8   # startGenTask 已写 running+taskId
+T4TG=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const t=((m[process.argv[2]].job||{}).genTasks||{}).changes||{};console.log(t.taskId||"")' "$RESUME_ROOT/docs-meta.json" "$JOBLOC")
+[ -n "$T4TG" ] || fail 'S4a-T5 转交修 a 夹具未进入 running'
+node -e 'const fs=require("fs");const f=process.argv[1],doc=process.argv[2];const m=JSON.parse(fs.readFileSync(f,"utf8"));const t=m[doc].job.genTasks.changes;m[doc].job.genTasks.changes={...t,startedAt:Date.now()-11*60*1000};fs.writeFileSync(f,JSON.stringify(m));' "$RESUME_ROOT/docs-meta.json" "$JOBLOC"
+wait $GC
+rm -f "$TEST_DIR/llm-slow"
+[ "$(cat "$TEST_DIR/t5-gen409.code")" = "409" ] || fail "S4a-T5 转交修 a 应 409 得 $(cat "$TEST_DIR/t5-gen409.code")"
+grep -q '任务超时' "$TEST_DIR/t5-gen409.json" || fail "S4a-T5 转交修 a：同步 409 应如实标任务超时: $(cat "$TEST_DIR/t5-gen409.json")"
+grep -q '已被取消或取代' "$TEST_DIR/t5-gen409.json" && fail 'S4a-T5 转交修 a：真超时不应再称已被取消或取代'
+# 首页要求卡（服务端直渲染 + 预设键）
+curl -sf "$B/" | grep -q '本次定制要求' || fail '首页缺要求卡折叠区'
+curl -sf "$B/" | grep -q 'briefFocusChips' || fail '首页缺重点 chips'
+curl -sf "$B/" | grep -q 's4a-presets' || fail '首页缺预设存储键'
+echo '✅ S4a-T5 要求卡（create/brief 端点 + 默认值 + 校验 + 旧草稿兼容 + 生成消费 + 首页表单 + 转交修 a）'
 
 # ===== 9. 生成建议（假 LLM）：只带已确认素材；状态入库可持久化 =====
 R=$(curl -s -X POST "$B/job/generate?id=$JOBLOC" -H 'Content-Type: application/json' -d '{}')
@@ -949,6 +1002,8 @@ wait_gt "$T4DOC" changes done 15 || fail "S4a-T4 新任务未完成（得 $(gt_s
 echo '✅ S4a-T4 取消不误伤新任务（旧 taskId 409 / 新任务正常完成落账）'
 
 # —— f. 请求级超时：config timeoutMs 覆盖 → 任务 error ——
+# slow=100 保证请求耗时 ≥100ms：无它时本地 stub 往返可 <1ms 抢在 AbortSignal.timeout(1) 前完成 → 偶发 done（实测 flake）
+echo 100 > "$TEST_DIR/llm-slow"
 t4_config_timeout 1
 R=$(curl -s -X POST "$B/job/gen-start?id=$T4DOC&kind=changes")
 echo "$R" | grep -q '"ok":true' || fail 'S4a-T4 超时夹具启动失败'
@@ -956,6 +1011,7 @@ wait_gt "$T4DOC" changes error 25 || fail "S4a-T4 请求级超时应落 error（
 gt_error "$T4DOC" changes | grep -q '模型调用失败' || fail "S4a-T4 请求级超时错误信息异常: $(gt_error "$T4DOC" changes)"
 [ "$(t4_count)" = "2" ] || fail 'S4a-T4 超时不得落 changes'
 t4_config_timeout ''
+rm -f "$TEST_DIR/llm-slow"   # slow 只为超时夹具兜底耗时，恢复配置后移除（重试须正常完成）
 R=$(curl -s -X POST "$B/job/gen-start?id=$T4DOC&kind=changes")
 echo "$R" | grep -q '"ok":true' || fail 'S4a-T4 恢复配置后重试启动失败'
 wait_gt "$T4DOC" changes done 15 || fail "S4a-T4 重试未完成（得 $(gt_status "$T4DOC" changes)）"
@@ -971,12 +1027,24 @@ gt_error "$T4DOC" changes | grep -q '任务超时' || fail 'S4a-T4 读取时清�
 echo '✅ S4a-T4 任务级总时限·读取时（过期 running → error 且不落账）'
 
 # —— h. 任务级总时限·完成回调时：过期回调不落账 ——
+# 断言直读 meta（同 t4_count 模式），不经 GET sweep：隔离「finishGenTask 锁内 genExpired 路径」，
+# 不与「读取时清理」（g 节已覆盖）混淆——两条路径各有独立断言。
+gt_meta() { # $1=doc $2=kind → 直接读 meta 的 "status error"（无 GET 副作用）
+  node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const t=((m[process.argv[2]].job||{}).genTasks||{})[process.argv[3]]||{};console.log((t.status||"")+" "+(t.error==null?"":t.error))' "$RESUME_ROOT/docs-meta.json" "$1" "$2"
+}
+wait_gtm() { # $1=doc $2=kind $3=期望status $4=超时秒（默认 15）
+  local i; for i in $(seq 1 $(( ${4:-15} * 4 ))); do
+    [ "$(gt_meta "$1" "$2" | awk '{print $1}')" = "$3" ] && return 0
+    sleep 0.25
+  done
+  return 1
+}
 echo 2000 > "$TEST_DIR/llm-slow"
 T4T3=$(curl -s -X POST "$B/job/gen-start?id=$T4DOC&kind=changes" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{console.log(JSON.parse(s).taskId)})')
 t4_age_task changes "$T4T3"   # 启动后立刻把 startedAt 改老 → 回调到达时已过期
 rm -f "$TEST_DIR/llm-slow"
-wait_gt "$T4DOC" changes error 15 || fail "S4a-T4 过期回调应判 error（得 $(gt_status "$T4DOC" changes)）"
-gt_error "$T4DOC" changes | grep -q '任务超时' || fail 'S4a-T4 过期回调应标任务超时'
+wait_gtm "$T4DOC" changes error 15 || fail "S4a-T4 过期回调应判 error（得 $(gt_meta "$T4DOC" changes)）"
+gt_meta "$T4DOC" changes | grep -q '任务超时' || fail 'S4a-T4 过期回调应标任务超时（回调路径直读 meta）'
 [ "$(t4_count)" = "$CNT_BEFORE" ] || fail "S4a-T4 过期回调仍落了 changes（$(t4_count) 条）"
 echo '✅ S4a-T4 任务级总时限·完成回调时（过期回调不落账）'
 
