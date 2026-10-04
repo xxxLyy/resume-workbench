@@ -1716,6 +1716,59 @@ try {
     await ctx2.close();
   }
 
+  // ===== 4h [S4a-T11] 组件与布局：⋯ 菜单键盘化 / favicon / 素材保存失败保留输入 / 事实层默认展开 =====
+  {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await page.goto(base + '/edit?id=' + ED_DOC);
+    await page.waitForSelector('#ed-navlist .ed-nav-entry', { timeout: 5000 });
+    // ⋯ 菜单键盘可达：Enter 展开 → 方向键导航 → Esc 关闭回 ⋯
+    await page.focus('#ed-navlist .ed-nav-more');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#ed-navlist .ed-nav-menu:not([hidden])', { timeout: 3000 });
+    ok('[S4a-T11] ⋯ 菜单 Enter 展开（aria-haspopup/expanded）');
+    await page.keyboard.press('ArrowDown');
+    const f1 = await page.evaluate(() => (document.activeElement || {}).textContent || '');
+    await page.keyboard.press('ArrowDown');
+    const f2 = await page.evaluate(() => (document.activeElement || {}).textContent || '');
+    if (!f1 || f1 === f2) bad('[S4a-T11] ⋯ 菜单方向键导航未移动焦点: ' + f1 + '→' + f2);
+    else ok('[S4a-T11] ⋯ 菜单方向键导航（' + f1.trim() + '→' + f2.trim() + '）');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
+    const escState = await page.evaluate(() => ({
+      closed: document.querySelector('#ed-navlist .ed-nav-menu').hidden,
+      back: (document.activeElement || {}).className === 'ed-nav-more'
+    }));
+    if (!escState.closed || !escState.back) bad('[S4a-T11] Esc 应关闭菜单并回焦 ⋯: ' + JSON.stringify(escState));
+    else ok('[S4a-T11] ⋯ 菜单 Esc 关闭 + 焦点返回');
+    const fav = await page.evaluate(async () => { const r = await fetch('/favicon.ico'); return { s: r.status, t: r.headers.get('content-type') || '' }; });
+    if (fav.s !== 200 || !fav.t.includes('svg')) bad('[S4a-T11] favicon 应 200 svg: ' + JSON.stringify(fav));
+    else ok('[S4a-T11] favicon 路由（svg）');
+    await ctx.close();
+    // 素材保存失败保留输入 + 事实层默认展开 + 范围文案
+    const ctx2 = await browser.newContext();
+    const page2 = await ctx2.newPage();
+    await page2.goto(base + '/materials');
+    await page2.waitForSelector('#matForm', { state: 'attached', timeout: 5000 });
+    await page2.evaluate(() => { const d = document.querySelector('details:has(#matForm)'); if (d) d.open = true; });   // ＋新增素材 details 展开
+    await page2.waitForSelector('#matForm', { timeout: 5000 });
+    const factsOpen = await page2.evaluate(() => { const d = document.querySelector('.mat-card details'); return d ? d.open : null; });
+    if (factsOpen !== true) bad('[S4a-T11] 事实层应默认展开: ' + factsOpen);
+    else ok('[S4a-T11] 事实层默认展开');
+    const scopeOk = await page2.evaluate(() => (typeof matConfirmAll === 'function') && matConfirmAll.toString().includes('待确认素材标记为已确认'));
+    if (!scopeOk) bad('[S4a-T11] 全部确认文案未明示范围（待确认素材）');
+    else ok('[S4a-T11] 全部确认范围文案（仅待确认素材）');
+    await page2.fill('#mtitle', 'T11素材');
+    await page2.fill('#mbrief', 'T11 表达');
+    await page2.route('**/mat/add', (route) => route.fulfill({ status: 500, contentType: 'text/plain', body: 'boom' }));
+    await page2.click('#matForm button');
+    await page2.waitForFunction(() => /保存失败|❌/.test((document.getElementById('matmsg') || {}).textContent || ''), { timeout: 4000 });
+    const kept = await page2.evaluate(() => ({ t: document.getElementById('mtitle').value, b: document.getElementById('mbrief').value }));
+    if (kept.t !== 'T11素材' || kept.b !== 'T11 表达') bad('[S4a-T11] 保存失败应保留输入: ' + JSON.stringify(kept));
+    else ok('[S4a-T11] 素材保存失败保留输入 + 错误可见');
+    await ctx2.close();
+  }
+
   // ===== 5. 导航无障碍与交互细节 =====
   {
     const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
@@ -2731,6 +2784,7 @@ try {
     await page15.waitForSelector('body.ed-on');
     await page15.waitForSelector('.recovery-bar');
     // ① 真实程序化操作（导航「复制条目」→ __edPushUndo + notifyEdit），此后不再产生任何受信任输入
+    await page15.evaluate(() => { const m = document.querySelector('#ed-navlist .ed-nav-more'); if (m && m.getAttribute('aria-expanded') !== 'true') m.click(); });   // S4a-T11：先展开 ⋯ 菜单
     const dupBtn15 = page15.locator('#ed-navlist button[aria-label^="复制条目"]').first();
     if (!(await dupBtn15.count())) bad('C1 夹具缺「复制条目」按钮（无法制造程序化 op）');
     else {
@@ -2778,6 +2832,7 @@ try {
     page16.on('dialog', async (d) => { dialogs16++; await d.dismiss(); });
     await page16.goto(`${base}/edit?id=${I2_DOC}`, { waitUntil: 'networkidle' });
     await page16.waitForSelector('body.ed-on');
+    await page16.evaluate(() => { const m = document.querySelector('#ed-navlist .ed-nav-more'); if (m && m.getAttribute('aria-expanded') !== 'true') m.click(); });   // S4a-T11：先展开 ⋯ 菜单
     const dupBtn16 = page16.locator('#ed-navlist button[aria-label^="复制条目"]').first();
     if (!(await dupBtn16.count())) bad('I2 场景缺「复制条目」按钮（无法制造程序化 op）');
     else {
