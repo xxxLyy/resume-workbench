@@ -578,7 +578,7 @@ function aiBlock(id) {
 }
 function shellBlock(id, mtimeMs) {
   const mats = loadMats().map((m) => ({ id: m.id, title: m.title, tags: m.tags || [],
-    brief: m.brief, technical: m.technical || '', interview: m.interview || '', confirmed: m.factStatus === 'confirmed' }));
+    brief: m.brief, technical: m.technical || '', interview: m.interview || '', confirmed: m.factStatus === 'confirmed', facts: m.facts || {} }));   // S4a-T7：facts 随 __MATS__ 供给证据表「事实依据」可读化
   const meta = loadMeta()[id] || {};
   const job = meta.job
     ? { hasJob: true, status: flowOf(meta), company: meta.company || '', role: meta.role || '', materials: meta.job.materials || [] }

@@ -14,7 +14,7 @@ import { resolveChromium, invalidateCache, readCache } from './chromium.mjs';
 import { updateMeta } from './tx.mjs';
 import { freezeHtml } from './freeze.mjs';
 import { assembleTemplate } from './template.mjs';
-import { paraFingerprint } from './evidence.mjs';
+import { paraFingerprint, contentFingerprint } from './evidence.mjs';
 
 const [base, docId, dataRoot] = process.argv.slice(2);
 if (!base || !docId || !dataRoot) { console.error('用法: node test-editor.mjs <baseURL> <docId> <dataRoot>'); process.exit(2); }
@@ -1111,6 +1111,12 @@ const JOB_DOC = 'ed-fixture-v2';
   fs.copyFileSync(path.join(dataRoot, 'docs', ED_DOC + '.html'), path.join(dataRoot, 'docs', JOB_DOC + '.html'));
   const metaPath = path.join(dataRoot, 'docs-meta.json');
   const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+  // S4a-T7：fresh mat ref 夹具（真实确认素材 + 指纹匹配 → 纯 sourced 徽章与事实字段原文展示）
+  const mFreshFacts = { company: '在线公司', role: '', dates: '', education: '', metrics: 'P99 210ms', contribution: '', conditions: '', source: '' };
+  const matsPath = path.join(dataRoot, 'materials.json');
+  const matsArr = JSON.parse(fs.readFileSync(matsPath, 'utf8'));
+  matsArr.push({ id: 'm-fresh', title: '在线素材', factStatus: 'confirmed', facts: mFreshFacts });
+  fs.writeFileSync(matsPath, JSON.stringify(matsArr));
   meta[JOB_DOC] = {
     parent: ED_DOC, company: '浏览器测试公司', role: '前端工程师', jd: 'React', createdAt: new Date().toISOString(), tag: '浏览器测试',
     job: {
@@ -1126,7 +1132,8 @@ const JOB_DOC = 'ed-fixture-v2';
         { id: 'e1', req: 'React 组件化经验', status: 'sourced', refs: [{ refId: 'b1r1', type: 'mat', id: 'm-none', zid: null, srcStatus: 'confirmed', hash: 'deadbeef', title: '旧素材', quote: '' }], note: '', noteConfirmed: false },
         { id: 'e2', req: '数据管道经验', status: 'covered', refs: [{ refId: 'b1r2', type: 'para', id: null, zid: 'za1b2c3d4', hash: paraFingerprint('项目B描述'), title: '项目经历', quote: '项目B描述' }], note: '', noteConfirmed: false },
         { id: 'e3', req: 'AB 实验设计', status: 'none', refs: [], note: '', noteConfirmed: false },
-        { id: 'e4', req: '工程效率提升', status: 'todo', refs: [], note: '维护过 3 节点自建集群两年（个人项目仓库）', noteConfirmed: true }
+        { id: 'e4', req: '工程效率提升', status: 'todo', refs: [], note: '维护过 3 节点自建集群两年（个人项目仓库）', noteConfirmed: true },
+        { id: 'e5', req: '高并发服务经验', status: 'sourced', refs: [{ refId: 'b1r3', type: 'mat', id: 'm-fresh', zid: null, srcStatus: 'confirmed', hash: contentFingerprint(mFreshFacts), title: '在线素材', quote: '' }], note: '', noteConfirmed: false }
       ],
       evidenceGen: 1
     }
@@ -1420,8 +1427,12 @@ try {
     if (!/简历已覆盖/.test(t2) || !/正文段落/.test(t2) || !/项目B描述/.test(t2)) bad('[S4a-T7] covered 条目应显 简历已覆盖 + para ref 可读化: ' + t2.slice(0, 120));
     else ok('[S4a-T7] covered 徽章 + para ref 可读化');
     const statsTxt = await page.evaluate(() => { const el = document.querySelector('#ed-pane-review .jp-sum'); return el ? el.textContent : ''; });
-    if (!/简历已覆盖 1/.test(statsTxt) || !/素材有据未表达 1/.test(statsTxt) || !/待补充 2/.test(statsTxt)) bad('[S4a-T7] 三列分计统计行不符: ' + statsTxt);
-    else ok('[S4a-T7] 三列分计统计行（覆盖 1 · 有据未表达 1 · 待补充 2）');
+    if (!/简历已覆盖 1/.test(statsTxt) || !/素材有据未表达 2/.test(statsTxt) || !/待补充 2/.test(statsTxt)) bad('[S4a-T7] 三列分计统计行不符: ' + statsTxt);
+    else ok('[S4a-T7] 三列分计统计行（覆盖 1 · 有据未表达 2 · 待补充 2）');
+    // 纯 sourced 徽章（仅有效 mat ref）+ 事实字段原文展示
+    const t5 = await evTxtOf('e5');
+    if (!/素材有据·简历未表达/.test(t5) || !/指标：P99 210ms/.test(t5) || /简历已覆盖/.test(t5)) bad('[S4a-T7] sourced 条目应显「素材有据·简历未表达」+ 事实字段原文，不显 covered: ' + t5.slice(0, 140));
+    else ok('[S4a-T7] sourced 徽章 + 事实字段原文（不显 covered）');
     // zid 定位：点击 para ref 的 📍定位 → 段落滚入视口 + jp-flash 高亮存在（瞬态，无 class 残留）
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.click('#ed-pane-review [data-ev="e2"] button.jp-refbtn');
@@ -1470,6 +1481,35 @@ try {
     const t4 = await evTxtOf('e4');
     if (!/有据（依据：你的补充）·简历未表达/.test(t4) || !/退回确认/.test(t4)) bad('[S4a-T7] noteConfirmed 条目展示不符: ' + t4.slice(0, 120));
     else ok('[S4a-T7] noteConfirmed 条目计 sourced 同层展示 + 可退回');
+    await ctx.close();
+  }
+
+  // ===== 4e [S4a-T7] 轮询续排：running 期间瞬时 GET 失败（abort 一次）后链条仍自续（T6 转交 b）=====
+  {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    // 夹具：evidence 任务 running（直写 meta，与 4c 同模式）
+    const metaPathE = path.join(dataRoot, 'docs-meta.json');
+    const metaE = JSON.parse(fs.readFileSync(metaPathE, 'utf8'));
+    metaE[JOB_DOC].job.genTasks = metaE[JOB_DOC].job.genTasks || {};
+    metaE[JOB_DOC].job.genTasks.evidence = { taskId: 't-poll01', status: 'running', startedAt: Date.now(), baseHash: null, error: null, scope: null };
+    fs.writeFileSync(metaPathE, JSON.stringify(metaE));
+    await page.goto(base + '/edit?id=' + JOB_DOC);
+    await page.waitForSelector('#ed-pane-review .jp-secs', { timeout: 5000 });
+    await page.waitForFunction(() => /正在分析证据/.test(document.querySelector('#ed-pane-review').textContent), { timeout: 6000 });
+    // 武装路由：下一次 GET /job/changes 直接 abort（模拟瞬时失败），其后放行
+    let aborted = false;
+    await page.route('**/job/changes*', (route) => {
+      if (route.request().method() !== 'GET') return route.continue();
+      if (!aborted) { aborted = true; return route.abort(); }
+      return route.continue();
+    });
+    // 任务收尾（running→done）：只有轮询链在失败后仍自续，面板才能拉到「已生成」
+    const metaE2 = JSON.parse(fs.readFileSync(metaPathE, 'utf8'));
+    metaE2[JOB_DOC].job.genTasks.evidence = { taskId: null, status: 'done', startedAt: null, baseHash: null, error: null, scope: null };
+    fs.writeFileSync(metaPathE, JSON.stringify(metaE2));
+    await page.waitForFunction(() => /已生成/.test(document.querySelector('#ed-pane-review').textContent), { timeout: 10000 });
+    ok('[S4a-T7] 轮询链瞬时 GET 失败后续排（不卡死 UI）');
     await ctx.close();
   }
 
