@@ -1103,7 +1103,7 @@ const ED_DOC = 'ed-fixture';
 const JOB_DOC = 'ed-fixture-v2';
 {
   let tpl = assembleTemplate('classic');   // 夹具经装配生成（themes 唯一源），不直读 template.html
-  const projects = '<div class="entry-head"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024-2025</div></div>\n<ul><li>旧项目描述</li></ul>\n<div class="entry-head"><div class="entry-title">项目B</div><div class="entry-role">开发</div><div class="entry-date">2023</div></div>\n<ul><li data-zid="za1b2c3d4">项目B描述</li></ul>';
+  const projects = '<div class="entry-head" data-zid="za7b8c9d0"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024-2025</div></div>\n<ul><li data-zid="za1b2c3d4">旧项目描述</li></ul>\n<div class="entry-head" data-zid="zc9d8e7f2"><div class="entry-title">项目B</div><div class="entry-role">开发</div><div class="entry-date">2023</div></div>\n<ul><li data-zid="zb4c5d6e7">项目B描述</li></ul>';
   tpl = tpl.replaceAll('{{NAME}}', () => '测试员').replaceAll('{{CONTACT}}', () => 'test@example.com')
     .replaceAll('{{INTENT}}', () => '测试').replaceAll('{{SUMMARY}}', () => '摘要文本').replaceAll('{{SKILLS}}', () => '<p>技能一：内容</p>')
     .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => projects).replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => ED_DOC);
@@ -1118,19 +1118,21 @@ const JOB_DOC = 'ed-fixture-v2';
   matsArr.push({ id: 'm-fresh', title: '在线素材', factStatus: 'confirmed', facts: mFreshFacts });
   fs.writeFileSync(matsPath, JSON.stringify(matsArr));
   meta[JOB_DOC] = {
-    parent: ED_DOC, company: '浏览器测试公司', role: '前端工程师', jd: 'React', createdAt: new Date().toISOString(), tag: '浏览器测试',
+    parent: ED_DOC, company: '浏览器测试公司', role: '前端工程师', jd: 'React', createdAt: new Date().toISOString(), tag: '浏览器测试', rev: 5,
+    zones: { za1b2c3d4: { zone: 'project', status: 'confirmed' }, za7b8c9d0: { zone: 'project', status: 'confirmed' }, zc9d8e7f2: { zone: 'project', status: 'confirmed' }, zb4c5d6e7: { zone: 'work', status: 'confirmed' } },
     job: {
       status: 'draft', sourceSnap: '', sourceHash: '', materials: [], generatedAt: null, deliveredAt: null, summary: '',
       changes: [
-        { id: 'bt1', gen: 1, section: '项目经历', entry: '项目A', kind: 'replace', before: '旧项目描述', after: '新项目描述（定制）', reason: '对齐 JD', source: '母版', level: 'normal', status: 'pending' },
-        { id: 'bt2', gen: 1, section: '项目经历', entry: '项目B', kind: 'hide', before: '', after: '', reason: '低相关', source: 'JD', level: 'important', status: 'pending' }
+        // S4a-T8：bt1 带 zid + 过期 baseSnapshot → needs-compare（确认门路径）；bt2 锚定条目头（可加锁测 locked-now）
+        { id: 'bt1', gen: 1, section: '项目经历', entry: '项目A', kind: 'replace', before: '旧项目描述', after: '新项目描述（定制）', reason: '对齐 JD', source: '母版', level: 'normal', status: 'pending', zid: 'za1b2c3d4', baseSnapshot: '生成基线：旧项目描述', zone: 'project' },
+        { id: 'bt2', gen: 1, section: '项目经历', entry: '项目B', kind: 'hide', before: '', after: '', reason: '低相关', source: 'JD', level: 'important', status: 'pending', zid: 'za7b8c9d0', baseSnapshot: '项目A负责人2024-2025', zone: 'project' }
       ],
       todos: [{ section: '项目经历', question: '缺少量化指标', why: 'JD 要求数据驱动', resolved: false }],
       // S4a-T6：证据表夹具（sourced 条目 + 不存在的 mat id → GET live 标注 fresh:false/stale:true 的现算路径）
       // S4a-T7 扩：covered（fresh para ref，供定位）/ none（note 两级）/ todo+noteConfirmed（有据·你的补充）
       evidence: [
         { id: 'e1', req: 'React 组件化经验', status: 'sourced', refs: [{ refId: 'b1r1', type: 'mat', id: 'm-none', zid: null, srcStatus: 'confirmed', hash: 'deadbeef', title: '旧素材', quote: '' }], note: '', noteConfirmed: false },
-        { id: 'e2', req: '数据管道经验', status: 'covered', refs: [{ refId: 'b1r2', type: 'para', id: null, zid: 'za1b2c3d4', hash: paraFingerprint('项目B描述'), title: '项目经历', quote: '项目B描述' }], note: '', noteConfirmed: false },
+        { id: 'e2', req: '数据管道经验', status: 'covered', refs: [{ refId: 'b1r2', type: 'para', id: null, zid: 'zb4c5d6e7', hash: paraFingerprint('项目B描述'), title: '项目经历', quote: '项目B描述' }], note: '', noteConfirmed: false },
         { id: 'e3', req: 'AB 实验设计', status: 'none', refs: [], note: '', noteConfirmed: false },
         { id: 'e4', req: '工程效率提升', status: 'todo', refs: [], note: '维护过 3 节点自建集群两年（个人项目仓库）', noteConfirmed: true },
         { id: 'e5', req: '高并发服务经验', status: 'sourced', refs: [{ refId: 'b1r3', type: 'mat', id: 'm-fresh', zid: null, srcStatus: 'confirmed', hash: contentFingerprint(mFreshFacts), title: '在线素材', quote: '' }], note: '', noteConfirmed: false }
@@ -1283,10 +1285,12 @@ try {
     await page.waitForSelector('#ed-pane-review .jp-item', { timeout: 5000 });
     const sel = await page.evaluate(() => document.querySelector('#ed-rtabs button[data-pane="review"]').getAttribute('aria-selected'));
     if (sel !== 'true') bad('岗位草稿默认未打开审阅视图'); else ok('岗位草稿默认打开修改清单');
-    await page.click('#ed-pane-review .jp-item button.jp-accept');
+    await page.click('#ed-pane-review .jp-item button.jp-accept');   // bt1 needs-compare → 先出确认门
+    await page.waitForSelector('#ed-pane-review [data-change="bt1"] .jp-gate', { timeout: 3000 });
+    await page.click('#ed-pane-review [data-change="bt1"] .jp-gate button.jp-accept');
     await page.waitForFunction(() => document.querySelector('.sheet').textContent.includes('新项目描述（定制）'), { timeout: 4000 });
-    ok('接受修改应用到正文');
-    await page.evaluate(() => window.__edSaveManual());
+    ok('接受修改应用到正文（确认门通过）');
+    await page.waitForFunction(() => /已接受/.test((document.querySelector('#ed-pane-review [data-change="bt1"]') || document.createElement('div')).textContent || ''), { timeout: 6000 });   // 等 JSON 保存落盘并刷新
     const disk4 = fs.readFileSync(path.join(dataRoot, 'docs', JOB_DOC + '.html'), 'utf8');
     if (!disk4.includes('新项目描述（定制）')) bad('接受的修改未落盘');
     else ok('接受的修改落盘');
@@ -1294,7 +1298,7 @@ try {
     const accepted = st.job.changes.find((c) => c.id === 'bt1');
     if (!accepted || accepted.status !== 'accepted') bad('审阅状态未回写服务端'); else ok('审阅状态回写并持久化');
     // 隐藏条目（important：需逐条确认）
-    await page.click('#ed-pane-review .jp-group.jp-important .jp-item button.jp-accept');
+    await page.click('#ed-pane-review [data-change="bt2"] button.jp-accept');
     await page.waitForTimeout(300);
     const hiddenOk = await page.evaluate(() => {
       const heads = Array.from(document.querySelectorAll('.sheet .entry-head'));
@@ -1302,7 +1306,6 @@ try {
       return !!(b && b.classList.contains('ed-entry-hidden'));
     });
     if (!hiddenOk) bad('隐藏条目未生效'); else ok('条目级隐藏生效（内容保留可恢复）');
-    await page.evaluate(() => window.__edSaveManual());
     const disk5 = fs.readFileSync(path.join(dataRoot, 'docs', JOB_DOC + '.html'), 'utf8');
     if (!disk5.includes('ed-entry-hidden')) bad('隐藏类未落盘（PDF 将不隐藏）'); else ok('隐藏类随保存落盘');
     await page.reload();
@@ -1438,7 +1441,7 @@ try {
     await page.click('#ed-pane-review [data-ev="e2"] button.jp-refbtn');
     await page.waitForFunction(() => !!(window.CSS && CSS.highlights && CSS.highlights.get('jp-flash')), { timeout: 3000 });
     await page.waitForFunction(() => {
-      const el = document.querySelector('[data-zid="za1b2c3d4"]');
+      const el = document.querySelector('[data-zid="zb4c5d6e7"]');
       if (!el) return false;
       const r = el.getBoundingClientRect();
       return r.top >= 0 && r.bottom <= window.innerHeight;
@@ -1510,6 +1513,102 @@ try {
     fs.writeFileSync(metaPathE, JSON.stringify(metaE2));
     await page.waitForFunction(() => /已生成/.test(document.querySelector('#ed-pane-review').textContent), { timeout: 10000 });
     ok('[S4a-T7] 轮询链瞬时 GET 失败后续排（不卡死 UI）');
+    await ctx.close();
+  }
+
+  // ===== 4f [S4a-T8] JSON 保存协议端到端：待比较确认门 → 接受 → 撤回 → 旧接受重试只回执不重放 =====
+  {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    // 夹具重置：第 4 段接受过 bt1/bt2 → 恢复 pending+原文+无隐藏类（4f 需要原始待处理态）
+    {
+      const metaR = JSON.parse(fs.readFileSync(path.join(dataRoot, 'docs-meta.json'), 'utf8'));
+      for (const id of ['bt1', 'bt2']) {
+        const c = metaR[JOB_DOC].job.changes.find((x) => x.id === id);
+        c.status = 'pending'; delete c.acceptedAt; delete c.origText; delete c.appliedText;
+      }
+      fs.writeFileSync(path.join(dataRoot, 'docs-meta.json'), JSON.stringify(metaR));
+      let html = fs.readFileSync(path.join(dataRoot, 'docs', JOB_DOC + '.html'), 'utf8');
+      html = html.replaceAll('新项目描述（定制）', '旧项目描述').replaceAll(' ed-entry-hidden', '');
+      fs.writeFileSync(path.join(dataRoot, 'docs', JOB_DOC + '.html'), html);
+    }
+    await page.goto(base + '/edit?id=' + JOB_DOC);
+    await page.waitForSelector('#ed-pane-review .jp-secs', { timeout: 5000 });
+    // 4c 曾持久化 reviewPos.section=evidence → 先切回修改清单段（reviewPos POST 走 /job/changes，不经 /save 路由）
+    await page.click('#ed-pane-review .jp-secs button[data-sec="changes"]');
+    await page.waitForTimeout(400);
+    // bt1 带 zid + 过期 baseSnapshot → 应在「待比较」组并标注
+    const cmpTxt = await page.evaluate(() => document.querySelector('#ed-pane-review').textContent);
+    if (!/待比较（正文已变化，需确认）/.test(cmpTxt) || !/待比较（正文已变化）/.test(cmpTxt)) bad('[S4a-T8] bt1 应进待比较组并带标注: ' + cmpTxt.slice(0, 150));
+    else ok('[S4a-T8] needs-compare 候选进待比较组（含标注）');
+    // 拦截 /save：JSON（op 保存）放行并记录请求体；旧路径（autosave text/html）abort——避免 rev 竞态
+    const saveBodies = [];
+    await page.route('**/save?**', (route) => {
+      const ct = (route.request().headers()['content-type'] || '');
+      if (ct.includes('application/json')) { saveBodies.push(route.request().postData()); return route.continue(); }
+      return route.abort();
+    });
+    const bt1Acc = '#ed-pane-review [data-change="bt1"] button.jp-accept';
+    // 第一次点接受 → 确认门展开（当前正文 vs 候选）；取消 → 关闭不保存
+    await page.click(bt1Acc);
+    await page.waitForSelector('#ed-pane-review [data-change="bt1"] .jp-gate', { timeout: 3000 });
+    const gateTxt = await page.evaluate(() => document.querySelector('#ed-pane-review [data-change="bt1"] .jp-gate').textContent);
+    if (!/当前正文/.test(gateTxt) || !/旧项目描述/.test(gateTxt) || !/新项目描述（定制）/.test(gateTxt)) bad('[S4a-T8] 确认门应展示当前正文 vs 候选: ' + gateTxt.slice(0, 140));
+    else ok('[S4a-T8] 待比较确认门（当前正文 vs 候选差异）');
+    await page.click('#ed-pane-review [data-change="bt1"] .jp-gate button:nth-of-type(2)');
+    if (await page.$('#ed-pane-review [data-change="bt1"] .jp-gate')) bad('[S4a-T8] 取消应关闭确认门');
+    else ok('[S4a-T8] 确认门可取消（不触发保存）');
+    // 确认接受 → op 随 JSON 保存同事务落账（无独立状态请求）→ 面板刷新为已接受
+    await page.click(bt1Acc);
+    await page.click('#ed-pane-review [data-change="bt1"] .jp-gate button.jp-accept');
+    await page.waitForFunction(() => /已接受/.test(document.querySelector('#ed-pane-review [data-change="bt1"]').textContent), { timeout: 6000 });
+    ok('[S4a-T8] 接受经 JSON 保存协议同事务落账（确认门→应用→刷新）');
+    if (saveBodies.length !== 1) bad('[S4a-T8] 应恰一次 JSON 保存请求（得 ' + saveBodies.length + '）');
+    const accBody = JSON.parse(saveBodies[0] || '{}');
+    if (accBody.ops && accBody.ops[0].action === 'accept' && accBody.ops[0].changeId === 'bt1'
+      && accBody.ops[0].origText === '旧项目描述' && typeof accBody.baseRev === 'number' && typeof accBody.html === 'string') {
+      ok('[S4a-T8] 保存载荷形状 {requestId, baseRev, html, ops[accept+origText]}（UI 无独立状态请求）');
+    } else bad('[S4a-T8] 保存载荷形状不符: ' + (saveBodies[0] || '').slice(0, 160));
+    // 服务端状态：accepted + origText/appliedText 快照
+    let srv = await page.evaluate(async () => (await (await fetch('/job/changes?id=' + location.search.match(/[?&]id=([^&]+)/)[1])).json()));
+    let bt1 = srv.job.changes.find((c) => c.id === 'bt1');
+    if (bt1.status !== 'accepted' || bt1.origText !== '旧项目描述' || bt1.appliedText !== '新项目描述（定制）' || !bt1.acceptedAt) bad('[S4a-T8] 服务端接受态/快照不符: ' + JSON.stringify(bt1));
+    else ok('[S4a-T8] 服务端 accepted+origText/appliedText 快照落账');
+    const revAfterAcc = srv.rev;
+    // 撤回 → pending + 快照清空
+    await page.click('#ed-pane-review [data-change="bt1"] .jp-ops button');
+    await page.waitForFunction(() => /待处理/.test(document.querySelector('#ed-pane-review [data-change="bt1"]').textContent), { timeout: 6000 });
+    srv = await page.evaluate(async () => (await (await fetch('/job/changes?id=' + location.search.match(/[?&]id=([^&]+)/)[1])).json()));
+    bt1 = srv.job.changes.find((c) => c.id === 'bt1');
+    if (bt1.status !== 'pending' || bt1.origText !== undefined || bt1.appliedText !== undefined || bt1.acceptedAt !== undefined) bad('[S4a-T8] 撤回后应 pending+清快照: ' + JSON.stringify(bt1));
+    else ok('[S4a-T8] 撤回 → pending+清空快照（同事务）');
+    const revAfterRevert = srv.rev;
+    // 核心反例：旧接受请求原样重试 → 只回执不重放（正文与状态保持撤回后）
+    const replay = await page.evaluate(async (body) => {
+      const r = await fetch('/save?id=' + location.search.match(/[?&]id=([^&]+)/)[1], { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+      return { status: r.status, data: await r.json().catch(() => ({})) };
+    }, saveBodies[0]);
+    if (replay.status !== 200 || replay.data.deduped !== true) bad('[S4a-T8] 旧接受重试应 200 deduped: ' + JSON.stringify(replay.data).slice(0, 120));
+    else ok('[S4a-T8] 旧接受重试命中回执（deduped，不重放）');
+    srv = await page.evaluate(async () => (await (await fetch('/job/changes?id=' + location.search.match(/[?&]id=([^&]+)/)[1])).json()));
+    bt1 = srv.job.changes.find((c) => c.id === 'bt1');
+    if (bt1.status !== 'pending' || srv.rev !== revAfterRevert) bad('[S4a-T8] 重放后状态/rev 必须保持撤回后: ' + JSON.stringify({ s: bt1.status, rev: srv.rev }));
+    else ok('[S4a-T8] 重放零副作用（状态 pending、rev 不变、正文保持撤回后）');
+    if (revAfterAcc !== revAfterRevert - 1) bad('[S4a-T8] 每次保存应 rev+1（acc=' + revAfterAcc + ' revert=' + revAfterRevert + '）');
+    // locked-now：锁定 bt2 锚点条目头 → 重载后按钮禁用 + 标注
+    const metaPathF = path.join(dataRoot, 'docs-meta.json');
+    const metaF = JSON.parse(fs.readFileSync(metaPathF, 'utf8'));
+    metaF[JOB_DOC].zones.za7b8c9d0.locked = true;
+    fs.writeFileSync(metaPathF, JSON.stringify(metaF));
+    await page.reload();
+    await page.waitForSelector('#ed-pane-review .jp-secs', { timeout: 5000 });
+    await page.waitForTimeout(500);
+    const bt2State = await page.evaluate(() => {
+      const el = document.querySelector('#ed-pane-review [data-change="bt2"]');
+      return el ? { txt: el.textContent, hasAcc: !!el.querySelector('button.jp-accept') } : null;
+    });
+    if (!bt2State || !/该段已锁定/.test(bt2State.txt) || bt2State.hasAcc) bad('[S4a-T8] locked-now 候选应标注已锁定且无接受按钮: ' + JSON.stringify(bt2State));
+    else ok('[S4a-T8] locked-now：标注+接受按钮禁用（生成后加锁拦旧候选）');
     await ctx.close();
   }
 

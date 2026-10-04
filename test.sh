@@ -117,6 +117,23 @@ http.createServer((q, s) => {
         const sys = JSON.parse(b).messages.find((m) => m.role === 'system').content;
         if (String(sys).includes('区域分析顾问')) content = zoneAnalyze;
         else if (String(sys).includes('区域改写器')) content = zoneRewrite;
+        else if (String(sys).includes('简历定制编排器')) {
+          // S4a-T8 控制文件：llm-changes-zone=局部重生成（从请求 zid 标注提取，zids[0] 由测试锁定）；llm-changes-add=全文生成含 add 候选
+          if (String(sys).includes('局部重生成') && fs.existsSync('$TEST_DIR/llm-changes-zone')) {
+            const u = JSON.parse(b).messages.find((m) => m.role === 'user').content;
+            const zids = [];
+            String(u).replace(/（zid：(z[0-9a-f]{8})）/g, function (_, x) { if (zids.indexOf(x) < 0) zids.push(x); return _; });
+            content = JSON.stringify({ summary: '局部重生成', changes: [
+              { section: '工作经历', kind: 'replace', zid: zids[0], before: '目标一（before 与正文无关，zid 提示优先）', after: '工作段一（锁定探测，不该落 pending）', reason: '越权目标', source: 'JD', level: 'normal' },
+              { section: '工作经历', kind: 'replace', zid: zids[1], before: '目标二（before 与正文无关，zid 提示优先）', after: '工作段二（定制版 T8）', reason: '对齐JD', source: '母版', level: 'normal' }
+            ], todos: [] });
+          } else if (fs.existsSync('$TEST_DIR/llm-changes-add')) {
+            content = JSON.stringify({ summary: '全文生成含新增', changes: [
+              { section: '工作经历', kind: 'add', after: '新增条目内容（T8 全文）', reason: '补充相关经历', source: '母版', level: 'normal' }
+            ], todos: [] });
+          }
+          // 无控制文件 → content 保持默认 reply，既有测试零影响
+        }
         else if (String(sys).includes('证据分析')) {
           // S4a-T7 控制文件（保护门用例）：llm-ev-raw=非 JSON 文本；llm-ev-bad=合法 JSON 但 refId 全部无法匹配
           if (fs.existsSync('$TEST_DIR/llm-ev-raw')) { content = '抱歉，我无法以 JSON 格式输出该证据表。'; }
@@ -449,7 +466,8 @@ BRIEFVIEW=$(curl -s "$B/job/changes?id=$BRIEFJOB" | node -e 'let s="";process.st
 [ "$BRIEFVIEW" = "1" ] || fail 'S4a-T5 旧草稿（无 brief）GET /job/changes 未出渐进默认值'
 curl -s -X POST "$B/job/brief?id=$BRIEFJOB" -H 'Content-Type: application/json' -d '{"focus":["高并发"],"keepProjects":["订单系统"],"deemphasize":["行政实习"],"degree":"light","pages":1,"preset":"后端通用"}' | grep -q '"ok":true' || fail 'S4a-T5 旧草稿补写 brief 失败'
 # 生成消费 brief（stub 记录 prompt）
-curl -s -X POST "$B/job/generate?id=$BRIEFJOB" -H 'Content-Type: application/json' -d '{}' | grep -q '"generated":2' || fail 'S4a-T5 带 brief 生成失败'
+R=$(curl -s -X POST "$B/job/generate?id=$BRIEFJOB" -H 'Content-Type: application/json' -d '{}')
+echo "$R" | grep -q '"generated":2' || fail "S4a-T5 带 brief 生成失败: $(echo "$R" | head -c 260)"
 grep -q '重点：高并发' "$TEST_DIR/llm-last.json" || fail 'prompt 未消费 brief.focus'
 grep -q '必须保留：订单系统' "$TEST_DIR/llm-last.json" || fail 'prompt 未消费 brief.keepProjects'
 grep -q '轻度精简' "$TEST_DIR/llm-last.json" || fail 'prompt 未消费 brief.degree'
@@ -1293,6 +1311,262 @@ let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => {
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/job/changes?id=$T6DOC" -H 'Content-Type: application/json' -d '{"reviewPos":{"section":"nope","filter":"all"}}')
 [ "$CODE" = "400" ] || fail "S4a-T6 非法 reviewPos 应 400 得 $CODE"
 echo '✅ S4a-T6 reviewPos（段名+changeId+filter 经 /job/changes POST 持久化；非法 400）'
+
+# ===== S4a-T8：局部生成与候选生命周期（scope/锚定落账/supersede 同 zone/guardOps 锁定/JSON 保存协议接入）=====
+# 夹具：专用文档（工作经历 2 段 + 项目经历 1 段）→ /job/create → 保存一次（zid 归一 + zoneSync）
+cat > "$TEST_DIR/t8-doc.html" << 'EOF'
+<body><div class="sheet"><div class="contact">测试员 t8@t.cn</div>
+<section class="section"><div class="section-title">个人总结</div><p>五年后端经验</p></section>
+<section class="section"><div class="section-title">工作经历</div><p>工作段一：负责交易系统</p><p>工作段二：负责订单系统</p></section>
+<section class="section"><div class="section-title">项目经历</div><p>项目甲：数据管道</p></section>
+</div></body>
+EOF
+T8SRC=$(curl -s -X POST "$B/new" -o /dev/null -w '%{redirect_url}' | sed 's/.*id=//')
+[ -n "$T8SRC" ] || fail 'S4a-T8 夹具源文档创建'
+curl -s -X POST "$B/save?id=$T8SRC" --data-binary "@$TEST_DIR/t8-doc.html" | grep -q '"ok":true' || fail 'S4a-T8 夹具正文保存（zid 归一 + zoneSync）'
+T8DOC=$(curl -s -X POST "$B/job/create" -H 'Content-Type: application/json' -d "{\"from\":\"$T8SRC\",\"company\":\"局部公司\",\"role\":\"后端\",\"jd\":\"S4a-T8 JD-SCOPE-MARK 验证\",\"materials\":[]}" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch{console.log('')}})")
+[ -n "$T8DOC" ] && [ -f "$RESUME_ROOT/docs/$T8DOC.html" ] || fail 'S4a-T8 夹具岗位草稿创建'
+curl -s -X POST "$B/save?id=$T8DOC" --data-binary "$(cat "$RESUME_ROOT/docs/$T8DOC.html")" | grep -q '"ok":true' || fail 'S4a-T8 夹具保存（zid 归一 + zoneSync）'
+# 工作经历区域前两个 zid（文档序）；GET rev 基线
+read -r T8Z0 T8Z1 << EOF2
+$(node -e '
+const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const wz = Object.entries(m.zones || {}).filter(([, z]) => z && z.zone === "work").map(([zid]) => zid);
+console.log(wz.slice(0, 2).join(" "));
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC")
+EOF2
+[ -n "$T8Z0" ] && [ -n "$T8Z1" ] || fail "S4a-T8 夹具工作区域段落不足（z0=$T8Z0 z1=$T8Z1）"
+T8_REV0=$(curl -s "$B/job/changes?id=$T8DOC" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).rev))')
+[ -n "$T8_REV0" ] || fail 'S4a-T8 GET /job/changes 应暴露 rev（JSON 保存协议 baseRev 来源）'
+
+# —— a. 局部生成 scope=zone:work：锁定跳过标注 + zid/baseSnapshot/zone 落账 + supersede 只清同 zone ——
+node -e '
+const fs = require("fs");
+const f = process.argv[1], doc = process.argv[2], z0 = process.argv[3];
+const m = JSON.parse(fs.readFileSync(f, "utf8"));
+m[doc].zones[z0].locked = true;   // 生成前加锁：guardOps ② 应把锁定目标候选列入 skipped
+m[doc].job.changes.push({ id: "t8-otherzone", gen: 1, section: "项目经历", kind: "replace", before: "项目甲", after: "x", reason: "r", source: "母版", level: "normal", status: "pending", zone: "project" });
+fs.writeFileSync(f, JSON.stringify(m));
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC" "$T8Z0"
+touch "$TEST_DIR/llm-changes-zone"
+R=$(curl -s -X POST "$B/job/gen-start?id=$T8DOC&kind=changes&scope=zone:work")
+echo "$R" | grep -q '"ok":true' || fail "S4a-T8 局部生成启动失败: $(echo "$R" | head -c 160)"
+wait_gt "$T8DOC" changes done 15 || fail "S4a-T8 局部生成未完成（得 $(gt_status "$T8DOC" changes)）"
+grep -q 'JD-SCOPE-MARK' "$TEST_DIR/llm-last.json" || fail 'S4a-T8 局部 prompt 未含 JD'
+grep -q '（zid：' "$TEST_DIR/llm-last.json" || fail 'S4a-T8 局部 prompt 段落缺 zid 标注'
+grep -q '全文摘要' "$TEST_DIR/llm-last.json" || fail 'S4a-T8 局部 prompt 缺全文摘要（digestOf）'
+grep -q '工作段一：负责交易系统' "$TEST_DIR/llm-last.json" || fail 'S4a-T8 局部 prompt 应只带目标区域段落'
+# 区域外内容只允许经全文摘要（digest）出现：zid 标注恰为区域段落数（2），区域外段落不带 zid 标注
+node -e '
+const fs = require("fs");
+const last = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const u = last.messages.find((m) => m.role === "user").content;
+const sys = last.messages.find((m) => m.role === "system").content;
+const n = (u.match(/（zid：z[0-9a-f]{8}）/g) || []).length;
+if (n !== 2) { console.error("❌ S4a-T8 局部 prompt zid 标注应恰 2 处（得 " + n + "）——区域外段落不得带标注"); process.exit(1); }
+if (!/【全文摘要（上下文参考；只允许修改下方目标区域内段落）】/.test(u)) { console.error("❌ S4a-T8 局部 prompt 缺摘要块"); process.exit(1); }
+if (!/仅限区域「工作」/.test(sys)) { console.error("❌ S4a-T8 局部 sys 缺越界禁令"); process.exit(1); }
+if (!/zid":"目标段落 zid/.test(sys)) { console.error("❌ S4a-T8 局部 sys 输出格式缺 zid 回传要求"); process.exit(1); }
+' "$TEST_DIR/llm-last.json" || fail 'S4a-T8 局部 prompt 形状（zid 标注数量/摘要块/越界禁令）'
+node -e '
+const fs = require("fs");
+const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const bad = (msg) => { console.error("❌ S4a-T8 局部落账 " + msg); process.exit(1); };
+const gt = m.job.genTasks.changes;
+if (gt.scope !== "zone:work") bad("scope 应为 zone:work（得 " + gt.scope + "）");
+if (!/^[0-9a-f]{16}$/.test(String(gt.baseHash || ""))) bad("baseHash 应记录（得 " + gt.baseHash + "）");
+const news = m.job.changes.filter((c) => c.gen >= 2);
+const skip = news.find((c) => c.status === "skipped");
+const pend = news.find((c) => c.status === "pending" && c.kind === "replace");
+if (!skip || !(skip.note || "").includes("锁定")) bad("锁定目标应列入 skipped 并标注原因: " + JSON.stringify(skip));
+if (skip.zid !== process.argv[3]) bad("skipped 候选应锚定锁定段 zid（得 " + skip.zid + "）");
+if (!pend) bad("自由目标应 pending: " + JSON.stringify(news));
+if (pend.zid !== process.argv[4]) bad("pending 候选应锚定 zids[1]（得 " + pend.zid + "）");
+if (pend.baseSnapshot !== "工作段二：负责订单系统") bad("baseSnapshot 应为生成时段落快照（得 " + JSON.stringify(pend.baseSnapshot) + "）");
+if (pend.zone !== "work") bad("候选应带 zone=work（得 " + pend.zone + "）");
+const other = m.job.changes.find((c) => c.id === "t8-otherzone");
+if (!other || other.status !== "pending") bad("局部 supersede 不得动其他 zone 的 pending（影响隔离反例3）");
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC" "$T8Z0" "$T8Z1" || fail 'S4a-T8 局部生成落账（scope/锚定/锁定跳过/影响隔离）'
+echo '✅ S4a-T8 局部生成（scope prompt 带 zid 标注+摘要；guardOps 锁定列入 skipped；baseSnapshot/zone 落账；supersede 只清同 zone）'
+
+# —— b. locked-now 门（生成后加锁 → 旧 pending 不可接受）+ needs-compare（手改 → 待比较）——
+
+node -e '
+const fs = require("fs");
+const f = process.argv[1], doc = process.argv[2], z1 = process.argv[3];
+const m = JSON.parse(fs.readFileSync(f, "utf8"));
+m[doc].zones[z1].locked = true;
+fs.writeFileSync(f, JSON.stringify(m));
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC" "$T8Z1"
+curl -s "$B/job/changes?id=$T8DOC" | node -e '
+let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => {
+  const j = JSON.parse(s).job;
+  const c = (j.changes || []).find((x) => x.zid === process.argv[1] && x.kind === "replace" && x.status === "pending");
+  if (!c || !(c.consistency || []).includes("locked-now")) { console.error("❌ S4a-T8 锁定后 pending 候选应命中 locked-now: " + JSON.stringify(c && c.consistency)); process.exit(1); }
+});' "$T8Z1" || fail 'S4a-T8 locked-now 命中（生成后加锁拦旧候选）'
+# 解锁 + 手改段落 → needs-compare（锚点文本 ≠ baseSnapshot）
+node -e '
+const fs = require("fs");
+const fm = process.argv[1], doc = process.argv[2], z1 = process.argv[3], fd = process.argv[4];
+const m = JSON.parse(fs.readFileSync(fm, "utf8"));
+m[doc].zones[z1].locked = false;
+fs.writeFileSync(fm, JSON.stringify(m));
+let html = fs.readFileSync(fd, "utf8");
+html = html.replace("工作段二：负责订单系统", "工作段二：负责订单系统（手改）");
+fs.writeFileSync(fd, html);
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC" "$T8Z1" "$RESUME_ROOT/docs/$T8DOC.html"
+curl -s "$B/job/changes?id=$T8DOC" | node -e '
+let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => {
+  const c = (JSON.parse(s).job.changes || []).find((x) => x.zid === process.argv[1] && x.kind === "replace" && x.status === "pending");
+  if (!c || !(c.consistency || []).includes("needs-compare")) { console.error("❌ S4a-T8 手改后应命中 needs-compare: " + JSON.stringify(c && c.consistency)); process.exit(1); }
+});' "$T8Z1" || fail 'S4a-T8 needs-compare 命中（锚点当前文本 ≠ baseSnapshot）'
+# evidenceRefs 依赖失效联动（T6 夹具 t6-batchold：旧批次 b0r1 引用 → batch-stale + refBad → needs-compare；不依赖素材状态）
+curl -s "$B/job/changes?id=$T6DOC" | node -e '
+let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => {
+  const c = (JSON.parse(s).job.changes || []).find((x) => x.id === "t6-batchold");
+  if (!c || !(c.consistency || []).includes("needs-compare") || !(c.consistency || []).includes("batch-stale")) { console.error("❌ S4a-T8 evidenceRefs 失效应联动 needs-compare: " + JSON.stringify(c && c.consistency)); process.exit(1); }
+});' || fail 'S4a-T8 evidenceRefs 失效联动 needs-compare'
+echo '✅ S4a-T8 失效判定（locked-now 拦截 / 手改→待比较 / evidenceRefs 依赖失效联动）'
+
+# —— c. JSON 保存协议：接受同事务落账（origText/appliedText/rev/receipt）+ 整次幂等 ——
+T8_PEND2=$(node -e '
+const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const c = m.job.changes.find((x) => x.zid === process.argv[3] && x.kind === "replace" && x.status === "pending");
+if (!c) { console.error("❌ S4a-T8 z1 pending 候选缺失"); process.exit(1); }
+console.log(c.id);
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC" "$T8Z1")
+T8_REV1=$(curl -s "$B/job/changes?id=$T8DOC" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).rev))')
+node -e '
+const fs = require("fs");
+const out = process.argv[1], fmeta = process.argv[2], doc = process.argv[3], fdoc = process.argv[4];
+const m = JSON.parse(fs.readFileSync(fmeta, "utf8"));
+const c = m[doc].job.changes.find((x) => x.kind === "replace" && x.status === "pending" && x.zid === process.argv[6]);
+let html = fs.readFileSync(fdoc, "utf8");
+html = html.replace("工作段二：负责订单系统（手改）", c.after);   // 仅入载荷：服务端磁盘保持接受前状态（origText 锚点与其比对）
+const body = { requestId: "t8-acc-1", baseRev: Number(process.argv[5]), html,
+  ops: [{ operationId: "t8-op-1", changeId: c.id, action: "accept", origText: "工作段二：负责订单系统（手改）" }] };
+fs.writeFileSync(out, JSON.stringify(body));
+' "$TEST_DIR/t8-acc1.json" "$RESUME_ROOT/docs-meta.json" "$T8DOC" "$RESUME_ROOT/docs/$T8DOC.html" "$T8_REV1" "$T8Z1"
+R=$(curl -s -X POST "$B/save?id=$T8DOC" -H 'Content-Type: application/json' --data-binary @"$TEST_DIR/t8-acc1.json")
+echo "$R" | grep -q '"ok":true' || fail "S4a-T8 JSON 接受失败: $(echo "$R" | head -c 200)"
+node -e '
+const fs = require("fs");
+const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const bad = (msg) => { console.error("❌ S4a-T8 接受落账 " + msg); process.exit(1); };
+const c = m.job.changes.find((x) => x.id === process.argv[3]);
+if (c.status !== "accepted") bad("应 accepted（得 " + c.status + "）");
+if (c.origText !== "工作段二：负责订单系统（手改）" || c.appliedText !== "工作段二（定制版 T8）") bad("origText/appliedText 快照: " + JSON.stringify({ o: c.origText, a: c.appliedText }));
+if (!c.acceptedAt) bad("acceptedAt 应落账");
+if ((Number(m.rev) || 0) !== Number(process.argv[4]) + 1) bad("rev 应 +1（得 " + m.rev + "）");
+if (!Array.isArray(m.job.saveReceipts) || !m.job.saveReceipts.some((r) => r.requestId === "t8-acc-1")) bad("saveReceipts 应记录回执");
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC" "$T8_PEND2" "$T8_REV1" || fail 'S4a-T8 接受同事务落账（状态+快照+rev+回执）'
+# 幂等：同 requestId 同内容重试 → 只回执零重写
+R2=$(curl -s -X POST "$B/save?id=$T8DOC" -H 'Content-Type: application/json' --data-binary @"$TEST_DIR/t8-acc1.json")
+echo "$R2" | grep -q '"deduped":true' || fail "S4a-T8 同请求重试应命中回执（deduped）: $(echo "$R2" | head -c 160)"
+echo '✅ S4a-T8 JSON 保存协议接受（正文+状态同事务；origText/appliedText/rev/saveReceipts 落账；同请求幂等回执）'
+
+# —— d. 核心反例（端到端服务侧）：接受→撤回→旧接受重试只回执不重放，正文与状态保持撤回后 ——
+T8_REV2=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]];console.log(m.rev)' "$RESUME_ROOT/docs-meta.json" "$T8DOC")
+node -e '
+const fs = require("fs");
+const out = process.argv[1], fdoc = process.argv[2];
+let html = fs.readFileSync(fdoc, "utf8");
+html = html.replace("工作段二（定制版 T8）", "工作段二：负责订单系统（手改）");   // 撤回载荷 = 客户端恢复后 DOM 文本；服务端磁盘在保存前仍是接受后状态
+fs.writeFileSync(out, JSON.stringify({ requestId: "t8-rev-1", baseRev: Number(process.argv[3]), html,
+  ops: [{ operationId: "t8-op-2", changeId: process.argv[4], action: "revert", origText: "工作段二（定制版 T8）" }] }));
+' "$TEST_DIR/t8-rev1.json" "$RESUME_ROOT/docs/$T8DOC.html" "$T8_REV2" "$T8_PEND2"
+R=$(curl -s -X POST "$B/save?id=$T8DOC" -H 'Content-Type: application/json' --data-binary @"$TEST_DIR/t8-rev1.json")
+echo "$R" | grep -q '"ok":true' || fail "S4a-T8 撤回失败: $(echo "$R" | head -c 200)"
+node -e '
+const fs = require("fs");
+const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const bad = (msg) => { console.error("❌ S4a-T8 撤回落账 " + msg); process.exit(1); };
+const c = m.job.changes.find((x) => x.id === process.argv[3]);
+if (c.status !== "pending") bad("撤回后应回 pending（得 " + c.status + "）");
+if (c.origText !== undefined || c.appliedText !== undefined || c.acceptedAt !== undefined) bad("撤回应清空 origText/appliedText/acceptedAt（不留旧快照误导后续判定）");
+if (fs.readFileSync(process.argv[4], "utf8").includes("工作段二（定制版 T8）")) bad("正文应保持撤回后版本");
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC" "$T8_PEND2" "$RESUME_ROOT/docs/$T8DOC.html" || fail 'S4a-T8 撤回（pending+清快照+正文恢复）'
+# 旧接受请求原样重试（同 requestId 同内容；baseRev 已落后）→ 只回执不重放
+R3=$(curl -s -X POST "$B/save?id=$T8DOC" -H 'Content-Type: application/json' --data-binary @"$TEST_DIR/t8-acc1.json")
+echo "$R3" | grep -q '"deduped":true' || fail "S4a-T8 旧接受重试应只回执: $(echo "$R3" | head -c 200)"
+node -e '
+const fs = require("fs");
+const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const bad = (msg) => { console.error("❌ S4a-T8 重放隔离 " + msg); process.exit(1); };
+const c = m.job.changes.find((x) => x.id === process.argv[3]);
+if (c.status !== "pending") bad("重放后正文与状态必须保持撤回后（得 " + c.status + "）");
+if (fs.readFileSync(process.argv[4], "utf8").includes("工作段二（定制版 T8）")) bad("重放不得重写正文");
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC" "$T8_PEND2" "$RESUME_ROOT/docs/$T8DOC.html" || fail 'S4a-T8 反例：接受→撤回→旧接受重试只回执不重放'
+echo '✅ S4a-T8 核心反例（接受→撤回→旧接受重试：只回执不重放，正文与状态保持撤回后）'
+
+# —— e. 503 路径：保存被拒时 accepted 不落 ——
+touch "$RESUME_ROOT/.migrate.lock"
+T8_REV3=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]];console.log(m.rev)' "$RESUME_ROOT/docs-meta.json" "$T8DOC")
+node -e '
+const fs = require("fs");
+fs.writeFileSync(process.argv[1], JSON.stringify({ requestId: "t8-acc-503", baseRev: Number(process.argv[4]), html: fs.readFileSync(process.argv[2], "utf8"),
+  ops: [{ operationId: "t8-op-3", changeId: process.argv[3], action: "accept", origText: "工作段二：负责订单系统（手改）" }] }));
+' "$TEST_DIR/t8-503.json" "$RESUME_ROOT/docs/$T8DOC.html" "$T8_PEND2" "$T8_REV3"
+CODE=$(curl -s -X POST "$B/save?id=$T8DOC" -H 'Content-Type: application/json' --data-binary @"$TEST_DIR/t8-503.json" -o /dev/null -w '%{http_code}')
+[ "$CODE" = "503" ] || fail "S4a-T8 持锁期间保存应 503（得 $CODE）"
+node -e '
+const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const c = m.job.changes.find((x) => x.id === process.argv[3]);
+if (c.status !== "pending" || c.acceptedAt) { console.error("❌ S4a-T8 503 路径 meta 出现 accepted"); process.exit(1); }
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC" "$T8_PEND2" || fail 'S4a-T8 503 时 accepted 不落'
+rm -f "$RESUME_ROOT/.migrate.lock"
+echo '✅ S4a-T8 503 路径（保存被拒：正文与 meta 均未写，accepted 不落）'
+
+# —— f. add 候选接受流程（容器锚点 → newZid 记录）+ 全文生成 supersede 全部 pending ——
+node -e '
+const fs = require("fs");
+const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+m[process.argv[2]].zones[process.argv[3]].locked = false;   // 解锁容器锚点（a 块的锁；解锁只是允许后续生成/接受，不替换内容）
+fs.writeFileSync(process.argv[1], JSON.stringify(m));
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC" "$T8Z0"
+touch "$TEST_DIR/llm-changes-add"
+R=$(curl -s -X POST "$B/job/gen-start?id=$T8DOC&kind=changes")
+echo "$R" | grep -q '"ok":true' || fail "S4a-T8 全文生成启动失败: $(echo "$R" | head -c 160)"
+wait_gt "$T8DOC" changes done 15 || fail "S4a-T8 全文生成未完成（得 $(gt_status "$T8DOC" changes)）"
+T8_ADD=$(node -e '
+const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const c = m.job.changes.find((x) => x.kind === "add" && x.status === "pending");
+if (!c) { console.error("❌ S4a-T8 add 候选未落 pending"); process.exit(1); }
+if (c.zid !== process.argv[3]) { console.error("❌ S4a-T8 add 容器锚点应为目标章节首段 zid（得 " + c.zid + "）"); process.exit(1); }
+console.log(c.id);
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC" "$T8Z0") || fail 'S4a-T8 add 候选落账（容器锚点）'
+node -e '
+const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const b = m.job.changes.find((x) => x.id === process.argv[3]);
+if (!b || b.status !== "superseded") { console.error("❌ S4a-T8 全文生成应 supersede 全部 pending（影响隔离只限局部）"); process.exit(1); }
+const other = m.job.changes.find((x) => x.id === "t8-otherzone");
+if (!other || other.status !== "superseded") { console.error("❌ S4a-T8 全文生成应 supersede 其他 zone pending"); process.exit(1); }
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC" "$T8_PEND2" || fail 'S4a-T8 全文 supersede 口径'
+T8_REV4=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]];console.log(m.rev)' "$RESUME_ROOT/docs-meta.json" "$T8DOC")
+node -e '
+const fs = require("fs");
+const out = process.argv[1], fdoc = process.argv[2], z0 = process.argv[3];
+let html = fs.readFileSync(fdoc, "utf8");
+// 客户端 add 语义：容器段落后插入新段落（自带 newZid）；只入载荷，服务端磁盘保持插入前状态
+html = html.replace(new RegExp("(<p data-zid=\"" + z0 + "\">[\\s\\S]*?</p>)"), "$1\n<p data-zid=\"z0ddba114\">新增条目内容（T8 全文）</p>");
+fs.writeFileSync(out, JSON.stringify({ requestId: "t8-acc-add", baseRev: Number(process.argv[5]), html,
+  ops: [{ operationId: "t8-op-4", changeId: process.argv[4], action: "accept", origText: "工作段一：负责交易系统", newZid: "z0ddba114" }] }));
+' "$TEST_DIR/t8-acc2.json" "$RESUME_ROOT/docs/$T8DOC.html" "$T8Z0" "$T8_ADD" "$T8_REV4"
+R=$(curl -s -X POST "$B/save?id=$T8DOC" -H 'Content-Type: application/json' --data-binary @"$TEST_DIR/t8-acc2.json")
+echo "$R" | grep -q '"ok":true' || fail "S4a-T8 add 接受失败: $(echo "$R" | head -c 200)"
+node -e '
+const fs = require("fs");
+const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const c = m.job.changes.find((x) => x.id === process.argv[3]);
+if (c.status !== "accepted" || c.newZid !== "z0ddba114") { console.error("❌ S4a-T8 add 接受应落 newZid: " + JSON.stringify({ s: c.status, n: c.newZid })); process.exit(1); }
+if (!fs.readFileSync(process.argv[4], "utf8").includes("data-zid=\"z0ddba114\"")) { console.error("❌ S4a-T8 新段落应已入正文"); process.exit(1); }
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC" "$T8_ADD" "$RESUME_ROOT/docs/$T8DOC.html" || fail 'S4a-T8 add 接受（容器锚点校验→插入→newZid 落账）'
+rm -f "$TEST_DIR/llm-changes-add"
+# scope 非法 400
+CODE=$(curl -s -X POST "$B/job/gen-start?id=$T8DOC&kind=changes&scope=zone:nope" -o /dev/null -w '%{http_code}')
+[ "$CODE" = "400" ] || fail "S4a-T8 非法 scope 应 400（得 $CODE）"
+echo '✅ S4a-T8 add 接受流程（容器锚点校验→插入→newZid 落账）+ 全文 supersede 口径 + scope 校验'
+
 
 # ===== 16. 浏览器级保存语义（可选，需要本机 Chromium）=====
 if node test-editor.mjs "$B" "$DOCID" "$RESUME_ROOT"; then

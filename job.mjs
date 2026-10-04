@@ -14,13 +14,14 @@ const DEGREE_RULES = {
 };
 const DEGREE_NAMES = { light: '轻度精简', refocus: '聚焦调整', restructure: '结构重组' };
 
-export function buildJobPrompt({ docText, jd, company, role, materials = [], twoPage = true, brief = null }) {
+export function buildJobPrompt({ docText, jd, company, role, materials = [], twoPage = true, brief = null, scope = null }) {
   const degree = (brief && DEGREE_RULES[brief.degree]) || DEGREE_RULES.refocus;   // 无 brief 默认 refocus 档
+  // S4a-T8：scope = { zone, zoneLabel, digest } 时为局部重生成——sys 加越界禁令，输出格式带 zid 回传要求
   const sys = `你是简历定制编排器。基于【母版简历】与【目标 JD】，输出一组修改操作来定制这个岗位的简历草稿。你只能输出 JSON，不能输出 HTML、脚本或解释文字。
 
 输出格式（严格 JSON）：
-{"summary":"一句话说明定制策略","changes":[{"section":"章节名","entry":"条目名（如公司或项目名，可空）","kind":"replace|reorder|hide|add","before":"文档中现有原文片段（逐字，≤80字）","after":"改后文字（kind=reorder/hide 时为空的字符串）","to":"kind=reorder 时的目标位置（top|bottom|上一条|下一条）","reason":"为什么这样改","source":"母版|素材:素材标题|JD","level":"normal|important|conflict"}],"todos":[{"section":"章节名","question":"缺少什么信息","why":"为什么需要"}]}
-
+{"summary":"一句话说明定制策略","changes":[{"section":"章节名","entry":"条目名（如公司或项目名，可空）","kind":"replace|reorder|hide|add","before":"文档中现有原文片段（逐字，≤80字）","after":"改后文字（kind=reorder/hide 时为空的字符串）","to":"kind=reorder 时的目标位置（top|bottom|上一条|下一条）"${scope ? ',"zid":"目标段落 zid（局部重生成必填，原样返回请求中标注的 zid）"' : ''},"reason":"为什么这样改","source":"母版|素材:素材标题|JD","level":"normal|important|conflict"}],"todos":[{"section":"章节名","question":"缺少什么信息","why":"为什么需要"}]}
+${scope ? `\n本次为局部重生成（仅限区域「${scope.zoneLabel}」）：每段已标注 zid，change.zid 原样返回；区域外的段落与章节一律不得触碰，越界即遭拒。\n` : ''}
 硬约束（违反即遭拒）：
 1. 禁止编造指标、数字、职责、技能、公司、职位、日期、学历。before 中已有的数字必须原样保留。
 2. 公司、职位、日期、学历一律不得修改；before/after 不得触碰这些字段所在文本。
@@ -49,7 +50,10 @@ changes 最多 12 条，todos 最多 6 条。`;
     `修改幅度：${DEGREE_NAMES[brief.degree] || DEGREE_NAMES.refocus}`,
     `页数目标：${brief.pages || 2} 页`
   ].filter(Boolean).join('\n') : '';
-  const user = `【目标公司】${company}\n【目标岗位】${role}\n【JD】\n${jd || '（未提供 JD）'}\n\n【已确认素材（只可引用，不可改写事实）】\n${matBlock}\n\n${briefBlock ? briefBlock + '\n\n' : ''}【母版简历正文】\n${docText}`;
+  const user = `【目标公司】${company}\n【目标岗位】${role}\n【JD】\n${jd || '（未提供 JD）'}\n\n【已确认素材（只可引用，不可改写事实）】\n${matBlock}\n\n${briefBlock ? briefBlock + '\n\n' : ''}`
+    + (scope
+      ? `【全文摘要（上下文参考；只允许修改下方目标区域内段落）】\n${scope.digest}\n\n【目标区域「${scope.zoneLabel}」段落（局部重生成，仅限此区域）】\n${docText}`
+      : `【母版简历正文】\n${docText}`);
   return { sys, user };
 }
 
@@ -100,6 +104,7 @@ export function parseJobOps(raw) {
       entry: typeof c.entry === 'string' ? c.entry.trim() : '',
       kind, before, after,
       to: typeof c.to === 'string' ? c.to.trim() : '',
+      zid: typeof c.zid === 'string' ? c.zid.trim() : '',   // S4a-T8：局部重生成回传的落点 zid（服务端按请求内段落校验）
       reason: typeof c.reason === 'string' ? c.reason.trim() : '',
       source: typeof c.source === 'string' ? c.source.trim() : '',
       level: LEVELS.has(c.level) ? c.level : 'normal'

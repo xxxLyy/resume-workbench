@@ -13,11 +13,11 @@ import { loadProfiles, hasLLM, chat, chatMsgs, listModels } from './llm.mjs';
 import { buildRewrite, buildChat, parseChanges, buildReview, buildMatch, parseReport } from './ai.mjs';
 import { buildJobPrompt, parseJobOps, pageSuggestions } from './job.mjs';
 import { docToLines, docToText, contentHash, sectionsOf } from './extract.mjs';
-import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, digestOf, buildZoneAnalyzePrompt, parseZoneAnalysis, buildZoneRewritePrompt, parseZoneRewrites, FACT_KEYS, MAT_STATES, migrateMats, parasOf } from './zone.mjs';
+import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, digestOf, buildZoneAnalyzePrompt, parseZoneAnalysis, buildZoneRewritePrompt, parseZoneRewrites, FACT_KEYS, MAT_STATES, migrateMats, parasOf, zidsOf } from './zone.mjs';
 import { rotateLogIfNeeded } from './logrotate.mjs';
 import { freezeHtml, normalizeToCurrent, splitDoc, staleInfo } from './freeze.mjs';
 import { beginTx, commitTx, dropSupersededTx, recoverPending, withDocLock, updateMeta, updateMetaAll, rootLock, atomicWrite, LockHeld } from './tx.mjs';
-import { applyOps, reviewConsistency, refFresh, buildEvidencePrompt, parseEvidence } from './evidence.mjs';
+import { applyOps, reviewConsistency, refFresh, buildEvidencePrompt, parseEvidence, guardOps } from './evidence.mjs';
 import { assembleTemplate, themeRegistration } from './template.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -159,23 +159,66 @@ function finishGenTask(id, kind, taskId, apply, errMsg) {
   return out || { dropped: true };
 }
 
-// changes 成功落账（与旧 /job/generate 的 updateMeta 体一致：gen 递增、旧 pending→superseded、新候选入列）
-function applyChangesResult(cur, ops) {
+// changes 成功落账（S4a-T8：候选锚定 zid/baseSnapshot/zone + guardOps 锁定与范围护栏 + 局部 supersede 同 zone）
+// ctx = { scope:'all'|'zone:<key>', html: 生成基线正文, paras: 基线段落（baseSnapshot 与锚点解析共用）, mats: 已确认素材 }。
+// 与旧 /job/generate 的 updateMeta 体一致：gen 递增、旧 pending→superseded（局部仅同 zone）、新候选入列
+function applyChangesResult(cur, ops, ctx = {}) {
   const gen = (cur.job.changes.reduce((mx, c) => Math.max(mx, c.gen || 0), 0)) + 1;
-  for (const c of cur.job.changes) if (c.status === 'pending') c.status = 'superseded';   // 不覆盖已接受/已撤销历史
+  const scope = ctx.scope || 'all';
+  const zoneScope = (typeof scope === 'string' && scope.startsWith('zone:')) ? scope.slice(5) : null;
+  const zones = cur.zones || {};
+  const locked = new Set(Object.entries(zones).filter(([, z]) => z && z.locked === true).map(([zid]) => zid));
+  const paras = Array.isArray(ctx.paras) ? ctx.paras : [];
+  const paraByZid = new Map(paras.map((p) => [p.zid, p]));
+  const zoneOfZid = (zid) => (zones[zid] && zones[zid].zone) || null;
+  // supersede（影响隔离，设计 §4.2 反例3）：全文=全部 pending；局部=只清同 zone 的 pending，其他 zone 不动
+  for (const c of cur.job.changes) {
+    if (c.status !== 'pending') continue;
+    if (!zoneScope || (c.zone || zoneOfZid(c.zid)) === zoneScope) c.status = 'superseded';
+  }
+  // 锚点解析：优先模型回传 zid（局部重生成的请求内标注），否则按 before/entry 文本匹配基线段落（首个命中）。
+  // add = 容器锚点（目标章节首个段落；容器消失 → anchor-gone，新段落 zid 接受时才创建——设计 §4.2）
+  const byText = (needle) => {
+    const n = String(needle || '').trim();
+    return n ? (paras.find((p) => p.text && (p.text.includes(n) || n.includes(p.text))) || null) : null;
+  };
+  const anchorOf = (c) => {
+    if (c.kind === 'add') {
+      const a = String(c.section || '').trim();
+      const sec = sectionsOf(String(ctx.html || '')).find((s) => {
+        const b = String(s.title || '').trim();
+        return b && a && (b.includes(a) || a.includes(b));
+      });
+      const zid = sec ? zidsOf(sec.html)[0] : null;
+      const p = zid ? paraByZid.get(zid) : null;
+      return { zid: zid || null, baseSnapshot: p ? p.text : null };
+    }
+    const hinted = (typeof c.zid === 'string' && paraByZid.has(c.zid)) ? c.zid : null;
+    const hit = hinted ? paraByZid.get(hinted) : byText(c.kind === 'hide' ? (c.entry || c.before) : (c.before || c.entry));
+    return { zid: hit ? hit.zid : null, baseSnapshot: hit ? hit.text : null };
+  };
+  const protectedTokens = [...new Set((ctx.mats || []).flatMap((m) => [(m.facts || {}).company, (m.facts || {}).role]).filter((t) => typeof t === 'string' && t))];
+  // 先锚定再护栏：guardOps ①范围/②锁定 按候选 zid 判定；dropped（锁定/越界）→ 列入 skipped（设计 §4.3 ②）
+  const resolved = ops.changes.map((c) => {
+    const a = anchorOf(c);
+    return { ...c, zid: a.zid || undefined, baseSnapshot: a.baseSnapshot || undefined, zone: a.zid ? (zoneOfZid(a.zid) || guessZone(c.section)) : guessZone(c.section) };
+  });
+  const g = guardOps(resolved, { scope, zones, locked, protectedTokens });
   let ci = 0;
-  for (const c of ops.changes) cur.job.changes.push({ id: 'g' + gen + '-c' + (++ci), gen, ...c, status: 'pending', createdAt: new Date().toISOString() });
+  const mk = (c, status, note) => ({ id: 'g' + gen + '-c' + (++ci), gen, ...c, status, note, createdAt: new Date().toISOString() });
+  for (const d of g.dropped) cur.job.changes.push(mk(d.op, 'skipped', 'guardOps：' + d.reason));
+  for (const c of g.kept) cur.job.changes.push(mk(c, 'pending'));
   cur.job.todos = (cur.job.todos || []).concat(ops.todos.map((t) => ({ ...t, resolved: false })));
   cur.job.generatedAt = new Date().toISOString();
   cur.flow = 'reviewing';   // 生成产生 pending 建议 → 审阅中（状态维度单源 flow）
   cur.job.summary = ops.summary;
-  return { generated: ops.changes.length, todos: ops.todos.length };
+  return { generated: g.kept.length, todos: ops.todos.length };
 }
 
 // 任务体（node 单进程 fire-and-forget：Promise 即可，不引调度平台）。changes 通道完整复用既有链路；
 // evidence 通道（S4a-T6）：JD + 已确认素材（facts+表达）+ 区域分组段落（请求内 ID）→ parseEvidence →
 // finishGenTask 校验落账——整批替换与 evidenceGen+1 只在成功落账事务内（设计 §5.1 反例2：失败/取消/超时不碰旧数据）。
-async function runGenTask(id, kind, taskId) {
+async function runGenTask(id, kind, taskId, scope = 'all') {
   if (kind === 'evidence') {
     try {
       const m0 = loadMeta()[id];
@@ -204,13 +247,23 @@ async function runGenTask(id, kind, taskId) {
   try {
     const m0 = loadMeta()[id];
     if (!m0 || !m0.job) return finishGenTask(id, kind, taskId, null, '文档已不是岗位草稿');
-    const docText = docToText(fs.readFileSync(docPath(id), 'utf8'), { includeHidden: false });
+    const html = fs.readFileSync(docPath(id), 'utf8');
+    const parasStart = parasOf(html);   // S4a-T8：生成基线段落——baseSnapshot 与锚点解析共用同一份快照
     const confirmedMats = loadMats().filter((x) => x.factStatus === 'confirmed' && m0.job.materials.includes(x.id));
-    const p = buildJobPrompt({ docText, jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: confirmedMats, twoPage: true, brief: m0.job.brief || null });   // S4a-T5：要求卡进 prompt（buildJobPrompt 内部渐进默认）
+    // 局部重生成（scope=zone:X，设计 §5.2）：prompt 只带该区域段落（zid 标注）+ 全文摘要；全文生成 docText 不变
+    let docText, scopeInfo = null;
+    if (typeof scope === 'string' && scope.startsWith('zone:')) {
+      const zk = scope.slice(5);
+      scopeInfo = { zone: zk, zoneLabel: ZONE_LABELS[zk] || zk, digest: digestOf(html) };
+      docText = zoneParas(html, m0, zk).map((p) => `（zid：${p.zid}）${p.text}`).join('\n');
+    } else {
+      docText = docToText(html, { includeHidden: false });
+    }
+    const p = buildJobPrompt({ docText, jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: confirmedMats, twoPage: true, brief: m0.job.brief || null, scope: scopeInfo });
     const raw = await chat(root, p.sys, p.user);
     const ops = parseJobOps(raw);
     if (!ops) return finishGenTask(id, kind, taskId, null, '模型输出无法解析为修改操作，未应用任何修改');
-    return finishGenTask(id, kind, taskId, (cur) => applyChangesResult(cur, ops));
+    return finishGenTask(id, kind, taskId, (cur) => applyChangesResult(cur, ops, { scope, html, paras: parasStart, mats: confirmedMats }));
   } catch (e) {
     return finishGenTask(id, kind, taskId, null, '模型调用失败：' + (e.message || e));
   }
@@ -218,7 +271,7 @@ async function runGenTask(id, kind, taskId) {
 
 // 原子启动（设计 §6 v1.4：updateMetaAll 全表事务锁内扫描）：全库同类 running ≤1、两类合计 ≤2，超限 409；
 // 过期残留不计入（读取时清）——启动时拒过期残留为三点校验之一。taskId 在事务内生成写入，无检查与写入分离窗口。
-function startGenTask(id, kind) {
+function startGenTask(id, kind, scope = 'all') {
   let baseHash = null;
   try { baseHash = contentHash(fs.readFileSync(docPath(id), 'utf8')); } catch {}   // 仅任务记录用（设计 §4.1）
   let taskId = null, reject = null;
@@ -241,7 +294,7 @@ function startGenTask(id, kind) {
     if (sameKindOther) { reject = { status: 409, error: '另一文档的任务进行中，请稍后再试' }; return null; }
     if (total >= 2) { reject = { status: 409, error: '并发任务已达上限（两类合计 2），请稍后再试' }; return null; }
     taskId = newGenTaskId();
-    const job = { ...m.job, genTasks: { ...(m.job.genTasks || {}), [kind]: { taskId, status: 'running', startedAt: now, baseHash, error: null, scope: null } } };
+    const job = { ...m.job, genTasks: { ...(m.job.genTasks || {}), [kind]: { taskId, status: 'running', startedAt: now, baseHash, error: null, scope } } };
     return { ...all, [id]: { ...m, job } };
   });
   return { taskId, reject };
@@ -1338,7 +1391,8 @@ async function handler(req, res) {
       // S4a-T3：jobView 附带 brief/evidence/genTasks/saveReceipts 摘要/reviewPos 渐进默认值。
       // S4a-T6：jobViewLive 叠加来源维度即时计算（refs fresh / consistency 现算，不落盘）。
       const job = jobViewLive(id, m);
-      return sendJson(200, { ok: true, job, zones: m.zones || null, zoneOrder: m.zoneOrder || null, zoneRounds: m.zoneRounds || null, doc: { id, parent: m.parent || '', company: m.company || '', role: m.role || '', jd: m.jd || '', jdSource: m.jdSource || '' } });
+      // S4a-T8：rev 随响应暴露——客户端 JSON 保存协议的 baseRev 基线来源
+      return sendJson(200, { ok: true, job, rev: Number(m.rev) || 0, zones: m.zones || null, zoneOrder: m.zoneOrder || null, zoneRounds: m.zoneRounds || null, doc: { id, parent: m.parent || '', company: m.company || '', role: m.role || '', jd: m.jd || '', jdSource: m.jdSource || '' } });
     }
     if (req.method === 'POST' && url.pathname === '/job/changes') {
       const body = JSON.parse(await readBody(req));
@@ -1470,10 +1524,18 @@ async function handler(req, res) {
     if (req.method === 'POST' && url.pathname === '/job/gen-start') {
       const kind = url.searchParams.get('kind');
       if (!GEN_KINDS.includes(kind)) return sendJson(400, { ok: false, error: 'kind 必须是 evidence|changes' });
+      // S4a-T8：scope=all|zone:<key>（局部重生成，仅 changes 通道；evidence 恒 all）
+      let scope = 'all';
+      const scopeRaw = url.searchParams.get('scope');
+      if (scopeRaw) {
+        const sm = /^zone:([a-z]+)$/.exec(scopeRaw);
+        if (kind !== 'changes' || !sm || !ZONE_KEYS.includes(sm[1])) return sendJson(400, { ok: false, error: 'scope 非法（all 或 zone:<区域key>，仅 changes 通道）' });
+        scope = scopeRaw;
+      }
       if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型：草稿仍可手动编辑，配置后可生成建议' });
-      const { taskId, reject } = startGenTask(id, kind);
+      const { taskId, reject } = startGenTask(id, kind, scope);
       if (reject) return sendJson(reject.status, { ok: false, error: reject.error });
-      runGenTask(id, kind, taskId).catch(() => {});   // 异步落账；异常不外抛（任务态由回调链路收敛）
+      runGenTask(id, kind, taskId, scope).catch(() => {});   // 异步落账；异常不外抛（任务态由回调链路收敛）
       return sendJson(200, { ok: true, taskId, status: 'running' });
     }
     // gen-cancel：taskId 匹配当前 running 才置 cancelled（防误取消刚接棒的新任务）；在途结果被回调校验丢弃。

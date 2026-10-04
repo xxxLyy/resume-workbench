@@ -58,6 +58,7 @@
     + '.jp-note .jp-note-ops button{min-height:22px;padding:0 8px;border-radius:6px;font-size:11px;cursor:pointer;border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink)}'
     + '.jp-note .jp-note-ops button.jp-pri{background:var(--ed-accent);border-color:var(--ed-accent);color:var(--ed-accent-ink)}'
     + '.jp-note .jp-note-hint{font-size:10.5px;color:var(--ed-mut)}'
+    + '.jp-gate{margin-top:6px;border:1px solid var(--ed-warn);border-radius:6px;padding:6px 8px;background:var(--ed-warn-soft)}'
     + '.jp button:focus-visible{outline:2px solid var(--ed-accent);outline-offset:1px}';
   document.head.appendChild(css);
 
@@ -67,6 +68,7 @@
   pane.appendChild(root);
 
   var job = null, doc = null, busy = false;
+  var docRev = 0;   // S4a-T8：GET /job/changes 暴露的 meta.rev——JSON 保存协议 baseRev 基线
   // S4a-T6 三段骨架状态：当前段（evidence|changes|export）+ reviewPos 筛选位（T9 落 UI）+ 任务轮询链
   var curSec = null, posFilter = 'all', pollTimer = null;
   var SEC_LABELS = { evidence: '要求与证据', changes: '修改清单', export: '导出检查' };
@@ -212,7 +214,7 @@
       node.textContent = c.after;
       (ul || sec2).appendChild(node);
       touch();
-      return { ok: true, meta: { target: 'add', title: c.section } };
+      return { ok: true, meta: { target: 'add', title: c.section }, node: node };
     }
     return { ok: false, error: '未知修改类型：' + c.kind };
   }
@@ -256,48 +258,165 @@
     });
   }
 
-  function accept(c) {
+  // ===== 接受/撤回经 v1.6 JSON 保存协议与正文同事务（S4a-T8）：op 随保存提交，UI 无独立状态请求 =====
+  function normWs(s) { return String(s || '').replace(/\s+/g, ' ').trim(); }
+  function randZid() {
+    var hex = '0123456789abcdef', s = '';
+    for (var i = 0; i < 8; i++) s += hex.charAt(Math.floor(Math.random() * 16));
+    return 'z' + s;
+  }
+  function anchorElOf(c) {
+    // add 的撤回锚点是已落账的 newZid（新段落本体）；其余用落点 zid（与服务端 applyOps 同逻辑）
+    var zid = (c.kind === 'add' && c.newZid) ? c.newZid : c.zid;
+    return zid ? sheet.querySelector('[data-zid="' + zid + '"]') : null;
+  }
+  // 与旧保存路径（template doSave）同口径的整页序列化：clone + 注入块清理；服务端 stripInjections 再兜底剥离
+  function buildPageHtml() {
+    var clone = document.documentElement.cloneNode(true);
+    clone.querySelectorAll('.page-line, .toast, .recovery-bar, [data-ai-panel], [data-ed-shell], [data-ed-inj], [data-job-panel]').forEach(function (el) { el.remove(); });
+    var cbody = clone.querySelector('body');
+    if (cbody) { cbody.classList.remove('ed-on', 'ed-preview'); cbody.style.cssText = ''; }
+    var csheet = clone.querySelector('.sheet');
+    if (csheet) { csheet.style.zoom = ''; csheet.style.transform = ''; csheet.setAttribute('contenteditable', 'true'); }
+    var cstate = clone.querySelector('#saveState');
+    if (cstate) { cstate.dataset.state = 'saved'; cstate.textContent = '已保存 ✓'; }
+    var csave = clone.querySelector('#saveBtn');
+    if (csave) csave.removeAttribute('disabled');
+    return '<!doctype html>\n' + clone.outerHTML;
+  }
+  function postSaveOps(ops, label) {
+    api('/save?id=' + DOC_ID, {
+      requestId: 'op-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10),
+      baseRev: docRev, html: buildPageHtml(), ops: ops
+    }).then(function (d) {
+      if (d.ok) {
+        if (d.receipt && d.receipt.mtime) window.__edDocMtime = d.receipt.mtime;   // 同步旧路径冲突基线
+      } else {
+        note('⚠️ ' + (d.error || (label + '失败')));
+      }
+      refresh();   // 成败都按服务器最新状态重渲染（409/400 的 DOM 差异由后续保存收敛）
+    }).catch(function (e) { note('⚠️ ' + (e.message || e)); refresh(); });
+  }
+  function accept(c, viaGate) {
     if (busy) return; busy = true;
+    var hits = c.consistency || [];
+    if (hits.indexOf('anchor-gone') >= 0) { busy = false; note('⚠️ 目标已删除，不可接受'); return; }
+    if (hits.indexOf('locked-now') >= 0) { busy = false; note('⚠️ 该段已锁定，不可接受'); return; }
+    // needs-compare 确认门（设计 §4.2 决策 4）：先展示当前正文 vs 候选差异，确认后才应用
+    if (hits.indexOf('needs-compare') >= 0 && !viaGate) { busy = false; renderGate(c); return; }
     if (window.__edPushUndo) window.__edPushUndo('接受修改：' + (c.note || c.kind));
-    var r = applyChange(c);
+    var anchorEl = anchorElOf(c);
+    var origText = anchorEl ? normWs(anchorEl.textContent) : (c.before || '');
+    var op = { operationId: 'op-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10), changeId: c.id, action: 'accept', origText: origText };
+    var r;
+    if (c.kind === 'replace' && viaGate) {
+      // 确认门通过：整段替换为候选 after（锚点=当前整段文本，与服务端 origText 校验一致）
+      r = replaceText(anchorEl.textContent, c.after) ? { ok: true, meta: {} } : { ok: false, error: '原文未找到（内容可能已被手工修改）' };
+    } else {
+      r = applyChange(c);
+    }
+    if (r.ok && c.kind === 'add' && r.node) {
+      var nz = randZid();                 // 客户端生成新段落 zid（applyOps 校验形状；服务端落账 newZid 永久对应）
+      r.node.setAttribute('data-zid', nz);
+      op.newZid = nz;
+    }
     busy = false;
     if (!r.ok) { note('⚠️ ' + r.error); return; }
-    setStatus([{ id: c.id, status: 'accepted', meta: r.meta }]);
+    postSaveOps([op], '接受');
   }
   function revert(c) {
     if (busy) return; busy = true;
     if (window.__edPushUndo) window.__edPushUndo('撤销修改：' + (c.note || c.kind));
+    var anchorEl = anchorElOf(c);
+    var op = { operationId: 'op-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10), changeId: c.id, action: 'revert', origText: anchorEl ? normWs(anchorEl.textContent) : '' };
     var r = revertChange(c);
+    if (!r.ok && c.kind === 'replace' && c.origText && anchorEl) {
+      r = replaceText(anchorEl.textContent, c.origText) ? { ok: true } : r;   // 确认门整段接受过的：整段恢复接受时快照
+    }
     busy = false;
     if (!r.ok) { note('⚠️ ' + r.error); return; }
-    setStatus([{ id: c.id, status: 'reverted' }]);
+    postSaveOps([op], '撤回');
   }
   function batchAccept(ids) {
     if (busy) return; busy = true;
     if (window.__edPushUndo) window.__edPushUndo('批量接受 ' + ids.length + ' 条');
-    var updates = [], fails = 0;
+    var ops = [], fails = 0, failedUpdates = [];
     ids.forEach(function (id) {
       var c = job.changes.find(function (x) { return x.id === id; });
       if (!c) return;
+      var anchorEl = anchorElOf(c);
+      var origText = anchorEl ? normWs(anchorEl.textContent) : (c.before || '');
       var r = applyChange(c);
-      if (r.ok) updates.push({ id: c.id, status: 'accepted', meta: r.meta });
-      else { fails++; updates.push({ id: c.id, status: 'pending', note: r.error }); }
+      if (r.ok) {
+        var op = { operationId: 'op-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10) + '-' + c.id, changeId: c.id, action: 'accept', origText: origText };
+        if (c.kind === 'add' && r.node) {
+          var nz = randZid();
+          r.node.setAttribute('data-zid', nz);
+          op.newZid = nz;
+        }
+        ops.push(op);
+      } else {
+        fails++;
+        failedUpdates.push({ id: c.id, status: 'pending', note: r.error });
+      }
     });
     busy = false;
     if (fails) note('⚠️ ' + fails + ' 条未能应用（原文可能已变化），其余已接受');
-    setStatus(updates);
+    if (failedUpdates.length) setStatus(failedUpdates);
+    if (ops.length) postSaveOps(ops, '批量接受'); else render();
   }
 
   // ===== 渲染 =====
-  var STATUS_LABEL = { pending: '待处理', accepted: '已接受', rejected: '已跳过', reverted: '已撤销', resolved: '已处理', superseded: '旧候选' };
+  var STATUS_LABEL = { pending: '待处理', accepted: '已接受', rejected: '已跳过', reverted: '已撤销', resolved: '已处理', superseded: '旧候选', skipped: '稍后处理' };
+  var CONS_LABEL = { 'anchor-gone': '目标已删除', 'batch-stale': '证据已更新，需重新核对', 'ref-stale': '来源已变化，需重新核对', 'locked-now': '该段已锁定', 'needs-compare': '待比较（正文已变化）', 'hand-edited': '已按你的修改调整' };
   function short(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n) + '…' : s; }
+  // needs-compare 确认门：当前正文 vs 候选差异（设计 §4.2 决策 4，不静默覆盖正文）
+  function renderGate(c) {
+    var div = root.querySelector('[data-change="' + c.id + '"]');
+    if (!div) return;
+    var old = div.querySelector('.jp-gate');
+    if (old) old.remove();
+    var anchorEl = anchorElOf(c);
+    var gate = document.createElement('div');
+    gate.className = 'jp-gate';
+    var before = document.createElement('div');
+    before.className = 'jp-before';
+    before.textContent = '当前正文：' + short(anchorEl ? normWs(anchorEl.textContent) : '', 120);
+    var after = document.createElement('div');
+    after.className = 'jp-after';
+    after.textContent = '候选改为：' + short(c.kind === 'replace' ? c.after : (c.kind === 'hide' ? '隐藏「' + (c.entry || c.section) + '」' : (c.kind === 'reorder' ? '排序 → ' + (c.to || '顶部') : c.after)), 120);
+    var ops2 = document.createElement('div');
+    ops2.className = 'jp-ops';
+    var ok = document.createElement('button');
+    ok.type = 'button';
+    ok.className = 'jp-accept';
+    ok.textContent = '确认接受（覆盖当前正文）';
+    ok.addEventListener('click', function () { gate.remove(); accept(c, true); });
+    var no = document.createElement('button');
+    no.type = 'button';
+    no.textContent = '取消';
+    no.addEventListener('click', function () { gate.remove(); });
+    ops2.appendChild(ok);
+    ops2.appendChild(no);
+    gate.appendChild(before);
+    gate.appendChild(after);
+    gate.appendChild(ops2);
+    div.appendChild(gate);
+  }
   function itemHtml(c, group) {
     var div = document.createElement('div');
     div.className = 'jp-item';
+    div.setAttribute('data-change', c.id);
     var title = document.createElement('div');
     title.innerHTML = '<b>' + esc(short(c.section || '文档', 12)) + (c.entry ? ' / ' + esc(short(c.entry, 14)) : '') + '</b>'
       + '<span class="jp-st ' + (c.level === 'conflict' ? 'conflict' : c.status) + '">' + (STATUS_LABEL[c.status] || c.status) + '</span>';
     div.appendChild(title);
+    if (Array.isArray(c.consistency) && c.consistency.length) {
+      var cons = document.createElement('div');
+      cons.className = 'jp-reason';
+      cons.textContent = '⚠ ' + c.consistency.map(function (h) { return CONS_LABEL[h] || h; }).join('；');
+      div.appendChild(cons);
+    }
     if (c.reason) { var why = document.createElement('div'); why.className = 'jp-reason'; why.textContent = '理由：' + c.reason + (c.source ? '（来源：' + c.source + '）' : ''); div.appendChild(why); }
     if (c.kind === 'replace') {
       var b = document.createElement('div'); b.className = 'jp-before'; b.textContent = c.before; div.appendChild(b);
@@ -332,15 +451,16 @@
       }
       note('⚠️ 未找到定位目标（内容可能已变化）');
     };
-    if (c.status === 'pending' || c.status === 'superseded') {
+    var blocked = (c.consistency || []).indexOf('anchor-gone') >= 0 || (c.consistency || []).indexOf('locked-now') >= 0;
+    if ((c.status === 'pending' || c.status === 'superseded') && !blocked) {
       mkBtn(c.level === 'conflict' ? '确认接受（无冲突）' : '接受', 'jp-accept', function () { accept(c); });
       mkBtn('跳过', '', function () { setStatus([{ id: c.id, status: 'rejected' }]); });
       mkBtn('定位', '', locate);
     } else if (c.status === 'accepted') {
-      mkBtn('撤销', '', function () { revert(c); });
+      if (!blocked) mkBtn('撤销', '', function () { revert(c); });
       mkBtn('定位', '', locate);
     } else if (c.status === 'reverted' || c.status === 'rejected') {
-      mkBtn('重新接受', '', function () { setStatus([{ id: c.id, status: 'pending' }]); });
+      if (!blocked) mkBtn('重新接受', '', function () { setStatus([{ id: c.id, status: 'pending' }]); });
       mkBtn('定位', '', locate);
     }
     div.appendChild(ops);
@@ -401,7 +521,7 @@
   function refresh() {
     return api('/job/changes?id=' + DOC_ID).then(function (d) {
       if (!d.ok) return;
-      job = d.job; doc = d.doc;
+      job = d.job; doc = d.doc; docRev = d.rev || 0;
       render();
     }).catch(function () {}).then(function () {
       // 自续判定放 catch 之后的语义位：running 期间瞬时 GET 失败也续排（S4a-T7 转交 b），不断链卡死 UI
@@ -682,7 +802,8 @@
 
     var changes = job.changes || [];
     var pending = changes.filter(function (c) { return c.status === 'pending'; });
-    var normal = changes.filter(function (c) { return c.status !== 'superseded' && c.level !== 'conflict' && c.level !== 'important' && ['replace', 'add'].indexOf(c.kind) >= 0 && c.status !== 'accepted' && c.status !== 'reverted' && c.status !== 'rejected'; });
+    var needsCompare = changes.filter(function (c) { return c.status === 'pending' && (c.consistency || []).indexOf('needs-compare') >= 0; });
+    var normal = changes.filter(function (c) { return c.status !== 'superseded' && c.level !== 'conflict' && c.level !== 'important' && ['replace', 'add'].indexOf(c.kind) >= 0 && c.status !== 'accepted' && c.status !== 'reverted' && c.status !== 'rejected' && (c.consistency || []).indexOf('needs-compare') < 0; });
     var reorder = changes.filter(function (c) { return c.level !== 'conflict' && c.level !== 'important' && c.kind === 'reorder' && c.status !== 'superseded' && c.status !== 'accepted' && c.status !== 'reverted' && c.status !== 'rejected'; });
     var hides = changes.filter(function (c) { return c.kind === 'hide' && c.status !== 'superseded'; });
     var important = changes.filter(function (c) { return c.level === 'important' && c.status !== 'superseded'; });
@@ -707,7 +828,8 @@
       gate.innerHTML = '<b>⛔ 事实冲突未解决前不能导出</b><div class="jp-meta">逐条确认接受或撤销后解除。</div>';
       root.appendChild(gate);
     }
-    [groupBox('普通表达', normal, { batch: normal }),
+    [groupBox('待比较（正文已变化，需确认）', needsCompare),
+     groupBox('普通表达', normal, { batch: normal }),
      groupBox('排序调整', reorder, { batch: reorder }),
      groupBox('隐藏经历（需逐条确认）', hides),
      groupBox('可能改变原意（单独审阅）', important, { cls: 'jp-important' }),
@@ -756,7 +878,7 @@
   // 初始进入：读 reviewPos 恢复段与筛选（刷新后位置恢复）
   api('/job/changes?id=' + DOC_ID).then(function (d) {
     if (!d.ok) return;
-    job = d.job; doc = d.doc;
+    job = d.job; doc = d.doc; docRev = d.rev || 0;
     applyReviewPos();
     render();
     var gt = job.genTasks || {};
