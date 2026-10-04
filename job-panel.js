@@ -59,6 +59,18 @@
     + '.jp-note .jp-note-ops button.jp-pri{background:var(--ed-accent);border-color:var(--ed-accent);color:var(--ed-accent-ink)}'
     + '.jp-note .jp-note-hint{font-size:10.5px;color:var(--ed-mut)}'
     + '.jp-gate{margin-top:6px;border:1px solid var(--ed-warn);border-radius:6px;padding:6px 8px;background:var(--ed-warn-soft)}'
+    // S4a-T9：筛选 / footbar / 拒绝 chips / ≥1440 并排对照
+    + '.jp-filter{display:flex;gap:2px}'
+    + '.jp-filter button{min-height:22px;padding:0 8px;border:none;background:transparent;font-size:11px;font-weight:600;color:var(--ed-mut);cursor:pointer;border-radius:6px}'
+    + '.jp-filter button.on{color:var(--ed-accent);background:var(--ed-accent-soft)}'
+    + '.jp-foot{display:flex;gap:4px;align-items:center;flex-wrap:wrap;padding-top:6px;border-top:1px solid var(--ed-line)}'
+    + '.jp-foot .jp-primary{background:var(--ed-accent);border-color:var(--ed-accent);color:var(--ed-accent-ink)}'
+    + '.jp-foot button{min-height:26px;padding:0 10px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink)}'
+    + '.jp-chips{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}'
+    + '.jp-chips button{min-height:22px;padding:0 8px;border-radius:999px;font-size:11px;cursor:pointer;border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink)}'
+    + '.jp-chips button.jp-pri{background:var(--ed-accent);border-color:var(--ed-accent);color:var(--ed-accent-ink)}'
+    + '.jp-active{outline:2px solid var(--ed-accent);outline-offset:1px}'
+    + '@media (min-width:1440px){.jp-cmp{display:grid;grid-template-columns:1fr 1fr;gap:6px}}'
     + '.jp button:focus-visible{outline:2px solid var(--ed-accent);outline-offset:1px}';
   document.head.appendChild(css);
 
@@ -326,6 +338,13 @@
   }
   function revert(c) {
     if (busy) return; busy = true;
+    // 撤回前置（设计 §4.2）：该段已被手改 → 提示原因并要求确认，拒绝静默执行
+    var preEl = anchorElOf(c);
+    if (preEl && typeof c.appliedText === 'string' && normWs(preEl.textContent) !== normWs(c.appliedText)) {
+      busy = false;
+      if (!window.confirm('该段已被修改，撤回会覆盖你的调整——确认撤回？')) { note('已取消撤回'); return; }
+      busy = true;
+    }
     if (window.__edPushUndo) window.__edPushUndo('撤销修改：' + (c.note || c.kind));
     var anchorEl = anchorElOf(c);
     var op = { operationId: 'op-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10), changeId: c.id, action: 'revert', origText: anchorEl ? normWs(anchorEl.textContent) : '' };
@@ -403,6 +422,95 @@
     gate.appendChild(ops2);
     div.appendChild(gate);
   }
+  // ===== S4a-T9：审阅操作升级 =====
+  // 拒绝原因 chips（决策 5）：不必填；进 job.feedback（下次生成 prompt），显式「记住偏好」存 localStorage
+  function renderRejectChips(c, div) {
+    var old = div.querySelector('.jp-chips');
+    if (old) { old.remove(); return; }
+    var chips = document.createElement('div');
+    chips.className = 'jp-chips';
+    var pick = function (reason) {
+      var updates = [{ id: c.id, status: 'rejected', note: reason }];
+      api('/job/changes?id=' + DOC_ID, { updates: updates, feedback: reason }).then(function (d) {
+        if (d.ok) job = d.job; else note('⚠️ ' + (d.error || '状态保存失败'));
+        render();
+      });
+      chips.remove();
+    };
+    ['改变原意', '太空泛', '过度夸大', '不符合我的表达'].forEach(function (r) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = r;
+      b.addEventListener('click', function () { pick(r); });
+      chips.appendChild(b);
+    });
+    var custom = document.createElement('input');
+    custom.type = 'text';
+    custom.placeholder = '自定义原因…';
+    custom.setAttribute('aria-label', '自定义拒绝原因');
+    custom.style.cssText = 'min-height:22px;padding:0 6px;border-radius:6px;font-size:11px;border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink);width:110px';
+    chips.appendChild(custom);
+    var go = document.createElement('button');
+    go.type = 'button';
+    go.className = 'jp-pri';
+    go.textContent = '跳过';
+    go.addEventListener('click', function () { var v = custom.value.trim(); if (v) pick(v); });
+    chips.appendChild(go);
+    var remember = document.createElement('button');
+    remember.type = 'button';
+    remember.textContent = '记住这个偏好';
+    remember.title = '存入本机 localStorage，随生成请求提交为长期反馈';
+    remember.addEventListener('click', function () {
+      try {
+        var prefs = JSON.parse(localStorage.getItem('s4a-feedback-prefs') || '[]');
+        var v = custom.value.trim();
+        if (!v) { note('⚠️ 先填写自定义原因再记住偏好'); return; }
+        prefs.push(v);
+        localStorage.setItem('s4a-feedback-prefs', JSON.stringify(prefs.slice(-20)));
+        note('✅ 偏好已存本机（生成时随请求提交）');
+      } catch (e) {}
+    });
+    chips.appendChild(remember);
+    div.appendChild(chips);
+    custom.focus();
+  }
+  // 「保留当前版本」：resolvedText=当前段落文本 + resolvedRefs=依赖 ref 指纹快照 → 退出待核对；再变重新核对
+  function keepCurrent(c) {
+    var anchorEl = anchorElOf(c);
+    var text = anchorEl ? normWs(anchorEl.textContent) : '';
+    var refs = {};
+    (c.evidenceRefs || []).forEach(function (rid) {
+      (job.evidence || []).forEach(function (e) { (e.refs || []).forEach(function (r) { if (r.refId === rid) refs[rid] = r.hash; }); });
+    });
+    setStatus([], { resolve: { changeId: c.id, text: text, refs: refs } });
+    note('✅ 已保留当前版本（再变化会重新进入待核对）');
+  }
+  // 主操作流转（决策 5）：浏览→「下一条」；候选待定→「接受」；全部处理→「去导出检查」；至多一个橙色
+  function pendingList() {
+    return (job.changes || []).filter(function (c) { return c.status === 'pending'; });
+  }
+  function activeIdx(list) {
+    var el = root.querySelector('.jp-item.jp-active');
+    if (!el) return -1;
+    var id = el.getAttribute('data-change');
+    return list.findIndex(function (c) { return c.id === id; });
+  }
+  function gotoItem(c) {
+    var el = root.querySelector('[data-change="' + c.id + '"]');
+    if (!el) return;
+    var prev = root.querySelector('.jp-item.jp-active');
+    if (prev) prev.classList.remove('jp-active');
+    el.classList.add('jp-active');
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+  function stepItem(dir) {
+    var list = pendingList();
+    if (!list.length) return;
+    var i = activeIdx(list);
+    var next = list[(i + dir + list.length) % list.length];
+    gotoItem(next);
+  }
+
   function itemHtml(c, group) {
     var div = document.createElement('div');
     div.className = 'jp-item';
@@ -419,8 +527,10 @@
     }
     if (c.reason) { var why = document.createElement('div'); why.className = 'jp-reason'; why.textContent = '理由：' + c.reason + (c.source ? '（来源：' + c.source + '）' : ''); div.appendChild(why); }
     if (c.kind === 'replace') {
-      var b = document.createElement('div'); b.className = 'jp-before'; b.textContent = c.before; div.appendChild(b);
-      var a = document.createElement('div'); a.className = 'jp-after'; a.textContent = c.after; div.appendChild(a);
+      var cmp = document.createElement('div'); cmp.className = 'jp-cmp';   // S4a-T9：默认上下对照，≥1440 并排
+      var b = document.createElement('div'); b.className = 'jp-before'; b.textContent = c.before; cmp.appendChild(b);
+      var a = document.createElement('div'); a.className = 'jp-after'; a.textContent = c.after; cmp.appendChild(a);
+      div.appendChild(cmp);
     } else if (c.kind === 'hide') {
       var h = document.createElement('div'); h.className = 'jp-before'; h.textContent = '隐藏：' + (c.entry || c.section) + '（内容保留，可恢复）'; div.appendChild(h);
     } else if (c.kind === 'reorder') {
@@ -454,14 +564,22 @@
     var blocked = (c.consistency || []).indexOf('anchor-gone') >= 0 || (c.consistency || []).indexOf('locked-now') >= 0;
     if ((c.status === 'pending' || c.status === 'superseded') && !blocked) {
       mkBtn(c.level === 'conflict' ? '确认接受（无冲突）' : '接受', 'jp-accept', function () { accept(c); });
-      mkBtn('跳过', '', function () { setStatus([{ id: c.id, status: 'rejected' }]); });
+      mkBtn('跳过…', '', function () { renderRejectChips(c, div); });   // S4a-T9：拒绝原因 chips
+      mkBtn('稍后处理', '', function () { setStatus([{ id: c.id, status: 'skipped' }]); });
       mkBtn('定位', '', locate);
     } else if (c.status === 'accepted') {
-      if (!blocked) mkBtn('撤销', '', function () { revert(c); });
+      if (!blocked) mkBtn('撤回这条建议', '', function () { revert(c); });   // 三层撤销之二（S2 整体回退 / 快照=查看历史版本）
       mkBtn('定位', '', locate);
-    } else if (c.status === 'reverted' || c.status === 'rejected') {
+    } else if (c.status === 'rejected' || c.status === 'reverted') {
       if (!blocked) mkBtn('重新接受', '', function () { setStatus([{ id: c.id, status: 'pending' }]); });
       mkBtn('定位', '', locate);
+    } else if (c.status === 'skipped') {
+      mkBtn('恢复处理', '', function () { setStatus([{ id: c.id, status: 'pending' }]); });   // skipped ⇄ pending
+      mkBtn('定位', '', locate);
+    }
+    // 待核对（consistency 命中且非历史态）→ 「保留当前版本」退出待核对（设计 §4.2 v1.4）
+    if (!blocked && ['pending', 'accepted'].indexOf(c.status) >= 0 && (c.consistency || []).length) {
+      mkBtn('保留当前版本', '', function () { keepCurrent(c); });
     }
     div.appendChild(ops);
     return div;
@@ -772,7 +890,7 @@
     meta.textContent = (doc && doc.company ? doc.company + '·' + doc.role : '') + (job.generatedAt ? ' · 建议生成于 ' + job.generatedAt.slice(0, 16).replace('T', ' ') : ' · 尚未生成建议');
     head.appendChild(meta);
     var gen = document.createElement('button');
-    gen.className = 'jp-primary';
+    gen.className = '';   // S4a-T9：唯一橙色主操作在底部 footbar（决策 5）
     gen.textContent = job.changes.some(function (c) { return c.status === 'pending'; }) ? '重新生成建议' : '生成建议';
     gen.disabled = busy;
     gen.title = '重新生成会产生新的候选版本，不覆盖你的手工修改';
@@ -801,13 +919,33 @@
     root.appendChild(head);
 
     var changes = job.changes || [];
+    // 筛选（reviewPos.filter 持久化）：全部 / 仅重点 / 仅本次变化
+    var flt = document.createElement('div');
+    flt.className = 'jp-filter';
+    [['all', '全部'], ['important', '仅重点'], ['new', '仅本次变化']].forEach(function (x) {
+      var fb = document.createElement('button');
+      fb.type = 'button';
+      fb.textContent = x[1];
+      if (posFilter === x[0]) fb.className = 'on';
+      fb.addEventListener('click', function () { posFilter = x[0]; savePos(); render(); });
+      flt.appendChild(fb);
+    });
+    head.appendChild(flt);
+    // 过滤应用（历史组不受筛）
+    var maxGen = changes.reduce(function (m, c) { return Math.max(m, c.gen || 0); }, 0);
+    var byFilter = function (list) {
+      if (posFilter === 'important') return list.filter(function (c) { return c.level === 'important' || c.level === 'conflict'; });
+      if (posFilter === 'new') return list.filter(function (c) { return (c.gen || 0) === maxGen; });
+      return list;
+    };
     var pending = changes.filter(function (c) { return c.status === 'pending'; });
-    var needsCompare = changes.filter(function (c) { return c.status === 'pending' && (c.consistency || []).indexOf('needs-compare') >= 0; });
-    var normal = changes.filter(function (c) { return c.status !== 'superseded' && c.level !== 'conflict' && c.level !== 'important' && ['replace', 'add'].indexOf(c.kind) >= 0 && c.status !== 'accepted' && c.status !== 'reverted' && c.status !== 'rejected' && (c.consistency || []).indexOf('needs-compare') < 0; });
-    var reorder = changes.filter(function (c) { return c.level !== 'conflict' && c.level !== 'important' && c.kind === 'reorder' && c.status !== 'superseded' && c.status !== 'accepted' && c.status !== 'reverted' && c.status !== 'rejected'; });
-    var hides = changes.filter(function (c) { return c.kind === 'hide' && c.status !== 'superseded'; });
-    var important = changes.filter(function (c) { return c.level === 'important' && c.status !== 'superseded'; });
-    var conflicts = changes.filter(function (c) { return c.level === 'conflict' && c.status !== 'superseded'; });
+    var needsCompare = byFilter(changes.filter(function (c) { return c.status === 'pending' && (c.consistency || []).indexOf('needs-compare') >= 0; }));
+    var normal = byFilter(changes.filter(function (c) { return c.status !== 'superseded' && c.level !== 'conflict' && c.level !== 'important' && ['replace', 'add'].indexOf(c.kind) >= 0 && c.status !== 'accepted' && c.status !== 'reverted' && c.status !== 'rejected' && c.status !== 'skipped' && (c.consistency || []).indexOf('needs-compare') < 0; }));
+    var reorder = byFilter(changes.filter(function (c) { return c.level !== 'conflict' && c.level !== 'important' && c.kind === 'reorder' && c.status !== 'superseded' && c.status !== 'accepted' && c.status !== 'reverted' && c.status !== 'rejected' && c.status !== 'skipped'; }));
+    var hides = byFilter(changes.filter(function (c) { return c.kind === 'hide' && c.status !== 'superseded' && c.status !== 'skipped'; }));
+    var important = byFilter(changes.filter(function (c) { return c.level === 'important' && c.status !== 'superseded' && c.status !== 'skipped'; }));
+    var conflicts = byFilter(changes.filter(function (c) { return c.level === 'conflict' && c.status !== 'superseded' && c.status !== 'skipped'; }));
+    var deferred = byFilter(changes.filter(function (c) { return c.status === 'skipped'; }));   // 稍后处理（v1.5：pending⇄skipped）
     var history = changes.filter(function (c) { return ['accepted', 'reverted', 'rejected'].indexOf(c.status) >= 0; });
 
     var sum = document.createElement('div');
@@ -828,7 +966,8 @@
       gate.innerHTML = '<b>⛔ 事实冲突未解决前不能导出</b><div class="jp-meta">逐条确认接受或撤销后解除。</div>';
       root.appendChild(gate);
     }
-    [groupBox('待比较（正文已变化，需确认）', needsCompare),
+    [groupBox('稍后处理', deferred),
+     groupBox('待比较（正文已变化，需确认）', needsCompare),
      groupBox('普通表达', normal, { batch: normal }),
      groupBox('排序调整', reorder, { batch: reorder }),
      groupBox('隐藏经历（需逐条确认）', hides),
@@ -871,9 +1010,53 @@
 
     var help = document.createElement('div');
     help.className = 'jp-meta';
-    help.textContent = '提示：接受操作会修改正文（底部「↩ 撤销」可整体回退）；隐藏内容可在外壳左栏点「显」恢复。';
+    help.textContent = '提示：接受会修改正文（「↩ 撤销」整体回退 / 「撤回这条建议」单条撤回 / 快照面板=查看历史版本）；j/k 上下条。';
     root.appendChild(help);
+
+    // 主操作随阶段流转：候选待定→「接受」；全部处理但有待核对→「去核对」；全部完成→「去导出检查」（至多一个橙色）
+    var pend = pendingList();
+    var toVerifyN = changes.filter(function (c) { return ['pending', 'accepted'].indexOf(c.status) >= 0 && (c.consistency || []).length; }).length;
+    var foot = document.createElement('div');
+    foot.className = 'jp-foot';
+    var mkFoot = function (label, cls, fn) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      if (cls) b.className = cls;
+      b.addEventListener('click', fn);
+      foot.appendChild(b);
+      return b;
+    };
+    mkFoot('‹ 上一条', '', function () { stepItem(-1); });
+    if (pend.length) {
+      mkFoot('接受', 'jp-primary', function () {
+        var i = activeIdx(pend);
+        accept(pend[i >= 0 ? i : 0]);
+      });
+    } else if (toVerifyN) {
+      mkFoot('去核对（' + toVerifyN + '）', 'jp-primary', function () {
+        var v = changes.find(function (c) { return ['pending', 'accepted'].indexOf(c.status) >= 0 && (c.consistency || []).length; });
+        if (v) gotoItem(v);
+      });
+    } else {
+      mkFoot('去导出检查 →', 'jp-primary', function () { setSec('export'); });
+    }
+    mkFoot('下一条 ›', '', function () { stepItem(1); });
+    var hint = document.createElement('span');
+    hint.className = 'jp-meta';
+    hint.textContent = '筛选：' + ({ all: '全部', important: '仅重点', new: '仅本次变化' }[posFilter] || posFilter) + ' · j/k 上下条 · 位置自动恢复';
+    foot.appendChild(hint);
+    root.appendChild(foot);
   }
+
+  // j/k 上下条（审阅段激活时；输入控件内不抢键）
+  window.addEventListener('keydown', function (e) {
+    if (curSec !== 'changes' || !job) return;
+    var t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable === true)) return;
+    if (e.key === 'j' || e.key === 'J') { e.preventDefault(); stepItem(1); }
+    else if (e.key === 'k' || e.key === 'K') { e.preventDefault(); stepItem(-1); }
+  });
 
   // 初始进入：读 reviewPos 恢复段与筛选（刷新后位置恢复）
   api('/job/changes?id=' + DOC_ID).then(function (d) {

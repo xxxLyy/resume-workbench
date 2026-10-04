@@ -259,7 +259,7 @@ async function runGenTask(id, kind, taskId, scope = 'all') {
     } else {
       docText = docToText(html, { includeHidden: false });
     }
-    const p = buildJobPrompt({ docText, jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: confirmedMats, twoPage: true, brief: m0.job.brief || null, scope: scopeInfo });
+    const p = buildJobPrompt({ docText, jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: confirmedMats, twoPage: true, brief: m0.job.brief || null, scope: scopeInfo, feedback: m0.job.feedback || null });   // S4a-T9：过往反馈进 prompt
     const raw = await chat(root, p.sys, p.user);
     const ops = parseJobOps(raw);
     if (!ops) return finishGenTask(id, kind, taskId, null, '模型输出无法解析为修改操作，未应用任何修改');
@@ -1406,6 +1406,18 @@ async function handler(req, res) {
           return sendJson(400, { ok: false, error: 'reviewPos 非法（section∈evidence|changes|export、changeId 字符串或 null、filter∈all|important|new）' });
         }
       }
+      // S4a-T9：resolve（「保留当前版本」）与 feedback（拒绝原因进 prompt）经本端点持久化；写入前整体校验。
+      if (body.resolve !== undefined) {
+        const rs = body.resolve;
+        if (!rs || typeof rs !== 'object' || typeof rs.changeId !== 'string' || !rs.changeId
+          || typeof rs.text !== 'string'
+          || (rs.refs !== undefined && (typeof rs.refs !== 'object' || rs.refs === null || Array.isArray(rs.refs)))) {
+          return sendJson(400, { ok: false, error: 'resolve 非法（changeId/text 必填，refs 为 {refId:指纹} 对象可选）' });
+        }
+      }
+      if (body.feedback !== undefined && (typeof body.feedback !== 'string' || !body.feedback.trim().slice(0, 200))) {
+        return sendJson(400, { ok: false, error: 'feedback 须为非空字符串（≤200 字）' });
+      }
       // S4a-T7：证据条目 note 两级流程（note 文本 / noteConfirmed 显式确认）经本端点持久化；写入前整体校验。
       if (body.evidenceNote !== undefined) {
         const en = body.evidenceNote;
@@ -1415,7 +1427,7 @@ async function handler(req, res) {
           return sendJson(400, { ok: false, error: 'evidenceNote 非法（reqId 必填、note 字符串可选、confirmed 布尔可选）' });
         }
       }
-      let written = null, isJob = false, evMiss = false, evEmpty = false;
+      let written = null, isJob = false, evMiss = false, evEmpty = false, resBad = false;
       // docs-meta 唯一写入者 updateMeta：读最新→只改本文档 job 子树→原子写（不整表覆盖）
       written = updateMeta(root, id, (m) => {
         if (!m || !m.job) return m;   // 非岗位草稿：原样返回（下方 404）
@@ -1424,7 +1436,7 @@ async function handler(req, res) {
           if (!u || typeof u.id !== 'string') continue;
           const c = m.job.changes.find((x) => x.id === u.id);
           if (!c) continue;
-          if (typeof u.status === 'string' && ['pending', 'accepted', 'rejected', 'reverted', 'resolved', 'superseded'].includes(u.status)) c.status = u.status;
+          if (typeof u.status === 'string' && ['pending', 'accepted', 'rejected', 'reverted', 'resolved', 'superseded', 'skipped'].includes(u.status)) c.status = u.status;   // S4a-T9：+skipped（稍后处理，pending⇄skipped）
           if (typeof u.note === 'string') c.note = u.note;
           if (u.meta && typeof u.meta === 'object') c.meta = { ...(c.meta || {}), ...u.meta };
           c.updatedAt = new Date().toISOString();
@@ -1444,6 +1456,23 @@ async function handler(req, res) {
             }
           }
         }
+        if (body.resolve) {
+          // 「保留当前版本」（设计 §4.2 v1.4）：绑定 resolvedText（当前段落文本）+ resolvedRefs（依赖 ref 指纹快照）→ 退出待核对；再变重新核对（candidatesState 读取时判定）
+          const rs = body.resolve;
+          const c = (m.job.changes || []).find((x) => x && x.id === rs.changeId);
+          if (!c || !['pending', 'accepted'].includes(c.status)) resBad = true;
+          else {
+            c.status = 'resolved';
+            c.resolvedAt = new Date().toISOString();
+            c.resolvedText = rs.text;
+            if (rs.refs && typeof rs.refs === 'object') c.resolvedRefs = rs.refs;
+            c.updatedAt = new Date().toISOString();
+          }
+        }
+        if (body.feedback !== undefined) {
+          // 拒绝原因 → job.feedback 环形（≤20 条，进下一次生成 prompt）
+          m.job.feedback = (Array.isArray(m.job.feedback) ? m.job.feedback : []).concat(body.feedback.trim()).slice(-20);
+        }
         if (typeof body.status === 'string') {
           // 状态维度单源（S1-T8）：旧词汇映射 deliverable/delivered→reviewed（投递历史改由 applications.json 派生），新词汇直通；
           // 只写 flow，不再写 job.status（迁移会删除它）
@@ -1453,6 +1482,7 @@ async function handler(req, res) {
         return m;
       });
       if (!isJob) return sendJson(404, { ok: false, error: '该文档不是岗位草稿' });
+      if (resBad) return sendJson(400, { ok: false, error: '保留当前版本：候选不存在或不在 pending/accepted（' + body.resolve.changeId + '）' });
       if (evMiss) return sendJson(400, { ok: false, error: '证据条目不存在：' + body.evidenceNote.reqId });
       if (evEmpty) return sendJson(400, { ok: false, error: '确认为证据前请先填写说明内容' });
       return sendJson(200, { ok: true, job: jobViewLive(id, written) });   // 响应与 GET 同视图（含 live 标注与渐进默认）
@@ -1561,7 +1591,16 @@ async function handler(req, res) {
     // 结果经与 gen-start 完全相同的 taskId 校验链路落账（并发双击在 startGenTask 锁内只剩一个）。
     if (req.method === 'POST' && url.pathname === '/job/generate') {
       if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型：草稿仍可手动编辑，配置后可生成建议' });
-      JSON.parse(await readBody(req));   // 兼容既有调用形状：空对象体；坏 JSON 400 路径保持
+      const genBody = JSON.parse(await readBody(req) || '{}');   // 兼容既有调用形状：空对象体；坏 JSON 400 路径保持
+      // S4a-T9：长期偏好（localStorage 显式记住）随生成请求并入 job.feedback（环形 ≤20）
+      if (Array.isArray(genBody.feedback) && genBody.feedback.length) {
+        updateMeta(root, id, (m) => {
+          if (!m || !m.job) return m;
+          m.job.feedback = (Array.isArray(m.job.feedback) ? m.job.feedback : [])
+            .concat(genBody.feedback.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim())).slice(-20);
+          return m;
+        });
+      }
       if (!fs.existsSync(docPath(id))) return sendJson(404, { ok: false, error: 'doc not found' });
       const { taskId, reject } = startGenTask(id, 'changes');
       if (reject) return sendJson(reject.status, { ok: false, error: reject.error });
@@ -3030,7 +3069,7 @@ async function handler(req, res) {
       }
       const suggestions = pageSuggestions(lines, { projects }).map((s) => `<li>${escHtml(s.text)}</li>`).join('');
       // 事实冲突/重点审阅门控
-      const pendingConflicts = (job ? job.changes.filter((c) => c.level === 'conflict' && ['pending'].includes(c.status)) : []);
+      const pendingConflicts = (job ? job.changes.filter((c) => c.level === 'conflict' && ['pending', 'skipped'].includes(c.status)) : []);   // S4a-T9：skipped 的 conflict 仍参与门控
       const pendingImportant = (job ? job.changes.filter((c) => c.level === 'important' && c.status === 'pending') : []);
       const gate = pendingConflicts.length
         ? `<div class="card" style="border-color:var(--err-soft);background:var(--err-soft)"><b>⛔ 存在 ${pendingConflicts.length} 条事实冲突未处理，暂不能下载</b>

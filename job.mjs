@@ -14,7 +14,7 @@ const DEGREE_RULES = {
 };
 const DEGREE_NAMES = { light: '轻度精简', refocus: '聚焦调整', restructure: '结构重组' };
 
-export function buildJobPrompt({ docText, jd, company, role, materials = [], twoPage = true, brief = null, scope = null }) {
+export function buildJobPrompt({ docText, jd, company, role, materials = [], twoPage = true, brief = null, scope = null, feedback = null }) {
   const degree = (brief && DEGREE_RULES[brief.degree]) || DEGREE_RULES.refocus;   // 无 brief 默认 refocus 档
   // S4a-T8：scope = { zone, zoneLabel, digest } 时为局部重生成——sys 加越界禁令，输出格式带 zid 回传要求
   const sys = `你是简历定制编排器。基于【母版简历】与【目标 JD】，输出一组修改操作来定制这个岗位的简历草稿。你只能输出 JSON，不能输出 HTML、脚本或解释文字。
@@ -42,6 +42,9 @@ changes 最多 12 条，todos 最多 6 条。`;
       return `【素材：${m.title}】\n事实：${facts || '（无结构化事实）'}\n表达：${m.brief || ''}\n技术：${m.technical || ''}`;
     }).join('\n\n')
     : '（无已确认素材）';
+  // S4a-T9：过往反馈（审阅中拒绝原因 + 长期偏好）进 prompt，避免重蹈
+  const feedbackBlock = (Array.isArray(feedback) && feedback.length)
+    ? '【过往反馈（用户拒绝过同类建议的原因，务必避免）】\n' + feedback.map((f) => '· ' + f).join('\n') + '\n\n' : '';
   const briefBlock = brief ? [
     '【本次定制要求】',
     Array.isArray(brief.focus) && brief.focus.length ? `重点：${brief.focus.join('、')}` : '',
@@ -51,6 +54,7 @@ changes 最多 12 条，todos 最多 6 条。`;
     `页数目标：${brief.pages || 2} 页`
   ].filter(Boolean).join('\n') : '';
   const user = `【目标公司】${company}\n【目标岗位】${role}\n【JD】\n${jd || '（未提供 JD）'}\n\n【已确认素材（只可引用，不可改写事实）】\n${matBlock}\n\n${briefBlock ? briefBlock + '\n\n' : ''}`
+    + feedbackBlock
     + (scope
       ? `【全文摘要（上下文参考；只允许修改下方目标区域内段落）】\n${scope.digest}\n\n【目标区域「${scope.zoneLabel}」段落（局部重生成，仅限此区域）】\n${docText}`
       : `【母版简历正文】\n${docText}`);

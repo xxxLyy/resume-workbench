@@ -1160,7 +1160,7 @@ try {
 try {
   // ===== 1. 保存期间继续编辑：A 提交，B 期间产生，A 返回后 B 仍未保存 =====
   {
-    const ctx = await browser.newContext();
+    const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     await ctx.addInitScript(() => {
       const orig = window.fetch;
       window.fetch = function (url, opts) {
@@ -1195,7 +1195,7 @@ try {
 
   // ===== 2. 离线编辑（正文+排版）→ 恢复缓存 → 重载恢复 =====
   {
-    const ctx = await browser.newContext();
+    const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     await ctx.addInitScript(() => {
       const orig = window.fetch;
       window.fetch = function (url, opts) {
@@ -1247,7 +1247,7 @@ try {
 
   // ===== 3. 多标签：旧标签保存不能静默覆盖 =====
   {
-    const ctx = await browser.newContext();
+    const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     const a = await ctx.newPage();
     const b = await ctx.newPage();
     await a.goto(base + '/edit?id=' + ED_DOC);
@@ -1279,7 +1279,7 @@ try {
 
   // ===== 4. 审阅面板：接受修改应用到正文并持久化状态；隐藏条目可恢复 =====
   {
-    const ctx = await browser.newContext();
+    const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } });   // ≥1440：三栏全开（宽度档不折叠）
     const page = await ctx.newPage();
     await page.goto(base + '/edit?id=' + JOB_DOC);
     await page.waitForSelector('#ed-pane-review .jp-item', { timeout: 5000 });
@@ -1323,7 +1323,7 @@ try {
     const metaB = JSON.parse(fs.readFileSync(metaPathB, 'utf8'));
     metaB[JOB_DOC].job.genTasks = { evidence: mkTask(), changes: mkTask({ taskId: 't-feed001', status: 'running', startedAt: Date.now() }) };
     fs.writeFileSync(metaPathB, JSON.stringify(metaB));
-    const ctx = await browser.newContext();
+    const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     const page = await ctx.newPage();
     await page.goto(base + '/edit?id=' + JOB_DOC);
     await page.waitForSelector('.ed-gening:not([hidden])', { timeout: 6000 });
@@ -1347,7 +1347,7 @@ try {
 
   // ===== 4c [S4a-T6] 审阅三段骨架：段切换 / 证据最小渲染 / 任务状态可取消 / 刷新后位置恢复 =====
   {
-    const ctx = await browser.newContext();
+    const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     const page = await ctx.newPage();
     await page.goto(base + '/edit?id=' + JOB_DOC);
     await page.waitForSelector('#ed-pane-review .jp-secs', { timeout: 5000 });
@@ -1399,7 +1399,7 @@ try {
 
   // ===== 4d [S4a-T7] 证据表完整 UI：五态徽章/事实依据可读化/zid 定位/note 两级/入口合并/引导无死链 =====
   {
-    const ctx = await browser.newContext();
+    const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     const page = await ctx.newPage();
     await page.goto(base + '/edit?id=' + JOB_DOC);
     await page.waitForSelector('#ed-pane-review .jp-secs', { timeout: 5000 });
@@ -1489,7 +1489,7 @@ try {
 
   // ===== 4e [S4a-T7] 轮询续排：running 期间瞬时 GET 失败（abort 一次）后链条仍自续（T6 转交 b）=====
   {
-    const ctx = await browser.newContext();
+    const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     const page = await ctx.newPage();
     // 夹具：evidence 任务 running（直写 meta，与 4c 同模式）
     const metaPathE = path.join(dataRoot, 'docs-meta.json');
@@ -1518,7 +1518,7 @@ try {
 
   // ===== 4f [S4a-T8] JSON 保存协议端到端：待比较确认门 → 接受 → 撤回 → 旧接受重试只回执不重放 =====
   {
-    const ctx = await browser.newContext();
+    const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     const page = await ctx.newPage();
     // 夹具重置：第 4 段接受过 bt1/bt2 → 恢复 pending+原文+无隐藏类（4f 需要原始待处理态）
     {
@@ -1612,9 +1612,113 @@ try {
     await ctx.close();
   }
 
+  // ===== 4g [S4a-T9] 审阅升级：筛选 / j-k / 拒绝 chips / 保留当前版本 / 撤回前置 / 主操作 / ≥1440 并排 =====
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } });   // ≥1440：并排对照生效
+    const page = await ctx.newPage();
+    // 夹具重置：4f 结束时 bt2 锚点被锁定 → 解锁；bt1/bt2 保持 pending
+    const metaPathG = path.join(dataRoot, 'docs-meta.json');
+    const metaG = JSON.parse(fs.readFileSync(metaPathG, 'utf8'));
+    metaG[JOB_DOC].zones.za7b8c9d0.locked = false;
+    for (const id of ['bt1', 'bt2']) {
+      const c = metaG[JOB_DOC].job.changes.find((x) => x.id === id);
+      c.status = 'pending'; delete c.acceptedAt; delete c.origText; delete c.appliedText;
+    }
+    fs.writeFileSync(metaPathG, JSON.stringify(metaG));
+    let htmlG = fs.readFileSync(path.join(dataRoot, 'docs', JOB_DOC + '.html'), 'utf8');
+    htmlG = htmlG.replaceAll('新项目描述（定制）', '旧项目描述').replaceAll(' ed-entry-hidden', '');
+    fs.writeFileSync(path.join(dataRoot, 'docs', JOB_DOC + '.html'), htmlG);
+    await page.goto(base + '/edit?id=' + JOB_DOC);
+    await page.waitForSelector('#ed-pane-review .jp-secs', { timeout: 5000 });
+    await page.click('#ed-pane-review .jp-secs button[data-sec="changes"]');
+    await page.waitForSelector('#ed-pane-review [data-change="bt1"]', { timeout: 5000 });
+    // 筛选：仅重点 → bt1（normal，在待比较组）不再渲染；全部 → 恢复
+    await page.click('#ed-pane-review .jp-filter button:nth-of-type(2)');
+    await page.waitForTimeout(200);
+    if (await page.$('#ed-pane-review [data-change="bt1"]')) bad('[S4a-T9] 仅重点筛选后 normal 候选不应渲染');
+    else ok('[S4a-T9] 筛选「仅重点」生效');
+    await page.click('#ed-pane-review .jp-filter button:nth-of-type(1)');
+    await page.waitForSelector('#ed-pane-review [data-change="bt1"]', { timeout: 5000 });
+    ok('[S4a-T9] 筛选「全部」恢复');
+    // 主操作流转：有 pending → 橙色主操作为「接受」（至多一个橙色）
+    const foot = await page.evaluate(() => {
+      const f = document.querySelector('#ed-pane-review .jp-foot');
+      return f ? { primary: (f.querySelector('.jp-primary') || {}).textContent || '', n: f.querySelectorAll('.jp-primary').length } : null;
+    });
+    if (!foot || foot.primary !== '接受' || foot.n !== 1) bad('[S4a-T9] 主操作流转应为唯一橙色「接受」: ' + JSON.stringify(foot));
+    else ok('[S4a-T9] 主操作流转（pending→接受，唯一橙色）');
+    // j/k 上下条
+    await page.keyboard.press('j');
+    await page.waitForTimeout(200);
+    if (!(await page.$('#ed-pane-review .jp-item.jp-active'))) bad('[S4a-T9] j 应激活下一条候选');
+    else ok('[S4a-T9] j/k 上下条激活候选');
+    // 拒绝原因 chips → rejected + note + job.feedback
+    await page.click('#ed-pane-review [data-change="bt1"] button:has-text("跳过…")');
+    await page.waitForSelector('#ed-pane-review [data-change="bt1"] .jp-chips', { timeout: 3000 });
+    await page.click('#ed-pane-review [data-change="bt1"] .jp-chips button:has-text("改变原意")');
+    await page.waitForFunction(() => /已跳过/.test((document.querySelector('#ed-pane-review [data-change="bt1"]') || document.createElement('div')).textContent || ''), { timeout: 6000 });
+    const fb = await page.evaluate(async () => {
+      const d = await (await fetch('/job/changes?id=' + location.search.match(/[?&]id=([^&]+)/)[1])).json();
+      return { f: d.job.feedback || [], bt1: d.job.changes.find((c) => c.id === 'bt1') };
+    });
+    if (!fb.f.includes('改变原意') || fb.bt1.status !== 'rejected' || fb.bt1.note !== '改变原意') bad('[S4a-T9] 拒绝原因应进 rejected.note 与 job.feedback: ' + JSON.stringify(fb));
+    else ok('[S4a-T9] 拒绝原因 chips → note + job.feedback');
+    await page.click('#ed-pane-review [data-change="bt1"] button:has-text("重新接受")');
+    await page.waitForFunction(() => /待处理/.test((document.querySelector('#ed-pane-review [data-change="bt1"]') || document.createElement('div')).textContent || ''), { timeout: 6000 });
+    // 「保留当前版本」：needs-compare 候选 → resolved 且退出待核对
+    await page.click('#ed-pane-review [data-change="bt1"] button:has-text("保留当前版本")');
+    await page.waitForFunction(() => /已处理/.test((document.querySelector('#ed-pane-review [data-change="bt1"]') || document.createElement('div')).textContent || ''), { timeout: 6000 });
+    const rv = await page.evaluate(async () => {
+      const d = await (await fetch('/job/changes?id=' + location.search.match(/[?&]id=([^&]+)/)[1])).json();
+      const c = d.job.changes.find((x) => x.id === 'bt1');
+      return { st: c.status, res: c.resolvedText, cons: c.consistency };
+    });
+    if (rv.st !== 'resolved' || !/旧项目描述/.test(String(rv.res)) || (rv.cons || []).includes('needs-compare')) bad('[S4a-T9] 保留当前版本应 resolved+退出待核对: ' + JSON.stringify(rv));
+    else ok('[S4a-T9] 保留当前版本（resolvedText 绑定，退出待核对）');
+    // 撤回前置：bt2 接受后手改条目头 → 撤回弹确认 → 接受确认后撤回成功
+    page.on('dialog', (d) => d.accept());
+    await page.click('#ed-pane-review [data-change="bt2"] button.jp-accept');
+    await page.waitForFunction(() => /已接受/.test((document.querySelector('#ed-pane-review [data-change="bt2"]') || document.createElement('div')).textContent || ''), { timeout: 6000 });
+    await page.evaluate(() => { const el = document.querySelector('[data-zid="za7b8c9d0"] .entry-date'); if (el) el.textContent = '2022'; });
+    await page.evaluate(() => window.__edSaveManual());                            // 手改落盘（撤回锚点与服务端一致的前提）
+    await page.evaluate(() => window.dispatchEvent(new Event('ed-review-refresh'))); // 刷新 docRev 基线
+    await page.waitForTimeout(400);
+    await page.click('#ed-pane-review [data-change="bt2"] button:has-text("撤回这条建议")');
+    await page.waitForFunction(() => /待处理/.test((document.querySelector('#ed-pane-review [data-change="bt2"]') || document.createElement('div')).textContent || ''), { timeout: 6000 });
+    ok('[S4a-T9] 撤回前置拦截（手改后要求确认）+ 撤回回 pending');
+    // ≥1440 并排对照
+    const grid = await page.evaluate(() => {
+      const cmp = document.querySelector('#ed-pane-review .jp-cmp');
+      return cmp ? getComputedStyle(cmp).display : 'missing';
+    });
+    if (grid !== 'grid') bad('[S4a-T9] ≥1440 对照应并排（grid），得 ' + grid);
+    else ok('[S4a-T9] ≥1440 原文/候选并排对照');
+    await ctx.close();
+    // 1280-1439 宽度档：审阅活跃保右栏；切到 AI 助手（非活跃）→ 自动折叠；切回 → 恢复
+    const ctx2 = await browser.newContext({ viewport: { width: 1300, height: 900 } });
+    const page2 = await ctx2.newPage();
+    await page2.goto(base + '/edit?id=' + JOB_DOC);
+    await page2.waitForSelector('#ed-pane-review .jp-item', { timeout: 5000 });
+    await page2.waitForTimeout(300);
+    const activeOpen = await page2.evaluate(() => !document.getElementById('ed-right').classList.contains('ed-hidden'));
+    if (!activeOpen) bad('[S4a-T9] 1280 档审阅活跃应保右栏');
+    else ok('[S4a-T9] 1280-1439 审阅活跃保右栏');
+    await page2.evaluate(() => window.__edSelectTab('ai'));
+    await page2.waitForTimeout(200);
+    const inactiveHidden = await page2.evaluate(() => document.getElementById('ed-right').classList.contains('ed-hidden'));
+    if (!inactiveHidden) bad('[S4a-T9] 1280 档非活跃应自动折叠右栏');
+    else ok('[S4a-T9] 1280-1439 非活跃自动折叠（竖标签条）');
+    await page2.evaluate(() => window.__edSelectTab('review'));
+    await page2.waitForTimeout(200);
+    const reOpen = await page2.evaluate(() => !document.getElementById('ed-right').classList.contains('ed-hidden'));
+    if (!reOpen) bad('[S4a-T9] 切回审阅应恢复右栏');
+    else ok('[S4a-T9] 切回审阅恢复右栏');
+    await ctx2.close();
+  }
+
   // ===== 5. 导航无障碍与交互细节 =====
   {
-    const ctx = await browser.newContext();
+    const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     const page = await ctx.newPage();
     await page.goto(base + '/edit?id=' + ED_DOC);
     await page.waitForSelector('#ed-navlist .ed-nav');
@@ -1641,7 +1745,7 @@ try {
 
   // 6) 冻结件不变性（稳态下只打开+保存 → 字节与渲染标识全不变）；外壳跨文档一致；注入层不碰正文
   {
-  const ctx6 = await browser.newContext();
+  const ctx6 = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
   const page = await ctx6.newPage();
   const sha1 = (s) => createHash('sha1').update(s).digest('hex');
   const docFile = path.join(dataRoot, 'docs', ED_DOC + '.html');
@@ -1826,7 +1930,7 @@ try {
   // 块 8-11 是一个连续场景，共用一个 { } 作用域与一个 ctx/page（约定见任务简报）。
   // [T5-ADJ] 标注处 = 与简报逐字代码的最小偏差，理由全部写入 task-5-report.md「简报偏差」节。
   {
-  const ctx = await browser.newContext();
+   const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });   // 8f 撤销命中测试显式要求 1280×720
   const page = await ctx.newPage();
   const saveHits = [];                                   // 不引入生产钩子：用网络计数观察是否真的保存
   page.on('request', (r) => { if (r.method() === 'POST' && r.url().includes('/save')) saveHits.push(r.url()); });
@@ -2224,7 +2328,7 @@ try {
   // [T5-ADJ-5] 用 DOMParser 惰性解析代替 setContent：setContent 会重放文档自带内联脚本，
   //   updatePageLines() 会在检查页里动态补出 .page-line，污染"落盘残留"判定（简报要求 pageLines 一并断言）。
   //   DOMParser 产物是惰性文档（脚本不执行），检查的仍完全是落盘 HTML 的 DOM。
-  const inspect = await browser.newContext();
+  const inspect = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
   const ipage = await inspect.newPage();
   await ipage.goto('about:blank');
   const dom = await ipage.evaluate((html) => {
@@ -2365,7 +2469,7 @@ try {
   //     客户端上送必然带着 ed-focus（先用解析 DOM 证明），落盘必须由服务端归一化剥净三个瞬态 class，
   //     同时逐字保留其余 class 与全部内容；再存一次字节稳定（剥离幂等）。
   {
-  const ctx12 = await browser.newContext();
+  const ctx12 = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
   const page12 = await ctx12.newPage();
   const STRIP_DOC = 'ed-strip-legacy';
   const stripFile = path.join(dataRoot, 'docs', STRIP_DOC + '.html');
@@ -2610,7 +2714,7 @@ try {
       .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => '<div class="entry-head"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024</div></div>\n<ul><li>项目A描述</li></ul>')
       .replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => REC_DOC);
     fs.writeFileSync(path.join(dataRoot, 'docs', REC_DOC + '.html'), tpl);
-    const ctx15 = await browser.newContext();
+    const ctx15 = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     // 预置离线恢复缓存（正文与服务器不同 → 加载后必出恢复条；比块 2 的失败保存路径更确定）
     await ctx15.addInitScript((id) => {
       try {
@@ -2668,7 +2772,7 @@ try {
       .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => '<div class="entry-head"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024</div></div>\n<ul><li>项目A描述</li></ul>')
       .replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => I2_DOC);
     fs.writeFileSync(path.join(dataRoot, 'docs', I2_DOC + '.html'), tpl);
-    const ctx16 = await browser.newContext();
+    const ctx16 = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     const page16 = await ctx16.newPage();
     let dialogs16 = 0;
     page16.on('dialog', async (d) => { dialogs16++; await d.dismiss(); });
@@ -2707,7 +2811,7 @@ try {
   //     旧码 dispatcher 无条件 toggleShortcutHelp(false)+closeFindPanel()，且弹层 handler 的
   //     stopPropagation 拦不住同节点上更早注册的 dispatcher → 关弹层的同一次 Esc 连带清掉查找词。
   {
-    const ctx17 = await browser.newContext();
+    const ctx17 = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     const page17 = await ctx17.newPage();
     await page17.goto(`${base}/edit?id=${ED_DOC}`, { waitUntil: 'networkidle' });
     await page17.waitForSelector('body.ed-on');
@@ -2763,7 +2867,7 @@ try {
       .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => '<div class="entry-head"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024</div></div>\n<ul><li>项目A描述</li></ul>')
       .replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => S3_DOC);
     fs.writeFileSync(path.join(dataRoot, 'docs', S3_DOC + '.html'), tpl);
-    const ctx = await browser.newContext();
+    const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     const page = await ctx.newPage();
     await page.goto(`${base}/edit?id=${S3_DOC}`, { waitUntil: 'networkidle' });
     // 确定性基线必须在任何编辑前采集：下方拆分/打字只改内存，磁盘正文不变（全程未触发保存），
@@ -2815,7 +2919,7 @@ try {
       .replaceAll('{{PROJECTS}}', () => '<div class="entry-head"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024</div></div>\n<ul><li>项目A描述</li></ul>')
       .replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => S3_DOC);
     fs.writeFileSync(path.join(dataRoot, 'docs', S3_DOC + '.html'), tpl);
-    const ctx = await browser.newContext();
+    const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } });   // S4a-T9：≥1440 三栏全开（1280 档右栏按活跃度折叠，不影响本段交互）
     const page = await ctx.newPage();
     await page.goto(`${base}/edit?id=${S3_DOC}`, { waitUntil: 'networkidle' });
     await page.click('#ed-rtabs button[data-pane="zone"]');
@@ -2854,6 +2958,7 @@ try {
   {
     const S3_DOC = 'ed-fixture-f2';
     let tpl = assembleTemplate('classic');
+    // （S4a-T9：本段在 1450 视口下运行——1280 档右栏按活跃度折叠，F2 交互不受折叠影响）
     tpl = tpl.replaceAll('{{NAME}}', () => '测试员').replaceAll('{{CONTACT}}', () => 'test@example.com')
       .replaceAll('{{INTENT}}', () => '测试').replaceAll('{{SUMMARY}}', () => '摘要文本').replaceAll('{{SKILLS}}', () => '<p>技能一：内容</p>')
       .replaceAll('{{WORK}}', () => '<div class="entry-head"><div class="entry-title">公司甲</div><div class="entry-role">工程师</div><div class="entry-date">2024</div></div>\n<ul><li>公司甲职责一</li><li>公司甲职责二</li></ul>')
@@ -2861,7 +2966,7 @@ try {
       .replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => S3_DOC);
     fs.writeFileSync(path.join(dataRoot, 'docs', S3_DOC + '.html'), tpl);
     const zonesOf = () => (JSON.parse(fs.readFileSync(path.join(dataRoot, 'docs-meta.json'), 'utf8'))[S3_DOC] || {}).zones || {};
-    const ctx = await browser.newContext();
+    const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } });   // S4a-T9：≥1440 三栏全开
     const page = await ctx.newPage();
     await page.goto(`${base}/edit?id=${S3_DOC}`, { waitUntil: 'networkidle' });
     await page.click('#ed-rtabs button[data-pane="zone"]');
@@ -2902,7 +3007,7 @@ try {
         }));
         if (!escState.modal && escState.drawer) ok('F2 Esc 关闭弹窗'); else bad('F2 Esc 未关闭', JSON.stringify(escState));
         if (escState.drawer) ok('F2 Esc 不连带关窄屏抽屉'); else bad('F2 Esc 连带关了抽屉（stopImmediatePropagation 缺失）');
-        await page.setViewportSize({ width: 1280, height: 800 });  // 还原宽屏（resize 会清 ed-open）
+        await page.setViewportSize({ width: 1440, height: 800 });  // 还原宽屏（resize 会清 ed-open；1440 档外不触发宽度档折叠）
         // (f) 中途确认一条：队列重排后跳过仍顺移（不跳到已确认段）
         await page.click('#zp-pend');
         const confirmedZid = await page.evaluate(() => document.querySelector('.zp-card').getAttribute('data-zid'));
@@ -2945,7 +3050,7 @@ try {
   //     复用 ed-fixture-zone（S3B 已保存落盘 zid 与 zones）；page.route 拦 /ai/zone-analyze 回 409 模拟未配置 LLM。
   {
     const S3_DOC = 'ed-fixture-zone';
-    const ctx = await browser.newContext();
+    const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } });   // S4a-T9：≥1440 三栏全开
     const page = await ctx.newPage();
     await page.route('**/ai/zone-analyze*', (route) => route.fulfill({ status: 409, contentType: 'text/plain', body: 'no llm' }));
     await page.goto(`${base}/edit?id=${S3_DOC}`, { waitUntil: 'networkidle' });
@@ -2979,7 +3084,7 @@ try {
     if (!zidLocked || !rest.length) { bad('S3C 夹具 zones 不足', JSON.stringify(Object.keys(zones0))); }
     else {
       zones0[zidLocked] = { zone: zones0[zidLocked].zone, status: 'confirmed', locked: true };
-      const ctx = await browser.newContext();
+      const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
       const page = await ctx.newPage();
       await page.goto(`${base}/edit?id=${S3_DOC}`, { waitUntil: 'networkidle' });
       await page.evaluate((z) => fetch('/zones?id=ed-fixture-zone', {
@@ -3003,7 +3108,7 @@ try {
   //     [S3T6-ADJ] 计划原稿标签「S3 块 C」与 T2 改绑契约块撞名，顺延为 D；复用 ed-fixture-zone（S3B 已落盘 zid）。
   {
     const S3_DOC = 'ed-fixture-zone';
-    const ctx = await browser.newContext();
+    const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     const page = await ctx.newPage();
     await page.goto(`${base}/edit?id=${S3_DOC}`, { waitUntil: 'networkidle' });
     await page.click('#ed-rtabs button[data-pane="zone"]');
@@ -3030,7 +3135,7 @@ try {
   }
   // ===== S4a-T5 修复轮：首页内联脚本完整性（script 块终止但 curl 全绿的回归门）=====
   {
-    const ctx = await browser.newContext();
+    const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     const page = await ctx.newPage();
     const consoleErrors = [];
     page.on('pageerror', (e) => consoleErrors.push(String(e && e.message || e)));

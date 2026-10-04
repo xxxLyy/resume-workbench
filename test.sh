@@ -1568,6 +1568,90 @@ CODE=$(curl -s -X POST "$B/job/gen-start?id=$T8DOC&kind=changes&scope=zone:nope"
 echo '✅ S4a-T8 add 接受流程（容器锚点校验→插入→newZid 落账）+ 全文 supersede 口径 + scope 校验'
 
 
+# ===== S4a-T9：审阅升级（feedback 进 prompt / 保留当前版本 / skipped 状态机与导出门控）=====
+# —— a. 拒绝原因 → job.feedback（环形 ≤20）→ 下一次生成 prompt 消费 ——
+R=$(curl -s -X POST "$B/job/changes?id=$T8DOC" -H 'Content-Type: application/json' -d '{"feedback":"不要动个人总结的排序"}')
+echo "$R" | grep -q '"ok":true' || fail "S4a-T9 feedback 写入失败: $(echo "$R" | head -c 160)"
+R=$(curl -s -X POST "$B/job/changes?id=$T8DOC" -H 'Content-Type: application/json' -d '{"feedback":"太空泛的建议直接跳过"}')
+echo "$R" | grep -q '"ok":true' || fail 'S4a-T9 feedback 二次写入失败'
+node -e '
+const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const f = m.job.feedback || [];
+if (f.length !== 2 || f[0] !== "不要动个人总结的排序" || f[1] !== "太空泛的建议直接跳过") { console.error("❌ S4a-T9 feedback 落盘: " + JSON.stringify(f)); process.exit(1); }
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC" || fail 'S4a-T9 feedback 落 meta'
+R=$(curl -s -X POST "$B/job/changes?id=$T8DOC" -H 'Content-Type: application/json' -d '{"feedback":"  "}')
+echo "$R" | grep -q '"ok":false' || fail "S4a-T9 空 feedback 应 400: $R"
+touch "$TEST_DIR/llm-changes-add"
+R=$(curl -s -X POST "$B/job/generate?id=$T8DOC" -H 'Content-Type: application/json' -d '{}')
+echo "$R" | grep -q '"ok":true' || fail "S4a-T9 反馈生成失败: $(echo "$R" | head -c 160)"
+grep -q '过往反馈' "$TEST_DIR/llm-last.json" || fail 'S4a-T9 prompt 未含过往反馈块'
+grep -q '不要动个人总结的排序' "$TEST_DIR/llm-last.json" || fail 'S4a-T9 prompt 未消费 feedback 内容'
+rm -f "$TEST_DIR/llm-changes-add"
+echo '✅ S4a-T9 拒绝原因进 feedback（环形落账 + 生成 prompt 消费 + 空 400）'
+
+# —— b. 「保留当前版本」：resolve 绑定 resolvedText/resolvedRefs → 退出待核对；再变重新核对 ——
+# 夹具：专用 pending replace 候选（锚 z0）+ 手改正文制造 needs-compare
+node -e '
+const fs = require("fs");
+const f = process.argv[1], doc = process.argv[2];
+const m = JSON.parse(fs.readFileSync(f, "utf8"));
+const gen = m[doc].job.changes.reduce((mx, c) => Math.max(mx, c.gen || 0), 0) + 1;
+m[doc].job.changes.push({ id: "t9-rp", gen, section: "工作经历", kind: "replace", before: "工作段一", after: "工作段一（定制）", reason: "r", source: "母版", level: "normal", status: "pending", zid: process.argv[3], baseSnapshot: "生成基线：工作段一：负责交易系统", zone: "work" });
+fs.writeFileSync(f, JSON.stringify(m));
+let raw = fs.readFileSync(process.argv[4], "utf8");
+raw = raw.replace("工作段一：负责交易系统", "工作段一：负责交易系统（T9手改）");
+fs.writeFileSync(process.argv[4], raw);
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC" "$T8Z0" "$RESUME_ROOT/docs/$T8DOC.html"
+T8_RP=t9-rp
+curl -s "$B/job/changes?id=$T8DOC" | node -e '
+let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => {
+  const c = (JSON.parse(s).job.changes || []).find((x) => x.id === "t9-rp");
+  if (!c || !(c.consistency || []).includes("needs-compare")) { console.error("❌ S4a-T9 夹具应命中 needs-compare: " + JSON.stringify(c && c.consistency)); process.exit(1); }
+});' || fail 'S4a-T9 resolve 夹具（needs-compare）'
+R=$(curl -s -X POST "$B/job/changes?id=$T8DOC" -H 'Content-Type: application/json' -d '{"resolve":{"changeId":"'"$T8_RP"'","text":"工作段一：负责交易系统（T9手改）"}}')
+echo "$R" | grep -q '"ok":true' || fail "S4a-T9 resolve 失败: $(echo "$R" | head -c 200)"
+node -e '
+const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const c = m.job.changes.find((x) => x.id === process.argv[3]);
+if (c.status !== "resolved" || !c.resolvedAt || !String(c.resolvedText || "").includes("T9手改")) { console.error("❌ S4a-T9 resolve 落账: " + JSON.stringify({ s: c.status, t: c.resolvedText, at: c.resolvedAt })); process.exit(1); }
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC" "$T8_RP" || fail 'S4a-T9 resolve 落账（resolvedText/resolvedAt）'
+# 再变 → 重新进待核对（resolvedText ≠ 当前文本）
+node -e '
+const fs = require("fs");
+const f = process.argv[1];
+let raw = fs.readFileSync(f, "utf8");
+raw = raw.replace("（T9手改）", "（T9手改2）");
+fs.writeFileSync(f, raw);
+' "$RESUME_ROOT/docs/$T8DOC.html"
+curl -s "$B/job/changes?id=$T8DOC" | node -e '
+let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => {
+  const c = (JSON.parse(s).job.changes || []).find((x) => x.id === process.argv[1]);
+  if (!c || !(c.consistency || []).includes("needs-compare")) { console.error("❌ S4a-T9 resolve 后再变应重新进待核对: " + JSON.stringify(c && c.consistency)); process.exit(1); }
+});' "$T8_RP" || fail 'S4a-T9 resolved 再变重新核对'
+# 非法与状态前置
+R=$(curl -s -X POST "$B/job/changes?id=$T8DOC" -H 'Content-Type: application/json' -d '{"resolve":{"changeId":"nope","text":"x"}}')
+echo "$R" | grep -q '"ok":false' || fail "S4a-T9 resolve 不存在候选应 400: $R"
+R=$(curl -s -X POST "$B/job/changes?id=$T8DOC" -H 'Content-Type: application/json' -d '{"resolve":{"changeId":"'"$T8_RP"'"}}')
+echo "$R" | grep -q '"ok":false' || fail "S4a-T9 resolve 缺 text 应 400: $R"
+echo '✅ S4a-T9 保留当前版本（resolvedText/resolvedAt 落账 + 再变重新核对 + 400 路径）'
+
+# —— c. skipped 状态机 + 导出门控（skipped 的 conflict 仍阻止导出；skipped 不满足整体完成）——
+node -e '
+const fs = require("fs");
+const f = process.argv[1], doc = process.argv[2];
+const m = JSON.parse(fs.readFileSync(f, "utf8"));
+const gen = m[doc].job.changes.reduce((mx, c) => Math.max(mx, c.gen || 0), 0) + 1;
+m[doc].job.changes.push({ id: "t9-skipconf", gen, section: "工作经历", kind: "replace", before: "x", after: "y", reason: "冲突稍后处理", source: "JD", level: "conflict", status: "skipped" });
+fs.writeFileSync(f, JSON.stringify(m));
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC"
+# skipped 的 conflict 计入门控（条数 +1）；恢复 pending 计数不变；resolved 退出计数（v1.5：skipped 不解冲突）
+curl -sf "$B/export?id=$T8DOC" | grep -q '存在 2 条事实冲突' || fail 'S4a-T9 skipped 的 conflict 未计入门控'
+curl -s -X POST "$B/job/changes?id=$T8DOC" -H 'Content-Type: application/json' -d '{"updates":[{"id":"t9-skipconf","status":"pending"}]}' | grep -q '"ok":true' || fail 'S4a-T9 skipped 恢复失败'
+curl -sf "$B/export?id=$T8DOC" | grep -q '存在 2 条事实冲突' || fail 'S4a-T9 恢复 pending 后门控计数应保持'
+curl -s -X POST "$B/job/changes?id=$T8DOC" -H 'Content-Type: application/json' -d '{"updates":[{"id":"t9-skipconf","status":"resolved"}]}' | grep -q '"ok":true' || fail 'S4a-T9 conflict 处理失败'
+curl -sf "$B/export?id=$T8DOC" | grep -q '存在 2 条事实冲突' && fail 'S4a-T9 resolved 后应退出门控计数'
+echo '✅ S4a-T9 skipped 状态机与导出门控（skipped 计入/恢复保持/resolved 退出）'
+
 # ===== 16. 浏览器级保存语义（可选，需要本机 Chromium）=====
 if node test-editor.mjs "$B" "$DOCID" "$RESUME_ROOT"; then
   echo '✅ 浏览器级保存/恢复/冲突/审阅验证'

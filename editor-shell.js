@@ -1430,6 +1430,7 @@
     });
     if (name === 'review') window.dispatchEvent(new Event('ed-review-refresh'));
     if (name === 'zone') window.dispatchEvent(new Event('ed-zone-refresh'));
+    if (window.__edApplyWidthTier) window.__edApplyWidthTier();   // S4a-T9：宽度档随活跃度联动
     persistSoon();                       // S2-T6：活动面板属会话状态
   }
   // 供 ai-panel / 外部切换（jdfrom 桥等）
@@ -1471,7 +1472,30 @@
   window.addEventListener('resize', function () {
     if (window.innerWidth >= 1200) { left.classList.remove('ed-open'); }
     if (window.innerWidth >= 768) { right.classList.remove('ed-open'); }
+    applyWidthTier();
   });
+
+  // ===== S4a-T9：1280-1439 宽度档联动（§7.3）——右栏为审阅 Tab 且岗位草稿有待处理项（正在使用）→ 保右栏；
+  // 非活跃 → 自动折叠为竖标签条（S2 折叠机制既有）；<1200 抽屉、≥1440 三栏全开均不走此逻辑。
+  function reviewActive() {
+    var sel = right.querySelector('#ed-rtabs button[aria-selected="true"]');
+    if (!sel || sel.dataset.pane !== 'review') return false;
+    if (!document.querySelector('#ed-pane-review .jp-item')) return true;   // 数据未加载：不动折叠态（防误折叠）
+    return !!document.querySelector('#ed-pane-review .jp-item button.jp-accept');
+  }
+  function applyWidthTier() {
+    var w = window.innerWidth;
+    if (w < 1280 || w >= 1440) return;
+    var hidden = right.classList.contains('ed-hidden');
+    if (reviewActive() && hidden) {
+      right.classList.remove('ed-hidden');
+      document.body.style.setProperty('--ed-right-w', window.innerWidth >= 768 ? '320px' : '0px');
+    } else if (!reviewActive() && !hidden) {
+      right.classList.add('ed-hidden');
+      document.body.style.setProperty('--ed-right-w', '0px');
+    }
+  }
+  window.__edApplyWidthTier = applyWidthTier;   // 供 Tab 切换后联动（selectTab 调用）与测试驱动
 
   // ===== S2-T6 会话状态（per-doc localStorage；滚动容器是 .sheet 自身；折叠存布尔而非 0 宽）=====
   // 只写 localStorage：不碰正文 DOM、不调 notifyEdit()、不进 docs-meta（块 13 有泄漏断言，块 6 冻结件不变性兜底）。
