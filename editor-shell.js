@@ -288,7 +288,7 @@
     rtBtn.className = 'ed-iconbtn ed-ghost ed-right-toggle';
     rtBtn.setAttribute('data-ed-inj', '1');
     rtBtn.setAttribute('aria-label', '辅助面板');
-    rtBtn.title = 'AI 助手 / 排版 / 岗位匹配';
+    rtBtn.title = '审阅 / 区域 / AI 助手 / 排版';
     rtBtn.textContent = '⚙';
     toolbar.appendChild(rtBtn);
   }
@@ -1400,13 +1400,11 @@
     + '<button type="button" role="tab" data-pane="zone" aria-selected="false">区域</button>'
     + '<button type="button" role="tab" data-pane="ai" aria-selected="' + (JOB_INFO.hasJob ? 'false' : 'true') + '">AI 助手</button>'
     + '<button type="button" role="tab" data-pane="typo" aria-selected="false">排版</button>'
-    + '<button type="button" role="tab" data-pane="match" aria-selected="false">岗位匹配</button>'
     + '</div>'
     + (JOB_INFO.hasJob ? '<div id="ed-pane-review" class="ed-pane on" role="tabpanel" aria-label="修改清单"></div>' : '')
     + '<div id="ed-pane-zone" class="ed-pane" role="tabpanel" aria-label="区域分析"></div>'
     + '<div id="ed-pane-ai" class="ed-pane' + (JOB_INFO.hasJob ? '' : ' on') + '" role="tabpanel" aria-label="AI 助手"></div>'
-    + '<div id="ed-pane-typo" class="ed-pane" role="tabpanel" aria-label="排版设置"></div>'
-    + '<div id="ed-pane-match" class="ed-pane" role="tabpanel" aria-label="岗位匹配"></div>';
+    + '<div id="ed-pane-typo" class="ed-pane" role="tabpanel" aria-label="排版设置"></div>';
   mount(right);
 
   right.querySelector('#ed-rtabs').addEventListener('click', function (e) {

@@ -33,13 +33,12 @@
     + '#ai-tabs button.on{background:var(--ed-panel);color:var(--ed-accent);box-shadow:inset 0 -2px 0 var(--ed-accent)}'
     + '.ai-pane{display:none;flex:1;flex-direction:column;min-height:0}'
     + '.ai-pane.on{display:flex}'
-    + '#ai-pane-review,#ai-pane-match{overflow:auto}'
+    + '#ai-pane-review{overflow:auto}'
     + '.ai-actions{padding:10px;border-bottom:1px solid var(--ed-line);background:var(--ed-panel);display:flex;gap:8px;flex-wrap:wrap;flex:none}'
     + '.ai-actions button{min-height:30px;padding:0 12px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink);transition:transform .12s,box-shadow .12s}'
     + '.ai-actions button:hover{transform:translateY(-1px);box-shadow:0 3px 9px rgba(60,45,25,.12)}'
     + '.ai-actions button:disabled{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none}'
-    + '#ai-jd{width:100%;height:110px;border:1px solid var(--ed-line);border-radius:8px;padding:6px;box-sizing:border-box;font-size:12px}'
-    + '#ai-review-out,#ai-match-out{padding:10px;overflow:auto;flex:1}'
+    + '#ai-review-out{padding:10px;overflow:auto;flex:1}'
     + '.ai-score{border:1px solid var(--ed-line);border-radius:12px;box-shadow:0 1px 3px rgba(60,45,25,.06);background:var(--ed-panel);padding:10px;text-align:center;margin:8px 0;font-size:13px}'
     + '.ai-score b{font-size:32px;display:block;color:var(--ed-accent)}'
     + '#ai-log{flex:1;overflow:auto;padding:10px 12px}'
@@ -68,17 +67,16 @@
   document.head.appendChild(css);
 
   // 嵌入模式：外壳右栏存在时，AI 面板内容嵌入其中（抽屉模式仅作无外壳兜底，如直接打开文档文件）
+  // S4a-T7：岗位匹配 Tab 已退役（能力由审阅 Tab 证据表承接），嵌入判定只看 ed-pane-ai
   var edPaneAi = document.getElementById('ed-pane-ai');
-  var edPaneMatch = document.getElementById('ed-pane-match');
-  var embedded = !!(edPaneAi && edPaneMatch);
+  var embedded = !!edPaneAi;
 
   var root = document.createElement('div');
   root.innerHTML = (embedded ? '' : '<button id="ai-toggle" title="AI 助手" aria-label="AI 助手">🤖</button>')
     + '<div id="ai-drawer"' + (embedded ? ' style="display:none"' : '') + '><header><span>🤖 AI 助手</span><span id="ai-close" role="button" aria-label="关闭">✕</span></header>'
-    + '<div id="ai-tabs"><button data-tab="chat" class="on">💬 对话</button><button data-tab="review">🩺 体检</button><button data-tab="match">🎯 JD</button></div>'
+    + '<div id="ai-tabs"><button data-tab="chat" class="on">💬 对话</button><button data-tab="review">🩺 体检</button></div>'
     + '<div id="ai-pane-chat" class="ai-pane on"><div id="ai-log"></div><div id="ai-input"><input id="ai-msg" placeholder="例如：把项目3精简一点" aria-label="对话输入"><button id="ai-send">发送</button></div></div>'
-    + '<div id="ai-pane-review" class="ai-pane"><div class="ai-actions"><button id="ai-review-full">全面体检</button><button id="ai-review-quant">仅量化增强</button></div><div id="ai-review-out"></div></div>'
-    + '<div id="ai-pane-match" class="ai-pane"><div class="ai-actions"><textarea id="ai-jd" placeholder="粘贴 JD 全文，或粘贴招聘链接后点「读取链接」" aria-label="JD 全文"></textarea><button id="ai-jd-fetch">📥 读取链接</button><button id="ai-match-go">分析匹配度</button></div><div id="ai-match-out"></div></div></div>'
+    + '<div id="ai-pane-review" class="ai-pane"><div class="ai-actions"><button id="ai-review-full">全面体检</button><button id="ai-review-quant">仅量化增强</button></div><div id="ai-review-out"></div></div></div>'
     + '<button id="ai-sel-btn">✨ AI 改写</button>'
     + '<div id="ai-pop" role="dialog" aria-label="选区改写"><textarea id="ai-inst" placeholder="改写指令，例如：精简到两行、突出量化成果" aria-label="改写指令"></textarea>'
     + '<div class="row"><button id="ai-gen">生成预览</button></div><div class="preview" id="ai-preview"></div>'
@@ -88,17 +86,13 @@
   if (endMark) endMark.parentNode.insertBefore(root, endMark);
   else document.body.appendChild(root);
 
-  // 嵌入模式：把面板内容搬进外壳右栏（AI 助手 = 对话+体检；岗位匹配 = JD），DOM 移动不丢事件绑定
+  // 嵌入模式：把面板内容搬进外壳右栏（AI 助手 = 对话+体检），DOM 移动不丢事件绑定
   // 注意：此处 $ 尚未定义（var 提升但赋值未到），用 document.getElementById
   if (embedded) {
     var tabsEl = document.getElementById('ai-tabs');
-    var matchTabBtn = tabsEl.querySelector('button[data-tab="match"]');
-    if (matchTabBtn) matchTabBtn.remove();  // JD 由右栏顶级 Tab「岗位匹配」承担
     edPaneAi.appendChild(tabsEl);
     edPaneAi.appendChild(document.getElementById('ai-pane-chat'));
     edPaneAi.appendChild(document.getElementById('ai-pane-review'));
-    edPaneMatch.appendChild(document.getElementById('ai-pane-match'));
-    document.getElementById('ai-pane-match').classList.add('on');  // pane 自身常显，显隐由右栏 Tab 管
   }
 
   var $ = function (id) { return document.getElementById(id); };
@@ -112,10 +106,10 @@
     log.scrollTop = log.scrollHeight;
   }
 
-  // 空态引导（不持久、不进对话历史）
+  // 空态引导（不持久、不进对话历史）；S4a-T7：岗位匹配已退役，引导不再提及
   addMsg(embedded
-    ? '👋 使用引导：\n· 选中正文文字 → 浮动工具条选改写方向\n· 「🩺 体检」出多维诊断报告\n· 右侧「岗位匹配」粘贴 JD 做匹配分析\n所有建议都可逐条 应用 / 📍定位 / 跳过 / 撤销'
-    : '👋 使用引导：\n· 选中正文一句话 → 点「✨ AI 改写」逐句精简\n· 「🩺 体检」出五维诊断报告\n· 「🎯 JD」粘贴岗位描述或链接做匹配分析\n所有建议都可逐条 应用 / 📍定位 / 跳过 / 撤销', false);
+    ? '👋 使用引导：\n· 选中正文文字 → 浮动工具条选改写方向\n· 「🩺 体检」出多维诊断报告\n所有建议都可逐条 应用 / 📍定位 / 跳过 / 撤销'
+    : '👋 使用引导：\n· 选中正文一句话 → 点「✨ AI 改写」逐句精简\n· 「🩺 体检」出五维诊断报告\n所有建议都可逐条 应用 / 📍定位 / 跳过 / 撤销', false);
 
   // 共享应用通道：在文档里找 before 文本并替换（支持跨加粗等 DOM 节点、定位第 N 个重复位置）
   // opts: { occurrence?: number, context?: string }
@@ -354,83 +348,6 @@
   }
   $('ai-review-full').onclick = function () { runReview('full'); };
   $('ai-review-quant').onclick = function () { runReview('quant'); };
-
-  // ===== JD 匹配 =====
-  var matching = false;
-  $('ai-match-go').onclick = async function () {
-    var jd = $('ai-jd').value.trim();
-    if (!jd || matching) return;
-    matching = true;
-    $('ai-match-go').disabled = true;
-    var out = $('ai-match-out');
-    out.textContent = '分析中…';
-    try {
-      var mt = await flushFirst();
-      var r = await fetch('/ai/match', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: DOC_ID, jd: jd, baseMtime: mt }) });
-      if (r.status === 409 && (r.headers.get('content-type') || '').includes('application/json')) { out.textContent = '⚠️ 文档有未同步修改，已自动保存，请重试'; return; }
-      if (r.status === 409) { out.textContent = await r.text(); return; }
-      var data = await r.json();
-      renderReport(out, data);
-      // 匹配报告出来后提供"创建岗位草稿"入口（独立文档 + 修改清单审阅，不动母版）
-      if (data.report) {
-        var mk = document.createElement('button');
-        mk.textContent = '📌 据此创建岗位草稿';
-        mk.style.marginTop = '8px';
-        mk.onclick = async function () {
-          var company = prompt('公司'); if (!company || !company.trim()) return;
-          var role = prompt('岗位'); if (!role || !role.trim()) return;
-          var r2 = await fetch('/job/create', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ from: DOC_ID, company: company.trim(), role: role.trim(), jd: jd }) });
-          var d2 = await r2.json().catch(function () { return null; });
-          if (d2 && d2.existing) { if (confirm('同岗位草稿已存在（' + d2.existing + '），打开它？')) location.href = '/edit?id=' + d2.existing; return; }
-          if (d2 && d2.ok && d2.id) { location.href = '/edit?id=' + d2.id; return; }
-          out.textContent = '⚠️ ' + ((d2 && d2.error) || '创建失败');
-        };
-        out.appendChild(mk);
-      }
-    } catch (e) { out.textContent = '⚠️ ' + (e.message || e); }
-    finally { matching = false; $('ai-match-go').disabled = false; }
-  };
-
-  // JD 链接读取：textarea 里是 http(s) 链接时拉回文本预填（失败也可手动粘贴）
-  var jdFetching = false;
-  $('ai-jd-fetch').onclick = async function () {
-    var ta = $('ai-jd'), v = ta.value.trim();
-    if (!/^https?:\/\//.test(v) || jdFetching) return;
-    jdFetching = true;
-    $('ai-jd-fetch').disabled = true;
-    var out = $('ai-match-out');
-    out.textContent = '读取链接中…';
-    try {
-      var r = await fetch('/ai/jd-text', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: v }) });
-      var d = await r.json();
-      if (d.ok && d.text) {
-        ta.value = d.text;
-        out.textContent = '✅ 已读取 JD（' + d.text.length + ' 字），检查后可点「分析匹配度」';
-      } else {
-        out.textContent = '⚠️ 读取失败：' + (d.error || '未知错误') + '（该站可能要登录/有反爬，请手动粘贴 JD 文本）';
-      }
-    } catch (e) { out.textContent = '⚠️ ' + (e.message || e); }
-    finally { jdFetching = false; $('ai-jd-fetch').disabled = false; }
-  };
-
-  // jdfrom 桥：看板 🎯 跳来时拉取该投递的 JD 预填 + 切 Tab + 开面板
-  (function () {
-    var m = location.search.match(/[?&]jdfrom=([0-9-]+)/);
-    if (!m) return;
-    fetch('/app/jd?id=' + m[1]).then(function (r) { return r.json(); }).then(function (d) {
-      if (!d || !d.jd) return;
-      $('ai-jd').value = d.jd;
-      if (embedded) { setDrawer(true, 'match'); }
-      else {
-        var mt = document.querySelector('#ai-tabs button[data-tab="match"]');
-        if (mt) mt.click();
-        setDrawer(true);
-      }
-    }).catch(function () {});
-  })();
 
   // ===== 选区改写 =====
   // 预设指令（嵌入模式四按钮工具条；沿用 /ai/rewrite 审阅流，不静默覆盖正文）

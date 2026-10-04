@@ -14,6 +14,7 @@ import { resolveChromium, invalidateCache, readCache } from './chromium.mjs';
 import { updateMeta } from './tx.mjs';
 import { freezeHtml } from './freeze.mjs';
 import { assembleTemplate } from './template.mjs';
+import { paraFingerprint } from './evidence.mjs';
 
 const [base, docId, dataRoot] = process.argv.slice(2);
 if (!base || !docId || !dataRoot) { console.error('用法: node test-editor.mjs <baseURL> <docId> <dataRoot>'); process.exit(2); }
@@ -1102,7 +1103,7 @@ const ED_DOC = 'ed-fixture';
 const JOB_DOC = 'ed-fixture-v2';
 {
   let tpl = assembleTemplate('classic');   // 夹具经装配生成（themes 唯一源），不直读 template.html
-  const projects = '<div class="entry-head"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024-2025</div></div>\n<ul><li>旧项目描述</li></ul>\n<div class="entry-head"><div class="entry-title">项目B</div><div class="entry-role">开发</div><div class="entry-date">2023</div></div>\n<ul><li>项目B描述</li></ul>';
+  const projects = '<div class="entry-head"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024-2025</div></div>\n<ul><li>旧项目描述</li></ul>\n<div class="entry-head"><div class="entry-title">项目B</div><div class="entry-role">开发</div><div class="entry-date">2023</div></div>\n<ul><li data-zid="za1b2c3d4">项目B描述</li></ul>';
   tpl = tpl.replaceAll('{{NAME}}', () => '测试员').replaceAll('{{CONTACT}}', () => 'test@example.com')
     .replaceAll('{{INTENT}}', () => '测试').replaceAll('{{SUMMARY}}', () => '摘要文本').replaceAll('{{SKILLS}}', () => '<p>技能一：内容</p>')
     .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => projects).replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => ED_DOC);
@@ -1120,7 +1121,13 @@ const JOB_DOC = 'ed-fixture-v2';
       ],
       todos: [{ section: '项目经历', question: '缺少量化指标', why: 'JD 要求数据驱动', resolved: false }],
       // S4a-T6：证据表夹具（sourced 条目 + 不存在的 mat id → GET live 标注 fresh:false/stale:true 的现算路径）
-      evidence: [{ id: 'e1', req: 'React 组件化经验', status: 'sourced', refs: [{ refId: 'b1r1', type: 'mat', id: 'm-none', zid: null, srcStatus: 'confirmed', hash: 'deadbeef' }], note: '', noteConfirmed: false }],
+      // S4a-T7 扩：covered（fresh para ref，供定位）/ none（note 两级）/ todo+noteConfirmed（有据·你的补充）
+      evidence: [
+        { id: 'e1', req: 'React 组件化经验', status: 'sourced', refs: [{ refId: 'b1r1', type: 'mat', id: 'm-none', zid: null, srcStatus: 'confirmed', hash: 'deadbeef', title: '旧素材', quote: '' }], note: '', noteConfirmed: false },
+        { id: 'e2', req: '数据管道经验', status: 'covered', refs: [{ refId: 'b1r2', type: 'para', id: null, zid: 'za1b2c3d4', hash: paraFingerprint('项目B描述'), title: '项目经历', quote: '项目B描述' }], note: '', noteConfirmed: false },
+        { id: 'e3', req: 'AB 实验设计', status: 'none', refs: [], note: '', noteConfirmed: false },
+        { id: 'e4', req: '工程效率提升', status: 'todo', refs: [], note: '维护过 3 节点自建集群两年（个人项目仓库）', noteConfirmed: true }
+      ],
       evidenceGen: 1
     }
   };
@@ -1377,6 +1384,92 @@ try {
     await page.click('#ed-pane-review button.jp-ev-cancel');
     await page.waitForFunction(() => /已取消/.test(document.querySelector('#ed-pane-review').textContent), { timeout: 5000 });
     ok('[S4a-T6] 证据任务可取消（cancelled 态可见）');
+    await ctx.close();
+  }
+
+  // ===== 4d [S4a-T7] 证据表完整 UI：五态徽章/事实依据可读化/zid 定位/note 两级/入口合并/引导无死链 =====
+  {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await page.goto(base + '/edit?id=' + JOB_DOC);
+    await page.waitForSelector('#ed-pane-review .jp-secs', { timeout: 5000 });
+    // 入口合并：岗位草稿右栏 Tab 恰为 审阅/区域/AI 助手/排版；普通文档无审阅也无岗位匹配
+    const tabs7 = await page.evaluate(() => Array.from(document.querySelectorAll('#ed-rtabs button')).map((b) => b.textContent.trim()));
+    if (tabs7.join(',') !== '审阅,区域,AI 助手,排版') bad('[S4a-T7] 岗位草稿右栏 Tab 应为 审阅/区域/AI 助手/排版: ' + tabs7.join(','));
+    else ok('[S4a-T7] 入口合并：岗位草稿四 Tab（岗位匹配已移除）');
+    const pageN = await ctx.newPage();
+    await pageN.goto(base + '/edit?id=' + ED_DOC);
+    await pageN.waitForSelector('#ed-rtabs', { timeout: 5000 });
+    const tabsN = await pageN.evaluate(() => Array.from(document.querySelectorAll('#ed-rtabs button')).map((b) => b.textContent.trim()));
+    if (tabsN.includes('审阅') || tabsN.includes('岗位匹配')) bad('[S4a-T7] 普通文档不应有审阅/岗位匹配 Tab: ' + tabsN.join(','));
+    else ok('[S4a-T7] 普通文档无审阅/岗位匹配 Tab（现状保持）');
+    const guide = await pageN.evaluate(() => { const el = document.querySelector('#ai-log'); return el ? el.textContent : ''; });
+    if (/岗位匹配|🎯/.test(guide)) bad('[S4a-T7] AI 引导仍有岗位匹配死链: ' + guide.slice(0, 100));
+    else ok('[S4a-T7] AI 引导无死链');
+    await pageN.close();
+    // 证据段：五态徽章（失效覆盖 sourced 展示）+ 事实依据可读化 + 统计行
+    await page.click('#ed-pane-review .jp-secs button[data-sec="evidence"]');
+    await page.waitForSelector('#ed-pane-review [data-ev="e1"]', { timeout: 5000 });
+    const evTxtOf = (id) => page.evaluate((i) => { const el = document.querySelector('#ed-pane-review [data-ev="' + i + '"]'); return el ? el.textContent : ''; }, id);
+    let t1 = await evTxtOf('e1');
+    if (!/待重新关联/.test(t1) || !/来源已变化/.test(t1) || /素材有据·简历未表达/.test(t1)) bad('[S4a-T7] ref 全失效应显示 待重新关联/来源已变化 且不显 sourced 徽章: ' + t1.slice(0, 120));
+    else ok('[S4a-T7] ref 全失效 → todo 层「待重新关联」（不显 sourced/covered）');
+    if (!/素材：旧素材/.test(t1) || !/事实依据/.test(t1)) bad('[S4a-T7] mat ref 应可读化（素材标题 + 事实依据标注）: ' + t1.slice(0, 120));
+    else ok('[S4a-T7] mat ref 事实依据可读化');
+    const t2 = await evTxtOf('e2');
+    if (!/简历已覆盖/.test(t2) || !/正文段落/.test(t2) || !/项目B描述/.test(t2)) bad('[S4a-T7] covered 条目应显 简历已覆盖 + para ref 可读化: ' + t2.slice(0, 120));
+    else ok('[S4a-T7] covered 徽章 + para ref 可读化');
+    const statsTxt = await page.evaluate(() => { const el = document.querySelector('#ed-pane-review .jp-sum'); return el ? el.textContent : ''; });
+    if (!/简历已覆盖 1/.test(statsTxt) || !/素材有据未表达 1/.test(statsTxt) || !/待补充 2/.test(statsTxt)) bad('[S4a-T7] 三列分计统计行不符: ' + statsTxt);
+    else ok('[S4a-T7] 三列分计统计行（覆盖 1 · 有据未表达 1 · 待补充 2）');
+    // zid 定位：点击 para ref 的 📍定位 → 段落滚入视口 + jp-flash 高亮存在（瞬态，无 class 残留）
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.click('#ed-pane-review [data-ev="e2"] button.jp-refbtn');
+    await page.waitForFunction(() => !!(window.CSS && CSS.highlights && CSS.highlights.get('jp-flash')), { timeout: 3000 });
+    await page.waitForFunction(() => {
+      const el = document.querySelector('[data-zid="za1b2c3d4"]');
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      return r.top >= 0 && r.bottom <= window.innerHeight;
+    }, { timeout: 3000 });
+    ok('[S4a-T7] zid 定位（滚动到段落 + Custom Highlight 闪烁）');
+    const bodyHtml = await page.evaluate(() => document.querySelector('.sheet').innerHTML);
+    if (/class="[^"]*jp-flash/.test(bodyHtml)) bad('[S4a-T7] 闪烁不应给正文挂 class');
+    else ok('[S4a-T7] 高亮为瞬态（正文无 class 残留）');
+    // note 两级流程：none 条目输入→保存→确认计 sourced 层→退回
+    const t3 = await evTxtOf('e3');
+    if (!/当前已确认来源中未找到证据/.test(t3)) bad('[S4a-T7] none 条目固定文案缺失: ' + t3.slice(0, 100));
+    else ok('[S4a-T7] none 文案固定（未找到证据）');
+    const confSel = '#ed-pane-review [data-ev="e3"] .jp-note button.jp-pri';
+    if (!(await page.evaluate((s) => document.querySelector(s) && document.querySelector(s).disabled, confSel))) bad('[S4a-T7] 空说明时「确认为证据」应禁用');
+    else ok('[S4a-T7] 空说明时确认为证据禁用');
+    await page.fill('#ed-pane-review [data-ev="e3"] .jp-note textarea', '维护过 3 节点自建集群两年（个人项目仓库）');
+    await page.click(confSel);
+    // 等待目标锁定 e3 自身徽章（不能全文匹配「已确认为证据」——e4 夹具的静态标签会提前满足）
+    await page.waitForFunction(() => /有据（依据：你的补充）/.test((document.querySelector('#ed-pane-review [data-ev="e3"]') || document.createElement('div')).textContent || ''), { timeout: 5000 });
+    let t3b = await evTxtOf('e3');
+    // 「不显 covered」只查徽章元素——hint 文案「正文实际引用后才计『简历已覆盖』」是说明文字，不算徽章
+    const e3badges = await page.evaluate(() => Array.from(document.querySelectorAll('#ed-pane-review [data-ev="e3"] .jp-st')).map((x) => x.textContent).join('|'));
+    if (!/有据（依据：你的补充）·简历未表达/.test(t3b) || /简历已覆盖/.test(e3badges)) bad('[S4a-T7] 确认后应计 sourced 层（有据·你的补充）且徽章不显 covered: badges=' + e3badges);
+    else ok('[S4a-T7] note 确认计 sourced 层（不显 covered）');
+    // 落盘断言：note/noteConfirmed 进 meta（GET 视图含）
+    const persisted = await page.evaluate(async () => {
+      const d = await (await fetch('/job/changes?id=' + location.search.match(/[?&]id=([^&]+)/)[1])).json();
+      const e3 = (d.job.evidence || []).find((x) => x.id === 'e3');
+      return { note: e3 && e3.note, confirmed: e3 && e3.noteConfirmed };
+    });
+    if (!persisted.confirmed || !/自建集群/.test(String(persisted.note))) bad('[S4a-T7] note/noteConfirmed 未落盘: ' + JSON.stringify(persisted));
+    else ok('[S4a-T7] note 确认经服务端落盘');
+    // 退回：badge 回 todo 层，note 保留
+    await page.click('#ed-pane-review [data-ev="e3"] .jp-note button:nth-of-type(2)');
+    await page.waitForFunction(() => /已退回确认/.test(document.querySelector('#ed-pane-review .jp-msg').textContent), { timeout: 5000 });
+    const t3c = await evTxtOf('e3');
+    if (/有据（依据：你的补充）/.test(t3c) || !/待补充|未找到证据/.test(t3c)) bad('[S4a-T7] 退回后应回原状态层: ' + t3c.slice(0, 120));
+    else ok('[S4a-T7] 退回确认回到原状态层');
+    // noteConfirmed 条目（e4 夹具）：徽章「有据（依据：你的补充）」+ 退回按钮存在
+    const t4 = await evTxtOf('e4');
+    if (!/有据（依据：你的补充）·简历未表达/.test(t4) || !/退回确认/.test(t4)) bad('[S4a-T7] noteConfirmed 条目展示不符: ' + t4.slice(0, 120));
+    else ok('[S4a-T7] noteConfirmed 条目计 sourced 同层展示 + 可退回');
     await ctx.close();
   }
 

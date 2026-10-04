@@ -118,6 +118,14 @@ http.createServer((q, s) => {
         if (String(sys).includes('区域分析顾问')) content = zoneAnalyze;
         else if (String(sys).includes('区域改写器')) content = zoneRewrite;
         else if (String(sys).includes('证据分析')) {
+          // S4a-T7 控制文件（保护门用例）：llm-ev-raw=非 JSON 文本；llm-ev-bad=合法 JSON 但 refId 全部无法匹配
+          if (fs.existsSync('$TEST_DIR/llm-ev-raw')) { content = '抱歉，我无法以 JSON 格式输出该证据表。'; }
+          else if (fs.existsSync('$TEST_DIR/llm-ev-bad')) {
+            content = JSON.stringify({ evidence: [
+              { req: '要求一：全无效素材引用', status: 'sourced', refHints: [{ type: 'mat', id: 'm-ghost99', title: '幽灵素材', quote: 'x' }] },
+              { req: '要求二：全无效段落引用', status: 'covered', refHints: [{ type: 'para', zid: 'zdeadbee', title: '幽灵段落', quote: 'y' }] }
+            ] });
+          } else {
           // S4a-T6：从请求正文动态提取请求内 ID（matId/zid）——验证「refHints 按 ID 原样返回与解析」，
           // 同时返回幽灵 ID 与空 refHints 各一条，覆盖解析层的丢弃与降级路径。
           const u = JSON.parse(b).messages.find((m) => m.role === 'user').content;
@@ -131,6 +139,7 @@ http.createServer((q, s) => {
             { req: '要求三：全部无效引用', status: 'covered', refHints: [{ type: 'mat', id: 'm-ghost00', title: '幽灵素材', quote: 'x' }, { type: 'para', zid: 'zdeadbee', title: '幽灵段落', quote: 'y' }] },
             { req: '要求四：无引用', status: 'covered', refHints: [] }
           ] });
+          }
         }
       } catch {}
       if (fs.existsSync('$TEST_DIR/llm-err')) { s.writeHead(500, { 'Content-Type': 'text/plain' }); return s.end('stub forced error'); }
@@ -1171,6 +1180,52 @@ gt_error "$T6DOC" evidence | grep -q '模型调用失败' || fail "S4a-T6 eviden
 [ "$(t6_ev_bytes)" = "$EV_BEFORE" ] || fail 'S4a-T6 失败后旧 evidence/evidenceGen 被改动（反例2）'
 rm -f "$TEST_DIR/llm-err"
 echo '✅ S4a-T6 反例2（取消/失败/迟到回调：旧 evidence 数组与 evidenceGen 逐字节不变）'
+
+# —— S4a-T7 转交（c/d）：零有效 ref 保护门 + 非 JSON 输出——error 落账，旧 evidence/evidenceGen 逐字节不变 ——
+EV_T7=$(t6_ev_bytes)
+touch "$TEST_DIR/llm-ev-raw"
+R=$(curl -s -X POST "$B/job/gen-start?id=$T6DOC&kind=evidence")
+echo "$R" | grep -q '"ok":true' || fail "S4a-T7 非 JSON 夹具启动失败: $(echo "$R" | head -c 160)"
+wait_gt "$T6DOC" evidence error 15 || fail "S4a-T7 非 JSON 输出应落 error（得 $(gt_status "$T6DOC" evidence)）"
+gt_error "$T6DOC" evidence | grep -q '无法解析' || fail "S4a-T7 非 JSON 错误原因异常: $(gt_error "$T6DOC" evidence)"
+[ "$(t6_ev_bytes)" = "$EV_T7" ] || fail 'S4a-T7 非 JSON 输出改动旧 evidence（旧表应逐字节不变）'
+rm -f "$TEST_DIR/llm-ev-raw"
+touch "$TEST_DIR/llm-ev-bad"
+R=$(curl -s -X POST "$B/job/gen-start?id=$T6DOC&kind=evidence")
+echo "$R" | grep -q '"ok":true' || fail "S4a-T7 全无效引用夹具启动失败: $(echo "$R" | head -c 160)"
+wait_gt "$T6DOC" evidence error 15 || fail "S4a-T7 零有效 ref 应落 error（得 $(gt_status "$T6DOC" evidence)）"
+gt_error "$T6DOC" evidence | grep -q '无任何有效来源引用' || fail "S4a-T7 零有效 ref 错误原因异常: $(gt_error "$T6DOC" evidence)"
+[ "$(t6_ev_bytes)" = "$EV_T7" ] || fail 'S4a-T7 零有效 ref 改动旧 evidence（保护门失效）'
+rm -f "$TEST_DIR/llm-ev-bad"
+echo '✅ S4a-T7 保护门（非 JSON / 全无效引用：error 落账，旧 evidence/evidenceGen 逐字节不变）'
+
+# —— S4a-T7：证据 note 两级流程端点（POST /job/changes evidenceNote 分支；模拟验证，走 stub 实例）——
+R=$(curl -s -X POST "$B/job/changes?id=$T6DOC" -H 'Content-Type: application/json' -d '{"evidenceNote":{"reqId":"e1","note":"维护过 3 节点自建集群两年（个人项目仓库）"}}')
+echo "$R" | grep -q '"ok":true' || fail "S4a-T7 note 保存失败: $(echo "$R" | head -c 200)"
+R=$(curl -s -X POST "$B/job/changes?id=$T6DOC" -H 'Content-Type: application/json' -d '{"evidenceNote":{"reqId":"e1","confirmed":true}}')
+echo "$R" | grep -q '"ok":true' || fail "S4a-T7 确认为证据失败: $(echo "$R" | head -c 200)"
+curl -s "$B/job/changes?id=$T6DOC" | node -e '
+let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => {
+  const bad = (m) => { console.error("❌ S4a-T7 note 端点 " + m); process.exit(1); };
+  const e1 = (JSON.parse(s).job.evidence || []).find((e) => e.id === "e1");
+  if (!e1) bad("e1 缺失");
+  if (e1.note !== "维护过 3 节点自建集群两年（个人项目仓库）") bad("note 未落盘: " + e1.note);
+  if (e1.noteConfirmed !== true) bad("noteConfirmed 未落盘");
+});' || fail 'S4a-T7 note/confirmed 落账'
+# 退回：confirmed=false → noteConfirmed=false 且 note 保留
+R=$(curl -s -X POST "$B/job/changes?id=$T6DOC" -H 'Content-Type: application/json' -d '{"evidenceNote":{"reqId":"e1","confirmed":false}}')
+echo "$R" | grep -q '"ok":true' || fail 'S4a-T7 退回失败'
+curl -s "$B/job/changes?id=$T6DOC" | grep -q '"noteConfirmed":false' || fail 'S4a-T7 退回后 noteConfirmed 应 false'
+# 非法路径：不存在条目 400 / 空说明确认 400 / 坏形状 400 / 非岗位草稿 404
+R=$(curl -s -X POST "$B/job/changes?id=$T6DOC" -H 'Content-Type: application/json' -d '{"evidenceNote":{"reqId":"e999","note":"x"}}')
+echo "$R" | grep -q '"ok":false' || fail "S4a-T7 不存在条目应 400: $R"
+R=$(curl -s -X POST "$B/job/changes?id=$T6DOC" -H 'Content-Type: application/json' -d '{"evidenceNote":{"reqId":"e2","confirmed":true}}')
+echo "$R" | grep -q '先填写说明内容' || fail "S4a-T7 空说明确认应 400: $R"
+R=$(curl -s -X POST "$B/job/changes?id=$T6DOC" -H 'Content-Type: application/json' -d '{"evidenceNote":{"reqId":"","note":123}}')
+echo "$R" | grep -q 'evidenceNote 非法' || fail "S4a-T7 坏形状应 400: $R"
+R=$(curl -s -X POST "$B/job/changes?id=$DOCID" -H 'Content-Type: application/json' -d '{"evidenceNote":{"reqId":"e1","note":"x"}}')
+echo "$R" | grep -q '不是岗位草稿' || fail "S4a-T7 非岗位草稿应 404: $R"
+echo '✅ S4a-T7 证据 note 两级流程端点（保存/确认/退回/四非法路径）'
 
 # —— d. 来源维度读取时即时计算（反例6：取消素材确认不保存正文 → GET 即见失效）——
 # 挂两条带 evidenceRefs 的候选（程序注入模拟依赖证据的建议）：一条引当前批次 mat ref，一条引旧批次 b0。

@@ -190,6 +190,8 @@ async function runGenTask(id, kind, taskId) {
       const gen = (Number(m0.job.evidenceGen) || 0) + 1;
       const ev = parseEvidence(raw, { gen, mats, paras });
       if (!ev || !ev.length) return finishGenTask(id, kind, taskId, null, '模型输出无法解析为证据表，未替换任何证据');
+      // S4a-T7 保护门：模型返回非空但整次解析零有效 ref（全部 refId 匹配不上）→ 视为解析失败，旧表与批次不动
+      if (!ev.some((e) => (e.refs || []).length)) return finishGenTask(id, kind, taskId, null, '模型输出的证据无任何有效来源引用（refId 全部无法匹配），未替换任何证据——可重试');
       return finishGenTask(id, kind, taskId, (cur) => {
         cur.job.evidence = ev;              // 整批替换 + 批次推进只在本次成功落账事务内（旧 refId 不复用）
         cur.job.evidenceGen = gen;
@@ -293,8 +295,8 @@ function jobViewLive(id, m) {
   let html;
   try { html = fs.readFileSync(docPath(id), 'utf8'); } catch { return job; }
   const mats = loadMats();
-  const out = reviewConsistency(job, html, { zones: (m || {}).zones, mats });
-  const paras = parasOf(html);
+  const paras = parasOf(html);   // S4a-T7：算一次透传给 reviewConsistency 与 refs fresh（原先每请求跑两遍）
+  const out = reviewConsistency(job, html, { zones: (m || {}).zones, mats, paras });
   out.evidence = (out.evidence || []).map((e) => {
     const refs = (Array.isArray(e.refs) ? e.refs : []).map((r) => ({ ...r, fresh: refFresh(r, { mats, paras }) }));
     return { ...e, refs, stale: refs.length > 0 && refs.every((r) => !r.fresh) };
@@ -1350,7 +1352,16 @@ async function handler(req, res) {
           return sendJson(400, { ok: false, error: 'reviewPos 非法（section∈evidence|changes|export、changeId 字符串或 null、filter∈all|important|new）' });
         }
       }
-      let written = null, isJob = false;
+      // S4a-T7：证据条目 note 两级流程（note 文本 / noteConfirmed 显式确认）经本端点持久化；写入前整体校验。
+      if (body.evidenceNote !== undefined) {
+        const en = body.evidenceNote;
+        if (!en || typeof en !== 'object' || typeof en.reqId !== 'string' || !en.reqId
+          || (en.note !== undefined && typeof en.note !== 'string')
+          || (en.confirmed !== undefined && typeof en.confirmed !== 'boolean')) {
+          return sendJson(400, { ok: false, error: 'evidenceNote 非法（reqId 必填、note 字符串可选、confirmed 布尔可选）' });
+        }
+      }
+      let written = null, isJob = false, evMiss = false, evEmpty = false;
       // docs-meta 唯一写入者 updateMeta：读最新→只改本文档 job 子树→原子写（不整表覆盖）
       written = updateMeta(root, id, (m) => {
         if (!m || !m.job) return m;   // 非岗位草稿：原样返回（下方 404）
@@ -1366,6 +1377,19 @@ async function handler(req, res) {
         }
         if (Array.isArray(body.todos)) m.job.todos = body.todos;
         if (body.reviewPos !== undefined) m.job.reviewPos = { section: body.reviewPos.section, changeId: body.reviewPos.changeId || null, filter: body.reviewPos.filter };
+        if (body.evidenceNote) {
+          const en = body.evidenceNote;
+          const ev = (m.job.evidence || []).find((x) => x && x.id === en.reqId);
+          if (!ev) evMiss = true;
+          else {
+            if (typeof en.note === 'string') ev.note = en.note;
+            if (en.confirmed !== undefined) {
+              // 「确认为证据」需有说明内容（note 是证据本体）；退回（false）不要求
+              if (en.confirmed && !((typeof en.note === 'string' ? en.note : ev.note || '')).trim()) evEmpty = true;
+              else ev.noteConfirmed = en.confirmed;
+            }
+          }
+        }
         if (typeof body.status === 'string') {
           // 状态维度单源（S1-T8）：旧词汇映射 deliverable/delivered→reviewed（投递历史改由 applications.json 派生），新词汇直通；
           // 只写 flow，不再写 job.status（迁移会删除它）
@@ -1375,6 +1399,8 @@ async function handler(req, res) {
         return m;
       });
       if (!isJob) return sendJson(404, { ok: false, error: '该文档不是岗位草稿' });
+      if (evMiss) return sendJson(400, { ok: false, error: '证据条目不存在：' + body.evidenceNote.reqId });
+      if (evEmpty) return sendJson(400, { ok: false, error: '确认为证据前请先填写说明内容' });
       return sendJson(200, { ok: true, job: jobViewLive(id, written) });   // 响应与 GET 同视图（含 live 标注与渐进默认）
     }
     // ===== S4a-T5：岗位草稿要求卡保存（同 normBrief 校验；普通文档 404）=====

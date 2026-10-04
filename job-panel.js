@@ -48,6 +48,16 @@
     + '.jp-ev-head{display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap}'
     + '.jp-ev-head button{min-height:24px;padding:0 8px;border-radius:6px;font-size:11px;cursor:pointer;border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink)}'
     + '.jp-st.sourced,.jp-st.thin{background:var(--ed-warn-soft);color:var(--ed-warn)}'
+    // S4a-T7 证据表完整 UI（原型 02b）：事实依据行 / note 两级流程 / zid 定位
+    + '.jp-ref{color:var(--ed-mut);font-size:11px;margin:3px 0;display:flex;gap:5px;align-items:baseline;flex-wrap:wrap}'
+    + '.jp-ref .jp-fact{background:var(--ed-ok-soft);color:var(--ed-ok);font-size:10px;border-radius:4px;padding:0 6px;flex:none}'
+    + '.jp-ref .jp-refbtn{min-height:20px;padding:0 6px;border-radius:5px;font-size:10px;cursor:pointer;border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink);flex:none}'
+    + '.jp-note{margin-top:6px;border:1px dashed var(--ed-line);border-radius:6px;padding:6px 8px}'
+    + '.jp-note textarea{width:100%;box-sizing:border-box;border:1px solid var(--ed-line);border-radius:5px;font-size:11.5px;padding:5px 6px;min-height:40px;background:var(--ed-panel);color:var(--ed-ink)}'
+    + '.jp-note .jp-note-ops{display:flex;gap:4px;margin-top:4px;align-items:center;flex-wrap:wrap}'
+    + '.jp-note .jp-note-ops button{min-height:22px;padding:0 8px;border-radius:6px;font-size:11px;cursor:pointer;border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink)}'
+    + '.jp-note .jp-note-ops button.jp-pri{background:var(--ed-accent);border-color:var(--ed-accent);color:var(--ed-accent-ink)}'
+    + '.jp-note .jp-note-hint{font-size:10.5px;color:var(--ed-mut)}'
     + '.jp button:focus-visible{outline:2px solid var(--ed-accent);outline-offset:1px}';
   document.head.appendChild(css);
 
@@ -393,9 +403,11 @@
       if (!d.ok) return;
       job = d.job; doc = d.doc;
       render();
-      var gt = job.genTasks || {};
+    }).catch(function () {}).then(function () {
+      // 自续判定放 catch 之后的语义位：running 期间瞬时 GET 失败也续排（S4a-T7 转交 b），不断链卡死 UI
+      var gt = (job && job.genTasks) || {};
       if ((gt.evidence && gt.evidence.status === 'running') || (gt.changes && gt.changes.status === 'running')) schedulePoll();
-    }).catch(function () {});
+    });
   }
   function schedulePoll() {
     if (pollTimer) return;
@@ -417,9 +429,90 @@
     root.appendChild(msg);
   }
 
-  // ===== 段一「要求与证据」：本任务为最小只读版（任务状态 + 条目列表；完整 UI 见 T7）=====
+  // ===== 段一「要求与证据」完整 UI（S4a-T7，照原型 02b：五态徽章/事实依据可读化/zid 定位/note 两级流程）=====
   var EV_STATUS = { covered: '简历已覆盖', sourced: '素材有据·简历未表达', thin: '表达不充分', todo: '待补充', none: '未找到证据' };
+  var FACT_LABELS = { company: '公司', role: '职位', dates: '时间', education: '学历', metrics: '指标', contribution: '贡献', conditions: '条件' };
   var GT_LABEL = { idle: '未生成', running: '正在分析证据…', done: '已生成', error: '失败', cancelled: '已取消' };
+  // 徽章口径（设计 §4.3）：失效条目盖过一切显示「待重新关联」；noteConfirmed 归 sourced 同层但绝不变「简历已覆盖」
+  function evBadge(e) {
+    if (e.stale) return '<span class="jp-st conflict">来源已变化，待重新关联</span>';
+    if (e.noteConfirmed && e.status !== 'covered') return '<span class="jp-st sourced">有据（依据：你的补充）·简历未表达</span>';
+    return '<span class="jp-st ' + (e.status || 'todo') + '">' + (EV_STATUS[e.status] || e.status || '待补充') + '</span>';
+  }
+  // mat ref 可读化：按 ID 取真实素材标题+事实字段原文（页面文案「事实依据」，不暴露内部字段名）
+  function matRefText(r) {
+    var m = (window.__MATS__ || []).find(function (x) { return x.id === r.id; });
+    var facts = (m && m.facts) || {};
+    var parts = [];
+    Object.keys(FACT_LABELS).forEach(function (k) { if (facts[k]) parts.push(FACT_LABELS[k] + '：' + short(facts[k], 60)); });
+    return { title: (m && m.title) || r.title || r.id || '', facts: parts.join(' · ') };
+  }
+  // zid 定位：滚动至段落 + Custom Highlight 闪烁（与 zone-panel 同机制，瞬态不落盘、不给正文挂 class）
+  function locateZid(zid) {
+    var el = sheet.querySelector('[data-zid="' + zid + '"]');
+    if (!el) { note('⚠️ 未找到定位目标（内容可能已变化）'); return; }
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    if (window.CSS && CSS.highlights) {
+      var r = document.createRange();
+      r.selectNodeContents(el);
+      CSS.highlights.set('jp-flash', new Highlight(r));
+      setTimeout(function () { CSS.highlights.delete('jp-flash'); }, 900);
+    }
+  }
+  // note 两级流程（S4a-T7 转交端点分支）：note 随时可存；「确认为证据」显式动作计 sourced 层，可退回
+  function saveEvidenceNote(reqId, noteText, confirmed) {
+    var body = { evidenceNote: { reqId: reqId } };
+    if (noteText !== null) body.evidenceNote.note = noteText;
+    if (confirmed !== null) body.evidenceNote.confirmed = confirmed;
+    api('/job/changes?id=' + DOC_ID, body).then(function (d) {
+      if (!d.ok) { note('⚠️ ' + (d.error || '说明保存失败')); return; }
+      job = d.job;
+      render();
+      note(confirmed === true ? '✅ 已确认为证据（计「素材有据·简历未表达」）' : (confirmed === false ? '已退回确认' : '✅ 说明已保存'));
+    }).catch(function (e2) { note('⚠️ ' + (e2.message || e2)); });
+  }
+  function noteBox(e) {
+    var box = document.createElement('div');
+    box.className = 'jp-note';
+    var lbl = document.createElement('div');
+    lbl.className = 'jp-meta';
+    lbl.textContent = e.noteConfirmed ? '已确认为证据（你的补充说明）' : '补充事实说明（可选）';
+    box.appendChild(lbl);
+    var ta = document.createElement('textarea');
+    ta.value = e.note || '';
+    ta.setAttribute('aria-label', '证据补充说明');
+    box.appendChild(ta);
+    var ops = document.createElement('div');
+    ops.className = 'jp-note-ops';
+    var save = document.createElement('button');
+    save.type = 'button';
+    save.textContent = '保存说明';
+    save.addEventListener('click', function () { saveEvidenceNote(e.id, ta.value, null); });
+    ops.appendChild(save);
+    if (e.noteConfirmed) {
+      var back = document.createElement('button');
+      back.type = 'button';
+      back.textContent = '退回确认';
+      back.addEventListener('click', function () { saveEvidenceNote(e.id, null, false); });
+      ops.appendChild(back);
+    } else {
+      var conf = document.createElement('button');
+      conf.type = 'button';
+      conf.className = 'jp-pri';
+      conf.textContent = '确认为证据';
+      var sync = function () { conf.disabled = !ta.value.trim(); };
+      ta.addEventListener('input', sync);
+      sync();
+      conf.addEventListener('click', function () { saveEvidenceNote(e.id, ta.value, true); });
+      ops.appendChild(conf);
+    }
+    var hint = document.createElement('span');
+    hint.className = 'jp-note-hint';
+    hint.textContent = e.noteConfirmed ? '可随时退回；正文实际引用后才计「简历已覆盖」。' : '确认为证据 = 计「素材有据·简历未表达」，需正文实际引用后才升「简历已覆盖」。';
+    ops.appendChild(hint);
+    box.appendChild(ops);
+    return box;
+  }
   function renderEvidence() {
     var gt = (job.genTasks || {}).evidence || {};
     var box = document.createElement('div');
@@ -471,29 +564,70 @@
       root.appendChild(empty);
       return;
     }
+    // 三列分计（设计 §4.3）：简历已覆盖 N（正文）· 素材有据未表达 M · 待补充 K；失效条目计入待补充
+    var nCov = 0, nSrc = 0, nTodo = 0;
+    list.forEach(function (e) {
+      if (e.stale) { nTodo++; return; }
+      if (e.status === 'covered') { nCov++; return; }
+      if (e.status === 'sourced' || e.noteConfirmed) nSrc++; else nTodo++;
+    });
+    var stats = document.createElement('div');
+    stats.className = 'jp-sum';
+    [['简历已覆盖 ' + nCov + '（正文）', nCov, 'badge ok'], ['素材有据未表达 ' + nSrc, nSrc, 'badge warn'], ['待补充 ' + nTodo, nTodo, 'badge']]
+      .forEach(function (x) {
+        if (!x[1]) return;
+        var b = document.createElement('span');
+        b.className = x[2];
+        b.textContent = x[0];
+        stats.appendChild(b);
+      });
+    if (stats.childNodes.length) root.appendChild(stats);
     list.forEach(function (e) {
       var div = document.createElement('div');
       div.className = 'jp-item';
+      div.setAttribute('data-ev', e.id || '');
       var title2 = document.createElement('div');
-      title2.innerHTML = '<b>' + esc(short(e.req || '（无要求描述）', 40)) + '</b>'
-        + '<span class="jp-st ' + (e.status || 'todo') + '">' + (EV_STATUS[e.status] || e.status || '待补充') + '</span>'
-        + (e.stale ? '<span class="jp-st conflict">来源已变化</span>' : '');
+      title2.innerHTML = '<b>' + esc(short(e.req || '（无要求描述）', 40)) + '</b>' + evBadge(e);
       div.appendChild(title2);
-      (e.refs || []).forEach(function (r) {
+      var refs = e.refs || [];
+      refs.forEach(function (r) {
         var line = document.createElement('div');
-        line.className = 'jp-reason';
-        var src = r.type === 'mat' ? '素材：' + (r.title || r.id || '') : '正文段落' + (r.title ? '（' + r.title + '）' : '');
-        line.textContent = '· ' + src + (r.quote ? '「' + short(r.quote, 40) + '」' : '') + (r.fresh === false ? '（已失效，需重新核对）' : '');
+        line.className = 'jp-ref';
+        if (r.type === 'mat') {
+          var mf = matRefText(r);
+          line.innerHTML = '· 素材：<b>' + esc(mf.title) + '</b><span class="jp-fact">事实依据</span>'
+            + (mf.facts ? '<span>' + esc(mf.facts) + '</span>' : (r.quote ? '<span>「' + esc(short(r.quote, 40)) + '」</span>' : ''));
+        } else {
+          line.innerHTML = '· 正文段落' + (r.title ? ' <b>' + esc(short(r.title, 16)) + '</b>' : '') + (r.quote ? '「' + esc(short(r.quote, 40)) + '」' : '');
+          var loc = document.createElement('button');
+          loc.type = 'button';
+          loc.className = 'jp-refbtn';
+          loc.textContent = '📍定位';
+          loc.addEventListener('click', function () { locateZid(r.zid); });
+          line.appendChild(loc);
+        }
+        if (r.fresh === false) {
+          var st = document.createElement('span');
+          st.className = 'jp-st conflict';
+          st.textContent = '来源已变化';
+          line.appendChild(st);
+        }
         div.appendChild(line);
       });
-      if (!(e.refs || []).length) {
+      if (!refs.length) {
         var none = document.createElement('div');
         none.className = 'jp-reason';
-        none.textContent = e.status === 'none' ? '当前已确认来源中未找到证据。' : '暂无有效引用。';
+        none.textContent = e.status === 'none' ? '当前已确认来源中未找到证据——不代表你没有做过，可补充事实说明。' : '暂无有效引用。';
         div.appendChild(none);
       }
+      // note 补充区：留缺口/已有说明的条目显示（覆盖与有据条目不需要）
+      if (e.status === 'none' || e.status === 'todo' || e.note || e.noteConfirmed) div.appendChild(noteBox(e));
       root.appendChild(div);
     });
+    var hint = document.createElement('div');
+    hint.className = 'jp-meta';
+    hint.textContent = 'JD 的每条要求来自 JD 本身（非你的经历事实）；事实只来自已确认素材与正文。';
+    root.appendChild(hint);
   }
 
   // ===== 段三「导出检查」：占位（S4a-T10 落地）=====

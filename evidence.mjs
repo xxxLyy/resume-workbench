@@ -178,12 +178,12 @@ export function candidatesState(change, ctx = {}) {
 
 // ===== 正文维度一致性刷新（设计 §4.2：/save 时 zoneSync 之后同一 updateMeta 事务内调用）=====
 // 逐条跑 candidatesState 写 change.consistency（UI 只读不判）；来源维度不落盘、读取时即时算。
-// opts = { zones: meta.zones（locked 派生）, mats }。纯函数：返回新 job，不改入参。
+// opts = { zones: meta.zones（locked 派生）, mats, paras（可选预计算，调用方已有时透传避免重复解析） }。纯函数：返回新 job，不改入参。
 export function reviewConsistency(job, html, opts = {}) {
   const zones = opts.zones || {};
   const locked = new Set(Object.entries(zones).filter(([, z]) => z && z.locked === true).map(([zid]) => zid));
   const ctx = {
-    paras: parasOf(String(html ?? '')),
+    paras: opts.paras || parasOf(String(html ?? '')),
     gen: Number(job && job.evidenceGen) || 0,
     evidence: (job && job.evidence) || [],
     mats: opts.mats || [],
