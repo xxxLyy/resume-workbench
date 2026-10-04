@@ -1716,6 +1716,12 @@ if (!/line-height:1\.38/.test(String(m.typo || ""))) bad("typo CSS 应更新行�
 ' "$RESUME_ROOT/docs-meta.json" "$T8DOC" || fail 'S4a-T10 apply 落账（typo CSS + 轮次）'
 echo '✅ S4a-T10 导出页诊断面板 + apply 端点（400 路径 / 下限钳制 / typo 通道落账 + 轮次推进）'
 
+# —— S4a-T11：favicon / 首页文档卡岗位草稿与版本状态徽章 / 素材确认范围文案 ——
+curl -sf "$B/favicon.ico" | grep -q '<svg' || fail 'S4a-T11 favicon 应 200 svg'
+curl -sf "$B/" | grep -q '审阅中\|草稿\|可投递' || fail 'S4a-T11 首页文档卡缺岗位草稿版本状态徽章'
+curl -sf "$B/materials" | grep -q '待确认素材标记为已确认' || fail 'S4a-T11 素材全部确认文案未明示范围'
+echo '✅ S4a-T11 favicon + 文档卡版本状态 + 素材范围文案'
+
 # ===== 16. 浏览器级保存语义（可选，需要本机 Chromium）=====
 if node test-editor.mjs "$B" "$DOCID" "$RESUME_ROOT"; then
   echo '✅ 浏览器级保存/恢复/冲突/审阅验证'

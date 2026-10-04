@@ -1982,7 +1982,7 @@ async function handler(req, res) {
           : `<button onclick="matStatus('${m.id}','confirmed')">确认可用于生成</button>`}
           ${m.factStatus !== 'outdated' ? `<button class="secondary" onclick="matStatus('${m.id}','outdated')">标记过时</button>` : `<button class="secondary" onclick="matStatus('${m.id}','pending')">恢复待确认</button>`}
           <button class="secondary" onclick="matEdit('${m.id}')">✏️ 编辑</button> <button class="danger" onclick="matDel('${m.id}')">🗑 删除</button></div>
-        <details style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--mut)">事实层</summary>
+        <details open style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--mut)">事实层</summary>
           <form class="mat-facts" style="margin-top:6px;font-size:13px" onsubmit="return matFacts(event,'${m.id}')">
             ${FACT_KEYS.map((k) => `<p style="margin:2px 0">${FACT_LABELS[k]} <input name="f_${k}" value="${escAttr((m.facts || {})[k] || '')}" style="width:60%"></p>`).join('')}
             <p style="margin:2px 0">状态 <select name="f_factStatus">
@@ -2026,13 +2026,26 @@ async function handler(req, res) {
         var f = new FormData(e.target), facts = {};
         for (var en of f.entries()) if (en[0].indexOf('f_') === 0) facts[en[0].slice(2)] = en[1];
         var factStatus = facts.factStatus; delete facts.factStatus;
+        var form = e.target;
         fetch('/mat/update', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: id, facts: facts, factStatus: factStatus }) }).then(function () { location.reload(); });
+          body: JSON.stringify({ id: id, facts: facts, factStatus: factStatus }) }).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        }).then(function () { location.reload(); }).catch(function (err) {
+          matShowErr(form, '保存失败：' + (err.message || err) + '（输入已保留，可重试）');
+        });
         return false;
       }
       function matConfirmAll() {
-        if (!confirm('把全部 ' + MATS.length + ' 条素材标记为已确认？先确认事实层与表达层内容准确再操作。')) return;
-        fetch('/mat/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: MATS.map(function (m) { return m.id; }), confirmed: true }) }).then(function () { location.reload(); });
+        var pend = MATS.filter(function (m) { return m.factStatus !== 'confirmed'; });   // S4a-T11：范围=待确认素材（文案明示）
+        if (!pend.length) { alert('没有待确认的素材。'); return; }
+        if (!confirm('将把 ' + pend.length + ' 条待确认素材标记为已确认——请先确认事实层内容准确。')) return;
+        fetch('/mat/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: pend.map(function (m) { return m.id; }), confirmed: true }) }).then(function () { location.reload(); });
+      }
+      function matShowErr(form, msg) {
+        var el = form.querySelector('.mat-err');
+        if (!el) { el = document.createElement('div'); el.className = 'mat-err'; el.style.cssText = 'color:var(--err);font-size:12px;margin-top:4px'; form.appendChild(el); }
+        el.textContent = msg;   // 保留输入：不清空、不 reload，可原样重试
       }
       function matEdit(id) {
         var m = MATS.find(function (x) { return x.id === id; });
@@ -2056,7 +2069,12 @@ async function handler(req, res) {
             technical: document.getElementById('mtech').value.trim(), interview: document.getElementById('mitv').value.trim(),
             attach: document.getElementById('mattach').value.trim(), confirm: true,
             tags: document.getElementById('mtags').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean) }) });
-        if (r.ok) location.reload(); else document.getElementById('matmsg').textContent = ' ❌ ' + (await r.text());
+        try {
+          if (r.ok) { location.reload(); return; }
+          document.getElementById('matmsg').textContent = ' ❌ ' + (await r.text());
+        } catch (err) {
+          document.getElementById('matmsg').textContent = ' ❌ 保存失败：' + (err.message || err) + '（输入已保留，可重试）';
+        }
       });
       document.getElementById('matSearch').addEventListener('input', function () {
         var q = this.value.toLowerCase();
@@ -2319,7 +2337,6 @@ async function handler(req, res) {
             <select style="font-size:12px;padding:2px" aria-label="状态" onchange="if(this.value)appPatch('${a.id}',{status:this.value})"><option value="">⇅</option>${APP_STATUSES.map((s) => `<option value="${s}"${s === a.status ? ' selected' : ''}>${s}</option>`).join('')}</select>
             <a href="/app?id=${escHtml(a.id)}">详情</a>
             <button class="secondary" style="padding:2px 8px" aria-label="快速编辑" onclick="appEdit('${a.id}')">✏️</button>
-            <a href="/edit?id=${escHtml(a.docId)}&jdfrom=${escHtml(a.id)}" aria-label="用此 JD 匹配">🎯</a>
             <button class="danger" style="padding:2px 8px;min-height:28px" aria-label="删除投递" onclick="appDel('${a.id}')">🗑</button>
           </div>
         </div>`;
@@ -3067,6 +3084,10 @@ async function handler(req, res) {
         'X-PDF-Stale': rst.stale ? '1' : '0'
       });
       return fs.createReadStream(pdfPath(id)).on('error', () => res.destroy()).pipe(res);
+    }
+    if (req.method === 'GET' && url.pathname === '/favicon.ico') {
+      const faviconSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#2f5d50"/><text x="16" y="22" font-size="15" text-anchor="middle" fill="#fff" font-family="serif">履</text></svg>';
+      return send(200, faviconSvg, 'image/svg+xml');
     }
     if (req.method === 'GET' && url.pathname === '/export') {
       if (!VALID_ID.test(id)) return send(400, 'invalid id', 'text/plain');

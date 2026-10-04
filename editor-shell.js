@@ -91,6 +91,12 @@
     + '.ed-nav-entry:hover{background:var(--ed-bg)}'
     + '.ed-nav-entry .ed-entry-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
     + '.ed-nav-entry.ed-entry-off .ed-entry-name{text-decoration:line-through;color:var(--ed-mut)}'
+    + '.ed-nav-entry{position:relative}'
+    + '.ed-nav-more{min-width:22px;min-height:22px;padding:0 4px;border:none;background:transparent;color:var(--ed-mut);cursor:pointer;border-radius:5px;font-size:12px}'
+    + '.ed-nav-more:hover{background:var(--ed-bg)}'
+    + '.ed-nav-menu{position:absolute;right:0;top:100%;background:var(--ed-panel);border:1px solid var(--ed-line);border-radius:8px;padding:4px;display:flex;flex-direction:column;min-width:112px;z-index:30;box-shadow:0 4px 14px rgba(60,45,25,.12)}'
+    + '.ed-nav-menu button{text-align:left;border:none;background:transparent;padding:4px 8px;font-size:11px;color:var(--ed-ink);cursor:pointer;border-radius:5px;min-height:24px}'
+    + '.ed-nav-menu button:hover:not([disabled]){background:var(--ed-bg)}'
     + '.ed-nav-entry .ed-nav-ops{display:inline-flex;gap:2px;flex:none}'
     + '.ed-nav-entry .ed-nav-ops button{min-width:20px;min-height:20px;padding:0;border:none;background:transparent;color:var(--ed-mut);cursor:pointer;border-radius:4px;font-size:10px;line-height:1}'
     + '.ed-nav-entry .ed-nav-ops button:hover{background:var(--ed-line);color:var(--ed-ink)}'
@@ -683,24 +689,68 @@
             b.addEventListener('click', function (e) { e.stopPropagation(); window.__edPushUndo(title); fn(); notifyEdit(); renderNav(); });
             eops.appendChild(b);
           };
-          mk('↑', '上移条目', function () {
+          mk(off ? '显' : '隐', (off ? '显示' : '隐藏') + '该条目（不删除内容，PDF 同步）', function () {
+            setEntryHidden(en, !off);
+          }, false);
+          // S4a-T11：复制/删除/排序收进 ⋯ 菜单——键盘可达（Tab 聚焦 + Enter 展开 + Esc 关闭 + 方向键导航）
+          var moveUp = function () {
             var prev = entries[idx - 1];
             if (!prev) return;
             sheet.insertBefore(en.head, prev.head);
             if (en.ul) sheet.insertBefore(en.ul, prev.head);
-          }, idx === 0);
-          mk('↓', '下移条目', function () {
+          };
+          var moveDown = function () {
             var next = entries[idx + 1];
             if (!next) return;
             sheet.insertBefore(next.head, en.head);
             if (next.ul) sheet.insertBefore(next.ul, en.head);
-          }, idx === entries.length - 1);
-          mk(off ? '显' : '隐', (off ? '显示' : '隐藏') + '该条目（不删除内容，PDF 同步）', function () {
-            setEntryHidden(en, !off);
-          }, false);
-          // S2-T5 基础编辑：条目复制 / 删除（title 字面量与块 8 断言一致；mk 已内置压栈+通知）
-          mk('⧉', '复制条目', function () { dupEntry(en); });
-          mk('🗑', '删除条目', function () { delEntry(en); });
+          };
+          var more = document.createElement('button');
+          more.type = 'button';
+          more.className = 'ed-nav-more';
+          more.textContent = '⋯';
+          more.title = '条目操作（上移/下移/复制/删除）';
+          more.setAttribute('aria-haspopup', 'true');
+          more.setAttribute('aria-expanded', 'false');
+          var menu = document.createElement('div');
+          menu.className = 'ed-nav-menu';
+          menu.hidden = true;
+          menu.setAttribute('role', 'menu');
+          var closeMenu = function () { menu.hidden = true; more.setAttribute('aria-expanded', 'false'); };
+          var mkItem = function (icon, name, fn, dis) {
+            var b = document.createElement('button');
+            b.type = 'button';
+            b.setAttribute('role', 'menuitem');
+            b.textContent = icon + ' ' + name;
+            b.title = name;
+            b.setAttribute('aria-label', name + '：' + en.title);   // 与旧内联按钮同契约（mk：title+'：'+条目名）
+            if (dis) b.disabled = true;
+            // 与 mk 同一包装：压栈 → 执行 → 通知编辑 → 重绘导航（缺压栈会丢撤销能力）
+            b.addEventListener('click', function (e) { e.stopPropagation(); closeMenu(); window.__edPushUndo(name); fn(); notifyEdit(); renderNav(); });
+            return b;
+          };
+          menu.appendChild(mkItem('↑', '上移条目', moveUp, idx === 0));
+          menu.appendChild(mkItem('↓', '下移条目', moveDown, idx === entries.length - 1));
+          menu.appendChild(mkItem('⧉', '复制条目', function () { dupEntry(en); }));   // mk 已内置压栈+通知（S2-T5 语义不变）
+          menu.appendChild(mkItem('🗑', '删除条目', function () { delEntry(en); }));
+          more.addEventListener('click', function () {
+            var opening = menu.hidden;
+            menu.hidden = !opening;
+            more.setAttribute('aria-expanded', String(opening));
+            if (opening) { var f = menu.querySelector('button:not([disabled])'); if (f) f.focus(); }
+          });
+          more.addEventListener('keydown', function (e) {
+            if (e.key === 'ArrowDown' && !menu.hidden) { e.preventDefault(); var f = menu.querySelector('button:not([disabled])'); if (f) f.focus(); }
+          });
+          menu.addEventListener('keydown', function (e) {
+            var items = Array.prototype.filter.call(menu.querySelectorAll('button'), function (b) { return !b.disabled; });
+            var i = items.indexOf(document.activeElement);
+            if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+            else if (e.key === 'Escape') { e.preventDefault(); closeMenu(); more.focus(); }
+          });
+          eops.appendChild(more);
+          eops.appendChild(menu);
           row.appendChild(eops);
           sub.appendChild(row);
         });
@@ -720,7 +770,8 @@
   // 定位闪记：CSS Custom Highlight API（零 DOM 变更 → 瞬态不落盘；不支持时只滚动定位，不降级为 class）
   function flashEl(el) {
     if (!el) return;
-    try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { }
+    var smooth = !(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+    try { el.scrollIntoView({ block: 'center', behavior: smooth ? 'smooth' : 'auto' }); } catch (e) { }
     if (!HL_OK) return;
     var r = document.createRange();
     r.selectNodeContents(el);

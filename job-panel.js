@@ -77,6 +77,7 @@
   var root = document.createElement('div');
   root.id = 'jp-root';
   root.className = 'jp';
+  root.textContent = '加载中…';   // S4a-T11：加载态（首屏数据到达后由 render 覆盖；失败提示重试入口）
   pane.appendChild(root);
 
   var job = null, doc = null, busy = false;
@@ -689,7 +690,8 @@
   function locateZid(zid) {
     var el = sheet.querySelector('[data-zid="' + zid + '"]');
     if (!el) { note('⚠️ 未找到定位目标（内容可能已变化）'); return; }
-    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    var smooth = !(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+    el.scrollIntoView({ block: 'center', behavior: smooth ? 'smooth' : 'auto' });
     if (window.CSS && CSS.highlights) {
       var r = document.createRange();
       r.selectNodeContents(el);
@@ -1090,13 +1092,13 @@
 
   // 初始进入：读 reviewPos 恢复段与筛选（刷新后位置恢复）
   api('/job/changes?id=' + DOC_ID).then(function (d) {
-    if (!d.ok) return;
+    if (!d.ok) { root.textContent = '加载失败：不是岗位草稿或读取错误。'; return; }
     job = d.job; doc = d.doc; docRev = d.rev || 0;
     applyReviewPos();
     render();
     var gt = job.genTasks || {};
     if ((gt.evidence && gt.evidence.status === 'running') || (gt.changes && gt.changes.status === 'running')) schedulePoll();
-  }).catch(function () {});
+  }).catch(function () { root.textContent = '加载失败：网络错误（切到其他 Tab 再切回可重试）。'; });
 
   // 外壳 Tab 切换到「审阅」时刷新（反映最新落盘状态；不重置当前段）
   window.addEventListener('ed-review-refresh', function () { refresh(); });
