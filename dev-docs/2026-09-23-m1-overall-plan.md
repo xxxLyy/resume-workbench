@@ -94,3 +94,5 @@
 - 每个 S 结束都是可用停止点；M1 结束即"自用稳定"，可不再继续。
 - 下一份文档顺序：S1 design（S0 完成后）→ S1 plan → S2 plan 与 S3 plan（分开：视觉改造 vs 编辑行为）→ S4a 三任务组 plan。
 - M2（S4b/S5/S6/S8）与 M3（S7/S9/开源检查）保持阶段级规划，开工前再细化；依赖自洽性见路线图 §3.1。
+
+> **2026-10-05 更新（S4a 交付）**：S4a T0–T12 已全部实施并通过四件套（test-structure / test-render / privacy-check / test.sh，test.sh 332✅）。M1（自用稳定）五阶段代码全部就绪，待用户授权重启 launchd 服务即完成上线。提交链 e67cd7f…4810a09（S4a-T7 至 T11 补提交），基线 bbbbad60 冻结件零偏差。终审记录见 `dev-docs/2026-10-05-s4a-final-review.md`。
