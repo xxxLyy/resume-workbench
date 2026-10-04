@@ -868,15 +868,45 @@
     root.appendChild(hint);
   }
 
-  // ===== 段三「导出检查」：占位（S4a-T10 落地）=====
+  // ===== 段三「导出检查」：三级检查 + 两级完成（S4a-T10：与导出页共用 exportChecks，jobViewLive 同源即时状态）=====
   function renderExport() {
+    var checks = job.checks || null;
     var box = document.createElement('div');
     box.className = 'jp-group';
-    box.innerHTML = '<h4>导出检查（第三步）</h4><div class="jp-meta">导出前的检查清单（事实冲突门控 / 待核对 / 风格建议）将在第三步落地。</div>';
+    var head4 = document.createElement('h4');
+    head4.textContent = '导出检查（第三步）';
+    box.appendChild(head4);
+    if (!checks) {
+      var meta0 = document.createElement('div');
+      meta0.className = 'jp-meta';
+      meta0.textContent = '检查数据不可用（非岗位草稿或读取失败）。';
+      box.appendChild(meta0);
+    } else {
+      var gate = document.createElement('div');
+      gate.className = 'jp-meta';
+      gate.textContent = checks.blocking && checks.blocking.length
+        ? '⛔ 阻止导出：未解决事实冲突 ' + checks.blocking.length + ' 条（含稍后处理的冲突）。'
+        : '✅ 允许导出：无未解决事实冲突。';
+      box.appendChild(gate);
+      var v = checks.check || {};
+      var nThin = (v.thin || []).length, nStale = (v.stale || []).length, nVerify = (v.toVerify || []).length;
+      var suggest = document.createElement('div');
+      suggest.className = 'jp-meta';
+      suggest.textContent = '建议核对（不阻塞导出）：'
+        + (nVerify ? '待核对候选 ' + nVerify + '；' : '')
+        + (nThin ? '表达不充分证据 ' + nThin + '；' : '')
+        + (nStale ? '来源已变化证据 ' + nStale + '；' : '')
+        + (!nVerify && !nThin && !nStale ? '无。' : '');
+      box.appendChild(suggest);
+      var done = document.createElement('div');
+      done.className = 'jp-meta';
+      done.textContent = checks.reviewComplete ? '✅ 整体审阅完成（跨全部批次：无待处理/稍后处理/待核对项）。' : '整体审阅未完成（仍有待处理/稍后处理/待核对项）。';
+      box.appendChild(done);
+    }
     root.appendChild(box);
     var exp = document.createElement('a');
     exp.href = '/export?id=' + DOC_ID;
-    exp.textContent = '前往导出页';
+    exp.textContent = '前往导出页（含排版诊断）';
     exp.style.cssText = 'font-size:12px';
     root.appendChild(exp);
   }

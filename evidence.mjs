@@ -350,3 +350,79 @@ export function exportChecks(job, ctx = {}) {
     reviewComplete: open === 0 && blocking.length === 0 && toVerify.length === 0   // 整体完成（job 级）：无 pending 且无 skipped + 冲突清零 + 待核对空
   };
 }
+
+// ===== 排版诊断（S4a-T10 设计 §5.3 v1.3：结构性事实表述，无置信度分级、无空间占比）=====
+// pages = [{ page: 页码, text: pdftotext 该页文本 }]；ctx = {
+//   paras: [{zid, text}]（正文段落，来源映射前缀匹配用）,
+//   sections: [{title}]（章节标题，跨页诊断用）,
+//   typo: { fontSize(pt), lineHeight(倍数), paraGap(em) }, targetPages（默认 2）, rounds（已完成迭代轮数） }。
+// 输出：{ over, items:[{text, zid?, page?}], apply:{fontSize,lineHeight,paraGap}|null, atFloor, rounds, topLong:[{zid,text,len}] }。
+// 定位规则：页文本行与段落文本（空白归一）前缀匹配 → 命中给 zid；不命中只报页码，不猜测定位。
+// 单位落地说明：设计 §5.3 写 pt/em，实现侧 typo 通道为 px/倍数/mm（editor-shell typoCss）——按实现单位落地，设计偏差记 T12 落地修正。
+const LAYOUT_FLOORS = { fontSize: 12, lineHeight: 1.3, paraGap: 0.4 };
+const LAYOUT_STEPS = { fontSize: -0.5, lineHeight: -0.05, paraGap: -0.1 };
+export function layoutDiagnose(pages, ctx = {}) {
+  const norm = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
+  const pagesArr = (Array.isArray(pages) ? pages : []).filter((p) => p && typeof p.text === 'string');
+  const totalPages = pagesArr.length;
+  const target = Number(ctx.targetPages) || 2;
+  const over = totalPages > target;
+  const rounds = Number(ctx.rounds) || 0;
+  const typo = { fontSize: Number(ctx.typo && ctx.typo.fontSize) || 10.5, lineHeight: Number(ctx.typo && ctx.typo.lineHeight) || 1.45, paraGap: Number(ctx.typo && ctx.typo.paraGap) || 0.35 };
+  const paras = (ctx.paras || []).filter((p) => p && p.zid && p.text);
+  const items = [];
+  // 来源映射：页文本按行拆（pdftotext 保行结构），行前缀 ↔ 段落文本匹配 → zid
+  const pageLines = pagesArr.map((p) => ({ page: p.page, lines: p.text.split('\n').map(norm).filter(Boolean) }));
+  const locate = (needle) => {
+    const n = norm(needle);
+    if (!n) return null;
+    for (const pl of pageLines) {
+      for (let i = 0; i < pl.lines.length; i++) {
+        const line = pl.lines[i];
+        const hitPara = paras.find((p) => norm(p.text).startsWith(line) || line.startsWith(norm(p.text).slice(0, Math.min(20, norm(p.text).length))));
+        if (hitPara && (n.includes(line) || line.includes(n.slice(0, Math.min(24, n.length))))) return { zid: hitPara.zid, page: pl.page, lineIdx: i };
+      }
+    }
+    return null;
+  };
+  // 跨页标题：章节标题落在某页最后 2 行、其章节内容起于次页前 3 行 → 结构性事实表述
+  for (const sec of (ctx.sections || [])) {
+    const t = norm(sec && sec.title);
+    if (!t) continue;
+    for (const pl of pageLines) {
+      const tail = pl.lines.slice(-2);
+      const atTail = tail.some((l) => l.includes(t) && l.length <= t.length + 12);
+      if (!atTail || pl.page >= totalPages) continue;
+      const next = pageLines.find((x) => x.page === pl.page + 1);
+      const headNext = next ? next.lines.slice(0, 3).some((l) => l.length > 0 && !l.includes(t)) : false;
+      items.push({
+        text: `标题「${t}」出现在第 ${pl.page} 页最后 2 行内${headNext ? '、其内容位于第 ' + (pl.page + 1) + ' 页前 3 行' : ''}——请以实际渲染核对，可考虑将该标题与其内容保持同页`,
+        page: pl.page
+      });
+    }
+  }
+  // 末页偏少（定性，不做占比）：末页归一文本量显著低于前页均值
+  if (totalPages >= 2) {
+    const last = pageLines[pageLines.length - 1];
+    const prevAvg = pageLines.slice(0, -1).reduce((s2, p) => s2 + p.lines.join('').length, 0) / Math.max(1, pageLines.length - 1);
+    if (last && prevAvg > 0 && last.lines.join('').length < prevAvg / 3) {
+      const loc = locate(last.lines.slice(0, 3).join(' '));
+      items.push({ text: '末页内容明显偏少，建议核对是否可并入上一页', zid: loc ? loc.zid : undefined, page: last.page });
+    }
+  }
+  // 参数建议：固定步长，不做自适应大步；下限内不再给压缩建议（转人工取舍）
+  const aboveFloor = typo.fontSize > LAYOUT_FLOORS.fontSize || typo.lineHeight > LAYOUT_FLOORS.lineHeight || typo.paraGap > LAYOUT_FLOORS.paraGap;
+  const step1 = (v, floor) => (v > floor ? Math.max(floor, +(v + LAYOUT_STEPS.fontSize).toFixed(2)) : v);
+  const apply = over && rounds < 3 && aboveFloor
+    ? {
+        fontSize: step1(typo.fontSize, LAYOUT_FLOORS.fontSize),
+        lineHeight: typo.lineHeight > LAYOUT_FLOORS.lineHeight ? Math.max(LAYOUT_FLOORS.lineHeight, +(typo.lineHeight + LAYOUT_STEPS.lineHeight).toFixed(2)) : typo.lineHeight,
+        paraGap: typo.paraGap > LAYOUT_FLOORS.paraGap ? Math.max(LAYOUT_FLOORS.paraGap, +(typo.paraGap + LAYOUT_STEPS.paraGap).toFixed(2)) : typo.paraGap
+      }
+    : null;
+  const atFloor = !aboveFloor;
+  // 人工取舍候选：最长的 3 个正文段落（超页且到上限/下限时列出，点击跳转定位）
+  const topLong = paras.map((p) => ({ zid: p.zid, text: p.text, len: norm(p.text).length }))
+    .sort((a, b) => b.len - a.len).slice(0, 3);
+  return { over, items, apply, atFloor, rounds, topLong, pages: totalPages, target };
+}

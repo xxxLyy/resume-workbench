@@ -17,7 +17,7 @@ import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, 
 import { rotateLogIfNeeded } from './logrotate.mjs';
 import { freezeHtml, normalizeToCurrent, splitDoc, staleInfo } from './freeze.mjs';
 import { beginTx, commitTx, dropSupersededTx, recoverPending, withDocLock, updateMeta, updateMetaAll, rootLock, atomicWrite, LockHeld } from './tx.mjs';
-import { applyOps, reviewConsistency, refFresh, buildEvidencePrompt, parseEvidence, guardOps } from './evidence.mjs';
+import { applyOps, reviewConsistency, refFresh, buildEvidencePrompt, parseEvidence, guardOps, exportChecks, layoutDiagnose } from './evidence.mjs';
 import { assembleTemplate, themeRegistration } from './template.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -354,6 +354,8 @@ function jobViewLive(id, m) {
     const refs = (Array.isArray(e.refs) ? e.refs : []).map((r) => ({ ...r, fresh: refFresh(r, { mats, paras }) }));
     return { ...e, refs, stale: refs.length > 0 && refs.every((r) => !r.fresh) };
   });
+  // S4a-T10：导出检查三级（阻止/建议核对/风格）与两级完成——与导出页共用同一纯函数，状态取即时视图（非落盘快照）
+  out.checks = exportChecks(out, { mats, paras });
   return out;
 }
 const exportsOf = (m) => (Array.isArray(m && m.exports) ? m.exports : []);
@@ -1794,6 +1796,10 @@ async function handler(req, res) {
         jobId: kindOf(metaNow) === 'job' ? id : null,             // 岗位草稿导出 → 草稿文档 id；母版 → null
         bodyHash: frozen.bodyHash,
         pages,
+        overpage: pages > (Number(metaNow.job && metaNow.job.brief && metaNow.job.brief.pages) || 2),   // S4a-T10：超页标记
+        company: metaNow.company || '',                           // S4a-T10：导出记录五要素（公司/岗位/正文 rev/页数/超页）
+        role: metaNow.role || '',
+        rev: Number(metaNow.rev) || 0,
         theme: metaNow.theme || normalizeToCurrent(frozen.html).theme || null
       };
       let out = null;
@@ -1808,6 +1814,38 @@ async function handler(req, res) {
       });
       try { pruneSnapshots(id, sDir); } catch {}   // 导出冻结快照同受配额（被 exports 引用者经 protectedSnaps 豁免；并发落败方的孤儿快照可被清理）
       return sendJson(200, { ok: true, exportId: out.exportId, url: '/history-pdf?exportId=' + encodeURIComponent(out.exportId), renderInputId: out.renderInputId, file: out.file, reused: out !== rec });
+    }
+    // ===== S4a-T10：应用本轮排版建议（半自动第 N 轮；typo 通道 meta.typo + layoutRounds+1 → 重渲染）=====
+    if (req.method === 'POST' && url.pathname === '/export/layout-apply') {
+      if (!fs.existsSync(docPath(id))) return sendJson(404, { ok: false, error: 'doc not found' });
+      const body = JSON.parse(await readBody(req) || '{}');
+      const FLOORS = { fontSize: 12, lineHeight: 1.3, paraGap: 0.4 };
+      const v = { fontSize: Number(body.fontSize), lineHeight: Number(body.lineHeight), paraGap: Number(body.paraGap) };
+      for (const k of Object.keys(FLOORS)) {
+        if (!Number.isFinite(v[k])) return sendJson(400, { ok: false, error: k + ' 必须是数字' });
+        if (v[k] < FLOORS[k]) return sendJson(400, { ok: false, error: k + ' 低于最小可读下限（' + FLOORS[k] + '）' });
+      }
+      const m0 = loadMeta()[id] || {};
+      const rounds = (Number(m0.layoutRounds) || 0) + 1;
+      const t = String(m0.typo || '');
+      const css = '/*TYPO-CUSTOM*/'
+        + 'body{font-size:' + v.fontSize + 'px;line-height:' + v.lineHeight + '}'
+        + (t.match(/\.sheet\{[^}]*\}/) ? '' : '.sheet{padding-top:9.4mm;padding-bottom:9.4mm}')
+        + '.plain-lines p{margin-bottom:' + v.paraGap + 'mm}li{margin-top:' + v.paraGap + 'mm;margin-bottom:' + v.paraGap + 'mm}'
+        + (t.match(/\.section\{[^}]*\}/) || '.section{margin-top:2.9mm}');
+      // typo CSS 其余字段（页边距/章节距）原值保留：从旧 CSS 抽取缺失字段用默认值拼回
+      const cssFull = t.includes('/*TYPO-CUSTOM*/') ? t
+        .replace(/body\{[^}]*\}/, 'body{font-size:' + v.fontSize + 'px;line-height:' + v.lineHeight + '}')
+        .replace(/\.plain-lines p\{margin-bottom:[\d.]+mm\}/, '.plain-lines p{margin-bottom:' + v.paraGap + 'mm}')
+        .replace(/li\{margin-top:[\d.]+mm;margin-bottom:[\d.]+mm\}/g, 'li{margin-top:' + v.paraGap + 'mm;margin-bottom:' + v.paraGap + 'mm}')
+        : css;
+      updateMeta(root, id, (m) => ({ ...(m || {}), typo: cssFull, layoutRounds: rounds }));
+      const r = await renderCurrent(id);
+      if (!r.ok) return sendJson(500, { ok: false, error: '重渲染失败（详见服务日志），参数已保存，可重试' });
+      const rst = currentRenderState(id);
+      let pages = 0;
+      try { pages = parseInt(execFileSync('pdfinfo', [pdfPath(id)]).toString().match(/Pages:\s*(\d+)/)?.[1] || '0', 10); } catch { pages = 0; }
+      return sendJson(200, { ok: true, rounds, pages, typo: cssFull });
     }
     // ===== 不可变导出产物下载（S1-T8）：按 exportId（全局唯一）跨文档 meta.exports 查找并伺服；纯读 =====
     if (req.method === 'GET' && url.pathname === '/history-pdf') {
@@ -3049,12 +3087,14 @@ async function handler(req, res) {
       const lines = docToText(fs.readFileSync(docPath(id), 'utf8'), { includeHidden: false }).split('\n');
       const projects = countProjects(docPath(id));
       let pages = 0, rows = [], checksOk = false;
+      const pageTexts = [];   // S4a-T10：分页文本层（排版诊断输入）
       if (pdfStat) {
         try { pages = parseInt(execFileSync('pdfinfo', [pdfPath(id)]).toString().match(/Pages:\s*(\d+)/)?.[1] || '0', 10); } catch { pages = 0; }
         const blank = [], orphan = [];
         for (let p = 1; p <= pages; p++) {
           let t = '';
           try { t = execFileSync('pdftotext', ['-f', String(p), '-l', String(p), pdfPath(id), '-'], { timeout: 15000 }).toString('utf8'); } catch {}
+          pageTexts.push({ page: p, text: t });
           const clean = t.replace(/\s+/g, ' ').trim();
           if (clean.length < 10) blank.push(p);
           const lastLine = t.split('\n').map((l) => l.trim()).filter(Boolean).pop() || '';
@@ -3068,6 +3108,26 @@ async function handler(req, res) {
         checksOk = pages > 0 && !blank.length && totalChars >= 200;
       }
       const suggestions = pageSuggestions(lines, { projects }).map((s) => `<li>${escHtml(s.text)}</li>`).join('');
+      // S4a-T10：排版诊断（渲染级，半自动 3 轮；结构性事实表述；下限内不再压缩；超页二出路）+ 导出检查三级（与审阅 Tab 同源 jobViewLive）
+      const jobLive = jobViewLive(id, meta);
+      const expChecks = exportChecks(jobLive, { mats: loadMats(), paras: parasOf(fs.readFileSync(docPath(id), 'utf8')) });
+      const typoVals = (() => {
+        const t = String(meta.typo || '');
+        const num = (re, d) => { const m = t.match(re); return m ? parseFloat(m[1]) : d; };
+        return { fontSize: num(/font-size:([\d.]+)px/, 13), lineHeight: num(/line-height:([\d.]+)/, 1.43), paraGap: num(/margin-bottom:([\d.]+)mm/, 0.45) };
+      })();
+      const secTitles = sectionsOf(fs.readFileSync(docPath(id), 'utf8')).map((x) => ({ title: x.title }));
+      const layout = pdfStat && pages > 0
+        ? layoutDiagnose(pageTexts, { paras: parasOf(fs.readFileSync(docPath(id), 'utf8')), sections: secTitles, typo: typoVals, targetPages: (job && job.brief && job.brief.pages) || 2, rounds: Number(meta.layoutRounds) || 0 })
+        : null;
+      const layoutBlock = !layout ? '' : `
+    <div class="card" style="margin-top:12px"><b>排版诊断</b><span style="font-size:12px;color:var(--mut)">（排版迭代 ${layout.rounds}/3 轮 · 实际 ${layout.pages} 页 / 目标 ${layout.target} 页 · 请以实际渲染核对）</span>
+      ${layout.items.length ? `<ul style="font-size:13px">${layout.items.map((it) => `<li>${escHtml(it.text)}${it.zid ? `（<a href="/edit?id=${id}">定位 ${escHtml(it.zid)}</a>）` : it.page ? `（第 ${it.page} 页）` : ''}</li>`).join('')}</ul>` : '<p style="font-size:13px;color:var(--mut)">无跨页标题 / 末页偏少等结构性事项。</p>'}
+      ${layout.over && layout.apply ? `<div style="font-size:13px">建议本轮参数：字号 ${typoVals.fontSize}px → <b>${layout.apply.fontSize}px</b> · 行高 ${typoVals.lineHeight} → <b>${layout.apply.lineHeight}</b> · 段距 ${typoVals.paraGap}mm → <b>${layout.apply.paraGap}mm</b>
+        <form method="post" action="/export/layout-apply?id=${id}" style="display:inline;margin-left:8px"><button class="secondary" type="submit">应用本轮建议并重渲染</button></form></div>` : ''}
+      ${layout.over && (!layout.apply) ? `<div style="font-size:13px">${layout.atFloor ? '已达最小可读参数下限（字号 ≥12px、行高 ≥1.3、段距 ≥0.4mm），不再给压缩建议。' : '已到排版迭代 3 轮上限。'}超页出路二选一：<b>a) 人工取舍</b>——最长的候选精简项：${layout.topLong.map((p) => `<a href="/edit?id=${id}">${escHtml(p.text.slice(0, 18))}…</a>`).join('、')}；<b>b) 超页导出</b>——PDF 正常下载，导出记录将标注「超页导出：${layout.pages} 页」。</div>` : ''}
+      <p style="font-size:12px;color:var(--mut)">内容精简（上方建议核对/风格建议）与排版调整（本轮参数）分别接受，互不替代。</p>
+    </div>`;
       // 事实冲突/重点审阅门控
       const pendingConflicts = (job ? job.changes.filter((c) => c.level === 'conflict' && ['pending', 'skipped'].includes(c.status)) : []);   // S4a-T9：skipped 的 conflict 仍参与门控
       const pendingImportant = (job ? job.changes.filter((c) => c.level === 'important' && c.status === 'pending') : []);
@@ -3117,6 +3177,23 @@ async function handler(req, res) {
         <div>· 下载/记录投递：都先 POST /export 创建不可变导出记录（幂等键 renderInputId，同内容重复点击不再记录），产物存 pdfs/history/，经 /history-pdf?exportId=… 下载<br>· 投递存档：绑定所选导出的冻结快照，之后改稿不影响它（绝不重冻后来的正文）<br>· 下方预览为「最新版」便利文件（可被覆盖）；导出记录与投递存档不指向它</div></details>
     </div>
     ${rows.length ? `<div class="card" style="margin-top:12px"><b>渲染检查</b>${rows.map((r) => `<div style="margin:6px 0">${r}</div>`).join('')}</div>` : ''}
+    ${layoutBlock}
+    <div class="card" style="margin-top:12px"><b>导出检查（内容侧，与审阅 Tab 同源即时状态）</b>
+      <div style="font-size:13px;margin:6px 0">建议核对：${(() => {
+        const v = expChecks.check || {};
+        const parts = [];
+        if (v.toVerify && v.toVerify.length) parts.push('待核对候选 ' + v.toVerify.length + ' 条');
+        const thin = (v.thin || []).length;
+        if (thin) parts.push('表达不充分证据 ' + thin + ' 条');
+        const stale = (v.stale || []).length;
+        if (stale) parts.push('来源已变化证据 ' + stale + ' 条');
+        const imp = (job ? job.changes.filter((c) => c.level === 'important' && c.status === 'pending').length : 0);
+        if (imp) parts.push('重点审阅 ' + imp + ' 条');
+        return parts.length ? parts.join('；') + '（不阻塞导出）' : '无';
+      })()}</div>
+      <div style="font-size:13px;margin:6px 0">整体审阅完成：${expChecks.reviewComplete ? '✅ 是（可进入投递）' : '否（仍有待处理/稍后处理/待核对项——不阻塞导出）'}</div>
+      ${suggestions ? `<div style="font-size:13px;margin:6px 0">风格建议：<ul style="margin:4px 0">${suggestions}</ul></div>` : ''}
+    </div>
     ${suggestions ? `<div class="card" style="margin-top:12px"><b>超过两页的可读处理建议</b><ol style="font-size:13px">${suggestions}</ol><p style="font-size:12px;color:var(--mut)">不需要靠缩小字号硬塞：优先去重、精简、隐藏低相关项目；也可以保留更多页。</p></div>` : ''}
     <div class="card" style="margin-top:12px">
       <b>导出记录</b> <span style="font-size:12px;color:var(--mut)">不可变产物；同内容（同 renderInputId）只记一条</span>

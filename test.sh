@@ -87,7 +87,8 @@ shift
 src=""; out=""
 if [ "\$1" = "--src" ]; then src="\$2"; out="\$4"; else src="$RESUME_ROOT/docs/\$1.html"; out="$RESUME_ROOT/pdfs/\$1.pdf"; fi
 mkdir -p "\$(dirname "\$out")"
-exec node "$TEST_DIR/mkpdf.mjs" "\$src" "\$out"
+node "$TEST_DIR/mkpdf.mjs" "\$src" "\$out"
+echo '{"renderInputId":"'"\$RESUME_RENDER_INPUT_ID"'","reproducible":true,"dpi":150}' > "\$out.env.json"   # S4a-T10：旁车与 test-structure 假渲染器同契约（POST /export 名实校验依赖）
 EOF
 chmod +x "$TEST_DIR/fake-render.sh"
 
@@ -1651,6 +1652,69 @@ curl -sf "$B/export?id=$T8DOC" | grep -q '存在 2 条事实冲突' || fail 'S4a
 curl -s -X POST "$B/job/changes?id=$T8DOC" -H 'Content-Type: application/json' -d '{"updates":[{"id":"t9-skipconf","status":"resolved"}]}' | grep -q '"ok":true' || fail 'S4a-T9 conflict 处理失败'
 curl -sf "$B/export?id=$T8DOC" | grep -q '存在 2 条事实冲突' && fail 'S4a-T9 resolved 后应退出门控计数'
 echo '✅ S4a-T9 skipped 状态机与导出门控（skipped 计入/恢复保持/resolved 退出）'
+
+# ===== S4a-T10：导出检查 + 排版诊断 + 超页出路（A8；A9 pixel-diff 由 test-render 覆盖）=====
+# —— a. layoutDiagnose 纯函数：结构性表述 / 固定步长 / 下限不压 / 3 轮上限 / 无置信无占比 ——
+node --input-type=module -e '
+import { layoutDiagnose } from "./evidence.mjs";
+const bad = (m) => { console.error("❌ S4a-T10 " + m); process.exit(1); };
+const pages = [{ page: 1, text: "工作经历\n负责交易系统 P99" }, { page: 2, text: "项目经历\n项目甲数据管道" }, { page: 3, text: "获奖情况" }];
+const ctx = { paras: [{ zid: "zaaa00001", text: "负责交易系统 P99" }], sections: [{ title: "项目经历" }], typo: { fontSize: 13, lineHeight: 1.43, paraGap: 0.45 }, rounds: 0 };
+const r1 = layoutDiagnose(pages, ctx);
+if (!r1.over || r1.pages !== 3 || r1.target !== 2) bad("超页判定");
+if (!r1.apply || r1.apply.fontSize !== 12.5 || r1.apply.lineHeight !== 1.38 || r1.apply.paraGap !== 0.4) bad("固定步长（-0.5px/-0.05/-0.1mm，下限钳制）: " + JSON.stringify(r1.apply));
+const s = JSON.stringify(r1);
+if (s.includes("置信") || /\d+%/.test(s)) bad("诊断不得含置信分级或占比百分比");
+if (!r1.items.some((i) => i.text.includes("末页内容明显偏少"))) bad("末页偏少应定性提示");
+const r2 = layoutDiagnose(pages, { ...ctx, typo: { fontSize: 12, lineHeight: 1.3, paraGap: 0.4 } });
+if (!r2.atFloor || r2.apply !== null) bad("下限内不再给压缩建议");
+const r3 = layoutDiagnose(pages, { ...ctx, rounds: 3 });
+if (r3.apply !== null) bad("3 轮上限后不再给建议");
+const r4 = layoutDiagnose(pages, { ...ctx, rounds: 2 });
+if (r4.apply === null || r4.rounds !== 2) bad("第 3 轮仍可给建议");
+if (!r1.topLong || r1.topLong.length !== 1 || r1.topLong[0].zid !== "zaaa00001") bad("人工取舍候选应带 zid");
+console.log("ok-layout");
+' || fail 'S4a-T10 layoutDiagnose 纯函数（步长/下限/上限/结构性表述）'
+echo '✅ S4a-T10 排版诊断纯函数（固定步长/下限钳制/3 轮上限/末页定性/无置信无占比/取舍候选带 zid）'
+
+# —— b. jobViewLive 挂 checks（审阅 Tab 与导出页同源）+ 导出记录五要素 ——
+curl -s "$B/job/changes?id=$T8DOC" | node -e '
+let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => {
+  const j = JSON.parse(s);
+  const bad = (m) => { console.error("❌ S4a-T10 checks 同源 " + m); process.exit(1); };
+  if (!j.job || !j.job.checks) bad("GET /job/changes 应带 checks");
+  if (typeof j.job.checks.canExport !== "boolean" || typeof j.job.checks.reviewComplete !== "boolean") bad("checks 缺 canExport/reviewComplete");
+  if (!Array.isArray(j.job.checks.blocking)) bad("checks 缺 blocking");
+});' || fail 'S4a-T10 jobViewLive checks 同源'
+R=$(curl -s -X POST "$B/export?id=$T8DOC")
+echo "$R" | grep -q '"ok":true' || fail "S4a-T10 导出失败: $(echo "$R" | head -c 220)"
+node -e '
+const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const rec = (m.exports || []).slice(-1)[0];
+const bad = (msg) => { console.error("❌ S4a-T10 导出记录 " + msg); process.exit(1); };
+if (!rec) bad("缺记录");
+if (rec.company !== "局部公司" || rec.role !== "后端") bad("公司/岗位: " + JSON.stringify({ c: rec.company, r: rec.role }));
+if (typeof rec.rev !== "number" || rec.rev < 1) bad("正文 rev: " + rec.rev);
+if (typeof rec.pages !== "number") bad("实际页数缺失");
+if (typeof rec.overpage !== "boolean") bad("超页标记缺失");
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC" || fail 'S4a-T10 导出记录五要素（公司/岗位/rev/页数/超页标记）'
+echo '✅ S4a-T10 checks 同源（jobViewLive）+ 导出记录增列（公司/岗位/rev/超页标记）'
+
+# —— c. /export 页排版诊断面板 + apply 端点（400 路径 + 轮次推进）——
+curl -sf "$B/export?id=$T8DOC" | grep -q '导出检查（内容侧' || fail 'S4a-T10 导出页缺内容侧检查面板'
+curl -s -X POST "$B/export/layout-apply?id=$T8DOC" -H 'Content-Type: application/json' -d '{"fontSize":"x","lineHeight":1.3,"paraGap":0.4}' | grep -q '"ok":false' || fail 'S4a-T10 apply 非数字应 400'
+R=$(curl -s -X POST "$B/export/layout-apply?id=$T8DOC" -H 'Content-Type: application/json' -d '{"fontSize":9,"lineHeight":1.3,"paraGap":0.4}')
+echo "$R" | grep -q '低于最小可读下限' || fail "S4a-T10 apply 低于下限应 400: $R"
+R=$(curl -s -X POST "$B/export/layout-apply?id=$T8DOC" -H 'Content-Type: application/json' -d '{"fontSize":12.5,"lineHeight":1.38,"paraGap":0.4}')
+echo "$R" | grep -q '"ok":true' || fail "S4a-T10 apply 合法应 200: $R"
+node -e '
+const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const bad = (msg) => { console.error("❌ S4a-T10 apply 落账 " + msg); process.exit(1); };
+if (m.layoutRounds !== 1) bad("layoutRounds 应 +1（得 " + m.layoutRounds + "）");
+if (!/font-size:12\.5px/.test(String(m.typo || ""))) bad("typo CSS 应更新字号: " + String(m.typo || "").slice(0, 80));
+if (!/line-height:1\.38/.test(String(m.typo || ""))) bad("typo CSS 应更新行高");
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC" || fail 'S4a-T10 apply 落账（typo CSS + 轮次）'
+echo '✅ S4a-T10 导出页诊断面板 + apply 端点（400 路径 / 下限钳制 / typo 通道落账 + 轮次推进）'
 
 # ===== 16. 浏览器级保存语义（可选，需要本机 Chromium）=====
 if node test-editor.mjs "$B" "$DOCID" "$RESUME_ROOT"; then
