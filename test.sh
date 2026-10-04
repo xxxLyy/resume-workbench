@@ -1193,7 +1193,7 @@ let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => {
   if (ev2.stale === true) bad("fresh 时条目不应标 stale");
   const dep = j.changes.find((c) => c.id === "t6-refdep");
   const old = j.changes.find((c) => c.id === "t6-batchold");
-  if (!(dep.consistency || []).length) bad("t6-refdep 应无来源失效命中: " + JSON.stringify(dep.consistency));
+  if ((dep.consistency || []).includes("ref-stale") || (dep.consistency || []).includes("batch-stale")) bad("t6-refdep 应无来源失效命中: " + JSON.stringify(dep.consistency));
   if (!(old.consistency || []).includes("batch-stale")) bad("旧批次引用应命中 batch-stale: " + JSON.stringify(old.consistency));
 });' || fail 'S4a-T6 即时计算基线（fresh/batch-stale GET 现算）'
 # 反例6：取消素材确认（factStatus→outdated，内容指纹未变）→ 不保存简历正文，GET 即见失效

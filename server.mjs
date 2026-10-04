@@ -185,7 +185,8 @@ async function runGenTask(id, kind, taskId) {
       const paras = parasOf(html);
       const p = buildEvidencePrompt({ jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: mats, zones: m0.zones || {}, paras });
       const raw = await chat(root, p.sys, p.user);
-      // 解析用批次号在锁外读取即可：同 kind 任务被 startGenTask 串行化（running 期间新任务 409），锁内必然一致。
+      // 解析用批次号在锁外读取即可：同 kind 任务被 startGenTask 串行化（running 期间新任务 409），锁内必然一致；
+      // 期间任务被取消/过期也不影响——迟到落账由 finishGenTask 的 taskId 不匹配与 genExpired 分支拒绝。
       const gen = (Number(m0.job.evidenceGen) || 0) + 1;
       const ev = parseEvidence(raw, { gen, mats, paras });
       if (!ev || !ev.length) return finishGenTask(id, kind, taskId, null, '模型输出无法解析为证据表，未替换任何证据');
