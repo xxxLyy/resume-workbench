@@ -102,4 +102,4 @@ launchctl kickstart -k gui/$(id -u)/com.lhx.resume-server   # 重启常驻服务
 - 测试：四件套全绿（test-structure / test-render / privacy-check / test.sh 332✅ / 浏览器级含端到端反例）；frozen-diff 对 bbbbad60 零偏差。
 - 提交链：e67cd7f → d0fc926 → e063cb8 → b8774a4 → 83b4dbf → 9b185bc → 4810a09。
 - 终审与遗留：`dev-docs/2026-10-05-s4a-final-review.md`（A1–A9 逐条、v1.4/v1.5/v1.6 反例逐条、落地修正 6 条、遗留 5 条、上线清单）。
-- 状态：**代码就绪，服务未重启**（正式服务仍跑 S3 代码；重启须用户明确指令：`launchctl kickstart -k gui/$(id -u)/com.lhx.resume-server`）。
+- 状态：**已上线**（2026-10-05 用户授权重启 launchd，pid 确认新代码生效）。上线冒烟通过：建草稿→四 Tab 注入（岗位匹配已退役）→保存 zid/zoneSync 落盘→真实渲染导出（2 页=目标，诊断面板齐全）→首页徽章→删除清理。LLM 生成链路留待用户真实使用时验证。登记一个 S1 时代既有缺口：POST /delete 不清理 docs-meta.json 条目（孤儿 meta 累积，非 S4a 回归）。
