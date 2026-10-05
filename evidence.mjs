@@ -380,7 +380,7 @@ export function layoutDiagnose(pages, ctx = {}) {
       for (let i = 0; i < pl.lines.length; i++) {
         const line = pl.lines[i];
         const hitPara = paras.find((p) => norm(p.text).startsWith(line) || line.startsWith(norm(p.text).slice(0, Math.min(20, norm(p.text).length))));
-        if (hitPara && (n.includes(line) || line.includes(n.slice(0, Math.min(24, n.length))))) return { zid: hitPara.zid, page: pl.page, lineIdx: i };
+        if (hitPara && (n.includes(line) || line.includes(n.slice(0, Math.min(24, n.length))))) return { zid: hitPara.zid, page: pl.page };
       }
     }
     return null;

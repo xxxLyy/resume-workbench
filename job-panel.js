@@ -512,7 +512,7 @@
     gotoItem(next);
   }
 
-  function itemHtml(c, group) {
+  function itemHtml(c) {
     var div = document.createElement('div');
     div.className = 'jp-item';
     div.setAttribute('data-change', c.id);

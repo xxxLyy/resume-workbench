@@ -170,7 +170,7 @@
 
   // ===== 对话抽屉 =====
   // 嵌入模式：面板常驻右栏，setDrawer 转为「显示右栏 + 切 Tab」；兜底模式维持抽屉开关
-  function setDrawer(open, tab) {
+  function setDrawer(open) {
     if (embedded) {
       var right = document.getElementById('ed-right');
       if (open && right) {
@@ -178,7 +178,6 @@
         right.classList.add('ed-open');
         document.body.style.setProperty('--ed-right-w', window.innerWidth >= 768 ? '320px' : '0px');
       }
-      if (open && tab && window.__edSelectTab) window.__edSelectTab(tab);
       return;
     }
     $('ai-drawer').classList.toggle('open', open);

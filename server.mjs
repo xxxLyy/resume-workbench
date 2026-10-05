@@ -363,7 +363,7 @@ const deliveredRefs = (docId) => loadApps().filter((a) => a && a.docId === docId
 const usedByExport = (exportId) => loadApps().filter((a) => a && a.exportId && a.exportId === exportId); // 使用某导出的投递
 const pendingConflictsOf = (m) => {
   const j = m && m.job;
-  return (j && Array.isArray(j.changes)) ? j.changes.filter((c) => c && c.level === 'conflict' && c.status === 'pending') : [];
+  return (j && Array.isArray(j.changes)) ? j.changes.filter((c) => c && c.level === 'conflict' && ['pending', 'skipped'].includes(c.status)) : [];   // S4a-T9 后补齐：skipped 的 conflict 仍算未解决（可投递与导出页同口径）
 };
 // 可投递 = 派生（三条件同时成立）：flow==='reviewed' && 无 pending 事实冲突 && !staleInfo(…).stale
 function deliverableNow(id, m, info) {
