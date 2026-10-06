@@ -128,6 +128,12 @@ http.createServer((q, s) => {
               { section: '工作经历', kind: 'replace', zid: zids[0], before: '目标一（before 与正文无关，zid 提示优先）', after: '工作段一（锁定探测，不该落 pending）', reason: '越权目标', source: 'JD', level: 'normal' },
               { section: '工作经历', kind: 'replace', zid: zids[1], before: '目标二（before 与正文无关，zid 提示优先）', after: '工作段二（定制版 T8）', reason: '对齐JD', source: '母版', level: 'normal' }
             ], todos: [] });
+          } else if (fs.existsSync('$TEST_DIR/llm-changes-hide')) {
+            // S4a 补遗：两条 hide 候选——目标条目甲（keepProjects）与条目乙（成员已锁定）→ guardOps ③ 双拒绝
+            content = JSON.stringify({ summary: 'hide 护栏', changes: [
+              { section: '工作经历', entry: '公司甲', kind: 'hide', before: '', after: '', reason: '低相关', source: 'JD', level: 'normal' },
+              { section: '工作经历', entry: '公司乙', kind: 'hide', before: '', after: '', reason: '低相关', source: 'JD', level: 'normal' }
+            ], todos: [] });
           } else if (fs.existsSync('$TEST_DIR/llm-changes-add')) {
             content = JSON.stringify({ summary: '全文生成含新增', changes: [
               { section: '工作经历', kind: 'add', after: '新增条目内容（T8 全文）', reason: '补充相关经历', source: '母版', level: 'normal' }
@@ -1721,6 +1727,97 @@ curl -sf "$B/favicon.ico" | grep -q '<svg' || fail 'S4a-T11 favicon 应 200 svg'
 curl -sf "$B/" | grep -q '审阅中\|草稿\|可投递' || fail 'S4a-T11 首页文档卡缺岗位草稿版本状态徽章'
 curl -sf "$B/materials" | grep -q '待确认素材标记为已确认' || fail 'S4a-T11 素材全部确认文案未明示范围'
 echo '✅ S4a-T11 favicon + 文档卡版本状态 + 素材范围文案'
+
+# ===== S4a 补遗（终审遗留）：guardOps ③ 接线 / /delete 清 meta / reorder zid 跟随 =====
+# —— g1. guardOps ③：hide 目标展开 ∩ keepProjects 与 locked 成员 → 双拒绝列入 skipped ——
+cat > "$TEST_DIR/g3-doc.html" << 'EOF'
+<body><div class="sheet"><div class="contact">测试员 g3@t.cn</div>
+<section class="section"><div class="section-title">工作经历</div>
+<div class="entry-head"><div class="entry-title">公司甲</div><div class="entry-role">工程师</div><div class="entry-date">2024</div></div>
+<ul><li>公司甲职责一段</li><li>公司甲职责二段</li></ul>
+<div class="entry-head"><div class="entry-title">公司乙</div><div class="entry-role">经理</div><div class="entry-date">2023</div></div>
+<ul><li>公司乙职责一段</li><li>公司乙职责二段</li></ul>
+</section></div></body>
+EOF
+G3SRC=$(curl -s -X POST "$B/new" -o /dev/null -w '%{redirect_url}' | sed 's/.*id=//')
+curl -s -X POST "$B/save?id=$G3SRC" --data-binary "@$TEST_DIR/g3-doc.html" | grep -q '"ok":true' || fail 'S4a 补遗 g3 夹具保存'
+G3DOC=$(curl -s -X POST "$B/job/create" -H 'Content-Type: application/json' -d "{\"from\":\"$G3SRC\",\"company\":\"护栏公司\",\"role\":\"后端\",\"jd\":\"G3\",\"brief\":{\"keepProjects\":[\"公司甲\"]}}" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch{console.log('')}})")
+curl -s -X POST "$B/save?id=$G3DOC" --data-binary "$(cat "$RESUME_ROOT/docs/$G3DOC.html")" | grep -q '"ok":true' || fail 'S4a 补遗 g3 草稿保存'
+# 锁定公司乙的成员段（entry-head 后第一个 li）
+node -e '
+const fs = require("fs");
+const f = process.argv[1], doc = process.argv[2];
+const m = JSON.parse(fs.readFileSync(f, "utf8"));
+const html = fs.readFileSync(process.argv[3], "utf8");
+const zids = [...html.matchAll(/data-zid="(z[0-9a-f]{8})"/g)].map((x) => x[1]);
+const heads = [...html.matchAll(/<div class="entry-head"[^>]*data-zid="(z[0-9a-f]{8})"/g)].map((x) => x[1]);
+const liAfter = zids[zids.indexOf(heads[1]) + 1];   // 公司乙 head 后第一个成员
+m[doc].zones[liAfter] = { ...(m[doc].zones[liAfter] || {}), locked: true };
+fs.writeFileSync(f, JSON.stringify(m));
+console.log(liAfter);
+' "$RESUME_ROOT/docs-meta.json" "$G3DOC" "$RESUME_ROOT/docs/$G3DOC.html" > "$TEST_DIR/g3-locked-zid"
+[ -s "$TEST_DIR/g3-locked-zid" ] || fail 'S4a 补遗 g3 锁定夹具失败'
+touch "$TEST_DIR/llm-changes-hide"
+R=$(curl -s -X POST "$B/job/gen-start?id=$G3DOC&kind=changes")
+echo "$R" | grep -q '"ok":true' || fail "S4a 补遗 g3 生成启动失败: $(echo "$R" | head -c 140)"
+wait_gt "$G3DOC" changes done 15 || fail "S4a 补遗 g3 生成未完成（得 $(gt_status "$G3DOC" changes)）"
+node -e '
+const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]];
+const bad = (msg) => { console.error("❌ S4a 补遗 guardOps ③ " + msg); process.exit(1); };
+const hides = m.job.changes.filter((c) => c.kind === "hide");
+if (hides.length !== 2 || !hides.every((c) => c.status === "skipped")) bad("两条 hide 应均列 skipped: " + JSON.stringify(hides.map((c) => ({ e: c.entry, s: c.status }))));
+if (!hides.every((c) => (c.note || "").includes("包含必须保留/已锁定内容"))) bad("拒绝原因应明示交集: " + JSON.stringify(hides.map((c) => c.note)));
+console.log("ok-g3");
+' "$RESUME_ROOT/docs-meta.json" "$G3DOC" || fail 'S4a 补遗 guardOps ③（hide 展开∩保留/锁定 → skipped）'
+rm -f "$TEST_DIR/llm-changes-hide"
+echo '✅ S4a 补遗 guardOps ③（hide 展开∩keepProjects 与 locked 成员 → 拒绝列 skipped）'
+
+# —— g2. /delete 同步清理 docs-meta 条目 ——
+G3DEL=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(Object.keys(m).find(k=>m[k].parent==="linghaoxiang"&&m[k].company==="冒烟公司X")||"")' "$RESUME_ROOT/docs-meta.json")
+curl -s -X POST "$B/job/create" -H 'Content-Type: application/json' -d '{"from":"'"$T8SRC"'","company":"冒烟公司X","role":"删除验证"}' | grep -q '"ok":true' || fail 'S4a 补遗 删除夹具创建失败'
+curl -s -X POST "$B/delete?id=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(Object.keys(m).find(k=>m[k].company==="冒烟公司X"))' "$RESUME_ROOT/docs-meta.json")" -o /dev/null -w '%{http_code}' | grep -q '303' || fail 'S4a 补遗 删除请求失败'
+node -e '
+const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+if (Object.keys(m).some((k) => m[k].company === "冒烟公司X")) { console.error("❌ S4a 补遗 /delete 后 meta 条目残留"); process.exit(1); }
+' "$RESUME_ROOT/docs-meta.json" || fail 'S4a 补遗 /delete 应同步清理 meta 条目'
+echo '✅ S4a 补遗 /delete 同步清理 docs-meta（孤儿条目缺口修复）'
+
+# —— g3. reorder 候选 zid 跟随（移动段落不误标失效）——
+node -e '
+const fs = require("fs");
+const f = process.argv[1], doc = process.argv[2], z0 = process.argv[3];
+const m = JSON.parse(fs.readFileSync(f, "utf8"));
+const gen = m[doc].job.changes.reduce((mx, c) => Math.max(mx, c.gen || 0), 0) + 1;
+const cur = (fs.readFileSync(process.argv[4], "utf8").match(new RegExp("<p data-zid=\"" + z0 + "\">([\\s\\S]*?)</p>")) || [])[1] || "";
+m[doc].job.changes.push({ id: "g3-reorder", gen, section: "工作经历", entry: "", kind: "reorder", before: cur, after: "", to: "bottom", reason: "r", source: "母版", level: "normal", status: "pending", zid: z0, baseSnapshot: cur.trim(), zone: "work" });
+fs.writeFileSync(f, JSON.stringify(m));
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC" "$T8Z0" "$RESUME_ROOT/docs/$T8DOC.html"
+curl -s "$B/job/changes?id=$T8DOC" | node -e '
+let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => {
+  const c = (JSON.parse(s).job.changes || []).find((x) => x.id === "g3-reorder");
+  if (!c || (c.consistency || []).length) { console.error("❌ S4a 补遗 reorder 基线应无命中: " + JSON.stringify(c && c.consistency)); process.exit(1); }
+});' || fail 'S4a 补遗 reorder 基线'
+# 移动段落（zid 随元素走）：把工作段一 p 移到工作经历 section 末尾
+node -e '
+const fs = require("fs");
+const f = process.argv[1], z0 = process.argv[2];
+let html = fs.readFileSync(f, "utf8");
+const mm = html.match(new RegExp("<p data-zid=\"" + z0 + "\">[\\s\\S]*?</p>"));
+if (!mm) { console.error("❌ reorder 夹具段落未找到"); process.exit(1); }
+html = html.replace(mm[0], "");
+html = html.replace(new RegExp("(<p data-zid=\"" + process.argv[3] + "\">[\\s\\S]*?</p>)"), "$1" + mm[0]);
+fs.writeFileSync(f, html);
+' "$RESUME_ROOT/docs/$T8DOC.html" "$T8Z0" "$T8Z1"
+curl -s "$B/job/changes?id=$T8DOC" | node -e '
+let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => {
+  const c = (JSON.parse(s).job.changes || []).find((x) => x.id === "g3-reorder");
+  const bad = (m) => { console.error("❌ S4a 补遗 reorder " + m); process.exit(1); };
+  if (!c) bad("候选缺失");
+  if ((c.consistency || []).includes("anchor-gone")) bad("zid 随元素移动后不得判 anchor-gone: " + JSON.stringify(c.consistency));
+  if ((c.consistency || []).includes("needs-compare")) bad("文本未变，重排不应触发待比较: " + JSON.stringify(c.consistency));
+  if ((c.consistency || []).length) bad("重排后应保持无命中: " + JSON.stringify(c.consistency));
+});' || fail 'S4a 补遗 reorder zid 跟随（移动后无失效误标）'
+echo '✅ S4a 补遗 reorder zid 跟随（移动段落候选不误标）'
 
 # ===== 16. 浏览器级保存语义（可选，需要本机 Chromium）=====
 if node test-editor.mjs "$B" "$DOCID" "$RESUME_ROOT"; then

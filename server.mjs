@@ -198,12 +198,35 @@ function applyChangesResult(cur, ops, ctx = {}) {
     return { zid: hit ? hit.zid : null, baseSnapshot: hit ? hit.text : null };
   };
   const protectedTokens = [...new Set((ctx.mats || []).flatMap((m) => [(m.facts || {}).company, (m.facts || {}).role]).filter((t) => typeof t === 'string' && t))];
-  // 先锚定再护栏：guardOps ①范围/②锁定 按候选 zid 判定；dropped（锁定/越界）→ 列入 skipped（设计 §4.3 ②）
+  // S4a 补齐 guardOps ③：条目结构（entry-head → 其成员段落）+ keepProjects 展开
+  // 条目组：按文档序扫 data-zid 单元，entry-head 开新组，其后 p/li 归入该组；组头 zid → [组头+成员] 即 expand。
+  const unitZids = zidsOf(String(ctx.html || ''));
+  const headSet = new Set([...String(ctx.html || '').matchAll(/<div class="entry-head"[^>]*data-zid="(z[0-9a-f]{8})"/g)].map((x) => x[1]));
+  const groups = [];   // [{head, members:[zid]}]（文档序）
+  let cur2 = null;
+  for (const zid of unitZids) {
+    if (headSet.has(zid)) { cur2 = { head: zid, members: [] }; groups.push(cur2); }
+    else if (cur2) cur2.members.push(zid);
+  }
+  const groupOfZid = new Map();   // 任意 zid → 所在组
+  for (const grp of groups) { groupOfZid.set(grp.head, grp); for (const z of grp.members) groupOfZid.set(z, grp); }
+  const expandEntry = (zid) => {
+    const grp = groupOfZid.get(zid);
+    return grp ? [grp.head, ...grp.members] : [zid];
+  };
+  const keepNames = (ctx.brief && Array.isArray(ctx.brief.keepProjects)) ? ctx.brief.keepProjects : [];
+  const keepZids = new Set();
+  for (const grp of groups) {
+    const headPara = paraByZid.get(grp.head);
+    const title = headPara ? headPara.text : '';
+    if (keepNames.some((n) => title.includes(String(n)))) [grp.head, ...grp.members].forEach((z) => keepZids.add(z));
+  }
+  // 先锚定再护栏：guardOps ①范围/②锁定/③hide 展开∩保留与锁定 按候选 zid 判定；dropped → 列入 skipped（设计 §4.3）
   const resolved = ops.changes.map((c) => {
     const a = anchorOf(c);
     return { ...c, zid: a.zid || undefined, baseSnapshot: a.baseSnapshot || undefined, zone: a.zid ? (zoneOfZid(a.zid) || guessZone(c.section)) : guessZone(c.section) };
   });
-  const g = guardOps(resolved, { scope, zones, locked, protectedTokens });
+  const g = guardOps(resolved, { scope, zones, locked, protectedTokens, keepZids, expand: expandEntry });
   let ci = 0;
   const mk = (c, status, note) => ({ id: 'g' + gen + '-c' + (++ci), gen, ...c, status, note, createdAt: new Date().toISOString() });
   for (const d of g.dropped) cur.job.changes.push(mk(d.op, 'skipped', 'guardOps：' + d.reason));
@@ -263,7 +286,7 @@ async function runGenTask(id, kind, taskId, scope = 'all') {
     const raw = await chat(root, p.sys, p.user);
     const ops = parseJobOps(raw);
     if (!ops) return finishGenTask(id, kind, taskId, null, '模型输出无法解析为修改操作，未应用任何修改');
-    return finishGenTask(id, kind, taskId, (cur) => applyChangesResult(cur, ops, { scope, html, paras: parasStart, mats: confirmedMats }));
+    return finishGenTask(id, kind, taskId, (cur) => applyChangesResult(cur, ops, { scope, html, paras: parasStart, mats: confirmedMats, brief: m0.job.brief || null }));
   } catch (e) {
     return finishGenTask(id, kind, taskId, null, '模型调用失败：' + (e.message || e));
   }
@@ -1291,6 +1314,13 @@ async function handler(req, res) {
       fs.unlinkSync(docPath(id));
       if (fs.existsSync(pdfPath(id))) fs.unlinkSync(pdfPath(id));
       try { fs.unlinkSync(pdfPath(id) + '.env.json'); } catch {}   // 渲染环境旁车与 PDF 成对清理
+      // S4a 补：meta 条目同步清理（快照按确认文案保留；applications.json 为投递权威源，不在此动）
+      updateMetaAll(root, (all) => {
+        if (!(id in all)) return all;
+        const base = { ...all };
+        delete base[id];
+        return base;
+      });
       return redirect('/');
     }
     // ===== 岗位草稿（独立文档；不依赖模型；同岗位不重复建）=====
