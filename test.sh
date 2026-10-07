@@ -1684,6 +1684,10 @@ console.log("ok-layout");
 echo '✅ S4a-T10 排版诊断纯函数（固定步长/下限钳制/3 轮上限/末页定性/无置信无占比/取舍候选带 zid）'
 
 # —— b. jobViewLive 挂 checks（审阅 Tab 与导出页同源）+ 导出记录五要素 ——
+# S4a 上线后修复1 前置：清 T8DOC 未解决冲突（导出门控改为服务端强制，POST /export 需无 pending/skipped 冲突）
+for FIXC in $(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]];console.log(((m.job&&m.job.changes)||[]).filter(c=>c.level==="conflict"&&["pending","skipped"].includes(c.status)).map(c=>c.id).join(" "))' "$RESUME_ROOT/docs-meta.json" "$T8DOC"); do
+  curl -s -X POST "$B/job/changes?id=$T8DOC" -H 'Content-Type: application/json' -d '{"updates":[{"id":"'"$FIXC"'","status":"resolved"}]}' | grep -q '"ok":true' || fail "S4a 修复批次前置：冲突 $FIXC 处理失败"
+done
 curl -s "$B/job/changes?id=$T8DOC" | node -e '
 let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => {
   const j = JSON.parse(s);
@@ -1818,6 +1822,133 @@ let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => {
   if ((c.consistency || []).length) bad("重排后应保持无命中: " + JSON.stringify(c.consistency));
 });' || fail 'S4a 补遗 reorder zid 跟随（移动后无失效误标）'
 echo '✅ S4a 补遗 reorder zid 跟随（移动段落候选不误标）'
+
+# ===== S4a 上线后修复批次回归：1) 导出门控服务端强制 2) 保存入口结构校验 3) 可投递契约统一 =====
+# —— 1. 导出门控：pending/skipped 冲突直接 POST /export → 409；记录与产物零变化；复用分支同检；历史访问独立 ——
+FIX_CN=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]];console.log((m.exports||[]).length)' "$RESUME_ROOT/docs-meta.json" "$T8DOC")
+FIX_HN=$(ls "$RESUME_ROOT/pdfs/history" 2>/dev/null | grep -c "^$T8DOC@")
+node -e '
+const fs = require("fs");
+const f = process.argv[1], doc = process.argv[2];
+const m = JSON.parse(fs.readFileSync(f, "utf8"));
+const gen = m[doc].job.changes.reduce((mx, c) => Math.max(mx, c.gen || 0), 0) + 1;
+m[doc].job.changes.push({ id: "fix1-c1", gen, section: "工作经历", kind: "replace", before: "x", after: "y", reason: "门控回归", source: "JD", level: "conflict", status: "pending" });
+fs.writeFileSync(f, JSON.stringify(m));
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC"
+R=$(curl -s -X POST "$B/export?id=$T8DOC")
+echo "$R" | grep -q '"ok":false' || fail "S4a 修复1 pending 冲突应 409: $R"
+echo "$R" | grep -q '未解决事实冲突' || fail "S4a 修复1 409 应含冲突说明: $R"
+[ "$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]];console.log((m.exports||[]).length)' "$RESUME_ROOT/docs-meta.json" "$T8DOC")" = "$FIX_CN" ] || fail 'S4a 修复1 409 后不得创建记录'
+[ "$(ls "$RESUME_ROOT/pdfs/history" 2>/dev/null | grep -c "^$T8DOC@")" = "$FIX_HN" ] || fail 'S4a 修复1 409 后不得产生产物'
+curl -s -X POST "$B/job/changes?id=$T8DOC" -H 'Content-Type: application/json' -d '{"updates":[{"id":"fix1-c1","status":"skipped"}]}' | grep -q '"ok":true' || fail 'S4a 修复1 skipped 夹具失败'
+R=$(curl -s -X POST "$B/export?id=$T8DOC")
+echo "$R" | grep -q '"ok":false' || fail "S4a 修复1 skipped 冲突应 409: $R"
+curl -s -X POST "$B/job/changes?id=$T8DOC" -H 'Content-Type: application/json' -d '{"updates":[{"id":"fix1-c1","status":"resolved"}]}' | grep -q '"ok":true' || fail 'S4a 修复1 解除夹具失败'
+R=$(curl -s -X POST "$B/export?id=$T8DOC")
+echo "$R" | grep -q '"ok":true' || fail "S4a 修复1 冲突清零后应 200: $R"
+FIX_EID=$(echo "$R" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).exportId))')
+node -e '
+const fs = require("fs");
+const f = process.argv[1], doc = process.argv[2];
+const m = JSON.parse(fs.readFileSync(f, "utf8"));
+const gen = m[doc].job.changes.reduce((mx, c) => Math.max(mx, c.gen || 0), 0) + 1;
+m[doc].job.changes.push({ id: "fix1-c2", gen, section: "工作经历", kind: "replace", before: "x", after: "y", reason: "复用分支门控", source: "JD", level: "conflict", status: "pending" });
+fs.writeFileSync(f, JSON.stringify(m));
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC"
+R=$(curl -s -X POST "$B/export?id=$T8DOC")
+echo "$R" | grep -q '"ok":false' || fail "S4a 修复1 已有产物（复用分支）也应被门控: $R"
+curl -sf -o /dev/null -w '' "$B/history-pdf?exportId=$FIX_EID" && FIX_HIST_OK=1 || FIX_HIST_OK=0
+[ "$FIX_HIST_OK" = "1" ] || fail 'S4a 修复1 历史冻结产物应保持独立访问（/history-pdf 200）'
+curl -s -X POST "$B/job/changes?id=$T8DOC" -H 'Content-Type: application/json' -d '{"updates":[{"id":"fix1-c2","status":"resolved"}]}' | grep -q '"ok":true' || fail 'S4a 修复1 复用解除失败'
+R=$(curl -s -X POST "$B/export?id=$T8DOC")
+echo "$R" | grep -q '"reused":true' || fail "S4a 修复1 冲突清零后同身份应复用: $R"
+echo '✅ 修复1 导出门控服务端强制（pending/skipped 409、记录产物零变化、复用分支同检、历史访问独立）'
+
+# —— 2. 保存入口：非文档载荷两路径拒绝，快照与写入之前（正文/meta/rev/PDF/快照零变化）——
+FIX_MD5=$(md5 -q "$RESUME_ROOT/docs/$T8DOC.html")
+FIX_REV=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]];console.log(m.rev)' "$RESUME_ROOT/docs-meta.json" "$T8DOC")
+FIX_SNAPS=$(ls "$RESUME_ROOT/snapshots/$T8DOC" 2>/dev/null | grep -c "\.html$")
+FIX_PDF=$(md5 -q "$RESUME_ROOT/pdfs/$T8DOC.pdf" 2>/dev/null)
+R=$(curl -s -X POST "$B/save?id=$T8DOC" --data-binary 'not found')
+echo "$R" | grep -q '非文档载荷' || fail "S4a 修复2 HTML 路径错误响应应拒: $R"
+R=$(curl -s -X POST "$B/save?id=$T8DOC" --data-binary '{"json":"garbage"}')
+echo "$R" | grep -q '非文档载荷' || fail "S4a 修复2 HTML 路径 JSON 碎片应拒: $R"
+curl -s -X POST "$B/save?id=$T8DOC" -H 'Content-Type: application/json' -d '{"requestId":"fix2-bad","baseRev":'"$FIX_REV"',"html":"not found","ops":[]}' | grep -q '非文档载荷' || fail 'S4a 修复2 JSON 路径错误响应应拒'
+node -e '
+const fs = require("fs");
+const f = process.argv[1], doc = process.argv[2];
+const m = JSON.parse(fs.readFileSync(f, "utf8"));
+fs.writeFileSync(f, JSON.stringify(m));   // 触碰 mtime 但内容不变（验证断言看内容/rev 而非 mtime）
+' "$RESUME_ROOT/docs-meta.json" "$T8DOC"
+[ "$(md5 -q "$RESUME_ROOT/docs/$T8DOC.html")" = "$FIX_MD5" ] || fail 'S4a 修复2 拒绝后正文不得变化'
+[ "$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]];console.log(m.rev)' "$RESUME_ROOT/docs-meta.json" "$T8DOC")" = "$FIX_REV" ] || fail 'S4a 修复2 拒绝后 rev 不得变化'
+[ "$(ls "$RESUME_ROOT/snapshots/$T8DOC" 2>/dev/null | grep -c "\.html$")" = "$FIX_SNAPS" ] || fail 'S4a 修复2 拒绝后快照不得新增'
+[ "$(md5 -q "$RESUME_ROOT/pdfs/$T8DOC.pdf" 2>/dev/null)" = "$FIX_PDF" ] || fail 'S4a 修复2 拒绝后 PDF 不得变化'
+# 合法文档（S1 极简夹具形状，无 .sheet）仍可保存——兼容性
+curl -s -X POST "$B/save?id=$T8DOC" --data-binary '<!doctype html>
+<html><body><p>兼容旧文档形状</p></body></html>' | grep -q '"ok":true' || fail 'S4a 修复2 极简合法文档应可保存（兼容性）'
+echo '✅ 修复2 保存入口结构校验（两路径拒非文档载荷；拒绝先于快照/写入；五项零变化；极简文档兼容）'
+
+# —— 3. 可投递契约统一：pending / skipped / 待核对 / 全部完成 四场景 ——
+FIXSRC=$(curl -s -X POST "$B/new" -o /dev/null -w '%{redirect_url}' | sed 's/.*id=//')
+FIXCRT=$(curl -s -X POST "$B/job/create" -H 'Content-Type: application/json' -d "{\"from\":\"$FIXSRC\",\"company\":\"门控公司\",\"role\":\"投递验证\"}")
+echo "$FIXCRT" | grep -q '"ok":true' || fail "S4a 修复3 夹具创建失败: $(echo "$FIXCRT" | head -c 200)"
+FIXDOC=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(Object.keys(m).find(k=>m[k].company==="门控公司"))' "$RESUME_ROOT/docs-meta.json")
+FIXSAVE=$(curl -s -X POST "$B/save?id=$FIXDOC" --data-binary "$(curl -s "$B/edit?id=$FIXDOC")")
+echo "$FIXSAVE" | grep -q '"ok":true' || fail "S4a 修复3 夹具保存失败: $(echo "$FIXSAVE" | head -c 200)"
+read FIXZ0 FIXZ1 << FIXZEOF
+$(node --input-type=module -e '
+import { parasOf } from "/Users/xxxly/resume/zone.mjs";
+import { readFileSync } from "node:fs";
+const ps = parasOf(readFileSync(process.argv[1], "utf8")).filter((p) => p.text);
+console.log(ps[0].zid, ps[1].zid);
+' "$RESUME_ROOT/docs/$FIXDOC.html")
+FIXZEOF
+node -e '
+const fs = require("fs");
+const f = process.argv[1], doc = process.argv[2], z0 = process.argv[3];
+const m = JSON.parse(fs.readFileSync(f, "utf8"));
+const html = fs.readFileSync(process.argv[4], "utf8");
+const cur = (html.match(new RegExp("<p data-zid=\"" + z0 + "\">([\\s\\S]*?)</p>")) || [])[1] || "x";
+const z1 = process.argv[5];
+const cur1 = (html.match(new RegExp("<p data-zid=\"" + z1 + "\">([\\s\\S]*?)</p>")) || [])[1] || "y";
+const gen = (m[doc].job.changes || []).reduce((mx, c) => Math.max(mx, c.gen || 0), 0) + 1;
+m[doc].job.changes = [
+  { id: "fx-p", gen, section: "工作经历", kind: "replace", before: cur, after: cur + "（定制）", reason: "r", source: "母版", level: "normal", status: "pending", zid: z0, baseSnapshot: cur },
+  { id: "fx-s", gen, section: "工作经历", kind: "replace", before: cur1, after: cur1 + "（定制）", reason: "稍后", source: "JD", level: "normal", status: "skipped", zid: z1, baseSnapshot: cur1 },
+  { id: "fx-tv", gen, section: "工作经历", kind: "replace", before: cur, after: "已应用文本", reason: "r", source: "母版", level: "normal", status: "accepted", acceptedAt: new Date().toISOString(), origText: cur, appliedText: "与当前正文不同的文本", zid: z0 }
+];
+fs.writeFileSync(f, JSON.stringify(m));
+' "$RESUME_ROOT/docs-meta.json" "$FIXDOC" "$FIXZ0" "$RESUME_ROOT/docs/$FIXDOC.html" "$FIXZ1"
+curl -s -X POST "$B/export?id=$FIXDOC" | grep -q '"ok":true' || fail 'S4a 修复3 夹具导出失败（普通/skipped 非冲突不阻塞）'
+curl -s -X POST "$B/job/changes?id=$FIXDOC" -H 'Content-Type: application/json' -d '{"status":"deliverable"}' | grep -q '"ok":true' || fail 'S4a 修复3 flow 置 reviewed 失败（S1 契约直设）'
+badge() { curl -s "$B/" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const i=s.indexOf("门控公司");if(i<0){console.log("missing");return;}const seg=s.slice(Math.max(0,i-600),i+300);console.log(seg.includes(">可投递<")?"可投递":"不可投递");})'; }
+[ "$(badge)" = "不可投递" ] || fail "S4a 修复3 普通 pending 场景不应可投递（得 $(badge)）"
+curl -s -X POST "$B/job/changes?id=$FIXDOC" -H 'Content-Type: application/json' -d '{"updates":[{"id":"fx-p","status":"resolved"}]}' | grep -q '"ok":true' || fail 'S4a 修复3 pending 处理失败'
+[ "$(badge)" = "不可投递" ] || fail "S4a 修复3 skipped 场景不应可投递（得 $(badge)）"
+curl -s -X POST "$B/job/changes?id=$FIXDOC" -H 'Content-Type: application/json' -d '{"updates":[{"id":"fx-s","status":"resolved"}]}' | grep -q '"ok":true' || fail 'S4a 修复3 skipped 处理失败'
+[ "$(badge)" = "不可投递" ] || fail "S4a 修复3 待核对场景不应可投递（得 $(badge)）"
+FIXZ0TXT=$(node --input-type=module -e '
+import { parasOf } from "/Users/xxxly/resume/zone.mjs";
+import { readFileSync } from "node:fs";
+const p = parasOf(readFileSync(process.argv[1], "utf8")).find((x) => x.zid === process.argv[2]);
+console.log(p ? p.text : "");
+' "$RESUME_ROOT/docs/$FIXDOC.html" "$FIXZ0")
+curl -s -X POST "$B/job/changes?id=$FIXDOC" -H 'Content-Type: application/json' -d '{"resolve":{"changeId":"fx-tv","text":"'"$FIXZ0TXT"'"}}' | grep -q '"ok":true' || fail "S4a 修复3 保留当前版本失败"
+dump3() { curl -s "$B/job/changes?id=$FIXDOC" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(JSON.stringify({rc:j.job.checks.reviewComplete,ch:(j.job.changes||[]).map(c=>({id:c.id,st:c.status,cons:c.consistency}))}));})'; }
+[ "$(badge)" = "可投递" ] || fail "S4a 修复3 全部处理完成后应可投递（得 $(badge)）：$(dump3)"
+# 导出页：不再自动标记；显式确认按钮契约
+FIXEX=$(curl -s "$B/export?id=$FIXDOC")
+echo "$FIXEX" | grep -q "status: 'deliverable' })" && fail 'S4a 修复3 导出页不得自动标记可投递'
+echo "$FIXEX" | grep -q '已确认可投递' || fail 'S4a 修复3 已确认态徽章缺失'
+FLOW=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]];console.log(m.flow)' "$RESUME_ROOT/docs-meta.json" "$FIXDOC")
+[ "$FLOW" = "reviewed" ] || fail "S4a 修复3 确认后 flow 应 reviewed（S1 契约）: $FLOW"
+# 打开导出页不改变 flow（无自动标记）——构造 reviewing 态验证
+curl -s -X POST "$B/job/changes?id=$FIXDOC" -H 'Content-Type: application/json' -d '{"status":"reviewing"}' | grep -q '"ok":true' || fail 'S4a 修复3 flow 回 reviewing 夹具失败'
+curl -sf "$B/export?id=$FIXDOC" -o /dev/null
+FLOW2=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]];console.log(m.flow)' "$RESUME_ROOT/docs-meta.json" "$FIXDOC")
+[ "$FLOW2" = "reviewing" ] || fail "S4a 修复3 打开导出页不得改变 flow（得 $FLOW2）"
+echo '✅ 修复3 可投递契约统一（pending/skipped/待核对/全部完成四场景 + 显式确认 + 无自动标记 + flow 契约不变）'
 
 # ===== 16. 浏览器级保存语义（可选，需要本机 Chromium）=====
 if node test-editor.mjs "$B" "$DOCID" "$RESUME_ROOT"; then

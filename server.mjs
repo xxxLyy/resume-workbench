@@ -388,11 +388,14 @@ const pendingConflictsOf = (m) => {
   const j = m && m.job;
   return (j && Array.isArray(j.changes)) ? j.changes.filter((c) => c && c.level === 'conflict' && ['pending', 'skipped'].includes(c.status)) : [];   // S4a-T9 后补齐：skipped 的 conflict 仍算未解决（可投递与导出页同口径）
 };
-// 可投递 = 派生（三条件同时成立）：flow==='reviewed' && 无 pending 事实冲突 && !staleInfo(…).stale
+// 可投递 = 派生（S4a 上线后修复3，契约口径）：用户显式确认 flow==='reviewed'（S1 契约不动）
+// && 整体审阅完成（jobViewLive.checks.reviewComplete——无 pending/skipped、冲突清零、待核对空，与审阅 Tab/导出页同源）
+// && PDF 非陈旧（staleInfo）。允许导出 ≠ 完成审阅：导出门控只看冲突，可投递另要求完成。
 function deliverableNow(id, m, info) {
   if (!info || !info.renderInputId) return false;
   if (flowOf(m) !== 'reviewed') return false;
-  if (pendingConflictsOf(m).length) return false;
+  const live = jobViewLive(id, m);
+  if (!live || !live.checks || !live.checks.reviewComplete) return false;
   return !staleInfo(m || {}, { renderInputId: info.renderInputId, pdfExists: fs.existsSync(pdfPath(id)) }).stale;
 }
 // 不可变导出产物路径（完整 renderInputId 命名，禁止截断；存在即复用、绝不覆盖）
@@ -1046,6 +1049,12 @@ function stripInjections(html) {
     }));
 }
 
+// S4a 上线后修复2：保存入口最小结构校验（JSON 与旧 HTML 两路径共用）。
+// 判据 = 剥离注入后至少含一个 HTML 元素标签——拒绝错误响应/纯文本/JSON 碎片等非文档载荷；
+// 不用固定错误字符串或最低字数判断，兼容一切旧文档（含 S1 夹具的极简 body）。拒绝必须发生在快照与写入之前。
+const DOC_PAYLOAD_RE = /<[a-zA-Z][^>]*>/;
+const looksLikeDoc = (html) => DOC_PAYLOAD_RE.test(String(html ?? ''));
+
 // ===== S4a-T3：JSON 保存协议（设计 §4.2 v1.6，复审批定顺序：全部校验通过前零写入）=====
 // ① 请求指纹 = 转换前原始请求体的规范化序列化 sha1（键序无关；重试方重发原文即同指纹；
 //    "转换"指 html 剥离归一——指纹绝不受其影响）→ ② saveReceipts 判重（同 requestId 同内容 → 只回执零重写；
@@ -1097,6 +1106,7 @@ async function saveJsonProtocol(req, id, url) {
       // ④ ops 全量校验（任一失败整份 400，正文不保存——快照与事务尚未开启）
       const stripped = normalizeZids(stripInjections(body.html));
       if (!stripped.trim()) return { status: 400, body: { ok: false, error: 'empty save rejected' } };
+      if (!looksLikeDoc(stripped)) return { status: 400, body: { ok: false, error: '非文档载荷：剥离后不含任何 HTML 元素，已拒绝（正文、meta、rev、快照均未变化）' } };
       const oldHtml = fs.readFileSync(docPath(id), 'utf8');
       if (body.ops.length && !job) return { status: 400, body: { ok: false, error: '该文档不是岗位草稿（无 changes 可操作）' } };
       // hide 接受要求目标段落在正文（删除式隐藏会被 anchor-gone 拒）——T4+ UI 必须属性式实现 hide（加隐藏标记类，不删节点）。
@@ -1660,6 +1670,7 @@ async function handler(req, res) {
       // S3：zid 归一（补缺/去重/坏值重打）必须在剥离注入块之后执行；meta zones 同步在下方 updateMeta 回调里做
       html = normalizeZids(html);
       if (!html.trim()) return send(400, 'empty save rejected', 'text/plain');
+      if (!looksLikeDoc(html)) return send(400, '非文档载荷：剥离后不含任何 HTML 元素，已拒绝（正文、meta、rev、快照均未变化）', 'text/plain');
       if (!fs.existsSync(docPath(id))) return send(404, 'doc not found', 'text/plain');
       // 跨进程排他锁：保存与迁移互斥（被他人持有 → 503）。持锁贯穿整个事务，覆盖两次 rename 之间被杀的窗口。
       try { rootLock.acquire(root); }
@@ -1747,6 +1758,13 @@ async function handler(req, res) {
     // GET 打开导出页、POST /render、自动重渲都不经过这里（绝不创建 exports 记录）。
     if (req.method === 'POST' && url.pathname === '/export') {
       if (!fs.existsSync(docPath(id))) return sendJson(404, { ok: false, error: 'doc not found' });
+      // S4a 上线后修复1：服务端导出门控——新建与复用分支同检（不依赖页面按钮禁用）；
+      // 已生成产物的历史访问走 /history-pdf?exportId=，独立语义保留。
+      const preMeta = loadMeta()[id] || {};
+      const preConflicts = pendingConflictsOf(preMeta);
+      if (preConflicts.length) {
+        return sendJson(409, { ok: false, error: '存在 ' + preConflicts.length + ' 条未解决事实冲突（pending/skipped），不能导出', conflicts: preConflicts.map((c) => ({ id: c.id, section: c.section || '', reason: c.reason || '' })) });
+      }
       const rst0 = currentRenderState(id);
       let frozen = rst0.frozen;
       // 不可复现输入（remote URL / 缺失资源）→ 拒绝导出（spec §12.1：普通渲染允许，POST /export 拒绝并提示先本地化）
@@ -3191,6 +3209,12 @@ async function handler(req, res) {
       const importantWarn = pendingImportant.length
         ? `<div class="badge warn">${pendingImportant.length} 条重点审阅建议待处理（不阻塞导出）</div>`
         : '';
+      // S4a 上线后修复3：可投递改为显式确认——整体审阅完成 + 当前 PDF 才出按钮；确认后 S1 flow 契约不变
+      const flowNow = flowOf(meta);
+      const confirmDeliverable = meta.parent && pdfCurrent && expChecks.reviewComplete && flowNow !== 'reviewed'
+        ? `<form method="post" action="/job/changes?id=${id}" style="display:inline" onsubmit="event.preventDefault();fetch('/job/changes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'${id}',status:'deliverable'})}).then(()=>location.reload())"><button class="ok" type="submit">确认可投递（整体审阅已完成）</button></form>`
+        : flowNow === 'reviewed' ? '<span class="badge ok">已确认可投递</span>'
+        : `<span class="badge" title="整体审阅完成 + 当前 PDF 后可确认">未确认可投递</span>`;
       const versionLine = pdfCurrent
         ? `<span class="badge ok">PDF 与当前内容一致</span>`
         : pdfStat
@@ -3219,6 +3243,7 @@ async function handler(req, res) {
       ${importantWarn}
       <p>
         ${pdfCurrent && !pendingConflicts.length ? `<button id="dlBtn">下载最新版 PDF</button>` : `<button disabled title="先解决上方问题">下载最新版 PDF</button>`}
+        ${confirmDeliverable}
         <button class="secondary" type="button" onclick="rerender()">重新生成</button>
         <a href="/snapshots?id=${id}" class="secondary" style="margin-left:8px">历史导出</a>
         <a href="/edit?id=${id}" class="secondary" style="margin-left:8px">返回编辑</a>
@@ -3263,7 +3288,7 @@ async function handler(req, res) {
     </div>
     ${pdfStat ? `<iframe src="/pdf?id=${id}" title="PDF 预览" style="width:100%;height:70vh;margin-top:12px;border:1px solid var(--line);border-radius:12px"></iframe><p style="color:var(--mut);font-size:12px">预览为「最新版」便利文件；下载请用上方的导出记录（不可变产物）。</p>` : ''}
     <script>
-      ${meta.parent && pdfCurrent && !pendingConflicts.length ? `fetch('/job/changes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: '${id}', status: 'deliverable' }) }).catch(function () {});` : ''}
+      // S4a 上线后修复3：移除「打开导出页即自动标记可投递」——改为契约判定（整体审阅完成 + 当前 PDF）下的显式用户确认。
       async function rerender() {
         var msg = document.getElementById('rrMsg');
         msg.textContent = ' 生成中…';
