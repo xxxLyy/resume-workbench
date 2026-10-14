@@ -24,14 +24,28 @@ export function hasLLM(root) {
   return !!(c && c.apiKey && c.baseURL && c.model);
 }
 
+// assertSafeBaseURL — /ai/test 的 baseURL 来自用户输入，而该端点不校验 Content-Type：
+// text/plain + JSON body 属 CORS 简单请求（免预检），任意网页可让本机去请求它指定的地址，
+// 且 Bearer apiKey 会随之发往该地址。此处挡掉无合法用途的高危端点（云元数据）与非 http(s) 协议。
+// 注意：不拦 127.0.0.1/局域网——本地模型（Ollama/LM Studio）是本项目的正当用法。
+function assertSafeBaseURL(u) {
+  let url;
+  try { url = new URL(String(u)); } catch { throw new Error('LLM 地址非法'); }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('LLM 地址协议不支持');
+  if (/^(169\.254\.|metadata\.|fd00:)/i.test(url.hostname)) throw new Error('禁止访问云元数据端点');
+  return url;
+}
+
 // withRetry — 仅网络错误/5xx/超时重试；4xx 是凭证/参数问题，重试无意义且烧 token
-// sleep 可注入：测试传假 sleep 实现零等待 + 断言延迟参数
-export async function withRetry(fn, { retries = 2, delayMs = 1500,
+// idempotent=false 用于非幂等请求（POST）：超时/网络错误时结果未知，重试会重复计费，
+// 故只重试明确失败的 5xx。sleep 可注入：测试传假 sleep 实现零等待 + 断言延迟参数
+export async function withRetry(fn, { retries = 2, delayMs = 1500, idempotent = true,
     sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
   for (let i = 0; ; i++) {
     try { return await fn(); }
     catch (e) {
-      if (i >= retries || !(e.status === undefined || e.status >= 500)) throw e;
+      const retryable = idempotent ? (e.status === undefined || e.status >= 500) : e.status >= 500;
+      if (i >= retries || !retryable) throw e;
       console.warn(`[retry] 第${i + 1}次失败，${delayMs}ms 后重试：${e.message || e}`);
       await sleep(delayMs);
     }
@@ -48,9 +62,11 @@ function okOrThrow(prefix) {
 
 // listModels — 连接测试 + 拉取可调用模型列表（OpenAI 兼容 GET /models）
 export async function listModels(baseURL, apiKey) {
-  const r = await withRetry(() => fetch(`${baseURL.replace(/\/$/, '')}/models`, {
+  const base = assertSafeBaseURL(baseURL).toString().replace(/\/$/, '');
+  const r = await withRetry(() => fetch(`${base}/models`, {
     headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(30000)
+    signal: AbortSignal.timeout(30000),
+    redirect: 'error'   // 跟随重定向会把 Bearer 带到别处，也绕过端点校验
   }).then(okOrThrow('连接失败')));
   const data = await r.json();
   return (data.data || []).map((m) => m.id).filter(Boolean).sort();
@@ -67,7 +83,7 @@ export async function chatMsgs(root, messages) {
     // 不带 temperature：Kimi coding 等端点只允许默认值，硬编码会被 400
     // 请求级超时（S4a 设计 §6）：默认 120s，profile 的 timeoutMs 可覆盖
     signal: AbortSignal.timeout(Number(c.timeoutMs) > 0 ? Number(c.timeoutMs) : 120000)
-  }).then(okOrThrow('LLM 请求失败')));
+  }).then(okOrThrow('LLM 请求失败')), { idempotent: false });   // POST 非幂等：网络错误/超时不重试，避免重复计费
   // r.json() 与结构校验刻意放在 withRetry 外：body 解析/格式错误天然不重试
   const data = await r.json();
   if (!data.choices?.[0]?.message?.content) throw new Error('LLM 返回格式异常');

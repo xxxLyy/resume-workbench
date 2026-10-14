@@ -209,12 +209,15 @@
       var before = anchorPair.head;
       var isDown = pairs.indexOf(anchorPair) > cur;
       var moveNodes = f2.pair.ul ? [f2.pair.head, f2.pair.ul] : [f2.pair.head];
+      // 条目节点挂在所属章节下（非 .sheet 直接子节点）：insertBefore 的 ref 必须是同一 parent 的子节点，
+      // 用 sheet 必抛 NotFoundError，且异常会穿透到 busy 复位之后把面板永久锁死
+      var host = f2.pair.head.parentNode;
       if (isDown) {
         var afterNodes = anchorPair.ul ? [anchorPair.head, anchorPair.ul] : [anchorPair.head];
         var ref = afterNodes[afterNodes.length - 1].nextElementSibling;
-        moveNodes.forEach(function (nd) { sheet.insertBefore(nd, ref); });
+        moveNodes.forEach(function (nd) { host.insertBefore(nd, ref); });   // ref 为 null 时即追加到章节末尾
       } else {
-        moveNodes.slice().reverse().forEach(function (nd) { sheet.insertBefore(nd, before); });
+        moveNodes.slice().reverse().forEach(function (nd) { host.insertBefore(nd, before); });
       }
       touch();
       return { ok: true, meta: { target: 'reorder', origIndex: cur, title: f2.pair.title } };
@@ -249,13 +252,18 @@
       var refPair = pairs[target];
       var moveNodes = f2.pair.ul ? [f2.pair.head, f2.pair.ul] : [f2.pair.head];
       var refNode = refPair && refPair.head !== f2.pair.head ? refPair.head : null;
-      if (target >= pairs.length) { moveNodes.forEach(function (nd) { sheet.appendChild(nd); }); }
-      else if (refNode) { moveNodes.slice().reverse().forEach(function (nd) { sheet.insertBefore(nd, refNode); }); }
+      // 同 applyChange 的 reorder 分支：条目在章节内，用 sheet 会抛异常或把条目搬出章节（静默结构损坏）
+      var host2 = f2.pair.head.parentNode;
+      if (target >= pairs.length) { moveNodes.forEach(function (nd) { host2.appendChild(nd); }); }
+      else if (refNode) { moveNodes.slice().reverse().forEach(function (nd) { host2.insertBefore(nd, refNode); }); }
       touch();
       return { ok: true };
     }
     if (c.kind === 'add') {
-      var hit = null;
+      // 优先按已落账 newZid 精确定位（anchorElOf 同逻辑）：正文可能本就有相同段落，按文本反查会误删用户原文
+      var zidEl = anchorElOf(c);
+      if (zidEl) { zidEl.remove(); touch(); return { ok: true }; }
+      var hit = null;   // 兜底：无 zid（未落账的旧候选）才回退文本匹配
       sheet.querySelectorAll('li,p').forEach(function (el) { if (!hit && el.childNodes.length === 1 && el.textContent.trim() === c.after.trim()) hit = el; });
       if (hit) { hit.remove(); touch(); return { ok: true }; }
       return { ok: false, error: '撤销失败：找不到插入的内容' };
@@ -324,7 +332,8 @@
     var r;
     if (c.kind === 'replace' && viaGate) {
       // 确认门通过：整段替换为候选 after（锚点=当前整段文本，与服务端 origText 校验一致）
-      r = replaceText(anchorEl.textContent, c.after) ? { ok: true, meta: {} } : { ok: false, error: '原文未找到（内容可能已被手工修改）' };
+      // anchorEl 可能已失效（zid 被移除）：解引用会抛 TypeError，且抛点在本函数 busy 复位之后 → 面板永久锁死
+      r = (anchorEl && replaceText(anchorEl.textContent, c.after)) ? { ok: true, meta: {} } : { ok: false, error: '原文锚点已不存在（正文可能已被修改），请重新载入' };
     } else {
       r = applyChange(c);
     }
@@ -364,6 +373,14 @@
     ids.forEach(function (id) {
       var c = job.changes.find(function (x) { return x.id === id; });
       if (!c) return;
+      // 批量路径复用单条门控（与 accept 第 316-319 行同判定，设计 §4.2）：
+      // 冲突/锁定/待比较一律排除出批量，否则会绕过确认门静默覆盖正文
+      var hits = c.consistency || [];
+      if (hits.indexOf('anchor-gone') >= 0 || hits.indexOf('locked-now') >= 0 || hits.indexOf('needs-compare') >= 0) {
+        fails++;
+        failedUpdates.push({ id: c.id, status: 'pending', note: '存在冲突或正文已变化，需逐条确认' });
+        return;
+      }
       var anchorEl = anchorElOf(c);
       var origText = anchorEl ? normWs(anchorEl.textContent) : (c.before || '');
       var r = applyChange(c);

@@ -25,6 +25,21 @@ function isChrome(tag, attrs) {
   return CHROME_MARKERS.some((re) => re.test(attrs) && !/\bsheet\b/.test(attrs));
 }
 
+// 标签结束位置：跳过引号区间内的 '>'。indexOf('>') 会把 <div title="A > B"> 截在属性值中间，
+// 导致标签名/属性解析出错、剥离元素时把 chrome 残片漏进正文（进而进 AI 上下文与版本对比）
+function tagEnd(html, lt) {
+  let i = lt + 1;
+  let q = null;
+  while (i < html.length) {
+    const ch = html[i];
+    if (q) { if (ch === q) q = null; }
+    else if (ch === '"' || ch === "'") q = ch;
+    else if (ch === '>') return i;
+    i++;
+  }
+  return -1;
+}
+
 // 通用：按标签深度移除匹配元素（含内容）。attrTest(tag, attrs, rawTag) 判定是否为要移除的开标签。
 function removeElements(html, attrTest) {
   let out = '';
@@ -41,7 +56,7 @@ function removeElements(html, attrTest) {
       i = end + 3;
       continue;
     }
-    const gt = html.indexOf('>', lt);
+    const gt = tagEnd(html, lt);
     if (gt < 0) { out += html.slice(lt); break; }
     const raw = html.slice(lt, gt + 1);
     const m = /^<\s*([a-zA-Z][a-zA-Z0-9-]*)/.exec(raw);
@@ -56,7 +71,7 @@ function removeElements(html, attrTest) {
     while (j < n && depth > 0) {
       const nextLt = html.indexOf('<', j);
       if (nextLt < 0) { j = n; break; }
-      const nextGt = html.indexOf('>', nextLt);
+      const nextGt = tagEnd(html, nextLt);
       if (nextGt < 0) { j = n; break; }
       const inner = html.slice(nextLt, nextGt + 1);
       const im = /^<\s*\/?\s*([a-zA-Z][a-zA-Z0-9-]*)/.exec(inner);
@@ -104,7 +119,7 @@ export function docToLines(html, { includeHidden = false, keepBlank = false } = 
   s = s
     .replace(/<\/(?:p|li|h1|h2|h3|h4|div|section|header|footer|ul|ol|table|tr|blockquote)\s*>/gi, '\n')
     .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]*>/g, '');
+    .replace(/<(?:[^>\"']|\"[^\"]*\"|'[^']*')*>/g, '');
   s = decodeEntities(s)
     .split('\n')
     .map((l) => l.replace(/[ \t\u00a0]+/g, ' ').trim());
@@ -135,7 +150,7 @@ export function sectionsOf(html) {
     const inner = body.slice(m.index, close);
     const tm = /<div[^>]*class="[^"]*\bsection-title\b[^"]*"[^>]*>([\s\S]*?)<\/div>/i.exec(inner);
     out.push({
-      title: tm ? decodeEntities(tm[1].replace(/<[^>]*>/g, '')).trim() : '',
+      title: tm ? decodeEntities(tm[1].replace(/<(?:[^>\"']|\"[^\"]*\"|'[^']*')*>/g, '')).trim() : '',
       html: inner,
       hidden: HIDDEN_CLASS.test(attrs),
       start: m.index,
@@ -150,7 +165,8 @@ export function matchingClose(html, openStart, tag) {
   let depth = 0;
   let i = openStart;
   const n = html.length;
-  const re = new RegExp(`<\\s*(\\/?)${tag}\\b[^>]*>`, 'gi');
+  // 属性分支须排除引号区间内的 '>'：与 tagEnd 同口径，否则属性值含 '>' 时两处判定打架
+  const re = new RegExp(`<\\s*(\\/?)${tag}\\b(?:[^>"']|"[^"]*"|'[^']*')*>`, 'gi');
   re.lastIndex = openStart;
   let m;
   while ((m = re.exec(html)) && i < n) {

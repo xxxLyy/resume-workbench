@@ -158,8 +158,10 @@
   }
 
   // AI 请求前确保当前内容已落盘，并带上内容版本（服务端据此拒绝落后内容）
+  // 保存失败必须上抛：吞掉异常会带着旧 mtime 继续请求，服务端基于过期内容做体检/对话，
+  // 给出基于旧文档的改写建议（用户看到的却是新内容）。调用方（sendChat/runReview）已在 try 内
   async function flushFirst() {
-    try { if (window.__edFlushSave) await window.__edFlushSave(); } catch (e) {}
+    if (window.__edFlushSave) await window.__edFlushSave();
     return Number(window.__edDocMtime || 0);
   }
   function isStale(r) { return r.status === 409; }
@@ -414,19 +416,22 @@
     };
   }
 
-  var pendingAfter = null;
+  var pendingAfter = null, pendingBefore = '';
   $('ai-gen').onclick = async function () {
     var inst = $('ai-inst').value.trim();
     if (!inst) return;
     $('ai-gen').disabled = true;
+    // 生成开始即冻结选区原文：请求/预览/应用三处必须用同一份快照，
+    // 否则等待期间的新选区会让「原文」与「替换目标」错配，改到别的段落
+    pendingBefore = selText;
     try {
       var r = await fetch('/ai/rewrite', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: DOC_ID, text: selText, instruction: inst }) });
+        body: JSON.stringify({ id: DOC_ID, text: pendingBefore, instruction: inst }) });
       if (r.status === 409) { $('ai-preview').textContent = await r.text(); return; }
       var data = await r.json();
       pendingAfter = data.revised;
       $('ai-preview').innerHTML = '';
-      var b = document.createElement('div'); b.className = 'ai-before'; b.textContent = selText;
+      var b = document.createElement('div'); b.className = 'ai-before'; b.textContent = pendingBefore;
       var a = document.createElement('div'); a.className = 'ai-after'; a.textContent = pendingAfter;
       $('ai-preview').append(b, a);
       $('ai-actions').style.display = 'block';
@@ -436,11 +441,11 @@
   $('ai-apply').onclick = function () {
     if (pendingAfter) {
       if (window.__edPushUndo) window.__edPushUndo('AI 改写');
-      if (findAndReplace(selText, pendingAfter)) $('ai-pop').style.display = 'none';
+      if (findAndReplace(pendingBefore, pendingAfter)) $('ai-pop').style.display = 'none';
       else $('ai-preview').textContent = '⚠️ 原文未找到（可能已被修改），未应用';
     }
   };
-  $('ai-cancel').onclick = function () { $('ai-pop').style.display = 'none'; };
+  $('ai-cancel').onclick = function () { $('ai-pop').style.display = 'none'; pendingAfter = null; pendingBefore = ''; };
   document.addEventListener('mousedown', function (e) {
     if (!$('ai-pop').contains(e.target) && e.target.id !== 'ai-sel-btn') $('ai-pop').style.display = 'none';
   });

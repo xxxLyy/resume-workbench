@@ -1,6 +1,7 @@
 // migrate-editor.mjs — 把现有文档的编辑器（工具栏 + 主脚本）升级为 template.html 的当前版本（先快照，幂等）
 // 用法: node migrate-editor.mjs [docId]   （给 docId 则只迁移该文档，供测试）
 // 护栏：旧块不匹配则跳过该文档并报告，绝不硬改；template 里 {{DOC_ID}} 会替换为各文档自身 id
+import { atomicWrite } from './tx.mjs';   // 正文覆写走项目统一的原子写（同 server.mjs / migrate-meta.mjs）
 // v5：保存状态机改为 revision 三态（编辑/已提交/已确认），保存期间新编辑排队续存，
 //     恢复缓存含排版（typo-custom），多标签 baseMtime 冲突检测；正文保存不再触发 PDF 渲染。
 import fs from 'node:fs';
@@ -35,13 +36,15 @@ for (const f of docs) {
   const hasOldBar = /<div class="edit-toolbar"[^>]*>[\s\S]*?<\/div>/.test(html);
   const hasOldScript = /<script>\s*\(function \(\) \{[\s\S]*?<\/script>/.test(html);
   if (!hasOldBar || !hasOldScript) { console.log('skip（旧编辑器块不匹配，未动）:', f); continue; }
-  const dir = path.join(root, 'snapshots', id);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.copyFileSync(p, path.join(dir, timestamp() + '.html'));
+  // 备份落 backups/ 而非 snapshots/：后者是用户历史快照配额目录（MAX_SNAPSHOTS 50，会被
+  // pruneSnapshots 按 .html 计数淘汰），迁移备份会被当作历史条目展示/回滚（约定见 migrate-meta.mjs:8）
+  const bdir = path.join(root, 'backups', 'pre-editor-' + timestamp(), id);
+  fs.mkdirSync(bdir, { recursive: true });
+  fs.copyFileSync(p, path.join(bdir, path.basename(p)));
   const newScript = script[0].replaceAll('{{DOC_ID}}', () => id);
   const out = html
     .replace(/<div class="edit-toolbar"[^>]*>[\s\S]*?<\/div>/, toolbar[0])
     .replace(/<script>\s*\(function \(\) \{[\s\S]*?<\/script>/, newScript);
-  fs.writeFileSync(p, out);
+  atomicWrite(p, out);   // 原子写：tmp + rename，避免中途中断留下半份正文
   console.log('migrated:', f);
 }

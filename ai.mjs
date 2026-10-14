@@ -9,7 +9,7 @@ export function buildRewrite(text, instruction) {
 export function buildChat(docText) {
   return `你是简历编辑助手。用户会告诉你想怎么改简历。你的输出只能是二者之一（不要任何其它文字、不要 Markdown 围栏）：
 1）需要修改文档时，输出 JSON 数组，每个元素一条修改：
-[{"before":"文档中现有的原文片段（必须逐字，不超过80字）","after":"改后的文字","note":"这条改的什么","context":"可选：before 前后 20 字上下文，用于区分重复文本"}]
+[{"before":"文档中现有的原文片段（必须逐字，不超过80字）","after":"改后的文字","note":"这条改的什么","context":"可选：before 前后 20 字上下文，用于区分重复文本","occurrence":"可选：before 在文档中从 0 开始的第几次出现（0 基）；与 context 二选一即可"}]
 最多 5 条，只给真正需要改的；保持事实不变，不编造数字和经历。
 2）用户在闲聊、提问或要求不明确时，输出单个对象：{"reply":"简短中文回答"}
 
@@ -20,7 +20,7 @@ ${docText}`;
 // S2：体检/匹配报告解析（报告契约：summary 必填，score 缺省 null，items/changes 缺省 []；坏输出返回 null）
 export function parseReport(raw) {
   try {
-    const cleaned = String(raw).replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+    const cleaned = String(raw).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
     const data = JSON.parse(cleaned);
     if (!data || typeof data.summary !== 'string' || !data.summary) return null;
     return {
@@ -57,7 +57,7 @@ export function buildMatch(docText, jd) {
 // 解析 LLM 输出：修改数组 或 {"reply":...} 对象；坏输出返回 null
 export function parseChanges(raw) {
   try {
-    const cleaned = String(raw).replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+    const cleaned = String(raw).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
     const data = JSON.parse(cleaned);
     if (Array.isArray(data)) {
       return {

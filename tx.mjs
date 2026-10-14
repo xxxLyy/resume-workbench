@@ -122,12 +122,15 @@ function readMetaLocked(mp) {
   let meta = {};
   if (fs.existsSync(mp)) {
     const raw = fs.readFileSync(mp, 'utf8');
-    let parsed;
-    try { parsed = JSON.parse(raw); } catch {
+    let parsed = null;
+    try { parsed = JSON.parse(raw); } catch { /* 落到下方统一抛 CORRUPT */ }
+    // 根值非普通对象（数组/字符串/null）与解析失败同等处理：静默降级 {} 会让下一次
+    // updateMeta 把它覆盖成只剩一个文档的残表 —— genTasks/job/zones/snapTs 全丢，且无告警
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       const e = new Error(`数据文件损坏，已停止写入：${META_FILE}。请先人工修复或从备份恢复。`);
       e.httpCode = 500; e.code = 'CORRUPT'; throw e;
     }
-    meta = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+    meta = parsed;
   }
   return meta;
 }
@@ -233,7 +236,7 @@ export function recoverPending(root, { restoreDoc } = {}) {
   const txIds = files
     .filter((f) => f.endsWith('.json') && !f.endsWith('.meta.json'))
     .map((f) => f.slice(0, -'.json'.length))
-    .sort();
+    .sort().reverse();   // 逆序恢复：oldHtml/oldMeta 是各事务开始前的前像，正序会停在 tx2 的前像并残留 tx1 的部分写入
   for (const txId of txIds) {
     const recPath = path.join(dir, txId + '.json');
     const metaRecPath = path.join(dir, txId + '.meta.json');

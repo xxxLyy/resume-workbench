@@ -43,7 +43,7 @@ export async function structureText(root, text, llmFn) {
   const call = llmFn || ((sys, user) => chat(root, sys, user));
   try {
     const raw = await call(SYS, text);
-    const cleaned = String(raw).replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+    const cleaned = String(raw).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
     const data = JSON.parse(cleaned);
     if (!data || typeof data !== 'object' || !('name' in data)) return null;
     return buildDoc(root, data);

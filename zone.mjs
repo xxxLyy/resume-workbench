@@ -115,7 +115,8 @@ export function zoneParas(html, meta, zone) {
 // 全文摘要（请求最小化）：每章只取标题 + 首段前 per 字，供区域分析看上下文而不带全文
 export function digestOf(html, per = 40) {
   return sectionsOf(String(html)).map((s) => {
-    const first = parasOf(s.html).map((p) => p.text).join(' ');
+    const paras = parasOf(s.html);
+    const first = paras.length ? paras[0].text : '';   // 只取首段：拼接全部再 slice 会把后续段的联系方式带进 LLM prompt
     return `【${s.title || '未命名'}】${first.slice(0, per)}`;
   }).join('\n');
 }
@@ -128,7 +129,7 @@ export function buildZoneAnalyzePrompt({ zoneName, zoneText: zt, digest, rounds 
   return { sys, user };
 }
 
-const stripFence = (raw) => String(raw).replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+const stripFence = (raw) => String(raw).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
 
 export function parseZoneAnalysis(raw) {
   try {

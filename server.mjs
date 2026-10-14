@@ -7,7 +7,6 @@ import os from 'node:os';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { importPdfText } from './importer.mjs';
 import { structureText } from './structure.mjs';
 import { loadProfiles, hasLLM, chat, chatMsgs, listModels } from './llm.mjs';
 import { buildRewrite, buildChat, parseChanges, buildReview, buildMatch, parseReport } from './ai.mjs';
@@ -679,6 +678,9 @@ const escAttr = (s) => escHtml(s).replace(/"/g, '&quot;');   // 属性值转义�
 // 备份页 DATA），把唯一能截断单引号属性的 ' 换成 JSON 转义 \u0027 —— 属性里不再出现裸 '，JSON.parse 原样还原为 '。
 // 值（docInfo.title）已过 escHtml：& < > 以实体形式存在并由属性解析还原，故此处绝不能再转 &（会把 &amp; 变成 &amp;amp;）。
 const jsonAttr = (v) => JSON.stringify(v).replace(/'/g, '\\u0027');
+// 内联 <script> 里的 JSON：必须连 < 一起转，否则数据里的 "</script>" 会闭合脚本标签（实测可执行任意脚本）。
+// 不转 &：值多已过 escHtml（& < > 以实体存在），此处再转会变成 &amp;amp;
+const jsonScript = (v) => JSON.stringify(v).replace(/</g, '\\u003c');
 
 function docInfo(id, m) {
   const f = docPath(id);
@@ -1110,7 +1112,7 @@ async function saveJsonProtocol(req, id, url) {
       const oldHtml = fs.readFileSync(docPath(id), 'utf8');
       if (body.ops.length && !job) return { status: 400, body: { ok: false, error: '该文档不是岗位草稿（无 changes 可操作）' } };
       // hide 接受要求目标段落在正文（删除式隐藏会被 anchor-gone 拒）——T4+ UI 必须属性式实现 hide（加隐藏标记类，不删节点）。
-      const pre = applyOps(body.ops, job, oldHtml);
+      const pre = applyOps(body.ops, job, oldHtml, { zones: (oldMeta && oldMeta.zones) || {} });
       if (!pre.ok) return { status: 400, body: { ok: false, badOp: pre.badOp, reason: pre.reason, error: '操作校验失败，整份拒绝（正文未保存）：' + pre.reason } };
       // ⑤ 四步全过 → 旧版快照（既有手动快照）+ beginTx 写入
       const autosave = !!url.searchParams.get('autosave');
@@ -1139,7 +1141,7 @@ async function saveJsonProtocol(req, id, url) {
             // 失败抛错走既有双恢复）；reviewConsistency 正文维度逐条写 consistency（zoneSync 之后、同一事务）；
             // saveReceipts 环形 ≤50 记进 meta.job。非 job 文档（母版）不记回执——meta.job 是岗位草稿子树，
             // 不为其造壳（kindOf 会把带 job 的母版误判成岗位草稿）。
-            const re = applyOps(body.ops, base.job, oldHtml);
+            const re = applyOps(body.ops, base.job, oldHtml, { zones: base.zones || {} });
             if (!re.ok) throw new Error('操作校验失败（并发状态变化，已整份回滚）：' + re.reason);
             base.job = reviewConsistency(re.job, newHtml, { zones: base.zones, mats: loadMats() });
             const rec = {
@@ -1199,6 +1201,14 @@ async function handler(req, res) {
     || (req.method === 'GET' && WRITE_ON_GET.has(url.pathname));
   if (mutating && rootLock.isHeld(root)) {
     return send(503, '迁移/维护进行中（.migrate.lock 被持有），写请求与渲染类 GET（/pdf、/export）暂不可用，请稍后重试', 'text/plain');
+  }
+  // CSRF 防线：服务只绑 127.0.0.1，但 text/plain + JSON body 属 CORS 简单请求（免预检），
+  // 任意网站都能让浏览器对本机发写请求 —— 实测可盲写 applications.json、盲打 /restore 覆盖全部简历。
+  // 浏览器发起的写请求必带 Origin，且同源时其 host 必等于 Host 头；无 Origin = 非浏览器客户端（curl/Node）放行。
+  if (mutating && req.headers.origin) {
+    let sameHost = false;
+    try { sameHost = new URL(req.headers.origin).host === req.headers.host; } catch {}
+    if (!sameHost) return send(403, 'cross-origin write rejected', 'text/plain');
   }
   try {
     // ===== 静态资源（代码目录，非数据目录）=====
@@ -2448,14 +2458,14 @@ async function handler(req, res) {
       const archiveMissing = !app.archive || app.archive.status !== 'ok';
       const archiveLine = archiveMissing
         ? `<span class="badge err">存档 PDF 缺失</span> <button class="secondary" style="padding:2px 8px;font-size:12px" onclick="regenArchive()">从快照重新生成</button><span id="regenMsg" style="font-size:12px"></span>`
-        : `<a href="/archive-pdf?id=${escHtml(app.id)}" target="_blank">存档 PDF</a> <span class="badge ok">内容哈希 ${escHtml((app.contentHash || '').slice(0, 8))}</span>`;
+        : `<a href="/archive-pdf?id=${escAttr(app.id)}" target="_blank">存档 PDF</a> <span class="badge ok">内容哈希 ${escHtml((app.contentHash || '').slice(0, 8))}</span>`;
       return send(200, page('投递详情', `<h1>投递详情</h1>
     <div class="card">
       <b style="font-size:16px">${escHtml(app.company)}</b> ${escHtml(app.role)} ${dueBadge}
       <div style="font-size:13px;color:var(--mut);margin-top:6px">
         状态：<span class="badge">${escHtml(app.status)}</span>
         ${app.channel ? `渠道：<span class="badge">${escHtml(app.channel)}</span>` : ''}
-        ${app.link ? `<a href="${escHtml(app.link)}" target="_blank" rel="noopener">岗位链接</a>` : ''}
+        ${app.link ? `<a href="${escAttr(app.link)}" target="_blank" rel="noopener">岗位链接</a>` : ''}
         简历：<a href="/edit?id=${escHtml(app.docId)}">${escHtml(app.docId)}</a>
         ${app.appliedAt ? `投递日期：${escHtml(app.appliedAt)}` : ''}
         ${app.nextStep ? `下一步：${escHtml(app.nextStep)}` : ''}
@@ -2503,7 +2513,7 @@ async function handler(req, res) {
       document.getElementById('ivSave').onclick = function () {
         var round = document.getElementById('ivRound').value.trim();
         if (!round) { document.getElementById('ivMsg').textContent = ' ❌ 轮次必填'; return; }
-        var ivs = ${JSON.stringify(interviews)};
+        var ivs = ${jsonScript(interviews)};
         ivs.push({ round: round, time: document.getElementById('ivTime').value,
           questions: document.getElementById('ivQ').value, answer: document.getElementById('ivA').value,
           feedback: document.getElementById('ivF').value, next: document.getElementById('ivN').value });
@@ -2558,8 +2568,15 @@ async function handler(req, res) {
       try {
         const r = await fetch(body.url.trim(), { signal: AbortSignal.timeout(15000) });
         if (!r.ok) throw new Error('HTTP ' + r.status);
-        const buf = Buffer.from(await r.arrayBuffer());
-        if (buf.length > 5 * 1024 * 1024) throw new Error('页面超过 5MB 上限');
+        // 流式累计并即时中断：原先 arrayBuffer() 先把整个响应读进内存、之后才判大小，上限形同虚设
+        const MAX_JD = 5 * 1024 * 1024;
+        const chunks = []; let size = 0;
+        for await (const c of r.body) {
+          size += c.length;
+          if (size > MAX_JD) throw new Error('页面超过 5MB 上限');
+          chunks.push(c);
+        }
+        const buf = Buffer.concat(chunks);
         const text = buf.toString('utf8')
           .replace(/<script[\s\S]*?<\/script>/g, '').replace(/<style[\s\S]*?<\/style>/g, '')
           .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 4000);
@@ -2646,7 +2663,9 @@ async function handler(req, res) {
       render();
       function diffLinesToHtml(prev) {
         var lines = [];
-        function sec(title, items) { if (!items || !items.length) return; lines.push('<div style="margin-top:6px"><b>' + title + '</b></div>'); items.forEach(function (x) { lines.push('<div>· ' + x + '</div>'); }); }
+        // x 来自备份包内的文件名/记录（可由构造的备份控制），拼进 innerHTML 前必须转义
+        var e = function (s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
+        function sec(title, items) { if (!items || !items.length) return; lines.push('<div style="margin-top:6px"><b>' + title + '</b></div>'); items.forEach(function (x) { lines.push('<div>· ' + e(x) + '</div>'); }); }
         var d = prev.docs || {}, a = prev.apps || {}, m = prev.mats || {}, meta = prev.meta || {};
         sec('文档（新增 ' + (d.add || []).length + ' / 冲突 ' + (d.conflict || []).length + ' / 本地保留 ' + (d.keep || []).length + '）',
           (d.add || []).slice(0, 10).map(function (x) { return '新增 ' + x; })
@@ -2937,6 +2956,11 @@ async function handler(req, res) {
       }
       try { execFileSync('tar', ['xzf', tmpTar, '-C', stage], { stdio: 'pipe' }); }
       catch { return fail('解包失败，备份包可能损坏'); }
+      // 防 symlink：条目路径校验只查字符串，查不出「合法路径 + 符号链接指向别处」。
+      // 实测 pdfs/leak.pdf -> /任意本地文件 经 copyMissing 的 copyFile 会把目标内容读进 root/pdfs/。
+      for (const ent of fs.readdirSync(stage, { withFileTypes: true, recursive: true })) {
+        if (ent.isSymbolicLink()) return fail('备份包含符号链接，已拒绝：' + ent.name.slice(0, 80));
+      }
       const hasContent = ['docs', 'snapshots', 'pdfs', 'docs-meta.json', 'applications.json', 'materials.json'].some((x) => fs.existsSync(path.join(stage, x)));
       if (!hasContent) return fail('备份包中没有可恢复的内容');
       // 预览：逐条差异（新增/冲突/保留）

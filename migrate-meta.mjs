@@ -335,6 +335,9 @@ async function migrateDoc(root, docId, chk, backupDir, lockInfo) {
       else if (jb.status === 'draft' && Array.isArray(jb.changes) && jb.changes.some((c) => c && c.status === 'pending')) reg.flow = 'reviewing';
       else reg.flow = 'draft';
       if (m.archivedAt === undefined) reg.archivedAt = null;
+      // 写正文前复核锁所有权（与 :351/:353 同款）：渲染耗时可能已越过 stale 窗口，
+      // 此时若已被 server 破锁接管，继续写会与之互踩 —— 该复核必须早于第一次落盘
+      assertLockOwnership(root, lockInfo, '写文档前');
       if (newHtml !== oldHtml) atomicWrite(docFile, newHtml);
       updateMeta(root, docId, (cur) => {
         const next = { ...(cur || {}), ...reg };
@@ -422,7 +425,10 @@ export async function runMigration(root, opts = {}) {
     makeBackup(root, backupDir);   // 触碰任何东西之前：全量副本
     report.backup = backupRel;
 
-    const lockInfo = rootLock.acquire(root);   // 整轮持锁（timeoutMs 0：被占即抛 LockHeld；server 见锁写请求 503）
+    // 整轮持锁（timeoutMs 0：被占即抛 LockHeld；server 见锁写请求 503）。
+    // staleMs 放大到 24h：默认 30min 会让「渲染慢 × 文档多」的整轮被 server 判陈旧并放行写请求，
+    // 两侧同时写同一文档；崩溃残留仍由 lockIsStale 的 !pidAlive 分支接管，不影响重启恢复
+    const lockInfo = rootLock.acquire(root, { staleMs: 24 * 3600 * 1000, timeoutMs: 0 });
     try {
       // 中断恢复：有 tx 记录 → 先恢复（legacy-safe 默认恢复）再重做；恢复失败 → 保留记录待人工，STOP 整轮
       const recovered = recoverPending(root);

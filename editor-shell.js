@@ -693,17 +693,21 @@
             setEntryHidden(en, !off);
           }, false);
           // S4a-T11：复制/删除/排序收进 ⋯ 菜单——键盘可达（Tab 聚焦 + Enter 展开 + Esc 关闭 + 方向键导航）
+          // 条目节点是 .section 的后代而非 .sheet 直接子节点，insertBefore 的 ref 必须是同一 parent 的子节点
+          // （否则必抛 NotFoundError）；parentNode 不一致说明跨章节，不移动（同 dupEntry 的 parent 用法）
           var moveUp = function () {
             var prev = entries[idx - 1];
-            if (!prev) return;
-            sheet.insertBefore(en.head, prev.head);
-            if (en.ul) sheet.insertBefore(en.ul, prev.head);
+            if (!prev || prev.head.parentNode !== en.head.parentNode) return;
+            var p = en.head.parentNode;
+            p.insertBefore(en.head, prev.head);
+            if (en.ul) p.insertBefore(en.ul, prev.head);
           };
           var moveDown = function () {
             var next = entries[idx + 1];
-            if (!next) return;
-            sheet.insertBefore(next.head, en.head);
-            if (next.ul) sheet.insertBefore(next.ul, en.head);
+            if (!next || next.head.parentNode !== en.head.parentNode) return;
+            var p = en.head.parentNode;
+            p.insertBefore(next.head, en.head);
+            if (next.ul) p.insertBefore(next.ul, en.head);
           };
           var more = document.createElement('button');
           more.type = 'button';

@@ -24,7 +24,7 @@ export function paraFingerprint(text) {
 // 匹配只认请求内 ID：matId 必须在已确认素材集（factStatus==='confirmed'）、zid 必须在正文段落——
 // 两份同名素材/两段相同正文无歧义；title/quote 原样保留仅作展示，不参与匹配。ID 不在集合 → 该 ref 丢弃。
 // refId 由本函数按 b<批次>r<序号> 分配（gen = 证据生成次数，调用方传 evidenceGen+1），全局唯一、跨批次不复用。
-const stripFence = (raw) => String(raw).replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+const stripFence = (raw) => String(raw).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
 
 // 五态校正（v1.3 反例5 / v1.4 validity-coverage 分离）：ref 实际形态与模型输出矛盾时以 ref 形态为准——
 // para 存在 = 简历已表达（充分性机判 covered/thin）；仅有效 mat = sourced（有据未表达，绝不显示"已覆盖"）；
@@ -231,7 +231,10 @@ export function transitionOp(change, action, ctx = {}) {
 export function applyOps(ops, job, html, opts = {}) {
   const changes = (job && Array.isArray(job.changes)) ? job.changes : [];
   const byZid = new Map(parasOf(String(html ?? '')).map((p) => [p.zid, p]));
-  const locked = opts.locked instanceof Set ? opts.locked : new Set();
+  const locked = opts.locked instanceof Set ? opts.locked
+    // 未显式传 locked 时从 zones 派生（与 reviewConsistency 同口径）：
+    // 原先回落空集，使下面 locked-now 拦截在生产路径恒不命中（服务端纵深防御失效）
+    : new Set(Object.entries(opts.zones || {}).filter(([, z]) => z && z.locked === true).map(([zid]) => zid));
   const now = opts.now || new Date().toISOString();
   const next = changes.map((c) => ({ ...c }));
   const applied = [];

@@ -89,7 +89,7 @@ export function factGuard(c) {
 export function parseJobOps(raw) {
   let data;
   try {
-    const cleaned = String(raw).replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+    const cleaned = String(raw).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
     data = JSON.parse(cleaned);
   } catch { return null; }
   if (!data || typeof data !== 'object') return null;

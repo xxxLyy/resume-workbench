@@ -78,11 +78,17 @@ function acquireLock() {
   try {
     const st = fs.statSync(lockPath());
     if (Date.now() - st.mtimeMs < LOCK_STALE_MS) return false;
+    fs.rmSync(lockPath(), { force: true });   // 陈旧 → 先清，否则下面的 wx 遇 EEXIST 永远无法接管
   } catch {}
-  try { fs.mkdirSync(path.dirname(lockPath()), { recursive: true }); fs.writeFileSync(lockPath(), String(process.pid)); return true; }
+  // wx 独占创建：消掉 statSync→writeFileSync 的 TOCTOU（两进程可同时判定"无锁"并各自写入）
+  try { fs.mkdirSync(path.dirname(lockPath()), { recursive: true }); fs.writeFileSync(lockPath(), String(process.pid), { flag: 'wx' }); return true; }
   catch { return false; }
 }
-function releaseLock() { try { fs.rmSync(lockPath(), { force: true }); } catch {} }
+function releaseLock() {
+  // 只删自己持有的锁：本进程的锁若已被陈旧破除并由他人接管，无条件 rm 会删掉对方的
+  try { if (fs.readFileSync(lockPath(), 'utf8').trim() !== String(process.pid)) return; } catch { return; }
+  try { fs.rmSync(lockPath(), { force: true }); } catch {}
+}
 
 export async function resolveChromium({ tmpDir = os.tmpdir(), force = false, waitMs = 30000 } = {}) {
   if (process.env.RESUME_CHROMIUM && !fs.existsSync(process.env.RESUME_CHROMIUM)) {
