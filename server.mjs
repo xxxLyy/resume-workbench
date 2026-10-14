@@ -58,17 +58,27 @@ function timestamp() {
 const JSON_FILES = { meta: 'docs-meta.json', apps: 'applications.json', mats: 'materials.json' };
 const corrupt = new Set();
 const dataFile = (name) => path.join(root, JSON_FILES[name]);
+// 根值形状要求：可解析 ≠ 形状正确。docs-meta.json 必须是普通对象，applications/materials 必须是数组。
+// 形状错时读取侧会静默降级为 fallback（[] / {}），随后的任意一次保存就把原表整体覆盖成空——
+// 实测 applications.json 被写成对象后一次 saveApps 即清空全部投递记录。
+const shapeOk = (name, d) => name === 'meta'
+  ? !!d && typeof d === 'object' && !Array.isArray(d)
+  : Array.isArray(d);
 function readJson(name, fallback) {
   const f = dataFile(name);
   if (!fs.existsSync(f)) return fallback;
-  try { const d = JSON.parse(fs.readFileSync(f, 'utf8')); corrupt.delete(name); return d ?? fallback; }
-  catch { corrupt.add(name); return fallback; }
+  try {
+    const d = JSON.parse(fs.readFileSync(f, 'utf8'));
+    if (!shapeOk(name, d)) { corrupt.add(name); return fallback; }
+    corrupt.delete(name); return d ?? fallback;
+  } catch { corrupt.add(name); return fallback; }
 }
 function assertWritable(name) {
   const f = dataFile(name);
   if (!fs.existsSync(f)) return;
-  let bad = false;
-  try { JSON.parse(fs.readFileSync(f, 'utf8')); } catch { bad = true; }
+  let parsed = null, bad = false;
+  try { parsed = JSON.parse(fs.readFileSync(f, 'utf8')); } catch { bad = true; }
+  if (!bad) bad = !shapeOk(name, parsed);
   if (bad) {
     corrupt.add(name);
     throw Object.assign(new Error(`数据文件损坏，已停止写入：${JSON_FILES[name]}。请先人工修复或从备份恢复。`), { httpCode: 500, code: 'CORRUPT' });
@@ -171,10 +181,14 @@ function applyChangesResult(cur, ops, ctx = {}) {
   const paraByZid = new Map(paras.map((p) => [p.zid, p]));
   const zoneOfZid = (zid) => (zones[zid] && zones[zid].zone) || null;
   // supersede（影响隔离，设计 §4.2 反例3）：全文=全部 pending；局部=只清同 zone 的 pending，其他 zone 不动
-  for (const c of cur.job.changes) {
-    if (c.status !== 'pending') continue;
-    if (!zoneScope || (c.zone || zoneOfZid(c.zid)) === zoneScope) c.status = 'superseded';
-  }
+  // 注意：本循环原先在 guardOps 之前执行 —— 模型输出为空或全被护栏丢弃时，旧 pending 已被抹成 superseded
+  // 却没有任何新候选顶上，待审队列静默消失。故移到 guardOps 之后、且仅在确有候选时执行。
+  const supersedePending = () => {
+    for (const c of cur.job.changes) {
+      if (c.status !== 'pending') continue;
+      if (!zoneScope || (c.zone || zoneOfZid(c.zid)) === zoneScope) c.status = 'superseded';
+    }
+  };
   // 锚点解析：优先模型回传 zid（局部重生成的请求内标注），否则按 before/entry 文本匹配基线段落（首个命中）。
   // add = 容器锚点（目标章节首个段落；容器消失 → anchor-gone，新段落 zid 接受时才创建——设计 §4.2）
   const byText = (needle) => {
@@ -229,10 +243,11 @@ function applyChangesResult(cur, ops, ctx = {}) {
   let ci = 0;
   const mk = (c, status, note) => ({ id: 'g' + gen + '-c' + (++ci), gen, ...c, status, note, createdAt: new Date().toISOString() });
   for (const d of g.dropped) cur.job.changes.push(mk(d.op, 'skipped', 'guardOps：' + d.reason));
+  if (g.kept.length) supersedePending();
   for (const c of g.kept) cur.job.changes.push(mk(c, 'pending'));
   cur.job.todos = (cur.job.todos || []).concat(ops.todos.map((t) => ({ ...t, resolved: false })));
   cur.job.generatedAt = new Date().toISOString();
-  cur.flow = 'reviewing';   // 生成产生 pending 建议 → 审阅中（状态维度单源 flow）
+  cur.flow = g.kept.length ? 'reviewing' : cur.flow;   // 无候选时不改 flow：否则空结果会把既有待审流程推到 reviewing
   cur.job.summary = ops.summary;
   return { generated: g.kept.length, todos: ops.todos.length };
 }
@@ -853,7 +868,8 @@ function listPage(showArchived = false) {
       </form>
     </details>
     ${drafts.length ? `<div class="card" style="margin-top:12px"><b>继续处理岗位草稿</b>
-      ${drafts.map((d) => `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><span><b>${d.title}</b> <span class="badge ${deliverableNow(d.id, meta[d.id] || {}, d) ? 'ok' : 'warn'}">${deliverableNow(d.id, meta[d.id] || {}, d) ? '可投递' : '草稿'}</span><span style="color:var(--mut);font-size:12px">${escHtml(((meta[d.id] || {}).company || '') + '·' + ((meta[d.id] || {}).role || ''))} · ${d.mtime}</span></span><a href="/edit?id=${d.id}"><button>继续处理</button></a></div>`).join('')}
+      ${drafts.map((d) => { const dl = deliverableNow(d.id, meta[d.id] || {}, d);   // 每草稿只算一次：原写法在同一模板串里调两次，2N 次同步解析卡首屏
+        return `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><span><b>${d.title}</b> <span class="badge ${dl ? 'ok' : 'warn'}">${dl ? '可投递' : '草稿'}</span><span style="color:var(--mut);font-size:12px">${escHtml(((meta[d.id] || {}).company || '') + '·' + ((meta[d.id] || {}).role || ''))} · ${d.mtime}</span></span><a href="/edit?id=${d.id}"><button>继续处理</button></a></div>`; }).join('')}
     </div>` : ''}
     <div class="card" style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <form method="post" action="/new"><button class="secondary">＋ 新建空白文档</button></form>
@@ -1021,6 +1037,9 @@ function readMetaSnapshotAt(f) {
   let parsed;
   try { parsed = JSON.parse(fs.readFileSync(f, 'utf8')); } catch { throw bad('损坏'); }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw bad('格式非法（应为对象）');
+  // key 须过 VALID_ID：否则 applyMetaSnapshot 会把非法 id 写进 meta 表，此后所有基于 id 的路径拼接都不可信
+  // （实测无原型污染——JSON.parse 的 "__proto__" 是自有属性，赋值退化为普通属性写——但数据完整性仍须守住）
+  for (const k of Object.keys(parsed)) if (!VALID_ID.test(k)) throw bad(`含非法文档 id「${String(k).slice(0, 40)}」`);
   return parsed;
 }
 
@@ -2169,7 +2188,10 @@ async function handler(req, res) {
       const mats = loadMats();
       const m = mats.find((x) => x.id === body.id);
       if (!m) return send(404, 'mat not found', 'text/plain');
-      for (const k of ['title', 'brief', 'technical', 'interview', 'attach', 'tags']) if (body[k] !== undefined) m[k] = body[k];
+      // 类型收敛（与 /mat/add 同口径）：原先原样覆盖，传字符串给 tags 会让 (m.tags||[]).map 抛 TypeError，
+      // 传数字给 title/brief 同样会让模板里的 .trim() 崩 —— 两者都导致整个 /materials 页 500 且需手改 JSON 恢复
+      for (const k of ['title', 'brief', 'technical', 'interview', 'attach']) if (typeof body[k] === 'string') m[k] = body[k];
+      if (body.tags !== undefined) m.tags = Array.isArray(body.tags) ? body.tags.filter((t) => typeof t === 'string') : [];
       // 事实层（S3-T7）：提供 facts 就按白名单整替；factStatus 走三态枚举
       if (body.facts && typeof body.facts === 'object')
         m.facts = Object.fromEntries(FACT_KEYS.map((k) => [k, body.facts[k] === undefined || body.facts[k] === null ? '' : String(body.facts[k])]));
@@ -2537,13 +2559,15 @@ async function handler(req, res) {
       const app = loadApps().find((a) => a.id === aid);
       if (!app) return send(404, 'app not found', 'text/plain');
       const ivs = Array.isArray(app.interviews) ? app.interviews : [];
-      if (idx < 0 || idx >= ivs.length) return send(404, 'interview not found', 'text/plain');
+      if (!Number.isInteger(idx) || idx < 0 || idx >= ivs.length) return send(404, 'interview not found', 'text/plain');
       const iv = ivs[idx];
-      const dt = (iv.time || '').replace(/[-:]/g, '').replace('T', 'T') + '00';
+      // DTSTART 须为合法紧凑时间：time 缺失时原写法生成 DTSTART:00（非法，日历客户端拒收）
+      const dt = String(iv.time || '').replace(/[-:]/g, '') + '00';
+      if (!/^\d{8}T\d{6}Z?$/.test(dt)) return send(400, '面试时间未设置或格式非法，无法导出日历', 'text/plain');
       const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'BEGIN:VEVENT',
         `UID:${app.id}-${idx}@resume.local`, `DTSTART:${dt}`,
         `SUMMARY:${app.company} ${iv.round || '面试'}`.replace(/[,;\\]/g, (m) => '\\' + m),
-        `DESCRIPTION:${(iv.questions || '').replace(/\n/g, '\\n')}`.slice(0, 500),
+        `DESCRIPTION:${String(iv.questions || '').replace(/\\/g, '\\\\').replace(/[,;]/g, (m) => '\\' + m).replace(/\r?\n/g, '\\n')}`.slice(0, 500),
         'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
       res.writeHead(200, { 'Content-Type': 'text/calendar; charset=utf-8', 'Content-Disposition': `attachment; filename="interview-${idx + 1}.ics"` });
       return res.end(ics);
@@ -2730,7 +2754,10 @@ async function handler(req, res) {
       if (profiles.length && (typeof body.active !== 'number' || !Number.isInteger(body.active) || body.active < 0 || body.active >= profiles.length))
         return send(400, 'active 需为 0-' + (profiles.length - 1) + ' 的整数', 'text/plain');
       const cfgTmp = path.join(root, 'config.json.tmp');
-      fs.writeFileSync(cfgTmp, JSON.stringify({ active: profiles.length ? body.active : 0, profiles }));
+      // mode 0o600：config.json 含明文 API Key，默认 0644 让同机其他用户可读（实测 -rw-r--r--）。
+      // 先 chmod 再 rename，避免 tmp 创建瞬间的默认权限窗口
+      fs.writeFileSync(cfgTmp, JSON.stringify({ active: profiles.length ? body.active : 0, profiles }), { mode: 0o600 });
+      try { fs.chmodSync(cfgTmp, 0o600); } catch {}
       fs.renameSync(cfgTmp, path.join(root, 'config.json'));
       return sendJson(200, { ok: true });
     }
@@ -2927,10 +2954,19 @@ async function handler(req, res) {
     // ===== 备份 =====
     if (req.method === 'GET' && url.pathname === '/backup') {
       const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + new Date().toTimeString().slice(0, 5).replace(':', '');
-      const child = spawn('tar', ['czf', '-', '-C', root, 'docs', 'snapshots', 'pdfs', 'docs-meta.json', 'applications.json', 'materials.json'], { stdio: ['ignore', 'pipe', 'ignore'] });
-      res.writeHead(200, { 'Content-Type': 'application/gzip', 'Content-Disposition': `attachment; filename="resume-backup-${stamp}.tar.gz"` });
-      child.stdout.pipe(res);
-      child.on('close', () => { if (!res.writableEnded) res.end(); });
+      // 先落临时文件再回传：原先 stdout 直接 pipe 且不监听退出码，tar 失败时客户端仍收到 200 + 残缺包
+      const tmpTar = path.join(os.tmpdir(), `resume-backup-${Date.now()}.tar.gz`);
+      const child = spawn('tar', ['czf', tmpTar, '-C', root, 'docs', 'snapshots', 'pdfs', 'docs-meta.json', 'applications.json', 'materials.json'], { stdio: ['ignore', 'ignore', 'pipe'] });
+      let err = '';
+      child.stderr.on('data', (c) => { err += c; });
+      child.on('close', (code) => {
+        if (code !== 0) {
+          fs.rmSync(tmpTar, { force: true });
+          return sendJson(500, { ok: false, error: '打包失败：' + (err.trim().slice(0, 200) || `tar exit ${code}`) });
+        }
+        res.writeHead(200, { 'Content-Type': 'application/gzip', 'Content-Disposition': `attachment; filename="resume-backup-${stamp}.tar.gz"` });
+        fs.createReadStream(tmpTar).pipe(res).on('close', () => fs.rmSync(tmpTar, { force: true }));
+      });
       return;
     }
     // ===== 恢复（校验 → 预览 → 安全点 → 合并/替换；支持回退）=====
@@ -3035,9 +3071,10 @@ async function handler(req, res) {
         if (mode === 'replace') {
           for (const d of ['docs', 'snapshots', 'pdfs']) {
             const src = path.join(stage, d);
-            if (!fs.existsSync(src)) continue;
-            for (const f of fs.readdirSync(path.join(root, d))) fs.rmSync(path.join(root, d, f), { recursive: true, force: true });
-            fs.cpSync(src, path.join(root, d), { recursive: true });
+            // replace 语义是「清空现有后导入」：备份包里缺该目录时同样要清空，
+            // 否则本地旧数据残留，与 UI 承诺相反（原先此处 continue 跳过了清理）
+            if (fs.existsSync(path.join(root, d))) for (const f of fs.readdirSync(path.join(root, d))) fs.rmSync(path.join(root, d, f), { recursive: true, force: true });
+            if (fs.existsSync(src)) fs.cpSync(src, path.join(root, d), { recursive: true });
           }
           for (const f of ['applications.json', 'materials.json']) if (fs.existsSync(path.join(stage, f))) fs.copyFileSync(path.join(stage, f), path.join(root, f));
           // docs-meta 成对替换：经 updateMeta 逐文档写（唯一写入者），不裸 copyFileSync 覆盖共享文件；损坏 → 抛 CORRUPT（500），绝不当成 {}
@@ -3099,9 +3136,11 @@ async function handler(req, res) {
       // 先把当前状态留一份（回退也可再次回退）
       const ts2 = Date.now();
       const safety2 = path.join(root, 'backups', 'restore-' + ts2);
-      fs.mkdirSync(safety2, { recursive: true });
-      for (const d of ['docs', 'snapshots', 'pdfs']) if (fs.existsSync(path.join(root, d))) fs.cpSync(path.join(root, d), path.join(safety2, d), { recursive: true });
-      for (const f of ['docs-meta.json', 'applications.json', 'materials.json']) if (fs.existsSync(path.join(root, f))) fs.copyFileSync(path.join(root, f), path.join(safety2, f));
+      // 回退点结构须与 restore 主路径一致（backups/<ts>/data/...）：undo 的读取端按 data/ 取，
+      // 原先只建 safety2 本身并把内容放在其下，等于自己造的回退点无法再回退
+      fs.mkdirSync(path.join(safety2, 'data'), { recursive: true });
+      for (const d of ['docs', 'snapshots', 'pdfs']) if (fs.existsSync(path.join(root, d))) fs.cpSync(path.join(root, d), path.join(safety2, 'data', d), { recursive: true });
+      for (const f of ['docs-meta.json', 'applications.json', 'materials.json']) if (fs.existsSync(path.join(root, f))) fs.copyFileSync(path.join(root, f), path.join(safety2, 'data', f));
       try {
         for (const d of ['docs', 'snapshots', 'pdfs']) {
           const src = path.join(dir, d);
@@ -3179,8 +3218,10 @@ async function handler(req, res) {
       const pdfCurrent = rst.state === 'fresh' && !renderError;
       const lines = docToText(fs.readFileSync(docPath(id), 'utf8'), { includeHidden: false }).split('\n');
       const projects = countProjects(docPath(id));
-      let pages = 0, rows = [], checksOk = false;
+      
       const pageTexts = [];   // S4a-T10：分页文本层（排版诊断输入）
+      const rows = [];   // PDF 体检结论行（页面/空白页/孤立标题/字符量）
+      let pages = 0;   // 块外 3254 的 layout 门控要用到，声明须在 pdfStat 分支之前
       if (pdfStat) {
         try { pages = parseInt(execFileSync('pdfinfo', [pdfPath(id)]).toString().match(/Pages:\s*(\d+)/)?.[1] || '0', 10); } catch { pages = 0; }
         const blank = [], orphan = [];
@@ -3198,7 +3239,7 @@ async function handler(req, res) {
         rows.push(`${blank.length ? '⚠️' : '✓'} 空白页检查：${blank.length ? `疑似空白页：${blank.join('、')}` : '无'}`);
         rows.push(`${orphan.length ? '⚠️' : '✓'} 孤立标题检查：${orphan.length ? orphan.map((p) => `第${p}页末疑似孤立标题`).join('；') : '无'}`);
         rows.push(`${totalChars >= 200 ? '✓' : '⚠️'} 文本层字符量：${totalChars}`);
-        checksOk = pages > 0 && !blank.length && totalChars >= 200;
+        
       }
       const suggestions = pageSuggestions(lines, { projects }).map((s) => `<li>${escHtml(s.text)}</li>`).join('');
       // S4a-T10：排版诊断（渲染级，半自动 3 轮；结构性事实表述；下限内不再压缩；超页二出路）+ 导出检查三级（与审阅 Tab 同源 jobViewLive）
@@ -3222,8 +3263,8 @@ async function handler(req, res) {
       <p style="font-size:12px;color:var(--mut)">内容精简（上方建议核对/风格建议）与排版调整（本轮参数）分别接受，互不替代。</p>
     </div>`;
       // 事实冲突/重点审阅门控
-      const pendingConflicts = (job ? job.changes.filter((c) => c.level === 'conflict' && ['pending', 'skipped'].includes(c.status)) : []);   // S4a-T9：skipped 的 conflict 仍参与门控
-      const pendingImportant = (job ? job.changes.filter((c) => c.level === 'important' && c.status === 'pending') : []);
+      const pendingConflicts = pendingConflictsOf(meta);   // 复用已带 Array.isArray 兜底的实现：旧 meta 缺 changes 时原写法直接抛 TypeError 让整页 500
+      const pendingImportant = (job && Array.isArray(job.changes) ? job.changes.filter((c) => c.level === 'important' && c.status === 'pending') : []);
       const gate = pendingConflicts.length
         ? `<div class="card" style="border-color:var(--err-soft);background:var(--err-soft)"><b>⛔ 存在 ${pendingConflicts.length} 条事实冲突未处理，暂不能下载</b>
            <p style="font-size:13px">请到编辑器右侧「审阅」面板逐条处理（接受或撤销）后再导出：</p>
@@ -3236,7 +3277,7 @@ async function handler(req, res) {
       // S4a 上线后修复3：可投递改为显式确认——整体审阅完成 + 当前 PDF 才出按钮；确认后 S1 flow 契约不变
       const flowNow = flowOf(meta);
       const confirmDeliverable = meta.parent && pdfCurrent && expChecks.reviewComplete && flowNow !== 'reviewed'
-        ? `<form method="post" action="/job/changes?id=${id}" style="display:inline" onsubmit="event.preventDefault();fetch('/job/changes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'${id}',status:'deliverable'})}).then(()=>location.reload())"><button class="ok" type="submit">确认可投递（整体审阅已完成）</button></form>`
+        ? `<form method="post" action="/job/changes?id=${id}" style="display:inline" onsubmit="event.preventDefault();fetch('/job/changes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'${id}',status:'deliverable'})}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);location.reload()}).catch(function(e){alert('确认失败：'+e.message)})"><button class="ok" type="submit">确认可投递（整体审阅已完成）</button></form>`
         : flowNow === 'reviewed' ? '<span class="badge ok">已确认可投递</span>'
         : `<span class="badge" title="整体审阅完成 + 当前 PDF 后可确认">未确认可投递</span>`;
       const versionLine = pdfCurrent
@@ -3287,7 +3328,7 @@ async function handler(req, res) {
         if (thin) parts.push('表达不充分证据 ' + thin + ' 条');
         const stale = (v.stale || []).length;
         if (stale) parts.push('来源已变化证据 ' + stale + ' 条');
-        const imp = (job ? job.changes.filter((c) => c.level === 'important' && c.status === 'pending').length : 0);
+        const imp = (job && Array.isArray(job.changes) ? job.changes.filter((c) => c.level === 'important' && c.status === 'pending').length : 0);
         if (imp) parts.push('重点审阅 ' + imp + ' 条');
         return parts.length ? parts.join('；') + '（不阻塞导出）' : '无';
       })()}</div>
