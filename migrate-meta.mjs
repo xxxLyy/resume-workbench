@@ -292,15 +292,30 @@ async function migrateDoc(root, docId, chk, backupDir, lockInfo) {
     atomicWrite(path.join(snapDir, snapBase + '.manifest.json'), JSON.stringify(buildManifest(frozenPre, oldHtml, m)));
 
     // ② beginTx（旧正文精确字节 + 旧 meta 整份副本落 .tx/；中断/失败的恢复依据）
-    const txId = beginTx(root, docId, 'migrate', '');
-    // 载荷落盘硬校验（I-2）：beginTx 把 .tx/<txId>.html 的写入包在 try{}catch{}（tx.mjs:172，磁盘满/权限等会静默失败），
-    // 而迁移传 oldSnapTs:''（迁移快照不进 snapshots/，默认恢复寻不到）→ 载荷缺失就等于本事务没有恢复源：此后被杀会把
-    // meta 回滚成 legacy-undefined 而 html 停在归一化态，重跑三门禁 before==after 全过、盖章 schemaVersion=2 而排版已丢。
+    // 载荷写失败时 beginTx 抛 code=TX_PAYLOAD_MISSING（tx.mjs 自 2026-10-18 审查 B1 起不再静默吞掉），
+    // 原始 errno 在 err.txErrno。迁移层在此把技术错误翻译成本层的停轮语义（信息面向操作者）。
+    let txId;
+    try {
+      txId = beginTx(root, docId, 'migrate', '');
+    } catch (err) {
+      if (err && err.code === 'TX_PAYLOAD_MISSING') {
+        const e = new Error('事务载荷未落盘（beginTx 写入失败：' + (err.txErrno || err.message)
+          + '）。本事务没有恢复源，已在改动任何文档之前停止整轮；请检查 '
+          + path.join(root, '.tx') + ' 的磁盘空间/权限后重跑。');
+        e.code = 'TX_PAYLOAD_MISSING';
+        e.restored = true;   // 零改动：文档天然仍是旧状态（tx 记录保留，交启动恢复按孤儿/旧 meta 语义清理）
+        throw e;
+      }
+      throw err;
+    }
+    // 载荷落盘硬校验（I-2，双保险）：beginTx 成功返回即两路载荷都已落盘（tx.mjs 硬失败而非静默跳过），
+    // 下面的存在性检查理论上不可达；保留以防 beginTx 语义再变。
+    // 而迁移传 oldSnapTs:''（迁移快照不进 snapshots/，默认恢复寻不到）→ 载荷缺失就等于本事务没有恢复源：
     // 此刻尚未改动任何文档 → 硬失败停整轮（CLI 非零退出），绝不降级续跑。
     const missingPayload = ['.html', '.meta.json'].filter((ext) => !fs.existsSync(path.join(root, '.tx', txId + ext)));
     if (missingPayload.length) {
       const e = new Error('事务载荷未落盘: ' + missingPayload.map((ext) => '.tx/' + txId + ext).join('、')
-        + ' 缺失（beginTx 写入被静默吞掉）。本事务没有恢复源，已在改动任何文档之前停止整轮；请检查 '
+        + ' 缺失。本事务没有恢复源，已在改动任何文档之前停止整轮；请检查 '
         + path.join(root, '.tx') + ' 的磁盘空间/权限后重跑。');
       e.code = 'TX_PAYLOAD_MISSING';
       e.restored = true;   // 零改动：文档天然仍是旧状态（tx 记录保留，交启动恢复按孤儿/旧 meta 语义清理）

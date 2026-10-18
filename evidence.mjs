@@ -2,7 +2,7 @@
 // 纪律：零网络零落盘；模型输出只经解析校正入库，判定以程序侧指纹与 ID 为准（title/quote 仅展示）。
 import { createHash } from 'node:crypto';
 import { parasOf, ZONE_LABELS } from './zone.mjs';
-import { DATE_TOKEN_RE, pageSuggestions, FACT_LABELS } from './job.mjs';
+import { DATE_TOKEN_RE, pageSuggestions, FACT_LABELS, factGuard } from './job.mjs';
 
 const sha1 = (s) => createHash('sha1').update(s).digest('hex');
 
@@ -428,4 +428,121 @@ export function layoutDiagnose(pages, ctx = {}) {
   const topLong = paras.map((p) => ({ zid: p.zid, text: p.text, len: norm(p.text).length }))
     .sort((a, b) => b.len - a.len).slice(0, 3);
   return { over, items, apply, atFloor, rounds, topLong, pages: totalPages, target };
+}
+
+// ===== S4B-3 面试追问（S4b③）：证据表 → 追问链 + 答法要点 =====
+// 双护栏：① quote 子串验证（对不上锚定段落就丢弃并计数）② 要点文本对锚定段落跑 factGuard（只标级不丢弃）
+// 不生成成稿答案——只给要点，避免制造「这不是我的风格」的距离感（小红书 2026-10-14 实测）
+const normSpace = (s) => String(s == null ? '' : s).replace(/\s+/g, '');
+
+// 证据行 → 锚点 zid。⚠️ zid 藏在 refs[] 里，证据行顶层没有 zid 字段
+// （parseEvidence 产出 {id,req,status,refs:[{refId,type,id,zid,hash,title,quote}],note}）。
+// 曾按顶层 e.zid 取值 → 恒 undefined → prompt 无原文 + 双护栏全被跳过（2026-10-18 蓝军自检）。
+// paras 校验：zid 必须仍在当前正文里，否则锚点已失效（证据重生成后旧 zid 会消失）。
+function evAnchorZid(e, paras) {
+  const refs = (e && Array.isArray(e.refs)) ? e.refs : [];
+  const hit = refs.find((r) => r && r.type === 'para' && typeof r.zid === 'string'
+    && (paras || []).some((p) => p && p.zid === r.zid));
+  return hit ? hit.zid : null;
+}
+
+export function parseInterview(raw, ctx = {}) {
+  let d;
+  try { d = JSON.parse(stripFence(raw)); } catch { return null; }
+  if (!d || typeof d !== 'object') return null;
+  const paras = ctx.paras || [];
+  const byZid = new Map(paras.filter((p) => p && p.zid).map((p) => [p.zid, p]));
+  const evList = Array.isArray(ctx.evidence) ? ctx.evidence : [];
+  // 解析侧兜底 prompt 里声明的条数上限——模型不遵守上限时不该把超量内容整批落库
+  const maxChains = Math.max(1, evList.length);
+  const MAX_GENERIC = 4;
+  let dropped = 0;
+
+  const mkChain = (c, anchoredZid, guardBase) => {
+    if (!c || typeof c !== 'object') return null;
+    const question = typeof c.question === 'string' ? c.question.trim() : '';
+    if (!question) return null;
+    const anchorHit = anchoredZid ? byZid.get(anchoredZid) : null;
+    const anchorText = (anchorHit && typeof anchorHit.text === 'string') ? anchorHit.text : '';
+    // 有锚点就必须验证（锚定段落已被删除也算验证失败）；无锚点时用 guardBase（全篇正文）做基准
+    const anchorRequired = !!anchoredZid;
+    const baseText = anchorText || (typeof guardBase === 'string' ? guardBase : '');
+
+    // ① 子串验证：quote 对不上锚定段落就丢弃（无锚点时不做此检查——通用问题的 quote 无处可锚）
+    const points = [];
+    for (const p of Array.isArray(c.answerPoints) ? c.answerPoints : []) {
+      if (!p || typeof p !== 'object') continue;
+      const text = typeof p.text === 'string' ? p.text.trim() : '';
+      if (!text) continue;
+      const quote = typeof p.quote === 'string' ? p.quote.trim() : '';
+      if (anchorRequired && (!anchorText || !quote || !normSpace(anchorText).includes(normSpace(quote)))) { dropped++; continue; }
+      points.push({ text, quote, anchored: !!(anchorText && quote), guard: 'normal' });
+    }
+
+    // ② factGuard（checkLoss:false）：只查「新增原文没有的数字」= 编造。
+    //    不查丢失方向——答法要点是提炼，漏数字是精简，不是编造。
+    //    逐条跑而非整链跑：一条要点编造数字时，同链的正常要点不应被一起标红（误报扩散）。
+    if (baseText) {
+      for (const p of points) {
+        const g = factGuard({ kind: 'replace', before: baseText, after: p.text }, { checkLoss: false });
+        if (g.level === 'conflict') p.guard = 'conflict';
+      }
+    }
+
+    return {
+      evIndex: Number.isInteger(c.evIndex) ? c.evIndex : -1,
+      zid: anchoredZid || '',
+      question,
+      followUp: typeof c.followUp === 'string' ? c.followUp.trim() : '',
+      answerPoints: points,
+      empty: points.length === 0
+    };
+  };
+
+  const chains = [];
+  const rawChains = (Array.isArray(d.chains) ? d.chains : []).slice(0, maxChains);
+  for (const c of rawChains) {
+    // fail-closed：证据链必须锚得上正文段落才落库。evIndex 越界/非整数、或该行无可用 para ref
+    // （含锚点段落已被删除/改版）→ 整链丢弃，绝不降级成「无锚点」绕过两条护栏。
+    const i = c && c.evIndex;
+    if (!Number.isInteger(i) || i < 0 || i >= evList.length) { dropped++; continue; }
+    const zid = evAnchorZid(evList[i], paras);
+    if (!zid || !byZid.has(zid)) { dropped++; continue; }
+    const chain = mkChain(c, zid);
+    if (chain) chains.push(chain);
+  }
+  // generic 链（自我介绍/为什么选我们）没有单段锚点，但仍要有基准：
+  // 用**全篇正文**当基准跑 added-only factGuard，模型编造的数字照样会被抓。
+  // 完全无基准 = 模型可为通用问题凭空造事实，与「双护栏」承诺相悖（2026-10-18 OCR 护栏缺口）。
+  const wholeDoc = paras.map((p) => (p && p.text) || '').join('\n').trim();
+  const generic = [];
+  for (const g of (Array.isArray(d.generic) ? d.generic : []).slice(0, MAX_GENERIC)) {
+    const item = mkChain({ ...g, evIndex: -1 }, '', wholeDoc);
+    if (item) generic.push(item);
+  }
+  return { chains, generic, dropped };
+}
+
+export function buildInterviewPrompt({ jd = '', company = '', role = '', evidence = [], paras = [] }) {
+  const evLines = evidence.map((e, i) => {
+    const zid = evAnchorZid(e, paras);
+    const para = zid ? paras.find((p) => p && p.zid === zid) : null;
+    // 无 para 锚点时退回该行 refs 里已校验过的 quote 片段（parseEvidence 已按 refId/zid 校验过）
+    const quotes = ((e && e.refs) || []).map((r) => r && r.quote).filter(Boolean).join(' / ');
+    const body = para ? para.text : quotes;
+    return `【要求 ${i + 1}】${(e && e.req) || ''}\n【简历原文${zid ? '（zid=' + zid + '）' : ''}】${String(body).slice(0, 600) || '（本条无可用原文，勿据此提问）'}`;
+  }).join('\n\n');
+  const sys = '你是资深技术面试官，正在为一轮真实面试预判追问。\n'
+    + '严格规则：\n'
+    + '1. 只基于给出的简历原文与岗位要求提问，不得虚构简历里不存在的经历、项目、职级或数字。\n'
+    + '2. 每条 answerPoint 必须回填支撑它的原文子串（quote），我会逐字校验；对不上就整条作废。\n'
+    + '3. followUp 是这个点上再往下一层的追问，不是换个说法重问。\n'
+    + '4. answerPoint 只写「要说的要点」，不要写成可直接背诵的成稿答案——用户要用自己的话讲。\n'
+    + '5. 只输出 JSON，不要任何解释文字。';
+  const user = `【目标公司】${company}\n【目标岗位】${role}\n【JD】\n${jd || '（未提供 JD）'}\n\n`
+    + `【岗位要求与简历证据（索引即 evIndex）】\n${evLines || '（证据表为空）'}\n\n`
+    + '输出格式：{"chains":[{"evIndex":0,"question":"…","followUp":"…","answerPoints":[{"text":"…","quote":"原文子串"}]}],'
+    + '"generic":[{"question":"自我介绍","answerPoints":[{"text":"…","quote":""}]}]}\n'
+    + `chains 最多 ${Math.max(1, evidence.length)} 条（对应证据表行），generic 最多 4 条。`;
+  return { sys, user };
 }

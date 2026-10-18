@@ -16,7 +16,7 @@ import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, 
 import { rotateLogIfNeeded } from './logrotate.mjs';
 import { freezeHtml, normalizeToCurrent, splitDoc, staleInfo } from './freeze.mjs';
 import { beginTx, commitTx, dropSupersededTx, recoverPending, withDocLock, updateMeta, updateMetaAll, rootLock, atomicWrite, LockHeld } from './tx.mjs';
-import { applyOps, reviewConsistency, refFresh, buildEvidencePrompt, parseEvidence, guardOps, exportChecks, layoutDiagnose } from './evidence.mjs';
+import { applyOps, reviewConsistency, refFresh, buildEvidencePrompt, parseEvidence, buildInterviewPrompt, parseInterview, guardOps, exportChecks, layoutDiagnose } from './evidence.mjs';
 import { assembleTemplate, themeRegistration } from './template.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -126,7 +126,7 @@ const legacyFlowStatus = (m) => (flowOf(m) === 'reviewed' ? 'deliverable' : 'dra
 // genTasks 两类 AI 任务各自独立（设计 §4.1/§6）；baseHash 仅任务记录，不参与候选失效判定。
 const mkGenTask = () => ({ taskId: null, status: 'idle', startedAt: null, baseHash: null, error: null, scope: null });
 // ===== S4a-T4：AI 任务最小可靠性（设计 §6 v1.6——taskId / 原子启动 / 三类回调校验 / 双层超时 / 取消 / 重启恢复）=====
-const GEN_KINDS = ['evidence', 'changes'];
+const GEN_KINDS = ['evidence', 'changes', 'interview'];
 const GEN_TTL_MS = 10 * 60 * 1000;   // 任务级总时限：启动 / 读取 / 完成回调三点校验（兜底 status 永挂 running）
 const genExpired = (t, now) => !!(t && t.status === 'running' && typeof t.startedAt === 'number' && t.startedAt + GEN_TTL_MS < now);
 const newGenTaskId = () => 't-' + randomBytes(4).toString('hex');
@@ -256,6 +256,42 @@ function applyChangesResult(cur, ops, ctx = {}) {
 // evidence 通道（S4a-T6）：JD + 已确认素材（facts+表达）+ 区域分组段落（请求内 ID）→ parseEvidence →
 // finishGenTask 校验落账——整批替换与 evidenceGen+1 只在成功落账事务内（设计 §5.1 反例2：失败/取消/超时不碰旧数据）。
 async function runGenTask(id, kind, taskId, scope = 'all') {
+  if (kind === 'interview') {
+    try {
+      const m0 = loadMeta()[id];
+      if (!m0 || !m0.job) return finishGenTask(id, kind, taskId, null, '文档已不是岗位草稿');
+      const ev = Array.isArray(m0.job.evidence) ? m0.job.evidence : [];
+      if (!ev.length) return finishGenTask(id, kind, taskId, null, '请先生成「要求与证据」——面试追问依赖证据表');
+      const html = fs.readFileSync(docPath(id), 'utf8');
+      const paras = parasOf(html);
+      const evGenAtStart = Number(m0.job.evidenceGen) || 0;   // 生成时的证据批次，interview 的 evIndex 绑定它
+      const p = buildInterviewPrompt({ jd: m0.jd || '', company: m0.company || '', role: m0.role || '', evidence: ev, paras });
+      const raw = await chat(root, p.sys, p.user);
+      const gen = (Number(m0.job.interviewGen) || 0) + 1;
+      const iv = parseInterview(raw, { paras, evidence: ev });
+      if (!iv) return finishGenTask(id, kind, taskId, null, '模型输出无法解析为面试追问，未替换任何内容');
+      // 「无有效内容」要看**要点**而非链数：模型可能只给问题、要点全被护栏丢弃，
+      // 这种链留着会让用户看到一屏空卡片（2026-10-18 OCR）
+      const hasPoint = (c) => Array.isArray(c.answerPoints) && c.answerPoints.length > 0;
+      const useful = iv.chains.filter(hasPoint).length + iv.generic.filter(hasPoint).length;
+      if (!useful) return finishGenTask(id, kind, taskId, null, '模型输出的追问没有任何有效要点，未替换任何内容');
+      return finishGenTask(id, kind, taskId, (cur) => {
+        // 批次隔离（与 evidence 通道同口径）：生成期间证据表被整批替换 → 链上的 evIndex 已指向别的表，
+        // 宁可整批不落账，也不能写出一份「标签对不上要求」的追问（2026-10-18 OCR 高危项）。
+        if ((Number(cur.job.evidenceGen) || 0) !== evGenAtStart) {
+          cur.job.genTasks.interview = { ...cur.job.genTasks.interview, status: 'error', error: '生成期间证据表已更新，请重新生成' };
+          return {};
+        }
+        cur.job.interview = iv;
+        cur.job.interviewGen = gen;
+        cur.job.interviewBaseHash = contentHash(html);       // 正文基线
+        cur.job.interviewEvidenceGen = evGenAtStart;          // 证据批次基线（证据表重生成不改正文，只靠它判 stale）
+        return { interview: iv.chains.length + iv.generic.length, interviewGen: gen, dropped: iv.dropped };
+      });
+    } catch (e) {
+      return finishGenTask(id, kind, taskId, null, '模型调用失败：' + (e.message || e));
+    }
+  }
   if (kind === 'evidence') {
     try {
       const m0 = loadMeta()[id];
@@ -329,7 +365,7 @@ function startGenTask(id, kind, scope = 'all') {
     }
     if (ownFresh) { reject = { status: 409, error: '该类型任务正在进行中，请稍候' }; return null; }
     if (sameKindOther) { reject = { status: 409, error: '另一文档的任务进行中，请稍后再试' }; return null; }
-    if (total >= 2) { reject = { status: 409, error: '并发任务已达上限（两类合计 2），请稍后再试' }; return null; }
+    if (total >= 2) { reject = { status: 409, error: '并发任务已达上限（全库同类 1 + 跨类合计 ' + (GEN_KINDS.length - 1) + '），请稍后再试' }; return null; }
     taskId = newGenTaskId();
     const job = { ...m.job, genTasks: { ...(m.job.genTasks || {}), [kind]: { taskId, status: 'running', startedAt: now, baseHash, error: null, scope } } };
     return { ...all, [id]: { ...m, job } };
@@ -366,9 +402,15 @@ function jobView(m) {
     brief: j.brief || { focus: [], keepProjects: [], deemphasize: [], degree: 'refocus', pages: 2, preset: null },
     evidence: Array.isArray(j.evidence) ? j.evidence : [],
     evidenceGen: Number(j.evidenceGen) || 0,
+    interview: (j.interview && typeof j.interview === 'object') ? j.interview : { chains: [], generic: [], dropped: 0 },
+    interviewGen: Number(j.interviewGen) || 0,
     genTasks: j.genTasks
-      ? { evidence: { ...mkGenTask(), ...(j.genTasks.evidence || {}) }, changes: { ...mkGenTask(), ...(j.genTasks.changes || {}) } }
-      : { evidence: mkGenTask(), changes: mkGenTask() },
+      ? {
+          evidence: { ...mkGenTask(), ...(j.genTasks.evidence || {}) },
+          changes: { ...mkGenTask(), ...(j.genTasks.changes || {}) },
+          interview: { ...mkGenTask(), ...(j.genTasks.interview || {}) }
+        }
+      : { evidence: mkGenTask(), changes: mkGenTask(), interview: mkGenTask() },
     saveReceipts: { count: receipts.length, lastRequestId: receipts.length ? receipts[receipts.length - 1].requestId : null },
     reviewPos: j.reviewPos || { section: null, changeId: null, filter: 'all' },
     status: legacyFlowStatus(m), flow: flowOf(m)
@@ -393,6 +435,15 @@ function jobViewLive(id, m) {
   });
   // S4a-T10：导出检查三级（阻止/建议核对/风格）与两级完成——与导出页共用同一纯函数，状态取即时视图（非落盘快照）
   out.checks = exportChecks(out, { mats, paras });
+  // S4B-3 面试追问 stale：① 正文哈希变了 ② 证据表重新生成（只换 meta 不改正文，必须靠证据批次判定）
+  //     两者任一发生，chains 里的 zid / evIndex 都可能已指向别处（2026-10-18 OCR 高危项）
+  const ivBase = (m && m.job && m.job.interviewBaseHash) || null;
+  out.interviewStale = !!(
+    ivBase && (
+      ivBase !== contentHash(html) ||
+      (typeof m.job.interviewEvidenceGen === 'number' && m.job.interviewEvidenceGen !== Number(m.job.evidenceGen || 0))
+    )
+  );
   return out;
 }
 const exportsOf = (m) => (Array.isArray(m && m.exports) ? m.exports : []);
@@ -424,8 +475,11 @@ const saveSnapMeta = (docId, meta) => {
   fs.writeFileSync(tmp, JSON.stringify(meta));
   fs.renameSync(tmp, snapMetaPath(docId));
 };
-function protectedSnaps(id) {
+function protectedSnaps(id, extraTs) {
   const keep = new Set();
+  // 调用方指定的额外豁免（如 /rollback 的回滚目标）：用户明确要回到的那一版绝不能被本次操作的
+  // 配额清理删掉——否则「回滚到最早一版」会把目标先删再报 500，存档永久丢失（2026-10-18 审查 P0）
+  if (extraTs) keep.add(extraTs);
   for (const a of loadApps()) if (a.docId === id && a.snapTs) keep.add(a.snapTs);
   // exports[].snapTs 引用的冻结快照豁免配额（S1-T8，spec §8）：manifest 与 html 成对清理（pruneSnapshots），随之同豁免。
   // pdfs/history 不可变产物不经任何清理器（无配额），天然豁免。
@@ -458,11 +512,11 @@ function writeFrozenSnapshot(dir, ts, html, meta) {
   atomicWrite(path.join(dir, ts + '.manifest.json'), JSON.stringify(buildManifest(frozen, html, meta || {})));
   return frozen;
 }
-function pruneSnapshots(id, dir) {
+function pruneSnapshots(id, dir, extraTs) {
   const htmls = fs.readdirSync(dir).filter((f) => f.endsWith('.html')).sort();
   const overflow = htmls.length - MAX_SNAPSHOTS;
   if (overflow <= 0) return;
-  const keep = protectedSnaps(id);
+  const keep = protectedSnaps(id, extraTs);
   const removable = htmls.filter((f) => !keep.has(f.replace('.html', '')));
   for (const f of removable.slice(0, overflow)) {
     const ts = f.replace(/\.html$/, '');
@@ -471,7 +525,7 @@ function pruneSnapshots(id, dir) {
   }
 }
 // 快照 = 冻结当前文档（freezeHtml）+ manifest；返回冻结 ts（无文档 → ''）。被投递引用/基准快照免配额清理。
-function snapshot(id) {
+function snapshot(id, keepExtraTs) {
   if (!fs.existsSync(docPath(id))) return '';
   const dir = snapDir(id);
   fs.mkdirSync(dir, { recursive: true });
@@ -479,7 +533,7 @@ function snapshot(id) {
   const meta = loadMeta()[id] || {};
   const ts = timestamp();
   writeFrozenSnapshot(dir, ts, html, meta);
-  pruneSnapshots(id, dir);
+  pruneSnapshots(id, dir, keepExtraTs);
   return ts;
 }
 
@@ -591,6 +645,11 @@ function page(title, inner, active = '', wide = false) {
 body{font-family:var(--sans);line-height:1.6;max-width:1100px;margin:0 auto;padding:0 20px 40px;font-size:14px;background:var(--bg);color:var(--ink)}
 body.wide{max-width:min(1440px,100%)}
 a{color:var(--accent);text-decoration:none;font-weight:600}
+/* S4B-2：键盘 Tab 焦点不被 sticky 顶栏遮挡（WCAG 2.4.11 Focus Not Obscured, AA 级）。
+   64px = topnav 的 top:12px + 单行实测高约 40px + 12px 余量。
+   窄屏 .topnav 两行、或快照只读横幅（sticky top:0 z-index:1000）叠加时可能仍偏小，
+   届时用媒体查询 / :has() 单独加一档，不改此默认值。 */
+html{scroll-padding-top:64px}
 .topnav{display:flex;justify-content:space-between;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:10px 18px;margin:16px 0 20px;position:sticky;top:12px;z-index:50;flex-wrap:wrap;gap:8px}
 .topnav .brand{font-family:var(--serif);letter-spacing:.4px;font-weight:800;font-size:16px;color:var(--ink)}
 .topnav .links a{margin-left:16px;color:var(--mut);font-weight:600}
@@ -1207,7 +1266,11 @@ async function handler(req, res) {
   const id = url.searchParams.get('id') || 'linghaoxiang';
   const send = (code, body, type = 'text/html; charset=utf-8') => {
     if (res.destroyed || res.writableEnded) return;
-    const extra = {};
+    // 页面 HTML 里内联了服务端运行时 JS（server.mjs 模板 + job-panel.js / editor-shell.js 注入）：
+    // 不加 no-store 时浏览器会缓存旧 HTML —— 症状是「服务端代码已改，页面行为没变」
+    // （2026-10-18：删除模型配置不落盘，根因即用户标签页跑着重启前的旧 JS）。
+    // 只对 HTML 加；PDF / 附件 / 静态资源各自 res.writeHead，不经过这里，不受影响。
+    const extra = /^text\/html/.test(type) ? { 'Cache-Control': 'no-store' } : {};
     res.writeHead(code, { 'Content-Type': type, ...extra });
     res.end(body);
   };
@@ -1257,7 +1320,20 @@ async function handler(req, res) {
     if (req.method === 'GET' && url.pathname === '/edit') {
       if (!fs.existsSync(docPath(id))) return send(404, page('404', `<h1>文档不存在: ${id}</h1><p><a href="/">返回首页</a></p>`));
       let html = fs.readFileSync(docPath(id), 'utf8');
-      if (!/var DOC_ID = '[^']*'/.test(html)) return send(500, 'doc missing DOC_ID marker', 'text/plain');
+      // 文档不完整（保存被中断 / 磁盘满 / 手动改坏）→ 不再吐 500 裸英文（同函数上一行的「文档不存在」
+      // 已用友好页面，风格不一致）。用户打不开自己的简历时必须知道发生了什么、以及怎么自救。
+      // ⚠️ 不做自动恢复：静默用快照覆盖可能吞掉用户手改内容，风险高于收益。
+      if (!/var DOC_ID = '[^']*'/.test(html)) return send(500, page('文档已损坏', `
+        <h1>文档「${escHtml(id)}」不完整，无法打开</h1>
+        <p>这份文档的内容看起来被截断了——通常是保存写到一半被中断、磁盘写满，或被外部工具改动造成。</p>
+        <h2>可以这样处理</h2>
+        <ol>
+          <li>先去<a href="/backup">备份与恢复</a>看看有没有这份文档的历史版本，可以还原。</li>
+          <li>如果内容你还有印象，也可以直接在 <code>docs/${escHtml(id)}.html</code> 里补回缺失的结尾。</li>
+          <li>实在无法恢复，就回<a href="/">首页</a>新建一份文档，把内容贴进去。</li>
+        </ol>
+        <p style="color:var(--mut)">修复这个文件后刷新本页即可。<a href="/">返回首页</a></p>
+      `));
       html = html.replace(/var DOC_ID = '[^']*'/, `var DOC_ID = '${id}'`);
       if (!html.includes('id="homeBtn"')) {
         html = html.replace('<button id="histBtn"', `<button id="homeBtn" class="secondary" onclick="location.href='/'">🏠 首页</button><button id="histBtn"`);
@@ -1624,7 +1700,7 @@ async function handler(req, res) {
     // LLM 跑在服务端 fire-and-forget，结果只经 finishGenTask 的 taskId 校验落账；客户端轮询 /job/changes。
     if (req.method === 'POST' && url.pathname === '/job/gen-start') {
       const kind = url.searchParams.get('kind');
-      if (!GEN_KINDS.includes(kind)) return sendJson(400, { ok: false, error: 'kind 必须是 evidence|changes' });
+      if (!GEN_KINDS.includes(kind)) return sendJson(400, { ok: false, error: 'kind 必须是 ' + GEN_KINDS.join('|') });
       // S4a-T8：scope=all|zone:<key>（局部重生成，仅 changes 通道；evidence 恒 all）
       let scope = 'all';
       const scopeRaw = url.searchParams.get('scope');
@@ -1643,7 +1719,7 @@ async function handler(req, res) {
     if (req.method === 'POST' && url.pathname === '/job/gen-cancel') {
       const kind = url.searchParams.get('kind');
       const taskId = url.searchParams.get('taskId');
-      if (!GEN_KINDS.includes(kind) || !taskId) return sendJson(400, { ok: false, error: 'kind（evidence|changes）与 taskId 必填' });
+      if (!GEN_KINDS.includes(kind) || !taskId) return sendJson(400, { ok: false, error: 'kind（' + GEN_KINDS.join('|') + '）与 taskId 必填' });
       let cancelled = false;
       updateMeta(root, id, (m) => {
         if (!m || !m.job) return m;
@@ -2296,12 +2372,13 @@ async function handler(req, res) {
     if (req.method === 'POST' && url.pathname === '/rollback') {
       if (!url.searchParams.get('id')) return send(400, 'id required', 'text/plain');
       const ts = url.searchParams.get('ts') || '';
-      const snap = path.join(snapDir(id), path.basename(ts) + '.html');
+      const targetTs = path.basename(ts);   // 用户选中的回滚目标（防路径穿越）
+      const snap = path.join(snapDir(id), targetTs + '.html');
       if (!fs.existsSync(snap)) return send(404, 'snapshot not found', 'text/plain');
       // 冻结点：回滚先冻结当前版（snapshot），再读冻结快照 → 归一化为当前格式（禁止把冻结字节直接落成活文档）→ 写正文 + meta（typo/theme/styleHash 从冻结解析）→ rev++
       try {
         await withDocLock(root, id, () => {
-          snapshot(id);
+          snapshot(id, targetTs);   // 回滚目标进 prune 豁免集：本次冻结不得删掉它自己（审查 P0）
           const norm = normalizeToCurrent(fs.readFileSync(snap, 'utf8'));
           atomicWrite(docPath(id), norm.html);
           updateMeta(root, id, (m) => {
@@ -2650,40 +2727,66 @@ async function handler(req, res) {
           var card = document.createElement('div');
           card.className = 'card';
           card.innerHTML =
-            '<p><label><input type="radio" name="act"' + (i === state.active ? ' checked' : '') + ' onchange="state.active=' + i + '"> 启用</label> <b>配置 ' + (i + 1) + '</b> <button type="button" class="secondary" onclick="delCard(' + i + ')">删除</button></p>'
+            '<p><label><input type="radio" name="act" value="' + i + '"' + (i === state.active ? ' checked' : '') + ' onchange="setActive(' + i + ', this)"> 启用</label> <b>配置 ' + (i + 1) + '</b> <button type="button" class="secondary" onclick="delCard(' + i + ')">删除</button></p>'
             + inp(i, 'name', '名称', p.name, 'size="12"')
             + inp(i, 'baseURL', 'Base URL', p.baseURL)
             + inp(i, 'apiKey', 'API Key', p.apiKey, 'size="46" type="password"')
-            + inp(i, 'model', '模型', p.model, 'size="46" list="models-' + i + '"')
+            + inp(i, 'model', '模型（可手填；点「测试连接」成功后可下拉选）', p.model, 'size="46" list="models-' + i + '"')
             + '<datalist id="models-' + i + '"></datalist>'
             + '<p><button type="button" onclick="testCard(' + i + ')">测试连接</button> <span id="msg-' + i + '"></span></p>';
           box.appendChild(card);
         });
       }
-      function delCard(i) {
-        if (!confirm('删除该配置？保存后生效')) return;
-        state.profiles.splice(i, 1);
-        if (state.active >= state.profiles.length) state.active = Math.max(0, state.profiles.length - 1);
+      // 保存失败必须回滚内存态：否则 UI 显示已生效、磁盘没变，刷新后「又回来了」= 原 bug 复现
+      // （2026-10-18 蓝军自检发现：引入即保存时漏了失败路径）
+      async function applyAndSave(mutate, radio) {
+        var prev = JSON.stringify(state);
+        mutate();
         render();
+        if (await save()) return;
+        state = JSON.parse(prev);
+        render();
+        if (radio) { var el = document.querySelector('input[name="act"][value="' + state.active + '"]'); if (el) el.checked = true; }
+      }
+      // 删除即落盘：原先只改内存 state，刷新后从 config.json 读回又出现（2026-10-18 修复）
+      async function delCard(i) {
+        if (!confirm('删除该配置？此操作立即生效')) return;
+        await applyAndSave(function () {
+          state.profiles.splice(i, 1);
+          // 删掉启用卡**之前**的卡片时 active 必须前移，否则静默切到另一套配置
+          // （[A,B,C] active=2 删 B → [A,C]，C 在下标 2，若只处理 >= length 会误设成 1=A）
+          if (i < state.active) state.active -= 1;
+          else if (state.active >= state.profiles.length) state.active = Math.max(0, state.profiles.length - 1);
+        });
+      }
+      // 切换启用项即落盘；失败时把 radio 拨回原值（浏览器已自动改 checked，必须复位）
+      async function setActive(i, radio) {
+        await applyAndSave(function () { state.active = i; }, radio);
+      }
+      async function save() {
+        var r = await fetch('/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state) });
+        document.getElementById('msg').textContent = r.ok ? ' ✅ 已保存' : ' ❌ ' + (await r.text());
+        return r.ok;
       }
       async function testCard(i) {
-        var p = state.profiles[i], msg = document.getElementById('msg-' + i);
-        msg.textContent = ' 测试中…';
+        var p = state.profiles[i];
+        // 每次现取：fetch 期间用户可能删配置触发 render()，缓存的 msg 会变 detached 节点，
+        // 写它抛 TypeError，且 catch 里再抛一次 → 未捕获 rejection（2026-10-18 蓝军自检发现）
+        var say = function (t) { var m = document.getElementById('msg-' + i); if (m) m.textContent = t; };
+        say(' 测试中…');
         try {
           var r = await fetch('/ai/test', { method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ baseURL: p.baseURL.trim(), apiKey: p.apiKey.trim() }) });
           var data = await r.json();
           if (data.ok) {
-            msg.textContent = ' ✅ 连接成功，' + data.models.length + ' 个模型可用';
-            document.getElementById('models-' + i).innerHTML = data.models.map(function (m) { return '<option value="' + String(m).replace(/"/g, '') + '">'; }).join('');
-          } else msg.textContent = ' ❌ ' + data.error;
-        } catch (e) { msg.textContent = ' ❌ ' + (e.message || e); }
+            say(' ✅ 连接成功，' + data.models.length + ' 个模型可用');
+            var dl = document.getElementById('models-' + i);
+            if (dl) dl.innerHTML = data.models.map(function (m) { return '<option value="' + String(m).replace(/"/g, '') + '">'; }).join('');
+          } else say(' ❌ 连接失败（' + (p.baseURL || '未填 Base URL') + '）：' + data.error + '　—— 不影响手填模型名，保存即可');
+        } catch (e) { say(' ❌ 连接失败（' + (p.baseURL || '未填 Base URL') + '）：' + (e.message || e) + '　—— 不影响手填模型名，保存即可'); }
       }
       document.getElementById('addBtn').onclick = function () { state.profiles.push({ name: '', baseURL: '', apiKey: '', model: '' }); render(); };
-      document.getElementById('saveBtn').onclick = async function () {
-        var r = await fetch('/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state) });
-        document.getElementById('msg').textContent = r.ok ? ' ✅ 已保存' : ' ❌ ' + (await r.text());
-      };
+      document.getElementById('saveBtn').onclick = save;
       render();
       function diffLinesToHtml(prev) {
         var lines = [];
@@ -2745,9 +2848,11 @@ async function handler(req, res) {
       const profiles = body.profiles;
       if (!Array.isArray(profiles)) return send(400, 'profiles 必填', 'text/plain');
       const names = new Set();
-      for (const p of profiles) {
+      for (let i = 0; i < profiles.length; i++) {
+        const p = profiles[i];
+        // 指名道姓是哪一张卡——原话「每个配置需…非空」在多配置时无法定位（2026-10-18）
         if (!p || !['name', 'baseURL', 'apiKey', 'model'].every((k) => typeof p[k] === 'string' && p[k].trim()))
-          return send(400, '每个配置需 name/baseURL/apiKey/model 非空字符串', 'text/plain');
+          return send(400, '配置 ' + (i + 1) + '（' + ((p && p.name) || '未命名') + '）的 name/baseURL/apiKey/model 必须都填', 'text/plain');
         if (names.has(p.name)) return send(400, 'name 重复: ' + p.name, 'text/plain');
         names.add(p.name);
       }

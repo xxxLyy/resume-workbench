@@ -54,6 +54,7 @@
     + '.jp-ref .jp-refbtn{min-height:20px;padding:0 6px;border-radius:5px;font-size:10px;cursor:pointer;border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink);flex:none}'
     + '.jp-note{margin-top:6px;border:1px dashed var(--ed-line);border-radius:6px;padding:6px 8px}'
     + '.jp-note textarea{width:100%;box-sizing:border-box;border:1px solid var(--ed-line);border-radius:5px;font-size:11.5px;padding:5px 6px;min-height:40px;background:var(--ed-panel);color:var(--ed-ink)}'
+    + '.jp-item li .jp-refbtn{margin-left:6px;vertical-align:baseline}'
     + '.jp-note .jp-note-ops{display:flex;gap:4px;margin-top:4px;align-items:center;flex-wrap:wrap}'
     + '.jp-note .jp-note-ops button{min-height:22px;padding:0 8px;border-radius:6px;font-size:11px;cursor:pointer;border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink)}'
     + '.jp-note .jp-note-ops button.jp-pri{background:var(--ed-accent);border-color:var(--ed-accent);color:var(--ed-accent-ink)}'
@@ -662,8 +663,15 @@
     }).catch(function () {}).then(function () {
       // 自续判定放 catch 之后的语义位：running 期间瞬时 GET 失败也续排（S4a-T7 转交 b），不断链卡死 UI
       var gt = (job && job.genTasks) || {};
-      if ((gt.evidence && gt.evidence.status === 'running') || (gt.changes && gt.changes.status === 'running')) schedulePoll();
+      if (anyRunning(gt)) schedulePoll();
     });
+  }
+  // 任一生成任务在跑就续排轮询。遍历而非硬编码 kind 名——新增生成类型漏改任一处都会导致
+  // 「页面状态长期陈旧」（2026-10-18 OCR 发现 evidence/changes/interview 三处需同步）。
+  function anyRunning(gt) {
+    gt = gt || {};
+    for (var k in gt) { if (gt[k] && gt[k].status === 'running') return true; }
+    return false;
   }
   function schedulePoll() {
     if (pollTimer) return;
@@ -885,6 +893,132 @@
     hint.className = 'jp-meta';
     hint.textContent = 'JD 的每条要求来自 JD 本身（非你的经历事实）；事实只来自已确认素材与正文。';
     root.appendChild(hint);
+    // S4B-3：面试追问折叠区紧跟证据表末尾（可折叠，不参与审阅任务完成判定，导出永不依赖）
+    var ivBox = renderInterview();
+    if (ivBox) root.appendChild(ivBox);
+  }
+
+  // ===== S4B-3 面试追问（挂在证据表底部；按需生成，不阻塞导出，可停止/重试）=====
+  function renderInterview() {
+    if (!job.evidence || !job.evidence.length) return null;   // 无证据表 → 折叠区不出现
+    var box = document.createElement('div');
+    box.className = 'jp-group';
+    var gt = (job.genTasks || {}).interview || {};
+    // 形状兜底：服务端只保证 interview 是对象，不保证 chains/generic 是数组
+    // （meta 是历史落盘数据，形状可能来自旧版本）——按真值取会在这里炸（2026-10-18 OCR）
+    var iv = (job.interview && typeof job.interview === 'object') ? job.interview : {};
+    var chains = Array.isArray(iv.chains) ? iv.chains : [];
+    var generic = Array.isArray(iv.generic) ? iv.generic : [];
+    var done = gt.status === 'done' && (chains.length || generic.length);
+
+    var det = document.createElement('details');
+    det.className = 'jp-iv';
+    // 已生成且未过期 → 展开；error / cancelled → 也展开，否则失败原因藏在折叠里看不见
+    if ((done && !job.interviewStale) || gt.status === 'error' || gt.status === 'cancelled') det.open = true;
+    var sum = document.createElement('summary');
+    sum.textContent = '面试追问（按需生成，不影响导出）';
+    det.appendChild(sum);
+
+    var act = document.createElement('button');
+    act.type = 'button';
+    act.className = 'jp-refbtn';   // 普通操作按钮；jp-ev-cancel 是「取消」语义，只用于取消
+    var start = function () {
+      act.disabled = true;   // 防连点：下次 render() 重建按钮时自动恢复
+      api('/job/gen-start?id=' + DOC_ID + '&kind=interview', {}).then(function (d) {
+        if (!d.ok) { act.disabled = false; note('⚠️ ' + (d.error || '启动失败')); return; }
+        schedulePoll();
+      }, function (e) {
+        act.disabled = false;   // 网络层 reject：api() 内部走 fetch，不接会成未捕获 rejection
+        note('⚠️ ' + (e.message || e));
+      });
+    };
+
+    if (gt.status === 'running') {
+      var spin = document.createElement('div');
+      spin.className = 'jp-reason';
+      spin.textContent = '⟳ 正在生成追问…';
+      det.appendChild(spin);
+      // 「可停止生成」是设计承诺，之前 running 分支不渲染任何按钮 = 无法停止（2026-10-18 OCR）
+      var cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'jp-ev-cancel';
+      cancel.textContent = '取消';
+      cancel.addEventListener('click', function () {
+        api('/job/gen-cancel?id=' + DOC_ID + '&kind=interview&taskId=' + encodeURIComponent(gt.taskId || ''), {}).then(function (d) {
+          note(d.ok ? '已取消' : '⚠️ ' + (d.error || '取消失败'));
+          refresh();
+        });
+      });
+      det.appendChild(cancel);
+    } else if (done) {
+      if (job.interviewStale) {
+        var w = document.createElement('div');
+        w.className = 'jp-reason';
+        w.textContent = '⚠️ 来源已变化，需重新核对。';
+        det.appendChild(w);
+      }
+      if (Number(iv.dropped) > 0) {
+        var dr = document.createElement('div');
+        dr.className = 'jp-reason';
+        dr.textContent = '已丢弃 ' + Number(iv.dropped) + ' 条对不上原文的要点';
+        det.appendChild(dr);
+      }
+      var card = function (c, label) {
+        var it = document.createElement('div');
+        it.className = 'jp-item';
+        if (label) { var m = document.createElement('div'); m.className = 'jp-meta'; m.textContent = label; it.appendChild(m); }
+        var q = document.createElement('b'); q.textContent = c.question; it.appendChild(q);
+        if (c.followUp) { var f = document.createElement('div'); f.className = 'jp-meta'; f.textContent = '再问：' + c.followUp; it.appendChild(f); }
+        if (!c.answerPoints || !Array.isArray(c.answerPoints) || !c.answerPoints.length) {
+          var e0 = document.createElement('div'); e0.className = 'jp-meta'; e0.textContent = '无可用要点'; it.appendChild(e0);
+        } else {
+          var ul = document.createElement('ul');
+          ul.style.margin = '4px 0 0 16px';
+          ul.style.padding = '0';
+          c.answerPoints.forEach(function (p) {
+            var li = document.createElement('li');
+            li.textContent = p.text;
+            if (p.guard === 'conflict') {
+              var gw = document.createElement('span');
+              gw.className = 'jp-reason';
+              gw.textContent = ' ⚠️出现原文没有的数字';
+              li.appendChild(gw);
+            }
+            if (p.anchored && c.zid) {
+              var zb = document.createElement('button');
+              zb.type = 'button'; zb.className = 'jp-refbtn'; zb.textContent = '回跳';
+              zb.addEventListener('click', (function (z) { return function () { locateZid(z); }; })(c.zid));
+              li.appendChild(zb);
+            }
+            ul.appendChild(li);
+          });
+          it.appendChild(ul);
+        }
+        return it;
+      };
+      // 标签必须用 c.evIndex（模型给的证据表下标），不能用数组下标 i——
+      // 中间任何一条链被 fail-closed 丢弃都会让后续标签整体错位（2026-10-18 OCR 高危项）
+      chains.forEach(function (c) {
+        det.appendChild(card(c, c.evIndex >= 0 ? '证据表第 ' + (c.evIndex + 1) + ' 行' : '未对应到证据表行'));
+      });
+      generic.forEach(function (c) { det.appendChild(card(c, '通用问题')); });
+      act.textContent = '重新生成';
+      act.addEventListener('click', start);
+      det.appendChild(act);
+    } else {
+      var hint2 = document.createElement('div');
+      hint2.className = 'jp-meta';
+      hint2.textContent = gt.status === 'error'
+        ? '生成失败：' + (gt.error || '未知原因')
+        : (gt.status === 'cancelled' ? '已取消。' : '按你的证据表预判面试官会追问什么，附答法要点。生成失败不影响导出。');
+      det.appendChild(hint2);
+      act.textContent = gt.status === 'error' ? '重试' : (gt.status === 'cancelled' ? '继续生成' : '生成面试追问');
+      act.addEventListener('click', start);
+      det.appendChild(act);
+    }
+
+    box.appendChild(det);
+    return box;
   }
 
   // ===== 段三「导出检查」：三级检查 + 两级完成（S4a-T10：与导出页共用 exportChecks，jobViewLive 同源即时状态）=====
@@ -1114,7 +1248,7 @@
     applyReviewPos();
     render();
     var gt = job.genTasks || {};
-    if ((gt.evidence && gt.evidence.status === 'running') || (gt.changes && gt.changes.status === 'running')) schedulePoll();
+    if (anyRunning(gt)) schedulePoll();
   }).catch(function () { root.textContent = '加载失败：网络错误（切到其他 Tab 再切回可重试）。'; });
 
   // 外壳 Tab 切换到「审阅」时刷新（反映最新落盘状态；不重置当前段）

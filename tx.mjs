@@ -88,11 +88,27 @@ function acquireLockSync(lockPath, { staleMs = 30000, timeoutMs = 8000, retryMs 
     try {
       const fd = fs.openSync(lockPath, 'wx');
       const info = { pid: process.pid, host: HOST, startedAt: Date.now() };
-      try { fs.writeFileSync(fd, JSON.stringify(info)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      // 谁创建谁清理：写锁信息失败（ENOSPC/EIO）会留下 0 字节残锁。残锁读不出 pid → 走 mtime 分支
+      // → 每次写入白等一个 GRACE_MS（事件循环被 sleepSync 冻住）。unlink 未关闭的 fd 在 POSIX 下合法。
+      try { fs.writeFileSync(fd, JSON.stringify(info)); fs.fsyncSync(fd); }
+      catch (err) { try { fs.unlinkSync(lockPath); } catch {} throw err; }
+      finally { fs.closeSync(fd); }
       return info;
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
-      if (lockIsStale(lockPath, readLock(lockPath), staleMs)) { try { fs.unlinkSync(lockPath); } catch {} continue; }  // 破除陈旧锁后重试
+      // 陈旧破除：unlink 成功才直接重试；失败必须走 deadline 判断，否则只读目录/磁盘满时
+      // unlink 持续失败 + continue 跳过下面的超时检查 = 无限自旋 + Atomics.wait 冻住整个事件循环
+      // （2026-10-18 审查 B2，实测 EXIT=137 只能杀进程）。
+      // ⚠️ 不能把 deadline 检查简单提到循环顶部：rootLock 用 timeoutMs=0，第一次就会抛，
+      //    那样就丧失了破除陈旧锁的能力。
+      if (lockIsStale(lockPath, readLock(lockPath), staleMs)) {
+        let broke = false;
+        try { fs.unlinkSync(lockPath); broke = true; } catch {}
+        if (broke) continue;
+        if (Date.now() >= deadline) throw new LockHeld('锁被占用且无法破除（等待超时）：' + path.basename(lockPath), { lock: readLock(lockPath) });
+        sleepSync(retryMs);
+        continue;
+      }
       if (Date.now() >= deadline) throw new LockHeld('锁被占用（等待超时）：' + path.basename(lockPath), { lock: readLock(lockPath) });
       sleepSync(retryMs);
     }
@@ -195,7 +211,23 @@ export function beginTx(root, docId, phase, oldSnapTs) {
   atomicWrite(path.join(dir, txId + '.meta.json'), JSON.stringify(oldMeta));
   // 旧正文副本（恢复首选源：精确旧字节，无需归一化；autosave 无快照时也能恢复）
   const docFile = path.join(root, 'docs', docId + '.html');
-  if (fs.existsSync(docFile)) { try { atomicWrite(path.join(dir, txId + '.html'), fs.readFileSync(docFile, 'utf8')); } catch {} }
+  // 正文载荷写失败必须抛出，不能空 catch 吞掉：
+  // 磁盘将满时顺序是 .meta.json（几百字节）成功 → .html（整篇，可能上百 KB）失败 → .json 标记成功，
+  // 恢复端就会只回滚 meta、跳过正文，还报 ok:true 并删记录 → 永久「新正文 + 旧 meta」混版（2026-10-18 审查 B1）。
+  if (fs.existsSync(docFile)) {
+    try {
+      atomicWrite(path.join(dir, txId + '.html'), fs.readFileSync(docFile, 'utf8'));
+    } catch (err) {
+      // 标记仍要落盘：载荷缺失的事务必须留下痕迹，交启动恢复或人工介入
+      // （S1-E⑧ 不变量「tx 记录应保留（标记 1 条），不得静默清理」——抛了就什么都不留是违约）
+      try { atomicWrite(path.join(dir, txId + '.json'), JSON.stringify(rec)); } catch {}
+      // code 无条件覆盖为 TX_PAYLOAD_MISSING：migrate-meta.mjs 的迁移硬停依赖此 code 判定「本事务无恢复源」。
+      // ENOSPC 本身带 code，条件守卫会失效；原始 errno 存 txErrno 供诊断。
+      err.txErrno = err.code || 'UNKNOWN';
+      err.code = 'TX_PAYLOAD_MISSING';
+      throw err;
+    }
+  }
   atomicWrite(path.join(dir, txId + '.json'), JSON.stringify(rec));   // 标记（recoverPending 的扫描入口）最后落盘
   return txId;
 }

@@ -1364,8 +1364,9 @@ try {
   fs.rmSync(lockFile, { force: true });
   console.log('✅ S1-E-⑦ rootLock self-pid 陈旧残锁判陈旧（pid 复用可破除）；新鲜自锁仍视为持有');
 
-  // ---------- ⑧ beginTx 载荷落盘校验：.tx/<txId>.html 静默写失败（tx.mjs:172 的 try{}catch{} 吞掉）→ 硬停整轮 ----------
+  // ---------- ⑧ beginTx 载荷落盘校验：.tx/<txId>.html 写失败 → 抛 TX_PAYLOAD_MISSING → 硬停整轮 ----------
   // 迁移传 oldSnapTs:''（无快照兜底），载荷缺失 = 本事务无恢复源；此刻尚未改动任何文档 → 必须停轮（不降级续跑）。
+  // 载荷缺失的事务仍留标记（tx 记录 1 条），交启动恢复或人工介入，不得静默清理。
   const R9 = seedRoot('r9', { pa: legDoc('PA', '/*PA*/p{margin:3px}'), pb: legDoc('PB', null) }, {});
   const pa0 = readDoc(R9, 'pa'), pb0 = readDoc(R9, 'pb'), meta9Raw = fs.readFileSync(path.join(R9, 'docs-meta.json'), 'utf8');
   const realWriteFileSync = fs.writeFileSync;
@@ -1390,7 +1391,7 @@ try {
   const rep9b = await runMigration(R9b, { checkers: mockCheckers() });
   if (!rep9b || rep9b.ok || !rep9b.stopped) fail('⑧b .tx 不可用（beginTx 抛错）也应停整轮: ' + JSON.stringify(rep9b && rep9b.stopped));
   if (readDoc(R9b, 'ro') !== ro0 || fs.readFileSync(path.join(R9b, 'docs-meta.json'), 'utf8') !== meta9bRaw) fail('⑧b 停轮时不得改动文档/写 meta');
-  console.log('✅ S1-E-⑧ beginTx 载荷落盘校验：.html 载荷静默失败 → TX_PAYLOAD_MISSING 硬停整轮（零文档改动、tx 保留）；.tx 不可用同样停轮');
+  console.log('✅ S1-E-⑧ beginTx 载荷落盘校验：.html 载荷写失败 → TX_PAYLOAD_MISSING 硬停整轮（零文档改动、tx 记录保留）；.tx 不可用同样停轮');
 
   // ---------- ⑨ 迁移中途 rootLock 所有权丧失（>30min 被 server 判陈旧破除并接管）→ 不写 schemaVersion=2、tx 保留、不删他人锁 ----------
   const R10 = seedRoot('r10', { lost: legDoc('LOST', '/*LOST*/p{margin:4px}') }, {});
@@ -2596,4 +2597,234 @@ for (const badRet of [() => ['x'], () => 'oops', () => 42]) {
 if (fs.readFileSync(metaFile, 'utf8') !== beforeShape) fail('mutator 返回非对象不得落盘');
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('✅ S4a-A2 updateMetaAll 全表事务（两进程并发不丢字段 / 抛错不落盘 / null 放弃 / 与 updateMeta 同锁共存）');
+EOF
+
+# —— S4B-1：lostNums 事实护栏（原文丢数字 → conflict）——
+node --input-type=module << 'EOF'
+import { factGuard, normNum } from './job.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ S4B-1 ' + m); process.exit(1); } };
+const t1 = factGuard({ kind: 'replace', before: '将 QPS 从 300 提升到 5000，延迟从 80ms 降到 15ms，覆盖 3 个业务线', after: '负责后端优化' });
+assert(t1.level === 'conflict', '删光数字 → conflict');
+assert(/300/.test(t1.reason) && /5000/.test(t1.reason), 'reason 点名丢失的数字');
+const t2 = factGuard({ kind: 'replace', before: '服务 12 万日活用户', after: '服务 120000 日活用户' });
+assert(t2.level !== 'conflict', '12万 → 120000 不算丢数字');
+const t3 = factGuard({ kind: 'replace', before: 'QPS 从 300 提升到 5000', after: '把 QPS 从 300 提升到 5000' });
+assert(t3.level !== 'conflict', '数字原样保留不拦');
+const t4 = factGuard({ kind: 'replace', before: '效率提升 30%', after: '效率提升 45%' });
+assert(t4.level === 'conflict', '百分比丢失也算丢数字');
+assert(normNum('12') === '12', 'normNum 无单位原样');
+assert(normNum('12万') === '120000', 'normNum 12万 → 120000');
+assert(normNum('30%') === '30%', 'normNum 百分比保留');
+assert(normNum('1.5亿') === '150000000', 'normNum 1.5亿 → 150000000');
+assert(normNum('-30%') === '-30%', 'normNum 保留负号');
+const tNeg = factGuard({ kind: 'replace', before: '延迟 -30%', after: '延迟 30%' });
+assert(tNeg.level === 'conflict', '-30% → 30% 必须报（负号丢失会导致漏报）');
+console.log('✅ S4B-1 lostNums 事实护栏');
+EOF
+
+# —— S4B-2：键盘焦点不被 sticky 头遮挡（WCAG 2.4.11 / 1.4.12）——
+node --input-type=module << 'EOF'
+import fs from 'fs';
+const assert = (c, m) => { if (!c) { console.error('❌ S4B-2 ' + m); process.exit(1); } };
+const src = fs.readFileSync('./server.mjs', 'utf8');
+assert(/html\s*\{[^}]*scroll-padding-top\s*:\s*\d+px/.test(src), 'html 设了 scroll-padding-top（固定 px）');
+assert(!/line-height\s*:\s*[\d.]+\s*(px|em)\b/.test(src), '服务端不硬编码 px/em 行高（WCAG 1.4.12）');
+console.log('✅ S4B-2 焦点不被 sticky 头遮挡');
+EOF
+
+# —— S4B-3：面试追问解析 + 双护栏（子串验证 + factGuard）——
+node --input-type=module << 'EOF'
+import { parseInterview, parseEvidence } from './evidence.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ S4B-3 ' + m); process.exit(1); } };
+const paras = [{ zid: 'za1111111', text: '负责存储层改造，QPS 从 300 提升到 5000' }];
+// ⚠️ 必须用 parseEvidence 的真实产出做夹具，不得手写 {req, zid}——
+//    真实行结构是 {id,req,status,refs:[{refId,type,id,zid,hash,title,quote}],note}，顶层没有 zid。
+//    手写假结构会让「实现读顶层 zid」这个错误假设在测试里也成立，护栏假绿（2026-10-18 蓝军自检发现）。
+const ev = parseEvidence(JSON.stringify({ evidence: [
+  { req: '后端能力', refHints: [{ type: 'para', zid: 'za1111111', title: '存储层', quote: '负责存储层改造' }] }
+] }), { gen: 1, mats: [], paras });
+assert(ev && ev.length === 1 && ev[0].refs.length === 1 && ev[0].refs[0].zid === 'za1111111', '夹具：真实证据行 refs 里带 zid');
+assert(!('zid' in ev[0]), '夹具自证：真实行顶层没有 zid（防止再写顶层 zid 的错假设）');
+
+const ok = parseInterview(JSON.stringify({
+  chains: [{ evIndex: 0, question: '你负责哪一块？', followUp: 'QPS 再翻十倍瓶颈在哪？',
+             answerPoints: [{ text: '我负责存储层', quote: '负责存储层改造' }] }],
+  generic: [{ question: '自我介绍', answerPoints: [{ text: '三段经历', quote: '' }] }]
+}), { paras, evidence: ev });
+assert(ok && ok.chains.length === 1, '正常链路解析');
+assert(ok.chains[0].zid === 'za1111111', 'evIndex → zid 回填');
+assert(ok.chains[0].answerPoints.length === 1 && ok.chains[0].answerPoints[0].anchored === true, '锚定要点保留');
+assert(ok.generic.length === 1 && ok.generic[0].answerPoints[0].anchored === false, '通用问题允许无锚定');
+assert(ok.dropped === 0, '无丢弃');
+
+const bad = parseInterview(JSON.stringify({
+  chains: [{ evIndex: 0, question: 'q', followUp: 'f',
+             answerPoints: [{ text: '编的', quote: '这段原文里根本没有的话' }] }]
+}), { paras, evidence: ev });
+assert(bad.chains[0].answerPoints.length === 0, 'quote 编造 → 要点被丢弃');
+assert(bad.chains[0].empty === true, '要点全空 → 标 empty');
+assert(bad.dropped === 1, '丢弃计数');
+
+const gone = parseInterview(JSON.stringify({
+  chains: [{ evIndex: 0, question: 'q', followUp: 'f', answerPoints: [{ text: 'x', quote: 'y' }] }]
+}), { paras: [], evidence: ev });
+// fail-closed：锚定段落消失 → 整链丢弃（不是保留并标 empty）。绝不降级成「无锚点」绕过护栏。
+assert(gone.chains.length === 0, '锚定段落已删 → 整链丢弃');
+assert(gone.dropped === 1, '锚点失效计入 dropped');
+
+const oob = parseInterview(JSON.stringify({
+  chains: [{ evIndex: 99, question: 'q', followUp: 'f', answerPoints: [{ text: 'x', quote: '负责存储层改造' }] }]
+}), { paras, evidence: ev });
+assert(oob.chains.length === 0, 'evIndex 越界 → 整链丢弃（fail-closed）');
+
+const noPara = parseInterview(JSON.stringify({
+  chains: [{ evIndex: 0, question: 'q', followUp: 'f', answerPoints: [{ text: 'x', quote: 'x' }] }]
+}), { paras, evidence: parseEvidence(JSON.stringify({ evidence: [{ req: '仅有素材', refHints: [{ type: 'mat', id: 'mm1', title: '素材' }] }] }), { gen: 1, mats: [{ id: 'mm1', factStatus: 'confirmed', facts: {} }], paras }) });
+assert(noPara.chains.length === 0, '该证据行无 para 型 ref → 整链丢弃（不可无锚点落库）');
+
+const guardOk = parseInterview(JSON.stringify({
+  chains: [{ evIndex: 0, question: 'q', followUp: 'f',
+             answerPoints: [{ text: '我负责存储层', quote: '负责存储层改造，QPS 从 300 提升到 5000' }] }]
+}), { paras, evidence: ev });
+assert(guardOk.chains[0].answerPoints[0].guard !== 'conflict', '答法要点漏数字是精简不是编造 → 不报 conflict');
+
+const guardBad = parseInterview(JSON.stringify({
+  chains: [{ evIndex: 0, question: 'q', followUp: 'f',
+             answerPoints: [{ text: '把 QPS 干到 100000', quote: '负责存储层改造' }] }]
+}), { paras, evidence: ev });
+assert(guardBad.chains[0].answerPoints[0].guard === 'conflict', '要点编造原文没有的数字 → guard=conflict');
+
+// 误报不得扩散：一条要点编造数字，同链的正常要点必须保持 normal（2026-10-18 OCR 发现整链跑 factGuard 的缺陷）
+const guardMix = parseInterview(JSON.stringify({
+  chains: [{ evIndex: 0, question: 'q', followUp: 'f', answerPoints: [
+    { text: '我负责存储层改造', quote: '负责存储层改造' },
+    { text: '干到 100000', quote: '负责存储层改造' },
+    { text: '瓶颈从磁盘转到缓存', quote: '负责存储层改造' }
+  ] }]
+}), { paras, evidence: ev });
+const gm = guardMix.chains[0].answerPoints;
+assert(gm[1].guard === 'conflict' && gm[0].guard === 'normal' && gm[2].guard === 'normal', 'factGuard 逐点跑：只标编造的那条');
+
+assert(parseInterview('不是json') === null, '坏输出返回 null');
+assert(parseInterview('{"chains":"不是数组"}').chains.length === 0, '类型错不崩');
+console.log('✅ S4B-3 面试追问解析 + 双护栏');
+EOF
+
+# —— S4B-4：跨文件契约断言（护栏口径漂移的护栏）（2026-10-18 OCR 后加）——
+node --input-type=module << 'EOF'
+import fs from 'fs';
+import { parseEvidence, parseInterview } from './evidence.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ S4B-4 ' + m); process.exit(1); } };
+
+const paras = [{ zid: 'za1111111', text: '负责存储层改造，QPS 从 300 提升到 5000' }];
+const ev = parseEvidence(JSON.stringify({ evidence: [
+  { req: '后端能力', refHints: [{ type: 'para', zid: 'za1111111', quote: '负责存储层改造' }] },
+  { req: '前端能力', refHints: [{ type: 'para', zid: 'za1111111', quote: '负责存储层改造' }] }
+] }), { gen: 1, mats: [], paras });
+
+// ① 证据行顶层没有 zid；锚点必须从 refs[].zid 推导——这是两条护栏能否生效的地基
+assert(!('zid' in ev[0]), '证据行顶层无 zid（防再写顶层 zid 的错假设）');
+const p = parseInterview(JSON.stringify({ chains: [{ evIndex: 0, question: 'q', answerPoints: [{ text: '我负责存储层', quote: '负责存储层改造' }] }] }), { paras, evidence: ev });
+assert(p.chains.length === 1 && p.chains[0].zid === 'za1111111', '锚点从 refs[].zid 推导成功');
+assert(p.chains[0].answerPoints[0].anchored === true, 'anchored 为 true（子串验证真的执行了）');
+
+// ② evIndex 必须原样透出，供前端显示「证据表第 N 行」——丢弃中间链后不得靠数组下标错位
+const two = parseInterview(JSON.stringify({ chains: [
+  { evIndex: 0, question: '丢', answerPoints: [{ text: 'x', quote: '原文没有的话' }] },   // 要点全被丢但链保留
+  { evIndex: 1, question: '留', answerPoints: [{ text: '我负责存储层', quote: '负责存储层改造' }] }
+] }), { paras, evidence: ev });
+assert(two.chains[0].evIndex === 0 && two.chains[1].evIndex === 1, 'evIndex 原样透出，不被重编号');
+
+// ③ prompt 必须真的带上简历原文（曾因读顶层 zid 而恒为空）
+const bp = (await import('./evidence.mjs')).buildInterviewPrompt({ company: 'A', role: '后端', jd: 'J', evidence: ev, paras });
+assert(bp.user.includes('负责存储层改造，QPS 从 300 提升到 5000'), 'prompt 含真实简历原文（非空串）');
+
+// ④ stale 双口径：正文哈希 + 证据批次（证据表重生成不改正文，只靠哈希查不出来）
+const src = fs.readFileSync('./server.mjs', 'utf8');
+assert(src.includes('interviewEvidenceGen'), '落账记录 interviewEvidenceGen');
+assert(/interviewEvidenceGen\s*!==\s*Number\(m\.job\.evidenceGen/.test(src), 'stale 判定含证据批次比对');
+assert(!/interviewEvGen/.test(src), '旧的错误字段名 interviewEvGen 已清除（曾拿 interview 批次比 evidence 批次）');
+console.log('✅ S4B-4 跨文件契约（锚点推导 / evIndex 透出 / prompt 原文 / stale 双口径）');
+EOF
+
+# —— S4B-5：generic 护栏缺口 + 解析侧上限（2026-10-18 OCR 中高危）——
+node --input-type=module << 'EOF'
+import { parseEvidence, parseInterview } from './evidence.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ S4B-5 ' + m); process.exit(1); } };
+const paras = [{ zid: 'za1111111', text: '负责存储层改造，QPS 从 300 提升到 5000' }];
+const ev = parseEvidence(JSON.stringify({ evidence: [{ req: '后端能力', refHints: [{ type: 'para', zid: 'za1111111', quote: '负责存储层改造' }] }] }), { gen: 1, mats: [], paras });
+
+// generic 链无单段锚点，但仍必须有基准：编造数字要被 factGuard 抓到（原先两道护栏全跳过）
+const gBad = parseInterview(JSON.stringify({ generic: [{ question: '自我介绍', answerPoints: [{ text: '我带了 50 人团队', quote: '' }] }] }), { paras, evidence: ev });
+assert(gBad.generic[0].answerPoints[0].guard === 'conflict', 'generic 要点编造数字 → guard=conflict（原先两道护栏全跳过）');
+const gOk = parseInterview(JSON.stringify({ generic: [{ question: '自我介绍', answerPoints: [{ text: '三段经历', quote: '' }] }] }), { paras, evidence: ev });
+assert(gOk.generic[0].answerPoints[0].guard !== 'conflict', 'generic 正常要点不误报');
+
+// 解析侧条数上限：模型不遵守 prompt 声明的条数时不整批落库
+const many = parseInterview(JSON.stringify({
+  chains: [0,1,2,3,4,5,6,7].map(i => ({ evIndex: 0, question: 'q' + i, answerPoints: [{ text: '我负责存储层', quote: '负责存储层改造' }] })),
+  generic: [0,1,2,3,4,5,6,7].map(i => ({ question: 'g' + i, answerPoints: [{ text: '三段经历', quote: '' }] }))
+}), { paras, evidence: ev });
+assert(many.chains.length === 1, 'chains 超上限被截断（证据表 1 行 → 1 条）');
+assert(many.generic.length === 4, 'generic 超上限被截断为 4 条');
+console.log('✅ S4B-5 generic 护栏 + 解析侧上限');
+EOF
+
+# —— S4B-6：用户数据损坏的可恢复性（2026-10-18 隔离根实测发现）——
+# 实测：docs-meta / materials / applications / config 损坏均优雅降级 200，唯独「HTML 被截断」
+# 让 /edit 返回 500 + 裸英文 'doc missing DOC_ID marker'——用户打不开自己的简历且无法自救。
+node --input-type=module << 'EOF'
+import fs from 'fs';
+const assert = (c, m) => { if (!c) { console.error('❌ S4B-6 ' + m); process.exit(1); } };
+const src = fs.readFileSync('./server.mjs', 'utf8');
+assert(!/doc missing DOC_ID marker/.test(src), '不再返回 500 裸英文');
+assert(/文档已损坏/.test(src) && /backup/.test(src.match(/文档已损坏[\s\S]{0,900}/)?.[0] || ''), '损坏页给出备份恢复入口');
+assert(/返回首页/.test(src.match(/文档已损坏[\s\S]{0,900}/)?.[0] || ''), '损坏页给出返回首页入口');
+console.log('✅ S4B-6 文档损坏可恢复提示页');
+EOF
+
+# —— S4B-7：数据安全边界契约（2026-10-18 三路审查：tx 事务层 / freeze 快照 / 注入层）——
+node --input-type=module << 'EOF'
+import fs from 'fs';
+import { updateMeta, beginTx } from './tx.mjs';
+import os from 'node:os';
+import path from 'node:path';
+const assert = (c, m) => { if (!c) { console.error('❌ S4B-7 ' + m); process.exit(1); } };
+const src = fs.readFileSync('./server.mjs', 'utf8');
+const txs = fs.readFileSync('./tx.mjs', 'utf8');
+
+// ① /rollback 的目标快照必须进 prune 豁免集（否则「回滚到最早一版」会先删目标再报 500，存档永久丢失）
+assert(/function protectedSnaps\(id, extraTs\)/.test(src), 'protectedSnaps 接受额外豁免 ts');
+assert(/function pruneSnapshots\(id, dir, extraTs\)/.test(src), 'pruneSnapshots 透传豁免');
+assert(/snapshot\(id, targetTs\)/.test(src), '/rollback 把回滚目标传给 snapshot');
+
+const withDoc = fs.readFileSync('./tx.mjs', 'utf8');
+// ② 陈旧锁 unlink 失败时必须走 deadline 判断（否则无限自旋 + Atomics.wait 冻住整个事件循环）
+assert(/锁被占用且无法破除/.test(withDoc), '锁破除失败有独立的超时出口（不再死循环）');
+assert(!/lockIsStale\([^)]*\) \{ try \{ fs\.unlinkSync\(lockPath\); \} catch \{\} continue; \}/.test(withDoc), '旧的无条件 continue 自旋已消除');
+
+// ③ beginTx 写正文载荷失败必须抛 + 必须留下标记（S1-E⑧ 不变量：tx 记录保留交启动恢复/人工，不得静默清理）
+assert(!/if \(fs\.existsSync\(docFile\)\) \{ try \{ atomicWrite/.test(withDoc), 'beginTx 不再用空 catch 吞正文载荷写失败');
+assert(/try \{ atomicWrite\(path\.join\(dir, txId \+ '\.json'\), JSON\.stringify\(rec\)\); \} catch \{\}/.test(withDoc), '载荷写失败仍落标记（交启动恢复/人工，见 S1-E⑧）');
+assert(/err\.code = 'TX_PAYLOAD_MISSING'/.test(withDoc), '载荷写失败 code 无条件置为 TX_PAYLOAD_MISSING');
+assert(/err\.txErrno/.test(withDoc), '原始 errno 存 txErrno 供诊断（ENOSPC 不被覆盖丢失）');
+
+// 行为验证：陈旧锁可破除 / 活锁被拒 / 只读目录下不死循环
+const mk = () => { const r = fs.mkdtempSync(path.join(os.tmpdir(), 's4b7-')); fs.mkdirSync(path.join(r, 'docs'), { recursive: true }); fs.writeFileSync(path.join(r, 'docs-meta.json'), '{}'); return r; };
+const r1 = mk();
+fs.writeFileSync(path.join(r1, '.meta.lock'), JSON.stringify({ pid: 999999, host: 'other', startedAt: 1 }));
+let broke = false;
+try { updateMeta(r1, 'd1', () => ({ rev: 1 })); broke = true; } catch {}
+assert(broke, '陈旧锁仍能被破除（rootLock 的能力没被改坏）');
+
+const r2 = mk();
+const now = String(Date.now());
+fs.writeFileSync(path.join(r2, '.meta.lock'), JSON.stringify({ pid: process.pid, host: 'x', startedAt: now }));
+let held = false;
+const t0 = Date.now();
+try { updateMeta(r2, 'd1', () => ({ rev: 1 })); } catch (e) { held = e.code === 'LOCK_HELD'; }
+assert(held && Date.now() - t0 >= 7000, '活锁被拒且走超时（约 8s），不是被误破除');
+fs.rmSync(r1, { recursive: true, force: true });
+fs.rmSync(r2, { recursive: true, force: true });
+console.log('✅ S4B-7 数据安全契约（回滚豁免 / 锁不死循环 / 载荷不静默吞）');
 EOF

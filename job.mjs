@@ -62,19 +62,40 @@ changes 最多 12 条，todos 最多 6 条。`;
 }
 
 // 解析模型输出为受约束的 op 列表；坏输出返回 null（调用方降级为手动草稿）
-// 同时执行确定性事实护栏：改写引入新数字 / 丢失原文日期 → 强制标记 conflict（导出前必须人工处理）
-const NUM_RE = /\d+(?:\.\d+)?%?/g;
+// 同时执行确定性事实护栏：改写引入新数字 / 丢失原文数字或日期 → 强制标记 conflict（导出前必须人工处理）
+// 捕获负号与中文数量单位（-30% / 12万 / 12 万），供 normNum 归一化；无单位时保持原样（S4B-1）
+// 负号必须捕获：`-30%` 若被切成 `30%`，符号丢失会让「-30 → 30」这类改写被误判为「数字原值保留」（漏报）
+const NUM_RE = /-?\d+(?:\.\d+)?\s*[千万亿]?\s*%?/g;
 export const DATE_TOKEN_RE = /(?:19|20)\d{2}(?:\s*[.\-/年]\s*\d{1,2}(?:\s*月)?)?/g;
 
-export function factGuard(c) {
+// 数字归一化：展开中文数量单位，使 12万 与 120000 判为同一个数字（S4B-1）
+// 无单位时保留原字符串——避免 Math.round 把 1.5 变成 2、把 2021.03 变成 2021
+export function normNum(n) {
+  const s = String(n).trim();
+  const m = /^(-?\d+(?:\.\d+)?)\s*(千|万|亿)?\s*(%)?$/.exec(s);
+  if (!m) return s;
+  if (!m[2]) return m[1] + (m[3] || '');
+  return String(Math.round(parseFloat(m[1]) * { 千: 1e3, 万: 1e4, 亿: 1e8 }[m[2]])) + (m[3] || '');
+}
+
+// checkLoss（默认 true）：是否检查「丢失方向」。答法要点等提炼场景传 false——
+//   要点天然不逐字复述原文，漏数字是精简不是编造；只有「新增原文没有的数字」才是编造。
+export function factGuard(c, opts = {}) {
   const notes = [];
+  const checkLoss = opts.checkLoss !== false;
   if (c.kind === 'replace') {
-    const beforeNums = new Set(c.before.match(NUM_RE) || []);
-    const added = [...new Set(c.after.match(NUM_RE) || [])].filter((n) => !beforeNums.has(n));
+    const beforeNums = new Set((c.before.match(NUM_RE) || []).map(normNum));
+    const added = [...new Set((c.after.match(NUM_RE) || []).map(normNum))].filter((n) => !beforeNums.has(n));
     if (added.length) notes.push('改写引入原文没有的数字：' + added.join('、') + '（请核对来源）');
-    const norm = (s) => String(s).replace(/\s+/g, '');
-    const lostDates = [...new Set(c.before.match(DATE_TOKEN_RE) || [])].filter((d) => !norm(c.after).includes(norm(d)));
-    if (lostDates.length) notes.push('原文日期未原值保留：' + lostDates.join('、'));
+    if (checkLoss) {
+      const norm = (s) => String(s).replace(/\s+/g, '');
+      const lostDates = [...new Set(c.before.match(DATE_TOKEN_RE) || [])].filter((d) => !norm(c.after).includes(norm(d)));
+      if (lostDates.length) notes.push('原文日期未原值保留：' + lostDates.join('、'));
+      // S4B-1：原文数字未在改写后原值保留（经 normNum 归一化，避免 12万/120000 误报）
+      const afterSet = new Set((c.after.match(NUM_RE) || []).map(normNum));
+      const lostNums = [...new Set((c.before.match(NUM_RE) || []).map(normNum))].filter((n) => !afterSet.has(n));
+      if (lostNums.length) notes.push('原文数字未原值保留：' + lostNums.join('、'));
+    }
   }
   if (c.kind === 'add' && (c.after.match(NUM_RE) || []).length) {
     notes.push('新增内容含数字，需人工核对来源');
