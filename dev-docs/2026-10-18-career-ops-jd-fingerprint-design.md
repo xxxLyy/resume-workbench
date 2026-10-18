@@ -43,7 +43,14 @@
 
 上游 `fingerprint-core.mjs` 的 `normalizeJdText` 按空格切 token。中文无空格 → 整段中文归一化为一个巨大 token → `tokens.length < 3` → 返回空指纹 → **永不匹配且无提示**。上游源码注释自认此点（"an unspaced CJK body normalizes to one giant token … treat it as unfingerprintable"）。
 
-直接复制不改 = 护栏对纯中文 JD 完全不生效（假绿陷阱，同 handoff §3.2 教训形态）。
+直接复制不改的真实后果（2026-10-18 实测修正，早期描述「完全不生效」过重）：
+
+| 中文 JD 形态 | 上游原版 | bigram 改造的价值 |
+|---|---|---|
+| **无标点**（标点被平台吞、或纯段落） | 归一化成单一巨 token → `tokens<3` → **空指纹，永不匹配且无提示** | **防静默失效**——不可替代的价值 |
+| **带标点**（几乎所有真实 JD） | 标点被 `[^\p{L}\p{N}]+→空格` 折成空格，已切出多 token → 照常出指纹 | 提升粒度（词级 bigram vs 句子片段） |
+
+即：改造在真实带标点 JD 上是**优化**，在无标点 JD 上是**必需**。测试哨兵必须用无标点 fixture 才能测到后者（用带标点 fixture 测是假绿——上游本来就能过那条路径）。
 
 **改造：CJK bigram 切分。** 归一化后对连续汉字段做两字滑窗：
 

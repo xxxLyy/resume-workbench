@@ -98,6 +98,37 @@ const loadApps = () => { const a = readJson('apps', []); return Array.isArray(a)
 const saveMats = (mats) => writeJson('mats', mats);
 const saveApps = (apps) => writeJson('apps', apps);
 // docs-meta.json 无 saveMeta：唯一写入者为 tx.mjs 的 updateMeta（读最新→只 patch 目标文档→原子 rename），见各写路径。
+// —— JD 指纹护栏（career-ops 移植，设计: dev-docs/2026-10-18-career-ops-jd-fingerprint-design.md）——
+// 用动态 import 而非顶部静态 import：vendors 模块损坏（如上游同步引入语法错误）时
+// 降级跳过护栏，不拖垮 server 启动。模糊匹配不阻断创建；任何异常只记日志。
+async function computeFpGuard(jd, jdLink, company, metaAll) {
+  try {
+    const { fingerprintText } = await import('./vendors/jd-fingerprint/fingerprint-core.mjs');
+    const { findDupHints } = await import('./vendors/jd-fingerprint/repost-check.mjs');
+    const jdFp = fingerprintText(jd || '');
+    if (!jdFp) return { jdFp: '', dupHints: [] };   // 新 JD 不可指纹 → 静默零提醒
+    const records = [];
+    for (const [k, m] of Object.entries(metaAll)) {
+      if (!m || m.kind !== 'job') continue;
+      if (!m.jd && !(m.job && m.job.jdFp)) continue;
+      records.push({ jd: m.jd || '', jdFp: (m.job && m.job.jdFp) || '', company: m.company, dateStr: m.createdAt, kind: 'draft', label: `${m.company}·${m.role}`, link: (m.jdSource || '').startsWith('http') ? m.jdSource : '' });
+    }
+    for (const a of loadApps()) {
+      if (!a || (!a.jd && !a.link)) continue;
+      records.push({ jd: a.jd || '', company: a.company, dateStr: a.appliedAt || a.createdAt || '', kind: 'app', label: `${a.company || ''}·${a.role || ''}`, link: a.link || '', status: a.status });
+    }
+    return { jdFp, dupHints: findDupHints(jd, records, { newCompany: company, newLink: jdLink || '' }) };
+  } catch (e) { console.error('[fp-guard] 降级跳过:', e && e.message); return { jdFp: '', dupHints: [] }; }
+}
+
+// 指纹提醒 → todo 条目（模式同 jdError todo）
+function fpTodo(dupHints) {
+  if (!dupHints || !dupHints.length) return [];
+  const top = dupHints.slice(0, 3).map((h) =>
+    `${h.label}（${String(h.dateStr).slice(0, 10)} ${h.kind === 'app' || h.kind === 'link' ? '已投递' + (h.status ? '·' + h.status : '') : '建过草稿'}${h.repost ? '，疑似重发' : ''}）`
+  ).join('；');
+  return [{ section: '岗位信息', question: '疑似重复职位：' + top, why: 'JD 内容指纹命中历史记录（最高相似度 ' + Math.round(dupHints[0].score * 100) + '%），请确认是否仍要适配', resolved: false }];
+}
 const corruptBanner = () => corrupt.size
   ? `<div class="card" style="border-color:var(--err-soft);background:var(--err-soft);color:var(--err)"><b>⚠️ 检测到数据文件损坏，相关写入已停止：</b>${[...corrupt].map((k) => JSON_FILES[k]).join('、')} —— 请先在设置页用备份恢复，或人工修复 JSON 后刷新。</div>`
   : '';
@@ -1480,6 +1511,7 @@ async function handler(req, res) {
             .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 4000);
         } catch (e) { jdError = String(e.message || e); }
       }
+      const { jdFp, dupHints } = await computeFpGuard(jd, jdLink, company, metaAll);
       const nowIso = new Date().toISOString();
       // meta 唯一写入者 updateMeta：只写目标文档 to（不整表覆盖，避免踩并发更新）；状态维度 kind/flow/archivedAt（job.status 不再写，单源 flow）
       updateMeta(root, to, () => ({
@@ -1491,13 +1523,13 @@ async function handler(req, res) {
         job: {
           sourceSnap: srcSnap, sourceHash: contentHash(srcHtml),
           materials: Array.isArray(body.materials) ? body.materials.filter((x) => typeof x === 'string') : [],
-          brief: nb.brief,   // S4a-T5 要求卡（渐进默认：无 brief 时字段全默认）
-          changes: [], todos: jdError ? [{ section: '岗位信息', question: 'JD 链接读取失败（' + jdError + '），请粘贴 JD 文本', why: '岗位匹配分析需要 JD', resolved: false }] : [],
+          brief: nb.brief, jdFp,   // S4a-T5 要求卡（渐进默认：无 brief 时字段全默认）
+          changes: [], todos: [...(jdError ? [{ section: '岗位信息', question: 'JD 链接读取失败（' + jdError + '），请粘贴 JD 文本', why: '岗位匹配分析需要 JD', resolved: false }] : []), ...fpTodo(dupHints)],
           generatedAt: null, deliveredAt: null
         }
       }));
       if ((req.headers.accept || '').includes('application/json') || (req.headers['content-type'] || '').includes('application/json')) {
-        return sendJson(200, { ok: true, id: to, jdError: jdError || null });
+        return sendJson(200, { ok: true, id: to, jdError: jdError || null, dupHints });
       }
       return redirect(`/edit?id=${to}`);
     }
@@ -1522,11 +1554,12 @@ async function handler(req, res) {
       const srcMeta = metaAll[body.from] || {};
       const normVer = normalizeToCurrent(freezeHtml(srcHtml, srcMeta).html);
       atomicWrite(docPath(to), normVer.html);
+      const { jdFp, dupHints } = await computeFpGuard(body.jd, '', body.company.trim(), metaAll);
       updateMeta(root, to, () => ({ parent: body.from, company: body.company.trim(), role: body.role.trim(), jd: typeof body.jd === 'string' ? body.jd : '',
         createdAt: new Date().toISOString(), tag: (body.company.trim() + '·' + body.role.trim()).slice(0, 20),
         typo: normVer.typo, theme: srcMeta.theme || normVer.theme || null, styleHash: normVer.styleHash, rev: 1,
         kind: 'job', flow: 'draft', archivedAt: null,
-        job: { sourceSnap: srcSnap, sourceHash: contentHash(srcHtml), materials: [], changes: [], todos: [], generatedAt: null, deliveredAt: null } }));
+        job: { sourceSnap: srcSnap, sourceHash: contentHash(srcHtml), jdFp, materials: [], changes: [], todos: fpTodo(dupHints), generatedAt: null, deliveredAt: null } }));
       return redirect(`/edit?id=${to}`);
     }
     // 岗位修改清单读/写（状态持久化；应用动作由前端 DOM 执行后回写状态）

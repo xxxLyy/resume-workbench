@@ -109,3 +109,30 @@ launchctl kickstart -k gui/$(id -u)/com.lhx.resume-server   # 重启常驻服务
 - 提交链：e67cd7f → d0fc926 → e063cb8 → b8774a4 → 83b4dbf → 9b185bc → 4810a09。
 - 终审与遗留：`dev-docs/2026-10-05-s4a-final-review.md`（A1–A9 逐条、v1.4/v1.5/v1.6 反例逐条、落地修正 6 条、遗留 5 条、上线清单）。
 - 状态：**已上线**（2026-10-05 用户授权重启 launchd，pid 确认新代码生效）。上线后修复批次（a450ce0：导出门控服务端强制 / 保存入口结构校验 / 可投递契约统一；ce077dc：guardOps③+/delete 清 meta+reorder 专测）已提交，**待用户授权重启生效**。上线冒烟通过：建草稿→四 Tab 注入（岗位匹配已退役）→保存 zid/zoneSync 落盘→真实渲染导出（2 页=目标，诊断面板齐全）→首页徽章→删除清理。真实 LLM 链路已验证（2026-10-05，Kimi k3：证据生成 5 条落账 refs 全 fresh、建议生成 6 条全带 zid 锚定、guardOps ③ 线上无误伤；测试草稿已删）。登记一个 S1 时代既有缺口：POST /delete 不清理 docs-meta.json 条目（孤儿 meta 累积，非 S4a 回归）。
+
+---
+
+## 批次1 交付快照（2026-10-18 · career-ops JD 指纹去重）
+
+**背景**：从开源 career-ops（MIT，`090f787e`）移植 JD 内容指纹，给岗位草稿创建流程加重复检测。本批次**不含任何 AI 调用**——纯确定性脚本，全链路可真实验证。
+
+- **落点**：`vendors/jd-fingerprint/` 三文件（`fingerprint-core.mjs` 移植+CJK 改造、`normalize-text-key.mjs` 移植、`repost-check.mjs` 自写薄壳）。**零 npm 依赖**（仅 `node:crypto`）。
+- **接线**：`server.mjs` 的 `computeFpGuard()`/`fpTodo()`（101–131 行），双入口 `/job/create`（1514/1526/1527/1532）与 `/version/create`（1557/1562）都挂。精确 409 去重语义不变，模糊只进 `job.todos` 提醒不阻断。护栏任何异常降级跳过（动态 import，vendors 损坏不拖垮启动）。
+- **测试**：`test-structure.sh` FP-1…FP-9 共 9 组（基线 86 → **95**）；`test.sh` **338** ✅；四件套 exit=0；冻结件零偏差。
+
+### ⚠️ 三个必须知道的坑
+
+1. **`FP_THRESHOLD = 0.90` 是实测校准的，不是拍的**（原设计初值 0.95，**已下调**）。依据 5 条真实 Boss直聘 JD（`test-fixtures/jd/sample-1..5.txt`）的两两矩阵：跨职位最高 0.6406（两条语义高度重叠的数据标注 JD，是真实数据里最难区分的一对）→ 余量 0.26；Boss直聘**页脚噪声**（微信扫码分享/举报/全角空格）0.9219、1% 字符扰动 0.9063 → 0.95 会漏检。**若日后样本变化需复校，改阈值前先跑 FP-4 看余量。**
+2. **CJK bigram 改造是必做项不是优化项**：上游 SimHash 按空格切 token，无标点中文归一化成单一巨 token → `tokens<3` → **空指纹、永不匹配且无提示**。改造后无标点中文指纹非空。**FP-7 是这个缺口的回归哨兵，fixture 必须用无标点纯中文**——用带标点的 fixture 测是假绿（标点被折成空格，上游原版照样能过）。已用「关掉 `bigramize` 看断言是否转红」验证过是真哨兵。
+3. **`CJK_RUN` 正则必须写 `\u` 转义**：`/[㐀-鿿豈-﫿]{2,}/gu` 用 Write 和 Edit 工具写都会把 U+F900 归一化成 U+8C48，**且落盘范围变成超集、中文照样能切、测试照样绿**——只有码位比对能发现。正确写法 `[㐀-鿿豈-﫿]{2,}`（用 python3 字节级写入）。
+
+### 上游同步纪律
+
+来源 career-ops-hq/career-ops @ `090f787e2499f4fd29b615272946c99dfcab1c28`（MIT）。**同步只 diff `fingerprint-core.mjs` 一个文件**（每季度或遇 bug），diff 后**必跑 FP-7**（CJK 哨兵）。`repost-check.mjs` 是本地自写薄壳，无同步负担。设计/计划文档：`dev-docs/2026-10-18-career-ops-jd-fingerprint-{design,plan}.md`。
+
+### 本批次已知遗留
+
+- 老草稿（无 `job.jdFp`）每次创建都要现算 SimHash，历史量大时会变慢——先量到再优化。
+- `/version/create` 传 `newLink: ''`，link 精确去重那条路在该入口不触发（该入口 body 无 jdLink 字段），spec 定的行为非缺陷。
+- 夹具缺「同公司同岗位的两个版本」（重发检测最真实场景），该场景目前靠 FP-9 合成文本 + Task 5 端到端（同 JD 换公司名 → score=1 命中）覆盖。
+- **批次 2（岗位快速评估，AI）未开工**：当前 `config.json` 无可用模型，评估类功能只能 stub 验证。结构就绪后模型到位即插即用。设计见 design 文档 §5。

@@ -2828,3 +2828,159 @@ fs.rmSync(r1, { recursive: true, force: true });
 fs.rmSync(r2, { recursive: true, force: true });
 console.log('✅ S4B-7 数据安全契约（回滚豁免 / 锁不死循环 / 载荷不静默吞）');
 EOF
+
+# —— FP-8：公司名归一化（career-ops normalizeTextKey 移植）——
+node --input-type=module << 'EOF'
+import { normalizeTextKey } from './vendors/jd-fingerprint/normalize-text-key.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ FP-8 ' + m); process.exit(1); } };
+assert(normalizeTextKey('字节跳动（北京）') === normalizeTextKey('字节跳动 北京'), '中文公司名去标点归一');
+assert(normalizeTextKey('ByteDance!') === normalizeTextKey('bytedance'), '拉丁大小写+标点归一');
+assert(normalizeTextKey(null) === '', 'null → 空串（不产生 "null" 字面量）');
+assert(normalizeTextKey(undefined) === '', 'undefined → 空串');
+assert(normalizeTextKey('İstanbul') === normalizeTextKey('Istanbul'), '土耳其 İ 剥组合点');
+assert(normalizeTextKey('Żubr') !== normalizeTextKey('Zubr'), 'Ż 与 Z 保持区分（NFKC 安全属性）');
+console.log('✅ FP-8 公司名归一化');
+EOF
+
+# —— FP-1/2/5/7：指纹核心（SimHash + CJK bigram 改造）——
+node --input-type=module << 'EOF'
+import { normalizeJdText, fingerprintText, similarity, FINGERPRINT_MIN_TEXT } from './vendors/jd-fingerprint/fingerprint-core.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ FP-1 ' + m); process.exit(1); } };
+
+// FP-1: 中文 bigram 切分
+const zh = '负责后端服务的开发与维护，参与系统架构设计，优化高并发场景下的性能瓶颈，配合产品团队完成需求评审。';
+const tokens = normalizeJdText(zh).split(' ').filter(Boolean);
+assert(tokens.length > 3, `纯中文切出多个 token（实际 ${tokens.length}）`);
+assert(tokens.includes('后端') && tokens.includes('服务'), 'bigram 覆盖（后端/服务）');
+const mixed = normalizeJdText('熟悉 Node.js 与 MySQL 优化');
+assert(mixed.split(' ').includes('node') && mixed.split(' ').includes('熟悉'), '中英混合 token 流');
+console.log('✅ FP-1 中文 bigram 切分');
+
+// FP-2: 确定性
+// 长度说明：zh 仅 49 字 → bigram 展开后 122 字符 < FINGERPRINT_MIN_TEXT(200) → 指纹为空。
+// 故 FP-2 用足门槛的长文本（断言条件与 FP-7 同一量级），否则确定性断言无法执行。
+const longZh = zh.repeat(5);
+const fpA = fingerprintText(longZh);
+assert(fpA === fingerprintText(longZh), '同文本两次计算指纹相同');
+assert(/^[0-9a-f]{16}$/.test(fpA), '指纹为 16 位小写 hex');
+console.log('✅ FP-2 指纹确定性');
+
+// FP-5: 短文本静默跳过
+assert(fingerprintText('太短') === '', '过短文本返回空指纹');
+assert(fingerprintText('') === '', '空串返回空指纹');
+assert(similarity('', fpA) === 0 && similarity(fpA, 'zz') === 0, '空/畸形指纹相似度为 0');
+console.log('✅ FP-5 短文本静默跳过');
+
+// FP-7: CJK 缺口回归哨兵 —— 必须用**无标点**纯中文。
+// 上游按空格切 token。带标点中文的标点会被 [^\p{L}\p{N}]+ 折成空格，已能切出多个 token，
+// 上游原版照样出指纹（那种场景测不出 bigram 的作用，测它是假绿）。只有无标点中文会归一化成
+// 单一巨 token → tokens<3 → 返回空指纹 → 护栏静默失效。
+// 实测（2026-10-18）：本实现 ed7376a8a0cda07a，上游等价格式返回 ''。去掉 bigramize 本断言即红。
+const noPunct = '负责核心系统的设计与开发保障系统稳定性与高可用持续优化服务性能参与技术方案评审与团队协作输出高质量技术文档'.repeat(6);
+assert(fingerprintText(noPunct) !== '', '无标点纯中文 JD 指纹非空（上游 SimHash 在此静默失效，bigram 已修复）');
+console.log('✅ FP-7 无标点纯中文指纹非空（CJK 回归哨兵）');
+EOF
+
+# —— FP-9：重复提醒判定（repost-check 纯函数）——
+node --input-type=module << 'EOF'
+import { findDupHints } from './vendors/jd-fingerprint/repost-check.mjs';
+import { fingerprintText, similarity } from './vendors/jd-fingerprint/fingerprint-core.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ FP-9 ' + m); process.exit(1); } };
+const jdA = '岗位要求：负责核心系统的设计与开发，保障系统稳定性与高可用，持续优化服务性能，参与技术方案评审与团队协作，输出高质量技术文档。三年以上后端开发经验，熟悉分布式架构与高并发场景，' .repeat(2) + '具备良好的沟通能力与责任心，能够独立完成模块设计与编码实现，熟悉常用中间件原理与调优。';
+const jdA2 = jdA.replace(/三年/g, '3 年').replace(/良好/g, '优秀');   // 少量扰动（<5% 字符）
+const jdB = '岗位职责：负责前端页面开发与交互实现，配合设计师还原视觉稿，优化页面加载性能，维护组件库，编写单元测试。熟悉 React 与 TypeScript，了解常见工程化工具链，有开源项目经验者优先，' .repeat(2) + '良好的代码风格与文档习惯，两年以上前端开发经验，能独立负责复杂交互模块。';
+const today = '2026-10-18T00:00:00Z';
+const mk = (over) => Object.assign({ jd: '', jdFp: '', company: '', role: '', dateStr: '', kind: 'draft', label: '' }, over);
+
+// —— 产品主场景：原样重发（HR 原样再发 / 同 JD 换公司名）必须命中 ——
+// 0.95 阈值 ≈ 汉明距离 ≤3 位 = 近逐字（上游自证 near-verbatim）。抓的就是原样重发，
+// 不是「大幅改写」——后者漏报优于误报（设计 §7）。
+// 注：同公司/换公司名的对照必须同时给 opts.newCompany，否则实现里的 !!newCompany 保护
+// 会让 sameCompany 恒为 false，repost 断言永远走不到真分支（假绿）。以下两处均已带上。
+let h = findDupHints(jdA, [mk({ jd: jdA, company: '某公司', dateStr: '2026-10-10T00:00:00Z', label: '某公司·后端' })], { today, newCompany: '某公司' });
+assert(h.length === 1 && h[0].score === 1, '原样重复 → score=1 必命中');
+assert(h[0].repost === true, '同公司原样重复 → repost 标记');
+h = findDupHints(jdA, [mk({ jd: jdA, company: '别家猎头', dateStr: '2026-10-15T00:00:00Z' })], { today, newCompany: '某公司' });
+assert(h.length === 1 && h[0].score === 1 && !h[0].repost, '换公司名原样重发 → 命中但跨公司不标 repost');
+
+// —— 轻微改写（3% 扰动）：只防算法崩坏的下限，不断言命中 ——
+// 实测值抄录进 Task 6 校准附录；若实测 ≥0.95 说明容错超预期，可另行收紧断言。
+h = findDupHints(jdA, [mk({ jd: jdA2, company: '某公司', dateStr: '2026-10-10T00:00:00Z' })], { today });
+const sPerturbed = h.length ? h[0].score : similarity(fingerprintText(jdA), fingerprintText(jdA2));
+assert(sPerturbed >= 0.5, '3% 扰动相似度 ≥0.5（防崩坏下限，实测 ' + sPerturbed.toFixed(3) + '，抄录进校准附录）');
+
+// 不同职位不误报（注：合成文本含 repeat 结构，权威的不误报验证在 FP-4 真实夹具）
+h = findDupHints(jdA, [mk({ jd: jdB, company: '另一公司', dateStr: '2026-10-10T00:00:00Z' })], { today });
+assert(h.length === 0, '不同 JD 不误报（实测 ' + h.length + ' 条）');
+
+// 窗口外跳过（用 jdA 原样文本：若窗口逻辑失效它必定命中，断言才有牙）
+h = findDupHints(jdA, [mk({ jd: jdA, dateStr: '2025-01-01T00:00:00Z' })], { today });
+assert(h.length === 0, '窗口外（>90 天）不提醒');
+
+// 窗口内跨公司 → 命中但无 repost 标记（用 jdA：3% 扰动实测 0.891 < 0.95 阈值不命中）
+h = findDupHints(jdA, [mk({ jd: jdA, company: '别家', dateStr: '2026-10-15T00:00:00Z' })], { today, newCompany: '某公司' });
+assert(h.length === 1 && !h[0].repost, '跨公司相似命中但不标 repost');
+
+// link 精确相等不受窗口限制
+h = findDupHints(jdA, [mk({ jd: '', link: 'https://x.zhipin.com/abc', dateStr: '2025-01-01T00:00:00Z', kind: 'app', status: '已约面' })], { today, newLink: 'https://x.zhipin.com/abc' });
+assert(h.length === 1 && h[0].kind === 'link' && h[0].status === '已约面', 'link 精确命中带状态');
+
+// 工作台日期格式 '2026-09-11-164709-312' 可解析（同上，用 jdA 避免被阈值挡掉）
+h = findDupHints(jdA, [mk({ jd: jdA, dateStr: '2026-09-11-164709-312' })], { today });
+assert(h.length === 1, 'apps 时间戳格式（YYYY-MM-DD-hhmmss-ms）可解析入窗');
+
+// 空指纹静默
+assert(findDupHints('太短', [mk({ jd: jdA })], { today }).length === 0, '新 JD 过短 → 零提醒');
+console.log('✅ FP-9 重复提醒判定');
+EOF
+
+# —— FP-3/4/6：真实 JD 夹具（来源 test-fixtures/jd/，硬规矩：不手编假 JD）——
+# 夹具每份首两行是 `# 来源:` / `# 截图转录` 注释，load() 必须剥掉再比对，
+# 否则注释文字会进入归一化文本，把相似度全部抬高（伪绿）。
+node --input-type=module << 'EOF'
+import { readFileSync } from 'fs';
+import { fingerprintText, similarity } from './vendors/jd-fingerprint/fingerprint-core.mjs';
+import { FP_THRESHOLD } from './vendors/jd-fingerprint/repost-check.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ FP-3/4/6 ' + m); process.exit(1); } };
+const load = (f) => readFileSync('test-fixtures/jd/' + f + '.txt', 'utf8').replace(/^#.*$/gm, '').trim();
+const files = ['sample-1', 'sample-2', 'sample-3', 'sample-4', 'sample-5'];
+const raws = files.map(load);
+
+// FP-3a: 夹具自检 —— 5 条真实 JD 归一化后均 ≥200 字符，全部可指纹
+const fps = raws.map(fingerprintText);
+for (let i = 0; i < files.length; i++) {
+  assert(fps[i] !== '', files[i] + ' 产出非空指纹（归一化后须 ≥200 字符）');
+}
+assert(fps.every((f) => /^[0-9a-f]{16}$/.test(f)), '全部指纹为 16 位小写 hex');
+assert(raws.every((r) => !/^#/.test(r)), '注释行已剥离（夹具首行不再以 # 开头）');
+console.log('✅ FP-3a 真实夹具全部可指纹');
+
+// FP-3b: 轻改写（1% 字符扰动）应仍高于阈值 —— 真实场景「HR 微调措辞后重发」可识别
+const chars = Array.from(raws[0]);
+const cnt = Math.max(1, Math.floor(chars.length * 0.01));
+const pert = chars.map((c, i) => (i > 10 && i % Math.floor(chars.length / cnt) === 0) ? '。' : c).join('');
+const s3 = similarity(fingerprintText(raws[0]), fingerprintText(pert));
+assert(s3 >= FP_THRESHOLD, `1% 字符扰动应仍命中（实测 ${s3.toFixed(4)}，阈值 ${FP_THRESHOLD}）— 真实场景：HR 微调措辞后重发`);
+console.log('✅ FP-3b 轻改写可识别');
+
+// FP-4: 真实 JD 两两不误报 —— 校准 0.90 阈值的核心依据
+let max = 0, pair = '';
+for (let i = 0; i < files.length; i++) {
+  for (let j = i + 1; j < files.length; j++) {
+    const s = similarity(fps[i], fps[j]);
+    assert(s < FP_THRESHOLD, `${files[i]} × ${files[j]} 相似度 ${s.toFixed(4)} ≥ 阈值 ${FP_THRESHOLD} → 会误报`);
+    if (s > max) { max = s; pair = files[i] + ' × ' + files[j]; }
+  }
+}
+console.log(`✅ FP-4 真实 JD 两两不误报（最高一对：${pair} = ${max.toFixed(4)}，阈值 ${FP_THRESHOLD}，余量 ${(FP_THRESHOLD - max).toFixed(4)}）`);
+
+// FP-6: Boss直聘复制噪声（emoji/链接/HTML/页脚）不破坏指纹
+const raw1 = raws[0];
+const uiNoise = raw1.replace(/。/, '。😎') + '\nhttps://www.zhipin.com/job_detail/x.htm\n<b>加粗</b>    ';
+const s6a = similarity(fps[0], fingerprintText(uiNoise));
+assert(s6a >= 0.95, `UI 噪声清洗后相似度 ≥0.95（实测 ${s6a.toFixed(4)}）— emoji/URL/空白应被清掉，标签内文字保留属预期`);
+const footerNoise = raw1 + ' 微信扫码分享\n举报 ' + '　'.repeat(20);
+const s6b = similarity(fps[0], fingerprintText(footerNoise));
+assert(s6b >= 0.90, `页脚噪声后相似度须 ≥0.90（实测 ${s6b.toFixed(4)}）— 低于阈值会导致 Boss直聘重复职位漏检，这是阈值从 0.95 降到 0.90 的直接原因`);
+console.log(`✅ FP-6 复制噪声清洗稳定（UI 噪声 ${s6a.toFixed(4)} / 页脚噪声 ${s6b.toFixed(4)}）`);
+EOF
