@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>S4a 原型 · 审阅 Tab·要求与证据（展开态）</title>
+<style>
+  :root{--bg:#F0EBE2;--panel:#FFFCF5;--ink:#26221C;--mut:#6E675C;--line:#DED3C0;--accent:#C2410C;--accent-ink:#FFF7ED;--accent-soft:#FBE9D8;--ok:#2F6B4F;--ok-soft:#E4EFE6;--warn:#A25711;--warn-soft:#FBEEDC;--err:#A32B2B;--err-soft:#F7E4E1;--serif:"Songti SC","Noto Serif CJK SC",Georgia,serif;--sans:"PingFang SC",-apple-system,sans-serif}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 var(--sans);padding:20px}
+  .zone{max-width:360px;background:var(--panel);border:1px solid var(--line);border-radius:10px;margin:0 auto}
+  .tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);padding:8px 8px 0}
+  .tabs button{flex:1;min-height:32px;border:none;background:transparent;font-size:12px;font-weight:600;color:var(--mut);cursor:pointer;border-radius:7px 7px 0 0}
+  .tabs button[aria-selected="true"]{color:var(--accent);box-shadow:inset 0 -2px 0 var(--accent)}
+  .ctx{padding:8px 12px;border-bottom:1px solid var(--line);font-size:12px}
+  .ctx b{font-family:var(--serif)}
+  .segs{display:flex;gap:4px;padding:8px 12px 0;font-size:12px}
+  .segs button{border:1px solid var(--line);background:#fff;border-radius:6px;padding:4px 9px;cursor:pointer;color:var(--mut)}
+  .segs button[aria-selected="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);font-weight:600}
+  .pane{padding:10px 12px}
+  .ev{border:1px solid var(--line);border-radius:8px;background:#fff;margin-bottom:8px;overflow:hidden}
+  .ev .hd{display:flex;align-items:center;gap:6px;padding:7px 9px;cursor:pointer}
+  .ev .req{flex:1;font-size:12px;font-weight:600}
+  .st{font-size:10px;border-radius:999px;padding:1px 8px;flex:none}
+  .st.covered{background:var(--ok-soft);color:var(--ok)}
+  .st.sourced{background:#EAF0F5;color:#3A5A78}
+  .st.thin{background:var(--warn-soft);color:var(--warn)}
+  .st.todo{background:#EFE9DC;color:var(--mut)}
+  .st.none{background:var(--err-soft);color:var(--err)}
+  .caret{color:var(--mut);font-size:10px}
+  .ev .bd{border-top:1px solid var(--line);padding:8px 9px;font-size:11.5px}
+  .ref{display:flex;gap:6px;align-items:flex-start;padding:4px 0}
+  .ref .ic{flex:none;font-size:10px;border-radius:4px;padding:0 5px;background:var(--ok-soft);color:var(--ok);margin-top:2px}
+  .ref .ic.para{background:var(--accent-soft);color:var(--accent)}
+  .ref .tx{flex:1}
+  .ref .src{color:var(--mut);font-size:10.5px}
+  .ref.stale .tx{text-decoration:line-through;color:var(--mut)}
+  .ref.stale .badge2{background:var(--warn-soft);color:var(--warn)}
+  .badge2{font-size:10px;border-radius:4px;padding:0 6px;background:var(--ok-soft);color:var(--ok)}
+  .ops{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+  .b{border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer;border:1px solid var(--line);background:#fff;color:var(--ink)}
+  .b.pri{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+  .b.ghost{border:none;background:none;color:var(--accent);text-decoration:underline;padding:3px 4px}
+  .note-box{margin-top:6px;border:1px dashed var(--line);border-radius:6px;padding:6px 8px;background:#fff}
+  .note-box .lbl{font-size:10.5px;color:var(--mut);margin-bottom:3px}
+  .note-box textarea{width:100%;border:1px solid var(--line);border-radius:5px;font:11.5px var(--sans);padding:5px 6px}
+  .none-hint{color:var(--err);font-size:11px;margin:4px 0}
+  .hint{font-size:10.5px;color:var(--mut);margin-top:8px}
+</style>
+</head>
+<body>
+<div class="zone">
+  <div class="tabs"><button>区域</button><button>AI 助手</button><button aria-selected="true">审阅</button><button>排版</button></div>
+  <div class="ctx"><b>示例科技 · 推荐算法工程师</b><br><span style="color:var(--mut);font-size:11px">证据生成于 14:18 · 来源：JD + 已确认素材 3 条 + 正文段落</span></div>
+  <div class="segs">
+    <button aria-selected="true">要求与证据</button>
+    <button aria-selected="false">修改清单</button>
+    <button aria-selected="false">导出检查</button>
+  </div>
+  <div class="pane">
+    <!-- 展开的 covered 行 -->
+    <div class="ev">
+      <div class="hd"><span class="req">大规模数据处理经验</span><span class="st covered">简历已覆盖</span><span class="caret">▴</span></div>
+      <div class="bd">
+        <div class="ref"><span class="ic">素材</span><div class="tx">推荐系统重构 <span class="badge2">事实依据</span><div class="src">指标：P99 800ms→210ms · 引用时已确认 · 版本指纹 a3f2…</div></div></div>
+        <div class="ref"><span class="ic para">段落</span><div class="tx">工作经历 ·「搭建日均 20 亿事件的数据管道…」<div class="src">📍定位到段落 · 版本指纹 b8c1…</div></div></div>
+        <div class="ops"><button class="b ghost">📍定位第一处</button><button class="b ghost">重新分析证据</button></div>
+      </div>
+    </div>
+    <!-- 展开的 stale 行 -->
+    <div class="ev">
+      <div class="hd"><span class="req">模型部署经验</span><span class="st thin" style="background:var(--warn-soft);color:var(--warn)">需重新核对</span><span class="caret">▴</span></div>
+      <div class="bd">
+        <div class="ref stale"><span class="ic">素材</span><div class="tx">模型上线实践 <span class="badge2" style="background:var(--warn-soft);color:var(--warn)">来源已变化</span><div class="src">引用建立于版本 c9d0…，素材事实已更新为 c9d1…——相关建议已标「需重新核对」</div></div></div>
+        <div class="ops"><button class="b">查看素材最新事实</button><button class="b">重新关联来源</button></div>
+      </div>
+    </div>
+    <!-- sourced：素材有据·简历未表达（v1.3 五态） -->
+    <div class="ev">
+      <div class="hd"><span class="req">K8s 集群运维经验</span><span class="st sourced">素材有据·简历未表达</span><span class="caret">▴</span></div>
+      <div class="bd">
+        <div class="ref"><span class="ic">素材</span><div class="tx">模型上线实践 <span class="badge2">事实依据</span><div class="src">贡献：维护 3 节点集群两年（引用时已确认）——素材有据，但简历正文尚未表达；可在生成建议中引用</div></div></div>
+        <div class="ops"><button class="b">📍查看素材事实</button><button class="b">让生成建议引用此据</button></div>
+      </div>
+    </div>
+    <!-- 收起的 thin / todo / none -->
+    <div class="ev"><div class="hd"><span class="req">AB 实验设计</span><span class="st thin">表达不充分</span><span class="caret">▾</span></div></div>
+    <div class="ev"><div class="hd"><span class="req">团队管理经验</span><span class="st todo">待补充</span><span class="caret">▾</span></div></div>
+    <div class="ev">
+      <div class="hd"><span class="req">K8s 集群运维</span><span class="st none">暂无证据</span><span class="caret">▴</span></div>
+      <div class="bd">
+        <div class="none-hint">当前已确认来源中未找到证据——不代表你没有做过，可补充事实说明。</div>
+        <div class="note-box">
+          <div class="lbl">补充事实（可选）</div>
+          <textarea rows="2">维护过 3 节点自建集群两年，来源：个人项目仓库</textarea>
+          <div class="ops"><button class="b">保存说明</button><button class="b pri">确认为证据</button><span style="font-size:10.5px;color:var(--mut);align-self:center">确认为证据 = 计「素材有据·简历未表达」，需正文实际引用后才升「简历已覆盖」；可随时退回</span></div>
+        </div>
+        <div class="ops" style="margin-top:6px"><button class="b">关联到具体素材/段落</button></div>
+      </div>
+    </div>
+    <div class="hint">JD 的每条要求来自 JD 本身（非你的经历事实）；事实只来自已确认素材与正文。</div>
+  </div>
+</div>
+</body>
+</html>

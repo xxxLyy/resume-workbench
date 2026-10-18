@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>S4a 原型 · 编辑器布局（真实响应式：1280 审阅活跃保右栏 / ≥1440 三栏）</title>
+<style>
+  :root{--ed-bg:#F0EBE2;--panel:#FFFCF5;--ink:#26221C;--mut:#6E675C;--line:#DED3C0;--accent:#C2410C;--accent-ink:#FFF7ED;--accent-soft:#FBE9D8;--ok-soft:#E4EFE6;--warn-soft:#FBEEDC;--serif:"Songti SC","Noto Serif CJK SC",Georgia,serif;--sans:"PingFang SC",-apple-system,sans-serif}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--ed-bg);color:var(--ink);font:12px/1.5 var(--sans);display:flex;flex-direction:column;overflow:hidden}
+  .toolbar{display:flex;gap:6px;align-items:center;padding:7px 14px;background:var(--panel);border-bottom:1px solid var(--line);font-size:11.5px;flex:none}
+  .toolbar .title{font-family:var(--serif);font-weight:700;font-size:13px}
+  .badge{display:inline-block;font-size:9.5px;border-radius:999px;padding:1px 7px;background:var(--warn-soft);color:#A25711}
+  .toolbar .b{border:1px solid var(--line);border-radius:6px;padding:3px 11px;background:#fff;cursor:pointer;font-size:11px}
+  .toolbar .b.pri{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+  .toolbar .gen{margin-left:auto;color:var(--accent);font-size:11px}
+  .cols{flex:1;display:flex;gap:10px;padding:10px;min-height:0;align-items:stretch}
+  .left{width:248px;flex:none;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 10px;overflow:auto}
+  .left h3{margin:2px 0 6px;font-size:10.5px;color:var(--mut);font-weight:700}
+  .entry{display:flex;align-items:center;gap:6px;padding:4px 2px;border-top:1px solid var(--line);font-size:11.5px}
+  .entry:first-of-type{border-top:none}
+  .entry .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .entry .menu{border:1px solid var(--line);border-radius:5px;background:#fff;cursor:pointer;font-size:12px;padding:0 6px}
+  .entry.off .nm{text-decoration:line-through;color:var(--mut)}
+  .paper{flex:1;min-width:0;background:#fff;border:1px solid var(--line);border-radius:4px;padding:26px 36px;overflow:auto;font-family:var(--serif);align-self:stretch}
+  .paper h4{margin:0 0 4px;font-size:16px}
+  .paper .p{font-size:11px;color:#3a352c;margin:5px 0}
+  .paper .p.mark{background:var(--accent-soft);outline:1px dashed var(--accent);border-radius:3px}
+  .right{width:300px;flex:none;background:var(--panel);border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;overflow:hidden}
+  .tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);padding:6px 6px 0;flex:none}
+  .tabs button{flex:1;min-height:28px;border:none;background:transparent;font-size:11px;font-weight:600;color:var(--mut);cursor:pointer;border-radius:6px 6px 0 0}
+  .tabs button[aria-selected="true"]{color:var(--accent);box-shadow:inset 0 -2px 0 var(--accent)}
+  .pane{padding:8px 10px;font-size:11px;color:var(--mut);overflow:auto}
+  .pane .c1{border:1px solid var(--line);border-radius:7px;background:#fff;padding:6px 8px;margin-bottom:6px;color:var(--ink)}
+  /* 1280-1439：审阅活跃（本原型即审阅场景）→ 保右栏，左栏收成竖标签条（v1.3 规则） */
+  .rail{width:34px;flex:none;background:var(--panel);border:1px solid var(--line);border-radius:10px;display:none;flex-direction:column;align-items:center;padding:10px 0;gap:12px}
+  .rail span{writing-mode:vertical-rl;font-size:10.5px;color:var(--mut)}
+  .rail span.on{color:var(--accent);font-weight:700}
+  @media (max-width:1439.5px){
+    .left{display:none}
+    .rail{display:flex}
+  }
+  .statusbar{display:flex;gap:14px;padding:5px 14px;background:var(--panel);border-top:1px solid var(--line);font-size:10.5px;color:var(--mut);flex:none}
+  .sizeflag{position:fixed;top:7px;left:50%;transform:translateX(-50%);font-size:10px;color:#fff;background:rgba(58,53,44,.75);border-radius:999px;padding:1px 10px;z-index:9;pointer-events:none}
+</style>
+</head>
+<body>
+  <div class="sizeflag" id="flag"></div>
+  <div class="toolbar">
+    <span class="title">凌浩翔 · 示例科技·推荐算法工程师</span>
+    <span class="badge">岗位草稿 · 待审 4</span>
+    <span class="b">↩ 撤销</span><span class="b">保存</span><span class="b">查找</span>
+    <span class="b pri">导出 PDF</span>
+    <span class="gen">● 生成中…（点回审阅）</span>
+  </div>
+  <div class="cols">
+    <div class="left">
+      <h3>章节与条目（⋯ 菜单键盘可达：Tab 聚焦 → Enter 展开 → ↑↓ → Esc）</h3>
+      <div class="entry"><span class="nm">个人总结</span><span class="menu">⋯</span></div>
+      <div class="entry"><span class="nm">专业技能</span><span class="menu">⋯</span></div>
+      <div class="entry"><span class="nm">工作经历</span><span class="menu">⋯</span></div>
+      <div class="entry"><span class="nm">某公司 · 后端工程师</span><span class="menu">⋯</span></div>
+      <div class="entry off"><span class="nm">早期外包经历</span><span class="menu">⋯</span></div>
+      <div class="entry"><span class="nm">项目经历</span><span class="menu">⋯</span></div>
+      <div class="entry"><span class="nm">推荐系统重构</span><span class="menu">⋯</span></div>
+      <div class="entry"><span class="nm">数据管道重设计</span><span class="menu">⋯</span></div>
+    </div>
+    <div class="paper">
+      <h4>凌浩翔</h4>
+      <div class="p">138****0000 · ling@example.com · 求职意向：推荐算法工程师</div>
+      <div class="p" style="font-weight:700;margin-top:10px">个人总结</div>
+      <div class="p">五年后端与推荐系统经验，专注算法效果与工程落地。</div>
+      <div class="p" style="font-weight:700;margin-top:10px">工作经历</div>
+      <div class="p mark">负责推荐系统重构：将召回层延迟从 800ms 降至 210ms，搭建 AB 实验平台覆盖全链路（正在审阅的段落 = Highlight 着色不落盘）</div>
+      <div class="p" style="font-weight:700;margin-top:10px">项目经历</div>
+      <div class="p">推荐系统重构（2023-2024）· 主导召回重构与实验平台……</div>
+      <div class="p">数据管道重设计（2022）· 日均 20 亿事件管道……</div>
+      <div class="p" style="font-weight:700;margin-top:10px">专业技能</div>
+      <div class="p">Go / Python / Spark / 推荐算法 / AB 实验……</div>
+      <div class="p" style="font-weight:700;margin-top:10px">教育经历</div>
+      <div class="p">某大学 · 计算机科学与技术 · 本科</div>
+    </div>
+    <div class="right">
+      <div class="tabs"><button>区域</button><button>AI 助手</button><button aria-selected="true">审阅<span class="badge" style="margin-left:2px">4</span></button><button>排版</button></div>
+      <div class="pane">
+        <div class="c1" style="padding:3px 8px"><b>修改清单</b>：待处理 4（2 普通 / 1 隐藏 / 1 冲突）· 待比较 1 · 简历已覆盖 2 · 素材有据未表达 1</div>
+        <div class="c1">
+          <div style="font-weight:600;font-size:11px">改写：工作经历·召回层表述 <span style="font-size:9px;border-radius:4px;padding:0 5px;background:#EFE9DC;color:var(--mut)">表达</span></div>
+          <div style="background:var(--warn-soft);border-radius:5px;padding:3px 6px;margin:4px 0;font-size:10.5px">负责推荐系统重构，将召回层延迟降低</div>
+          <div style="background:var(--ok-soft);border-radius:5px;padding:3px 6px;margin:4px 0;font-size:10.5px">主导召回层重构，P99 延迟 800ms→210ms</div>
+          <div style="font-size:10px;color:var(--mut)">事实依据：素材「推荐系统重构」·指标（已确认）</div>
+          <div style="margin-top:4px"><span style="display:inline-block;background:var(--accent);border-radius:5px;padding:1px 9px;font-size:10px;color:#FFF7ED;cursor:pointer">接受</span> <span style="display:inline-block;border:1px solid var(--line);border-radius:5px;padding:1px 9px;font-size:10px;cursor:pointer">跳过</span> <span style="font-size:10px;color:var(--accent);text-decoration:underline;cursor:pointer">📍定位</span></div>
+        </div>
+        <div class="c1" style="border-style:dashed;padding:3px 8px"><b>导出检查</b>：1 条事实冲突阻止导出 · <span style="color:var(--accent);cursor:pointer">去核对 →</span></div>
+        <div style="font-size:10.5px;color:var(--mut)">1280：真实候选卡与正文共存（上下对照）；≥1440 且右栏展开：候选卡原文/候选并排两列。</div>
+      </div>
+    </div>
+    <div class="rail">
+      <span>章节</span><span>条目</span><span class="on">☰</span>
+    </div>
+  </div>
+  <div class="statusbar">
+    <span>约 2 页 · A4（估算，以导出为准）</span><span>缩放 100%</span><span>字数 3072</span>
+    <span style="margin-left:auto">1280-1439：审阅活跃保右栏（纸张缩放适配），左栏收标签条；右栏非活跃才折叠右栏；≥1440 三栏；&lt;1200 单栏抽屉</span>
+  </div>
+  <script>
+    var f = document.getElementById('flag');
+    function up() { f.textContent = window.innerWidth + 'px · ' + (window.innerWidth >= 1440 ? '三栏全开' : window.innerWidth >= 1280 ? '审阅活跃：保右栏 · 左栏收标签条' : '单栏抽屉'); }
+    up(); window.addEventListener('resize', up);
+  </script>
+</body>
+</html>

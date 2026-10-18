@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>S4a 原型 · 岗位创建（含本次定制要求）</title>
+<style>
+  :root{--bg:#F6F1E7;--panel:#FFFCF5;--ink:#26221C;--mut:#6E675C;--line:#E2D9C8;--accent:#C2410C;--accent-ink:#FFF7ED;--accent-soft:#FBE9D8;--ok:#2F6B4F;--ok-soft:#E4EFE6;--warn:#A25711;--warn-soft:#FBEEDC;--err:#A32B2B;--err-soft:#F7E4E1;--serif:"Songti SC","Noto Serif CJK SC",Georgia,serif;--sans:"PingFang SC",-apple-system,sans-serif;--radius:8px;--shadow:0 1px 2px rgba(60,45,25,.07)}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 var(--sans);padding:28px}
+  .wrap{max-width:560px;margin:0 auto}
+  h1{font-family:var(--serif);font-size:22px;margin:0 0 4px}
+  .sub{color:var(--mut);font-size:13px;margin:0 0 18px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px;box-shadow:var(--shadow);margin-bottom:14px}
+  label{display:block;font-size:12px;font-weight:600;color:var(--mut);margin:10px 0 4px}
+  input,select,textarea{width:100%;border:1px solid var(--line);border-radius:6px;padding:7px 9px;font:13px var(--sans);background:#fff;color:var(--ink)}
+  input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{border:1px solid var(--line);border-radius:999px;padding:3px 11px;font-size:12px;background:#fff;cursor:pointer}
+  .chip[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+  details{border:1px solid var(--line);border-radius:8px;background:#fff}
+  details summary{cursor:pointer;padding:9px 12px;font-size:13px;font-weight:600;list-style:none}
+  details summary::after{content:"▾";float:right;color:var(--mut)}
+  details[open] summary::after{content:"▴"}
+  details .inner{padding:2px 12px 12px}
+  .seg{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+  .seg button{flex:1;border:none;background:#fff;padding:7px 4px;font-size:12px;cursor:pointer;color:var(--mut)}
+  .seg button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink)}
+  .foot{display:flex;gap:10px;align-items:center;margin-top:6px}
+  .btn{border-radius:7px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer}
+  .btn.primary{background:var(--accent);border:1px solid var(--accent);color:var(--accent-ink)}
+  .btn.secondary{background:var(--panel);border:1px solid var(--line);color:var(--ink)}
+  .btn.text{background:none;border:none;color:var(--mut);text-decoration:underline}
+  .note{font-size:12px;color:var(--mut)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>针对岗位生成草稿</h1>
+  <p class="sub">六项基础信息照旧；「本次定制要求」默认折叠，默认两页——创建仍是两步以内。</p>
+
+  <div class="card">
+    <div class="row">
+      <div><label>公司</label><input value="示例科技"></div>
+      <div><label>岗位</label><input value="推荐算法工程师"></div>
+    </div>
+    <label>JD（文本或链接）</label>
+    <textarea rows="3">负责推荐系统算法效果优化…要求：大规模数据处理经验、AB 实验设计、模型部署…</textarea>
+    <div class="row">
+      <div><label>母版</label><select><option>凌浩翔</option></select></div>
+      <div><label>引用素材</label><select><option>已确认素材（3 条）</option></select></div>
+    </div>
+  </div>
+
+  <details open>
+    <summary>本次定制要求（v1.1 原型：展示展开态；线上默认收起）（可选，默认已按经验填好）</summary>
+    <div class="inner">
+      <label>本次重点</label>
+      <div class="chips">
+        <button class="chip" aria-pressed="true">算法效果</button>
+        <button class="chip" aria-pressed="true">AB 实验</button>
+        <button class="chip" aria-pressed="false">端侧部署</button>
+        <button class="chip" aria-pressed="false">工程平台</button>
+        <button class="chip" aria-pressed="false">大模型应用</button>
+      </div>
+      <label>必须保留的项目</label>
+      <div class="chips">
+        <button class="chip" aria-pressed="true">推荐系统重构</button>
+        <button class="chip" aria-pressed="false">数据管道重设计</button>
+      </div>
+      <label>不希望强调</label>
+      <div class="chips"><button class="chip" aria-pressed="true">早期外包经历</button></div>
+      <label>修改幅度</label>
+      <div class="seg">
+        <button aria-pressed="false">轻度精简</button>
+        <button aria-pressed="true">重点调整</button>
+        <button aria-pressed="false">重新组织</button>
+      </div>
+      <label>页数目标</label>
+      <div class="seg">
+        <button aria-pressed="false">1 页</button>
+        <button aria-pressed="true">2 页（默认）</button>
+      </div>
+    </div>
+  </details>
+
+  <div class="foot">
+    <button class="btn primary">创建草稿</button>
+    <button class="btn text">存为常用预设</button>
+    <span class="note">预设存本机；下次创建可一键带回</span>
+  </div>
+</div>
+</body>
+</html>

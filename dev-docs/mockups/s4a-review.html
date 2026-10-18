@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>S4a 原型 · 审阅 Tab（要求与证据 + 修改清单）</title>
+<style>
+  :root{--bg:#F0EBE2;--panel:#FFFCF5;--ink:#26221C;--mut:#6E675C;--line:#DED3C0;--accent:#C2410C;--accent-ink:#FFF7ED;--accent-soft:#FBE9D8;--ok:#2F6B4F;--ok-soft:#E4EFE6;--warn:#A25711;--warn-soft:#FBEEDC;--err:#A32B2B;--err-soft:#F7E4E1;--serif:"Songti SC","Noto Serif CJK SC",Georgia,serif;--sans:"PingFang SC",-apple-system,sans-serif}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 var(--sans);padding:0}
+  .frame{max-width:880px;margin:0 auto;display:flex;gap:0;min-height:640px}
+  .paper{flex:1;background:#fff;margin:14px 8px 14px 14px;border:1px solid var(--line);border-radius:4px;padding:26px 34px;box-shadow:0 1px 3px rgba(60,45,25,.1);font-family:var(--serif)}
+  .paper h2{font-size:17px;margin:0 0 4px}
+  .paper .p{font-size:11.5px;color:#3a352c;margin:5px 0}
+  .paper .p.mark{background:var(--accent-soft);outline:1px dashed var(--accent);border-radius:3px}
+  .side{width:330px;flex:none;background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column}
+  .tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);padding:8px 8px 0}
+  .tabs button{flex:1;min-height:32px;border:none;background:transparent;font-size:12px;font-weight:600;color:var(--mut);cursor:pointer;border-radius:7px 7px 0 0}
+  .tabs button[aria-selected="true"]{color:var(--accent);box-shadow:inset 0 -2px 0 var(--accent)}
+  .badge{display:inline-block;font-size:10px;border-radius:999px;padding:1px 7px;margin-left:4px;background:var(--warn-soft);color:var(--warn);vertical-align:1px}
+  .ctx{padding:8px 12px;border-bottom:1px solid var(--line);font-size:12px}
+  .ctx b{font-family:var(--serif)}
+  .segs{display:flex;gap:4px;padding:8px 12px 0;font-size:12px}
+  .segs button{border:1px solid var(--line);background:#fff;border-radius:6px;padding:4px 9px;cursor:pointer;color:var(--mut)}
+  .segs button[aria-selected="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);font-weight:600}
+  .pane{padding:10px 12px;overflow:auto}
+  .ev{border:1px solid var(--line);border-radius:8px;background:#fff;margin-bottom:8px;overflow:hidden}
+  .ev .hd{display:flex;align-items:center;gap:6px;padding:7px 9px;border-bottom:1px solid var(--line)}
+  .ev .req{flex:1;font-size:12px;font-weight:600}
+  .st{font-size:10px;border-radius:999px;padding:1px 8px;flex:none}
+  .st.covered{background:var(--ok-soft);color:var(--ok)}
+  .st.thin{background:var(--warn-soft);color:var(--warn)}
+  .st.todo{background:#EFE9DC;color:var(--mut)}
+  .st.none{background:var(--err-soft);color:var(--err)}
+  .ev .bd{padding:6px 9px;font-size:11.5px;color:var(--mut)}
+  .ev .src{margin-top:3px}
+  .ev .src i{font-style:normal;background:var(--ok-soft);color:var(--ok);border-radius:4px;padding:0 5px;font-size:10.5px}
+  .ev .src em{font-style:normal;color:var(--err);font-size:10.5px}
+  .lnk{color:var(--accent);cursor:pointer;text-decoration:underline;font-size:11px}
+  .grp{margin:10px 0 6px;font-size:12px;font-weight:700;display:flex;align-items:center;gap:8px}
+  .grp .n{color:var(--mut);font-weight:400;font-size:11px}
+  .ch{border:1px solid var(--line);border-radius:8px;background:#fff;margin-bottom:8px}
+  .ch.current{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),0 2px 6px rgba(194,65,12,.12)}
+  .ch.current .wh::before{content:"▶ ";color:var(--accent);font-size:10px}
+  .ch .hd{display:flex;gap:6px;align-items:center;padding:7px 9px;cursor:pointer}
+  .ch .wh{flex:1;font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .lv{font-size:10px;border-radius:4px;padding:1px 6px;flex:none}
+  .lv.normal{background:#EFE9DC;color:var(--mut)}
+  .lv.important{background:var(--warn-soft);color:var(--warn)}
+  .lv.conflict{background:var(--err-soft);color:var(--err)}
+  .ch .bd{border-top:1px solid var(--line);padding:8px 9px}
+  .cmp .before{background:var(--err-soft);border-radius:5px;padding:5px 7px;margin:3px 0;font-size:11.5px}
+  .cmp .after{background:var(--ok-soft);border-radius:5px;padding:5px 7px;margin:3px 0;font-size:11.5px}
+  .why{font-size:11px;color:var(--mut);margin:6px 0}
+  .why b{color:var(--ink);font-weight:600}
+  .ops{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .b{border-radius:6px;padding:4px 11px;font-size:11.5px;cursor:pointer;border:1px solid var(--line);background:#fff;color:var(--ink)}
+  .b.pri{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+  .b.ghost{border:none;background:none;color:var(--mut);text-decoration:underline;padding:4px 4px}
+  .b:disabled{opacity:.5;cursor:not-allowed}
+  .reject-reasons{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px}
+  .reject-reasons .chip{border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:10.5px;color:var(--mut);cursor:pointer;background:#fff}
+  .pending-badge{background:var(--warn-soft);color:var(--warn);border-radius:999px;font-size:10px;padding:1px 7px}
+  .footbar{border-top:1px solid var(--line);padding:8px 12px;display:flex;gap:8px;align-items:center}
+  .footbar .sp{flex:1}
+  .progress{font-size:11px;color:var(--mut)}
+</style>
+</head>
+<body>
+<div class="frame">
+  <div class="paper">
+    <h2>凌浩翔</h2>
+    <div class="p">138****0000 · ling@example.com</div>
+    <div class="p" style="font-weight:700;margin-top:10px">工作经历</div>
+    <div class="p mark">负责推荐系统重构：将召回层延迟从 800ms 降至 210ms，搭建 AB 实验平台覆盖全链路……（当前正在审阅的段落，编辑器内为 Highlight 着色不落盘）</div>
+    <div class="p" style="font-weight:700;margin-top:10px">项目经历</div>
+    <div class="p">推荐系统重构（2023-2024）……</div>
+    <div class="p">数据管道重设计（2022）……</div>
+    <div class="p" style="font-weight:700;margin-top:10px">专业技能</div>
+    <div class="p">Go / Python / Spark / 推荐算法…</div>
+  </div>
+
+  <div class="side">
+    <div class="tabs" role="tablist">
+      <button>区域</button>
+      <button>AI 助手</button>
+      <button aria-selected="true">审阅<span class="badge">4 待处理</span></button>
+      <button>排版</button>
+    </div>
+    <div class="ctx"><b>示例科技 · 推荐算法工程师</b><br><span style="color:var(--mut);font-size:11px">草稿 v3 · 生成于 14:20 · 待处理 4 / 共 9 条建议 · 简历已覆盖 3 · 素材有据未表达 1 · 待补充 1</span></div>
+    <div class="segs">
+      <button aria-selected="false">要求与证据</button>
+      <button aria-selected="true">修改清单</button>
+      <button aria-selected="false">导出检查</button>
+    </div>
+
+    <div class="pane">
+      <!-- 修改清单段：按项目分组 -->
+      <div class="grp">推荐系统重构 <span class="n">2 条普通表达</span> <button class="b" style="margin-left:auto">按项目接受</button></div>
+      <div class="ch current">
+        <div class="hd"><span class="wh">改写：工作经历·召回层表述</span><span class="lv normal">表达</span><span style="font-size:9.5px;color:var(--accent);border:1px solid var(--accent);border-radius:999px;padding:0 6px;flex:none">当前项</span></div>
+        <div class="bd">
+          <div class="cmp">
+            <div class="before">负责推荐系统重构，召回层 P99 延迟从 800ms 降至 210ms</div>
+            <div class="after">负责推荐系统重构：召回层 P99 延迟 800ms→210ms，支撑算法效果目标（纯表达精简，数字与事实归属不变）</div>
+          </div>
+          <div class="why">为什么：对齐 JD「算法效果优化」重点 ｜ <b>事实依据</b>：素材「推荐系统重构」·指标（已确认）<br><span class="lnk">查看当前正文与来源详情</span></div>
+          <div class="ops">
+            <button class="b pri">接受</button>
+            <button class="b">跳过</button>
+            <button class="b" disabled title="生成中不可接受">对比中…</button>
+            <span style="flex:1"></span>
+            <span class="lnk">📍定位</span>
+          </div>
+        </div>
+      </div>
+      <div class="ch">
+        <div class="hd"><span class="wh">精简：项目经历·数据管道</span><span class="lv normal">表达</span></div>
+      </div>
+
+      <div class="grp">需要逐条处理 <span class="n">隐藏 / 改变原意 / 事实冲突</span></div>
+      <div class="ch">
+        <div class="hd"><span class="wh">隐藏：早期外包经历</span><span class="lv important">隐藏经历</span></div>
+        <div class="bd">
+          <div class="why">为什么：与本次重点（算法效果）相关度低 ｜ 依据：要求卡「不希望强调」</div>
+          <div class="ops"><button class="b pri">隐藏</button><button class="b">保留</button></div>
+        </div>
+      </div>
+      <div class="ch">
+        <div class="hd"><span class="wh">改写：项目甲量化描述</span><span class="lv conflict">事实冲突</span></div>
+        <div class="bd">
+          <div class="why">⚠ 改写引入原文没有的数字（210ms→190ms）——需核对来源后处理；<b>未解决前不能导出</b></div>
+          <div class="ops"><button class="b pri">去核对</button><button class="b">跳过</button></div>
+          <div class="reject-reasons"><span style="font-size:10.5px;color:var(--mut)">拒绝原因（可选）：</span><span class="chip">改变原意</span><span class="chip">太空泛</span><span class="chip">过度夸大</span><span class="chip">不符合我的表达</span></div>
+        </div>
+      </div>
+
+      <div class="grp">待比较 <span class="n">生成期间正文有修改</span></div>
+      <div class="ch" style="border-style:dashed">
+        <div class="hd"><span class="wh">改写：技能区排序建议</span><span class="pending-badge">需重新核对</span></div>
+        <div class="bd"><div class="why">你在这条建议生成后又编辑了该段落。接受前请对比当前正文。<br><span class="lnk">对比当前正文</span></div></div>
+      </div>
+    </div>
+
+    <div class="footbar">
+      <button class="b">‹ 上一条</button>
+      <button class="b pri">下一条 ›</button>
+      <span class="sp"></span>
+      <span class="progress">仅重点 / 仅本次变化 · j/k 切换 · 位置自动恢复</span>
+    </div>
+  </div>
+</div>
+</body>
+</html>

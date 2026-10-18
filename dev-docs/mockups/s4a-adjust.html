@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>S4a 原型 · 首页状态条口径 + 区域面板调整</title>
+<style>
+  :root{--bg:#F6F1E7;--panel:#FFFCF5;--ed-bg:#F0EBE2;--ink:#26221C;--mut:#6E675C;--line:#E2D9C8;--ed-line:#DED3C0;--accent:#C2410C;--accent-ink:#FFF7ED;--accent-soft:#FBE9D8;--ok:#2F6B4F;--ok-soft:#E4EFE6;--warn:#A25711;--warn-soft:#FBEEDC;--serif:"Songti SC","Noto Serif CJK SC",Georgia,serif;--sans:"PingFang SC",-apple-system,sans-serif}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 var(--sans);padding:24px}
+  h1{font-family:var(--serif);font-size:20px;margin:0 0 14px}
+  h1 small{font-family:var(--sans);font-size:12px;color:var(--mut);font-weight:400;margin-left:10px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:22px}
+  .panel h2{font-size:14px;margin:0 0 10px;font-family:var(--serif)}
+  .status{display:flex;gap:8px;flex-wrap:wrap;font-size:12.5px;align-items:center}
+  .status .s{border-radius:999px;padding:2px 11px;background:#fff;border:1px solid var(--line)}
+  .status .s.warn{background:var(--warn-soft);border-color:var(--warn);color:var(--warn)}
+  .status .s.ok{background:var(--ok-soft);border-color:var(--ok);color:var(--ok)}
+  .diff{margin-top:10px;font-size:12px;color:var(--mut)}
+  .diff .bad{color:var(--err);text-decoration:line-through}
+  .diff .good{color:var(--ok)}
+  .doc-card{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:8px;background:#fff;padding:10px 12px;margin-top:10px}
+  .doc-card .nm{font-weight:700;font-family:var(--serif)}
+  .doc-card .who{color:var(--mut);font-size:12px}
+  .doc-card .next{margin-left:auto;font-size:12px;color:var(--accent);font-weight:600}
+  .badge{font-size:10px;border-radius:999px;padding:1px 7px}
+  .badge.warn{background:var(--warn-soft);color:var(--warn)}
+  .badge.ok{background:var(--ok-soft);color:var(--ok)}
+  /* 区域面板（编辑器右栏局部） */
+  .zone{background:var(--panel);border:1px solid var(--ed-line);border-radius:10px;width:330px;font-size:12px}
+  .zone .tabs{display:flex;gap:2px;border-bottom:1px solid var(--ed-line);padding:8px 8px 0}
+  .zone .tabs button{flex:1;min-height:30px;border:none;background:transparent;font-size:12px;font-weight:600;color:var(--mut);cursor:pointer;border-radius:7px 7px 0 0}
+  .zone .tabs button[aria-selected="true"]{color:var(--accent);box-shadow:inset 0 -2px 0 var(--accent)}
+  .zone .body{padding:10px 12px}
+  .zhead{display:flex;align-items:center;gap:6px;margin-bottom:8px}
+  .zhead .n{color:var(--warn);font-weight:600}
+  .zrow{display:flex;align-items:center;gap:6px;padding:5px 0;border-top:1px solid var(--ed-line)}
+  .zrow .dot{width:10px;height:10px;border-radius:3px;flex:none;border:1px solid var(--ed-line)}
+  .zrow .nm{flex:1}
+  .zrow .c{font-size:10px;color:var(--mut)}
+  .zrow .c.w{color:var(--warn)}
+  .zrow[aria-expanded="true"]{background:var(--ed-bg);margin:0 -6px;padding:5px 6px;border-radius:6px}
+  .zempty{color:var(--mut);font-size:11px;padding:3px 0 3px 16px}
+  .confirm-bar{display:flex;gap:6px;margin-top:8px;align-items:center}
+  .confirm-bar .b{border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer;border:1px solid var(--ed-line);background:#fff;color:var(--ink)}
+  .confirm-bar .b.pri{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+  .confirm-bar .note{font-size:10.5px;color:var(--mut)}
+  .picker{border:1px dashed var(--accent);border-radius:8px;padding:8px 10px;margin-top:8px;background:var(--accent-soft)}
+  .picker .p-h{font-size:11.5px;margin-bottom:5px}
+  .picker .ops{display:flex;gap:5px;flex-wrap:wrap}
+  .picker .ops button{border-radius:6px;padding:2px 9px;font-size:11px;border:1px solid var(--ed-line);background:#fff;cursor:pointer}
+  .picker .foot-ops{margin-top:6px;display:flex;gap:8px;font-size:11px;color:var(--mut)}
+  .picker .foot-ops .esc{margin-left:auto}
+  .gen-note{background:var(--warn-soft);border-radius:6px;padding:5px 9px;font-size:11px;color:var(--warn);margin-bottom:8px}
+</style>
+</head>
+<body>
+
+  <h1>首页调整 <small>F1 修复后：摘要与卡片同判断、同分母</small></h1>
+  <div class="panel">
+    <h2>状态摘要（PDF 口径修正）</h2>
+    <div class="status">
+      <span class="s warn">⚠ 1 份待结构化</span>
+      <span class="s">⏰ 1 份逾期/近期面试</span>
+      <span class="s">📑 PDF 1/3 已同步 · 2 较旧（单 chip，撤重复行）</span>
+    </div>
+    <div class="diff">
+      <span class="bad">v1.2 旧：📑 PDF 3/3 同步（存在数冒充同步数）+ 独立"🔄 2 份较旧"行重复呈现</span><br>
+      <span class="good">新：📑 PDF 1/3 已同步（fresh 数 / 同一文档集合；全同步时显示"PDF 全部同步"；归档视图分母随之）</span>
+    </div>
+    <div class="doc-card">
+      <div><div class="nm">示例科技 · 推荐算法工程师</div><div class="who">岗位草稿 · v3 · 快照 12</div></div>
+      <span class="badge warn">审阅中 · 4 条待处理</span>
+      <span class="next">继续审阅 →</span>
+    </div>
+    <div class="doc-card">
+      <div><div class="nm">凌浩翔</div><div class="who">母版 · 快照 21</div></div>
+      <span class="badge warn">PDF 较旧</span>
+      <span class="next" style="color:var(--mut)">继续编辑</span>
+    </div>
+  </div>
+
+  <h1>区域面板调整 <small>D5 文案/空态 + F2 确认流</small></h1>
+  <div class="panel" style="background:var(--ed-bg)">
+    <div class="zone">
+      <div class="tabs"><button aria-selected="true">区域</button><button>AI 助手</button><button>审阅</button><button>排版</button></div>
+      <div class="body">
+        <div class="gen-note">本次生成涉及「工作」「项目」区域的 5 个未确认分类段落——建议先确认（仅本次范围，不要求处理全文）</div>
+        <div class="zhead"><span class="n">待确认分类 38 段</span><span style="font-size:11px;color:var(--mut)">（原"待绑定"）</span></div>
+        <div class="zrow"><span class="dot" style="background:hsla(28,80%,55%,.4)"></span><span class="nm">个人</span><span class="c w">⚠2</span></div>
+        <div class="zrow" aria-expanded="true"><span class="dot" style="background:hsla(210,70%,55%,.4)"></span><span class="nm">工作</span><span class="c w">⚠8</span></div>
+        <div style="padding:2px 0 2px 16px;font-size:11px;color:var(--mut)">
+          <div>▪ 段落：负责推荐系统重构… <span style="color:var(--accent)">建议：工作</span> <input type="checkbox" checked></div>
+          <div>▪ 段落：搭建 AB 实验平台… <span style="color:var(--accent)">建议：工作</span> <input type="checkbox" checked></div>
+        </div>
+        <div class="confirm-bar"><button class="b pri">确认所选（2）</button><span class="note">批量确认是明确动作，不静默批准全文</span></div>
+        <div class="zrow"><span class="dot" style="background:hsla(262,55%,55%,.4)"></span><span class="nm">项目</span><span class="c w">⚠20</span></div>
+        <div class="zrow"><span class="dot" style="background:hsla(160,60%,45%,.4)"></span><span class="nm">技能</span><span class="c w">⚠6</span></div>
+        <div class="zrow"><span class="dot" style="background:hsla(45,85%,55%,.4)"></span><span class="nm">获奖</span><span class="c">—</span></div>
+        <div class="zempty">该区域暂无内容——在正文添加相关段落后会自动进入待确认</div>
+      </div>
+    </div>
+
+    <div class="zone" style="margin-top:14px">
+      <div class="body">
+        <div class="zhead"><span class="n">逐段确认弹窗（F2 后）</span></div>
+        <div class="picker">
+          <div class="p-h">段落：「主导召回层重构，P99 延迟 800ms→210ms…」</div>
+          <div class="ops"><button>个人</button><button style="border-color:var(--accent);color:var(--accent)">工作 ✓建议</button><button>项目</button><button>技能</button><button>…</button></div>
+          <div class="foot-ops">
+            <span>「跳过本段」→ 按 zid 游标推进（队列动态重排，被确认/删除则顺移）</span>
+            <span class="esc">Esc / 取消 = 关闭 · 焦点返回触发元素 · 焦点圈定弹窗内</span>
+          </div>
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:var(--mut);border-top:1px dashed var(--ed-line);padding-top:6px">
+          队列结束（v1.1）：全部跳过/看完 → <b>本轮结束，不自动回绕</b>——提示「本轮已看完（N 段仍待确认分类）」；
+          <button class="b" style="font-size:10.5px;padding:1px 8px">重新查看待确认</button>（用户主动重启，从头开始）
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
