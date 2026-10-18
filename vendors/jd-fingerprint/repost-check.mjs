@@ -64,3 +64,27 @@ export function findDupHints(jdText, records, opts = {}) {
   }
   return hints;
 }
+
+/**
+ * dupHints → todo 条目（纯函数，与 findDupHints 同文件，保证渲染层可被测试直接导入）。
+ * 文案口径（2026-10-18 审查 🔴 问题 1）：只按 kind 的原始来源说话，从不把草稿说成已投递。
+ *   kind='draft' → 建过草稿；kind='app' → 已投递（带 status）；byLink=true → 同一链接（额外标注来源）。
+ */
+export function fpTodo(dupHints) {
+  if (!dupHints || !dupHints.length) return [];
+  // 按相似度降序：slice(0,3) 取最高的 3 条。原实现取 [0]（输入顺序第一条），多条命中时向低报。
+  const ranked = dupHints.slice().sort((a, b) => b.score - a.score);
+  const top = ranked.slice(0, 3).map((h) => {
+    // status 已是「已投递」时不重复拼接 —— /app/add 的默认 status 就是「已投递」，
+    // 直接拼会输出「已投递·已投递」（2026-10-18 端到端实测确认）。
+    const what = h.kind === 'app' ? '已投递' + (h.status && h.status !== '已投递' ? '·' + h.status : '') : '建过草稿';
+    return `${h.label}（${String(h.dateStr).slice(0, 10)} ${h.byLink ? '同一链接·' + what : what}${h.repost ? '，疑似重发' : ''}）`;
+  }).join('；');
+  // 百分比只对「真的比过指纹」的命中负责：纯 link 命中的 score 是退化值 1，不是相似度，
+  // 写进文案等于谎称指纹命中（2026-10-18 端到端实测：历史 app 记录 jd 为空仍显示 100%）。
+  const fpScores = ranked.filter((h) => !h.byLink).map((h) => h.score);
+  const why = fpScores.length
+    ? 'JD 内容指纹命中历史记录（最高相似度 ' + Math.round(Math.max(...fpScores) * 100) + '%），请确认是否仍要适配'
+    : '相同 JD 链接命中历史记录，请确认是否仍要适配';
+  return [{ section: '岗位信息', question: '疑似重复职位：' + top, why, resolved: false }];
+}

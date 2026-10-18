@@ -104,9 +104,9 @@ const saveApps = (apps) => writeJson('apps', apps);
 async function computeFpGuard(jd, jdLink, company, metaAll) {
   try {
     const { fingerprintText } = await import('./vendors/jd-fingerprint/fingerprint-core.mjs');
-    const { findDupHints } = await import('./vendors/jd-fingerprint/repost-check.mjs');
+    const { findDupHints, fpTodo } = await import('./vendors/jd-fingerprint/repost-check.mjs');
     const jdFp = fingerprintText(jd || '');
-    if (!jdFp) return { jdFp: '', dupHints: [] };   // 新 JD 不可指纹 → 静默零提醒
+    if (!jdFp) return { jdFp: '', dupHints: [], todos: [] };   // 新 JD 不可指纹 → 静默零提醒
     const records = [];
     for (const [k, m] of Object.entries(metaAll)) {
       if (!m || m.kind !== 'job') continue;
@@ -117,24 +117,12 @@ async function computeFpGuard(jd, jdLink, company, metaAll) {
       if (!a || (!a.jd && !a.link)) continue;
       records.push({ jd: a.jd || '', company: a.company, dateStr: a.appliedAt || a.createdAt || '', kind: 'app', label: `${a.company || ''}·${a.role || ''}`, link: a.link || '', status: a.status });
     }
-    return { jdFp, dupHints: findDupHints(jd, records, { newCompany: company, newLink: jdLink || '' }) };
-  } catch (e) { console.error('[fp-guard] 降级跳过:', e && e.message); return { jdFp: '', dupHints: [] }; }
+    // todo 与 dupHints 同源同 try：vendors 模块损坏时两者一起降级，绝不产出半截提醒。
+    const dupHints = findDupHints(jd, records, { newCompany: company, newLink: jdLink || '' });
+    return { jdFp, dupHints, todos: fpTodo(dupHints) };
+  } catch (e) { console.error('[fp-guard] 降级跳过:', e && e.message); return { jdFp: '', dupHints: [], todos: [] }; }
 }
 
-// 指纹提醒 → todo 条目（模式同 jdError todo）
-// 文案口径（2026-10-18 审查 🔴 问题 1）：只按 kind 的原始来源说话，从不把草稿说成已投递。
-//   kind='draft' → 建过草稿；kind='app' → 已投递（带 status）；byLink=true → 同一链接（额外标注来源）。
-function fpTodo(dupHints) {
-  if (!dupHints || !dupHints.length) return [];
-  // 按相似度降序：slice(0,3) 取最高的 3 条，why 的百分比取真正最大值——
-  // 原实现取 [0]（输入顺序第一条），多条命中时会系统性向低报，掩盖分数最高的那条（审查 🟡 问题 2）。
-  const ranked = dupHints.slice().sort((a, b) => b.score - a.score);
-  const top = ranked.slice(0, 3).map((h) => {
-    const what = h.kind === 'app' ? '已投递' + (h.status ? '·' + h.status : '') : '建过草稿';
-    return `${h.label}（${String(h.dateStr).slice(0, 10)} ${h.byLink ? '同一链接·' + what : what}${h.repost ? '，疑似重发' : ''}）`;
-  }).join('；');
-  return [{ section: '岗位信息', question: '疑似重复职位：' + top, why: 'JD 内容指纹命中历史记录（最高相似度 ' + Math.round(ranked[0].score * 100) + '%），请确认是否仍要适配', resolved: false }];
-}
 const corruptBanner = () => corrupt.size
   ? `<div class="card" style="border-color:var(--err-soft);background:var(--err-soft);color:var(--err)"><b>⚠️ 检测到数据文件损坏，相关写入已停止：</b>${[...corrupt].map((k) => JSON_FILES[k]).join('、')} —— 请先在设置页用备份恢复，或人工修复 JSON 后刷新。</div>`
   : '';
@@ -1142,21 +1130,35 @@ function readMetaSnapshotAt(f) {
 // ===== /save 剥离归一链（HTML 路径与 JSON 协议共用，抽出保持两路径字节同口径）=====
 // 注释对剥离必须与 serve 注入对称（注入 `\nPAIR\n`、剥离归 ''）：save(serve(D)) === D 逐字节成立。
 // 若剥离归 '\n'，每次保存净增 3 个换行（S2-T2 块 6c 冻结件不变性断言实测抓到的漂移），绝不可回改。
+// 注入注释对的闭标记缺失时不做剥离（本来也剥不掉），且开标记出现多次时同样跳过：
+// 两者都是 [\s\S]*? 的回溯放大形状——每个开标记起点都要扫到文末找闭标记，O(开标记数 × 正文长度)。
+// 真实正文里每个注入对至多 1 个（server 幂等注入 + 保存即剥离），>2 个必是病态/攻击形状。
+const INJECT_KINDS = ['AI', 'SHELL', 'JOB', 'ZONE'];
+function stripInjectCommentPair(s, kind) {
+  const open = '<!--' + kind + '-INJECT-->';
+  const close = '<!--/' + kind + '-INJECT-->';
+  let n = 0, i = s.indexOf(open);
+  while (i !== -1) { if (++n > 2) return s; i = s.indexOf(open, i + open.length); }
+  if (n === 0 || s.indexOf(close) === -1) return s;
+  return s.replace(new RegExp('\\n?' + open + '[\\s\\S]*?' + close + '\\n?', 'g'), '');
+}
 function stripInjections(html) {
-  return String(html)
-    .replace(/\n?<!--AI-INJECT-->[\s\S]*?<!--\/AI-INJECT-->\n?/g, '')
-    .replace(/\n?<!--SHELL-INJECT-->[\s\S]*?<!--\/SHELL-INJECT-->\n?/g, '')
-    .replace(/\n?<!--JOB-INJECT-->[\s\S]*?<!--\/JOB-INJECT-->\n?/g, '')
-    .replace(/\n?<!--ZONE-INJECT-->[\s\S]*?<!--\/ZONE-INJECT-->\n?/g, '')
-    // 运行时面板样式（head 中，不在注释对里）也要剥离
-    .replace(/<style[^>]*data-ai-panel[^>]*>[\s\S]*?<\/style>/g, '')
-    .replace(/<style[^>]*data-ed-shell[^>]*>[\s\S]*?<\/style>/g, '')
-    .replace(/<style[^>]*data-job-panel[^>]*>[\s\S]*?<\/style>/g, '')
+  let s = String(html);
+  for (const kind of INJECT_KINDS) s = stripInjectCommentPair(s, kind);
+  return s
+    // 运行时面板样式（head 中，不在注释对里）也要剥离。
+    // 属性扫描必须定量（[^>]{0,400}）而非 [^>]*：无界 [^>]* 在「目标属性名缺席 + 全文无 '>'」的正文上
+    // 每个起点回扫到文末，O(<style 出现次数 × 正文长度) —— 实测 0.13MB body 卡死 8.2s，
+    // 按 body 上限 10MB 外推可达数小时，且这些 replace 是同步的 → 整个事件循环冻结、全部端点不可用。
+    // 400 字符远大于注入侧实际属性长度（data-ai-panel / data-ed-shell / class="zp-modal" 等），语义不变。
+    .replace(/<style(?=[^>]{0,400}data-ai-panel)[^>]*>[\s\S]*?<\/style>/g, '')
+    .replace(/<style(?=[^>]{0,400}data-ed-shell)[^>]*>[\s\S]*?<\/style>/g, '')
+    .replace(/<style(?=[^>]{0,400}data-job-panel)[^>]*>[\s\S]*?<\/style>/g, '')
     // 区域面板运行时样式（data-zone-panel）与弹窗标记同款剥离，与注入对称
-    .replace(/<style[^>]*data-zone-panel[^>]*>[\s\S]*?<\/style>/g, '')
+    .replace(/<style(?=[^>]{0,400}data-zone-panel)[^>]*>[\s\S]*?<\/style>/g, '')
     // 改绑弹窗挂 body 末尾（fixed 遮罩不受窄屏浮层祖先影响）；旧文档内联 doSave 预清理选择器无 data-zone-panel，服务端兜底剥整元素。
     // 双锚 class+data-zone-panel：面板创建恒先 className 后 setAttribute（序列化顺序确定），与全链按运行时标记锚定的纪律一致，防误删用户手写同形状 div
-    .replace(/<div[^>]*class="zp-modal"[^>]*data-zone-panel[^>]*>[\s\S]*?<\/div>\s*<\/div>(?=\s*<\/body>)/g, '')
+    .replace(/<div(?=[^>]{0,400}class="zp-modal"[^>]{0,400}data-zone-panel)[^>]*>[\s\S]*?<\/div>\s*<\/div>(?=\s*<\/body>)/g, '')
     // body class 归一化（S2-T5，设计 §6.2）：只删编辑器瞬态项，其余属性与内容原样保留。
     // ed-focus 是注入层加的聚焦态，旧文档 doSave 的内联清理选择器不认它 → 服务端兜底。
     // 幂等：无 class 的 <body> 原样返回；save(serve(D)) === D 的字节稳定性不受影响。
@@ -1517,7 +1519,7 @@ async function handler(req, res) {
             .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 4000);
         } catch (e) { jdError = String(e.message || e); }
       }
-      const { jdFp, dupHints } = await computeFpGuard(jd, jdLink, company, metaAll);
+      const { jdFp, dupHints, todos } = await computeFpGuard(jd, jdLink, company, metaAll);
       const nowIso = new Date().toISOString();
       // meta 唯一写入者 updateMeta：只写目标文档 to（不整表覆盖，避免踩并发更新）；状态维度 kind/flow/archivedAt（job.status 不再写，单源 flow）
       updateMeta(root, to, () => ({
@@ -1530,7 +1532,7 @@ async function handler(req, res) {
           sourceSnap: srcSnap, sourceHash: contentHash(srcHtml),
           materials: Array.isArray(body.materials) ? body.materials.filter((x) => typeof x === 'string') : [],
           brief: nb.brief, jdFp,   // S4a-T5 要求卡（渐进默认：无 brief 时字段全默认）
-          changes: [], todos: [...(jdError ? [{ section: '岗位信息', question: 'JD 链接读取失败（' + jdError + '），请粘贴 JD 文本', why: '岗位匹配分析需要 JD', resolved: false }] : []), ...fpTodo(dupHints)],
+          changes: [], todos: [...(jdError ? [{ section: '岗位信息', question: 'JD 链接读取失败（' + jdError + '），请粘贴 JD 文本', why: '岗位匹配分析需要 JD', resolved: false }] : []), ...todos],
           generatedAt: null, deliveredAt: null
         }
       }));
@@ -1562,13 +1564,13 @@ async function handler(req, res) {
       // 护栏必须在 atomicWrite 之前算完：它含一次动态 import + 全量指纹计算（最坏数百 ms 的同步计算），
       // 夹在 atomicWrite 与 updateMeta 之间会把两者原本「紧邻、崩溃窗口为零」的配对撑开一个 await 窗口，
       // 中途被杀会留下有 doc 无 meta 的孤儿文件（2026-10-18 审查 ⚪ 问题 8）。
-      const { jdFp, dupHints } = await computeFpGuard(body.jd, '', body.company.trim(), metaAll);
+      const { jdFp, dupHints, todos } = await computeFpGuard(body.jd, '', body.company.trim(), metaAll);
       atomicWrite(docPath(to), normVer.html);
       updateMeta(root, to, () => ({ parent: body.from, company: body.company.trim(), role: body.role.trim(), jd: typeof body.jd === 'string' ? body.jd : '',
         createdAt: new Date().toISOString(), tag: (body.company.trim() + '·' + body.role.trim()).slice(0, 20),
         typo: normVer.typo, theme: srcMeta.theme || normVer.theme || null, styleHash: normVer.styleHash, rev: 1,
         kind: 'job', flow: 'draft', archivedAt: null,
-        job: { sourceSnap: srcSnap, sourceHash: contentHash(srcHtml), jdFp, materials: [], changes: [], todos: fpTodo(dupHints), generatedAt: null, deliveredAt: null } }));
+        job: { sourceSnap: srcSnap, sourceHash: contentHash(srcHtml), jdFp, materials: [], changes: [], todos, generatedAt: null, deliveredAt: null } }));
       return redirect(`/edit?id=${to}`);
     }
     // 岗位修改清单读/写（状态持久化；应用动作由前端 DOM 执行后回写状态）

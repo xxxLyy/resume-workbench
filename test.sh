@@ -205,6 +205,32 @@ curl -sf "$B/" | grep -q "/edit?id=$DOCID" || fail '新文档未出现在首页�
 curl -sf "$B/" | grep -q 'class="card doc-card"' || fail '首页缺文档卡片'
 echo "✅ 新建文档与编辑器注入幂等（${DOCID}）"
 
+# 安全回归（2026-10-18 蓝军审查 R1）：/save 的 stripInjections 回溯放大。
+# 病态正文 = 大量未闭合的注入开标记（真实正文每个至多 1 个）。修复前 [\s\S]*? 与无界 [^>]* 会
+# 从每个起点回扫到文末：40k 标记 / 0.64MB 即 5.40s，且这些 replace 是同步的 → 整个事件循环冻结，
+# 全部端点（含只读）一起挂起；并发 GET 延迟同步升到 5.41s。按 body 上限 10MB 外推可达数分钟。
+# 修复后同 payload = 0.08s，并发 GET max 0.09s（属性扫描改定量前瞻 + 注入注释对数量上限）。
+# 用独立一次性文档：病态正文会整篇覆盖文件，复用 $DOCID 会毁掉下游用例依赖的模板正文。
+RD_ID=$(curl -s -X POST "$B/new" -o /dev/null -w '%{redirect_url}' | sed 's/.*id=//')
+[ -n "$RD_ID" ] && [ "$RD_ID" != "$DOCID" ] || fail 'ReDoS 用例未拿到独立文档'
+python3 -c "import sys;sys.stdout.write('<html><body>'+('<!--AI-INJECT-->'*100000)+'<p>ok</p></body></html>')" > "$TEST_DIR/redos.html"
+RD_T0=$(date +%s)
+RD_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X POST --data-binary "@$TEST_DIR/redos.html" \
+  -H 'Content-Type: text/html; charset=utf-8' "$B/save?id=$RD_ID&force=1")
+RD_T1=$(date +%s)
+RD_EL=$((RD_T1 - RD_T0))
+[ "$RD_CODE" = "200" ] || fail "病态 /save 未返回 200（$RD_CODE）"
+[ "$RD_EL" -lt 6 ] || fail "stripInjections 回溯放大未修复：10 万未闭合标记耗时 ${RD_EL}s（阈值 6s）"
+curl -sf --max-time 5 "$B/" -o /dev/null || fail '病态保存后服务无响应（事件循环被冻结）'
+printf '%s' '<html><body><h1>after-redos</h1><p>normal</p></body></html>' > "$TEST_DIR/normal.html"
+curl -sf --max-time 10 -X POST --data-binary "@$TEST_DIR/normal.html" -H 'Content-Type: text/html; charset=utf-8' \
+  "$B/save?id=$RD_ID&force=1" -o /dev/null || fail '病态保存后正常保存失败'
+grep -q 'after-redos' "$RESUME_ROOT/docs/$RD_ID.html" || fail '正常保存未落盘'
+curl -s -X POST "$B/delete?id=$RD_ID" -o /dev/null || fail 'ReDoS 临时文档未清理'
+[ ! -f "$RESUME_ROOT/docs/$RD_ID.html" ] || fail 'ReDoS 临时文档仍在（污染后续用例）'
+grep -q 'contenteditable' <(curl -sf "$B/edit?id=$DOCID") || fail '主文档 $DOCID 被本次用例破坏'
+echo "✅ stripInjections 回溯放大已修复（10 万未闭合标记 ${RD_EL}s < 6s，服务未冻结）"
+
 # S2-T3: 首页结构（hero / 一行状态摘要 / 折叠岗位表单 / 继续上次任务）
 # 放在文档创建之后：无文档时 hero 渲染「新建第一份简历」空态，continueBtn/data-doc-ids 不存在（回退链契约如此）
 HOME_HTML=$(curl -s "$B/")

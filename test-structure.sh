@@ -2224,7 +2224,13 @@ const ext = readFileSync('./extract.mjs', 'utf8');
 const zp = readFileSync('./zone-panel.js', 'utf8');
 const assert = (c, m) => { if (!c) { console.error('❌ S3-C ' + m); process.exit(1); } };
 const stripCount = (x) => (x.match(/ZONE-INJECT/g) || []).length;
-assert(stripCount(srv) >= 3, '/edit 注入 + /save 剥离 + 常量定义对称引用 ZONE-INJECT');
+// 剥离清单必须覆盖 ZONE（注入层内容随保存落盘 = handoff §5 纪律红线）。
+// 断言从「ZONE-INJECT 字面量出现 ≥3 次」改为「剥离清单含 ZONE 且走统一注释对函数」——
+// 2026-10-18 stripInjections 重构把 4 处重复 replace 收成 INJECT_KINDS 循环后，字面量降到 2 处，
+// 字面量计数对等价重构变红。原断言测的是写法不是行为；此处测行为（ZONE 必须被剥离）。
+assert(/INJECT_KINDS\s*=\s*\[[^\]]*'ZONE'/.test(srv), '/save 剥离清单含 ZONE（对称于 /edit 的 ZONE-INJECT 注入，防注入内容随保存落盘）');
+assert(srv.includes('stripInjectCommentPair'), '注入剥离走统一注释对函数');
+assert(stripCount(srv) >= 2, 'ZONE-INJECT 仍有对称引用（/edit 注入侧）');
 assert((srv.match(/data-zone-panel/g) || []).length >= 2, '/save 剥离 data-zone-panel 样式块（与注入对称）');
 assert(ext.includes('data-zone-panel'), 'extract CHROME_MARKERS 含 data-zone-panel（第二道防线）');
 assert(!/classList\.add\(['"]zone-/.test(zp), 'zone-panel 不给正文节点挂 zone class');
@@ -3024,4 +3030,45 @@ assert(h.length === 1, '同一天的 ISO 本地时间格式结果一致（两种
 h = findDupHints(jdA, [mk({ jd: jdA, link: URL, dateStr: '2020-01-01T00:00:00Z' })], { today, newLink: URL });
 assert(h.length === 1, 'link 精确命中不受 90 天窗口限制');
 console.log('✅ FP-10 深度审查修复回归（kind 保真 / repost 不丢失 / score 实测 / 时区不坍缩）');
+EOF
+# —— FP-11：2026-10-18 第二轮审查新增（渲染层 fpTodo：排序 + 两处文案谎报）——
+# fpTodo 已从 server.mjs 移入 repost-check.mjs 导出：server.mjs 顶层 tryListen(0)，
+# 导入即起服务，渲染层此前无法被任何断言覆盖 —— 本组是该层唯一的回归网。
+node --input-type=module << 'EOF'
+import { fpTodo } from './vendors/jd-fingerprint/repost-check.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ FP-11 ' + m); process.exit(1); } };
+const H = (o) => Object.assign({ kind: 'draft', byLink: false, label: '甲·岗', dateStr: '2026-10-01T00:00:00Z', score: 0.9, sameCompany: false, repost: false }, o);
+
+// 🟡 问题②（本轮修复但零断言）：按 score 降序，why 取真正最大值而非输入顺序第一条
+const r = fpTodo([
+  H({ label: '甲·低分', score: 0.9063 }),
+  H({ kind: 'app', label: '乙·高分', score: 1, status: '已约面', repost: true }),
+  H({ label: '丙·中分', score: 0.95 }),
+]);
+assert(r[0].question.indexOf('乙·高分') < r[0].question.indexOf('甲·低分'), `问题② 最高分那条必须排在最前（否则又向低报），实际：${r[0].question}`);
+assert(r[0].why.indexOf('100%') >= 0, `问题② why 必须报真实最大值 100%，实际：${r[0].why}`);
+
+// 🟡 第二轮新 bug 1：status 本身就是「已投递」时不得拼出「已投递·已投递」
+// （/app/add 的默认 status 就是「已投递」，实测输出过「同一链接·已投递·已投递」）
+let t = fpTodo([H({ kind: 'app', byLink: true, label: '乙·岗', score: 1, status: '已投递' })]);
+assert(t[0].question.indexOf('已投递·已投递') < 0, `已投递 不得重复出现，实际：${t[0].question}`);
+assert(t[0].question.indexOf('已投递）') > 0, `非默认 status 仍要带出来，实际：${t[0].question}`);
+t = fpTodo([H({ kind: 'app', label: '乙·岗', score: 1, status: '面试中' })]);
+assert(t[0].question.indexOf('已投递·面试中') > 0, `非默认 status 仍要带出来，实际：${t[0].question}`);
+
+// 🟡 第二轮新 bug 2：纯 link 命中（历史记录无 JD 文本）时 score 是退化值 1，
+// 写进文案等于谎称「指纹命中 100%」—— 实测过 jd 为空的 app 记录被这样报出来
+t = fpTodo([H({ kind: 'app', byLink: true, label: '乙·岗', score: 1 })]);
+assert(t[0].why.indexOf('指纹') < 0, `纯 link 命中不得谎称指纹命中，实际：${t[0].why}`);
+assert(t[0].why.indexOf('相同 JD 链接') >= 0, `纯 link 命中须说明命中原因，实际：${t[0].why}`);
+assert(t[0].why.indexOf('100%') < 0, `退化 score 不得当相似度报出，实际：${t[0].why}`);
+
+// 混合命中：百分比只对真比过指纹的那条负责，不得被 link 的退化 1 顶掉
+t = fpTodo([H({ byLink: true, label: '丙·仅链接', score: 1 }), H({ label: '甲·真指纹', score: 0.95 })]);
+assert(t[0].why.indexOf('95%') >= 0, `混合命中的百分比取指纹最大值 95%，实际：${t[0].why}`);
+assert(t[0].why.indexOf('100%') < 0, `link 的退化 score 不得污染百分比，实际：${t[0].why}`);
+
+// 空输入零提醒
+assert(fpTodo([]).length === 0 && fpTodo(null).length === 0, '空 dupHints → 无 todo');
+console.log('✅ FP-11 渲染层回归（排序取真最大值 / 不重复已投递 / 不谎称指纹命中）');
 EOF
