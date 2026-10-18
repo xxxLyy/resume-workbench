@@ -476,6 +476,13 @@ export function parseInterview(raw, ctx = {}) {
       if (!text) continue;
       const quote = typeof p.quote === 'string' ? p.quote.trim() : '';
       if (anchorRequired && (!anchorText || !quote || !normSpace(anchorText).includes(normSpace(quote)))) { dropped++; continue; }
+      // quote 太短等于没锚：二轮安全审查实测 quote:'负责'（段落里确实有）双护栏全过，
+      // 却与「主导过公司级战略并购与海外分拆上市」这种纯编造要点一同放行。
+      // 子串存在 ≠ 语义相关，正则判不了语义；但「至少引用一段有信息量的原文」是能判的。
+      // 门槛定 6 字：既有的 S4B-3 夹具用「负责存储层改造」（7 字）作合法锚定，
+      // 它指明了具体改造对象，是有效引用，丢弃它属误报；而「负责」「完成了」
+      // 这类 2–3 字动词短语不含任何被引内容，过不了这道门。6 字刚好分开这两类。
+      if (quote && [...normSpace(quote)].length < 6) { dropped++; continue; }
       points.push({ text, quote, anchored: !!(anchorText && quote), guard: 'normal' });
     }
 

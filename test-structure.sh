@@ -3234,3 +3234,24 @@ assert(caps >= 3, '三个写 jd 的入口都要截断（实得 ' + caps + ' 处�
 assert(!/jd: typeof body\.jd === 'string' \? body\.jd :/.test(srv), '不得再有裸传 body.jd 的入口');
 console.log('✅ S4B-12 /job/create JD 长度上限');
 EOF
+
+# —— S4B-13：quote 最小长度护栏（子串存在 ≠ 语义相关）——
+node --input-type=module << 'EOF'
+import { parseInterview, parseEvidence } from './evidence.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ S4B-13 ' + m); process.exit(1); } };
+const paras = [{ zid: 'za1111111', text: '负责存储层改造，QPS 从 300 提升到 5000，主导跨部门技术方案评审与容量规划落地' }];
+const ev = parseEvidence(JSON.stringify({ evidence: [{ req: '后端', refHints: [{ type: 'para', zid: 'za1111111', quote: '负责存储层改造' }] }] }), { gen: 1, mats: [], paras });
+const mk = (q) => JSON.stringify({ chains: [{ evIndex: 0, question: '如何做容量规划', answerPoints: [{ text: 'QPS 从 300 提升到 5000，覆盖存储层改造', quote: q }] }] });
+const REAL = '负责存储层改造，QPS 从 300 提升到 5000，主导跨部门技术方案评审与容量规划落地';
+// 短 quote（动词短语，无信息量）必须丢弃：二轮审查实测 quote:'负责' 双护栏全过却放过纯编造要点
+for (const q of ['负责', '完成了', '参与了', '存储改造']) {
+  assert(parseInterview(mk(q), { paras, evidence: ev }).chains[0].answerPoints.length === 0, `短 quote「${q}」（${[...q].length} 字）必须丢弃`);
+}
+// 真实引用（有指标/技术名/动作对象）必须保留
+assert(parseInterview(mk(REAL), { paras, evidence: ev }).chains[0].answerPoints.length === 1, '真实引用（>8 字）必须保留');
+assert(parseInterview(mk('QPS 从 300 提升到 5000'), { paras, evidence: ev }).chains[0].answerPoints.length === 1, '指标型引用必须保留');
+// generic 链无锚点要求，quote 为空时不受此限（否则会把所有 generic 要点全丢）
+const g = parseInterview(JSON.stringify({ generic: [{ question: '自我介绍', answerPoints: [{ text: '三段经历', quote: '' }] }] }), { paras, evidence: ev });
+assert(g.generic[0].answerPoints.length === 1, 'generic 链 quote 为空不受长度限制');
+console.log('✅ S4B-13 quote 最小长度护栏（短引用丢弃 / 真实引用保留 / generic 不受影响）');
+EOF

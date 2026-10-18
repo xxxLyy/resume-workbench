@@ -163,6 +163,13 @@ launchctl kickstart -k gui/$(id -u)/com.lhx.resume-server   # 重启常驻服务
 
 **一个审计陷阱（比 bug 更隐蔽）**：`editor-shell.js` 含 NUL 分隔符 → `grep` 静默跳过整个文件，任何 grep 式审计必须加 `-a`。同理：**改 `server.mjs` 里跨多行的长块时，python 脚本的 assert 失败会在写盘前中止**——如果脚本里有两处替换，第一处成功第二处失败，结果是**两处都没生效**（文件根本没写），而下一次改动又基于旧内容继续做，看起来"改了但没反应"。改完必须 `node --check` + 端到端实测，不能只看脚本退出码。
 
+**本轮判定为「不修」的两项（附理由，防下轮重复讨论）**：
+
+| 项 | 不修理由 |
+|---|---|
+| `GET /pdf` / `/export` 的 Origin 绕过 | CSRF 门的设计是「无 Origin = CLI 客户端放行」，测试脚本和 curl 都依赖它。加 `Sec-Fetch-Site` 挡跨站会**误伤合法场景**（用户从邮件/聊天里点「打开你的简历 PDF」链接 = 跨站导航到 localhost）。危害仅是任意网站可盲触发**幂等**渲染（同一正文渲染同一 PDF，不改数据），影响是资源消耗而非泄露。收益 < 误伤成本 |
+| `/ai/jd-text` 的 SSRF 原语 | **这本身就是功能**（粘贴 JD 链接抓取岗位描述）。CSRF 已挡死网页触发路径，剩下的只有「用户自己粘一个链接」——那正是功能预期行为。要「修」只能砍功能 |
+
 **未修（按优先级，等拍板）**：
 
 | # | 问题 | 位置 | 为什么没修 |
@@ -172,7 +179,7 @@ launchctl kickstart -k gui/$(id -u)/com.lhx.resume-server   # 重启常驻服务
 | 🟡 | `app.link` 未过滤 `javascript:` 协议 → 存储型 XSS | `server.mjs` 投递记录 | 修法是一行：写入时校验 `https?://` 开头。触发需用户自粘 `javascript:` URL，概率低但后果是简历外泄 |
 | ⚪ | `/job/create` 粘贴 JD 无长度上限（链接路径 cap 4000 字，粘贴路径无 cap） | `server.mjs:1481` | 实测 6 次 2MB JD → docs-meta.json 涨到 12.59MB。建议 cap 到 64KB |
 | ⚪ | `GET /pdf` / `/export` 的 Origin 绕过（跨域 `<img src>` 不带 Origin） | `server.mjs:1327` | CSRF 门只拦带 Origin 的请求。渲染幂等，影响有限 |
-| ⚪ | `quote` 子串校验语义弱（`quote:'负责'` 存在即过） | `evidence.mjs:479` | 子串存在 ≠ 语义相关。加上中文数字缺口，这条链上「非数字的凭空编造」目前无护栏 |
+| ✅已修 | `quote` 子串校验语义弱 | `evidence.mjs` | 加最小长度护栏（6 字，挡「负责」「完成了」这类虚词，保留「负责存储层改造」这类有效锚定）。**注意门槛定 6 不是 8**：既有 S4B-3 夹具用 7 字锚定，8 字会误杀它。语义级判断正则做不到，纯编造仍需人眼过 |
 | ⚪ | `/ai/jd-text` 是 SSRF 原语（服务端 fetch 任意 http/https） | `server.mjs:2707` | CSRF 已挡死网页触发，只剩用户自粘链接一条路 |
 
 **已实证排除 8 项**（有命令输出，别重复查）：路径穿越 24 种攻击全灭（`VALID_ID` 全局闸门）、tar 条目穿越/绝对路径/symlink 3 种全拒、CSRF 有效（跨站/null Origin 均 403）、服务端 HTML 转义扎实、前端 XSS 0 处可注入、tx 崩溃恢复正确（SIGKILL 实测回滚成功）、rootLock 陈旧判定正确、并发保存无死锁无丢失（50 路全 200 + 双标签 409 冲突闭环）。
