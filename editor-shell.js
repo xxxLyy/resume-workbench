@@ -501,6 +501,10 @@
         !window.confirm('撤销「' + (top.label || '操作') + '」会回到该操作之前，其后的正文输入也会一并回退。确认撤销？')) return false;
     undoStack.pop();
     sheet.innerHTML = top.state.body;
+    // 正文整片替换后旧的 .section-title 已脱离文档，而 IntersectionObserver 从不 unobserve →
+    // 回调里 scanSections() 找不到匹配、best 恒 -1 → 左栏「当前章节」active 永久停摆（刷新才恢复）。
+    // 因此每次替换后必须重建观察（2026-10-18 审查 P1-4）。
+    observeTitles();
     if (window.__edSetTypo) window.__edSetTypo(top.state.typo);
     window.__edMarkProgrammatic();
     if (window.__edRefreshFind) window.__edRefreshFind();               // 正文已变：命中位置必须重算
@@ -1045,6 +1049,7 @@
   var io = null;
   function observeTitles() {
     if (!io) return;
+    io.disconnect();   // 必须先断开：撤销/重渲染后旧 title 节点已脱离文档，不清会一直观察游离节点（审查 P1-4）
     scanSections().forEach(function (s) { if (s.titleEl) io.observe(s.titleEl); });
   }
   if ('IntersectionObserver' in window) {
@@ -1425,6 +1430,11 @@
   var zoom = 1;
   var zval = tools.querySelector('#ed-zval');
   function setZoom(z) {
+    // 非有限值守卫：输入框被清空 → parseFloat('') = NaN → Math.min/Math.max 对 NaN 不传染无效，
+    // NaN 贯穿全局，此后「＋/−」全部空转（NaN + 0.1 仍是 NaN），状态栏显示「缩放 NaN%」。
+    // 刷新后 JSON.stringify 把 NaN 写成 null，被 restoreUi 的 typeof 守卫跳过 → 故障被掩盖，更难查。
+    // 一处守卫覆盖全部入口：滑杆 / ＋− / 输入框 / window.__edSetZoom / 恢复态（审查 B1）。
+    if (!isFinite(z)) return;
     zoom = Math.min(1.5, Math.max(0.4, Math.round(z * 100) / 100));
     sheet.style.zoom = zoom === 1 ? '' : String(zoom);
     zval.value = Math.round(zoom * 100);
