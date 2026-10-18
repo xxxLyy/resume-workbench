@@ -12,19 +12,27 @@ import { normalizeTextKey } from './normalize-text-key.mjs';
 export const FP_THRESHOLD = 0.90;
 export const FP_WINDOW_DAYS = 90;
 
-/** 宽松日期解析：ISO 或工作台 'YYYY-MM-DD-hhmmss-ms' 格式 */
+/**
+ * 宽松日期解析：ISO（含 Z，按 UTC 精确解析）或工作台 'YYYY-MM-DD-hhmmss-ms' 本地格式。
+ * 后者必须拼成带时间分量的本地串再 Date.parse —— 只取前 10 位会按 UTC 午夜解析，
+ * 在东八区把当天所有记录坍缩到本地 08:00，90 天窗口边界日误差可达 -16h ~ +8h。
+ */
 function parseAnyDate(s) {
   if (!s) return NaN;
   let t = Date.parse(s);
-  if (Number.isNaN(t) && s.length >= 10) t = Date.parse(s.slice(0, 10));
-  return t;
+  if (!Number.isNaN(t)) return t;
+  const m = /^(\d{4}-\d{2}-\d{2})-(\d{2})(\d{2})(\d{2})/.exec(s);
+  if (m) return Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}`);
+  if (s.length >= 10) { t = Date.parse(s.slice(0, 10) + 'T00:00:00'); if (!Number.isNaN(t)) return t; }
+  return NaN;
 }
 
 /**
  * 新 JD 与历史记录比对，产出提醒（纯函数）。
  * records: [{ jd?, jdFp?, company?, dateStr?, kind: 'draft'|'app', label?, link?, status? }]
  * opts: { newCompany?, newLink?, threshold?, windowDays?, today? }
- * 返回 [{ kind: 'draft'|'app'|'link', label, dateStr, score, sameCompany, repost, status? }]
+ * 返回 [{ kind: 'draft'|'app', byLink, label, dateStr, score, sameCompany, repost, status? }]
+ *   kind = 记录原始来源（draft 建过草稿 / app 投递记录）；byLink = 是否由 link 精确匹配命中
  */
 export function findDupHints(jdText, records, opts = {}) {
   const threshold = opts.threshold ?? FP_THRESHOLD;
@@ -36,19 +44,23 @@ export function findDupHints(jdText, records, opts = {}) {
   const newCompany = normalizeTextKey(opts.newCompany || '');
   const hints = [];
   for (const r of records) {
-    // 路 b：link 精确相等，不受窗口限制
+    const sameCompany = !!newCompany && normalizeTextKey(r.company || '') === newCompany;
+    const rfp = r.jdFp || fingerprintText(r.jd || '');
+    const score = rfp ? similarity(fp, rfp) : 0;
+    // 路 b：link 精确相等，不受窗口限制。
+    // kind 必须是 r.kind 的原始来源（draft=建过草稿 / app=投递记录）——用 'link' 当 kind 会让
+    // 上层文案把「从未投递的草稿」说成「已投递」（2026-10-18 审查 🔴 问题 1）。
+    // byLink 单独标记命中方式；score 用实测相似度（有 JD 时），无 JD 时按同源链接记 1。
+    // repost 取 sameCompany —— HR 把同一链接重发给同公司是最常见的重发形态，不能在这里丢标记。
     if (r.link && opts.newLink && r.link === opts.newLink) {
-      hints.push({ kind: 'link', label: r.label || '', dateStr: r.dateStr || '', score: 1, sameCompany: normalizeTextKey(r.company || '') === newCompany, repost: false, status: r.status });
-      continue;
+      hints.push({ kind: r.kind || 'draft', byLink: true, label: r.label || '', dateStr: r.dateStr || '', score: rfp ? score : 1, sameCompany, repost: sameCompany, status: r.status });
+      continue;                              // 已记一条，不重复走相似路径
     }
     const t = parseAnyDate(r.dateStr);
     if (Number.isNaN(t) || t < cutoff) continue;
-    const rfp = r.jdFp || fingerprintText(r.jd || '');
     if (!rfp) continue;                     // 历史条目不可指纹 → 跳过
-    const score = similarity(fp, rfp);
     if (score < threshold) continue;
-    const sameCompany = !!newCompany && normalizeTextKey(r.company || '') === newCompany;
-    hints.push({ kind: r.kind, label: r.label || '', dateStr: r.dateStr || '', score, sameCompany, repost: sameCompany, status: r.status });
+    hints.push({ kind: r.kind, byLink: false, label: r.label || '', dateStr: r.dateStr || '', score, sameCompany, repost: sameCompany, status: r.status });
   }
   return hints;
 }

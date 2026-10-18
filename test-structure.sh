@@ -2923,7 +2923,7 @@ assert(h.length === 1 && !h[0].repost, '跨公司相似命中但不标 repost');
 
 // link 精确相等不受窗口限制
 h = findDupHints(jdA, [mk({ jd: '', link: 'https://x.zhipin.com/abc', dateStr: '2025-01-01T00:00:00Z', kind: 'app', status: '已约面' })], { today, newLink: 'https://x.zhipin.com/abc' });
-assert(h.length === 1 && h[0].kind === 'link' && h[0].status === '已约面', 'link 精确命中带状态');
+assert(h.length === 1 && h[0].kind === 'app' && h[0].byLink === true && h[0].status === '已约面', 'link 命中：kind 保留原始来源 app + byLink 标记 + 带状态');
 
 // 工作台日期格式 '2026-09-11-164709-312' 可解析（同上，用 jdA 避免被阈值挡掉）
 h = findDupHints(jdA, [mk({ jd: jdA, dateStr: '2026-09-11-164709-312' })], { today });
@@ -2983,4 +2983,45 @@ const footerNoise = raw1 + ' 微信扫码分享\n举报 ' + '　'.repeat(20);
 const s6b = similarity(fps[0], fingerprintText(footerNoise));
 assert(s6b >= 0.90, `页脚噪声后相似度须 ≥0.90（实测 ${s6b.toFixed(4)}）— 低于阈值会导致 Boss直聘重复职位漏检，这是阈值从 0.95 降到 0.90 的直接原因`);
 console.log(`✅ FP-6 复制噪声清洗稳定（UI 噪声 ${s6a.toFixed(4)} / 页脚噪声 ${s6b.toFixed(4)}）`);
+EOF
+
+# —— FP-10：2026-10-18 深度审查的 4 处阻塞修复回归（每条钉死一个曾逃逸的 bug）——
+node --input-type=module << 'EOF'
+import { findDupHints } from './vendors/jd-fingerprint/repost-check.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ FP-10 ' + m); process.exit(1); } };
+const jdA = '岗位要求：负责核心系统的设计与开发，保障系统稳定性与高可用，持续优化服务性能，参与技术方案评审与团队协作，输出高质量技术文档。三年以上后端开发经验，熟悉分布式架构与高并发场景，' .repeat(2) + '具备良好的沟通能力与责任心，能够独立完成模块设计与编码实现，熟悉常用中间件原理与调优。';
+const today = '2026-10-18T00:00:00Z';
+const mk = (over) => Object.assign({ jd: '', jdFp: '', company: '', role: '', dateStr: '', kind: 'draft', label: '' }, over);
+const URL = 'https://x.zhipin.com/abc';
+
+// 🔴 问题 1：从未投递的草稿，link 命中时 kind 不得被说成 app/link（否则 fpTodo 会写「已投递」）
+let h = findDupHints(jdA, [mk({ jd: jdA, kind: 'draft', link: URL, dateStr: today, label: '某公司·后端' })], { today, newLink: URL, newCompany: '某公司' });
+assert(h.length === 1, 'link 命中 1 条');
+assert(h[0].kind === 'draft', '草稿的 kind 必须是 draft（不得被改写成 app/link）— 否则上层文案会说「已投递」');
+assert(h[0].byLink === true, 'byLink 标记命中方式');
+
+// 🟡 问题 3：link 命中且同公司 → 必须带 repost 标记（HR 同链接重发给同公司是最常见重发形态）
+h = findDupHints(jdA, [mk({ jd: jdA, kind: 'draft', link: URL, dateStr: today, company: '某公司' })], { today, newLink: URL, newCompany: '某公司' });
+assert(h[0].repost === true && h[0].sameCompany === true, 'link 命中 + 同公司 → repost=true（原实现写死 false，重发检测在此失效）');
+h = findDupHints(jdA, [mk({ jd: jdA, kind: 'draft', link: URL, dateStr: today, company: '别家' })], { today, newLink: URL, newCompany: '某公司' });
+assert(h[0].repost === false, 'link 命中 + 跨公司 → repost=false');
+
+// 🟡 问题 4：link 命中的 score 必须是实测相似度，不是写死的 1
+h = findDupHints(jdA, [mk({ jd: jdA + '另外还有一些补充说明需要写在这里', link: URL, dateStr: today })], { today, newLink: URL });
+assert(h[0].score < 1, `link 命中的 score 须为实测相似度而非写死 1（实测 ${h[0].score}）`);
+// 无 JD 文本可比时（同源链接），才退化为 1
+h = findDupHints(jdA, [mk({ jd: '', link: URL, dateStr: today })], { today, newLink: URL });
+assert(h[0].score === 1, '无 JD 文本可比时 score 退化为 1');
+
+// 🟡 问题 5：工作台本地时间戳格式按本地时刻解析，不按 UTC 午夜坍缩
+// '2026-04-21-110000-000' 是本地 11:00；90 天窗口内（今天 2026-07-20）必须命中
+h = findDupHints(jdA, [mk({ jd: jdA, dateStr: '2026-04-21-110000-000' })], { today: '2026-07-20T02:00:00Z' });
+assert(h.length === 1, '本地时间戳 11:00 在窗口内须命中（UTC 坍缩会误判为窗口外漏提醒）');
+h = findDupHints(jdA, [mk({ jd: jdA, dateStr: '2026-04-21T11:00:00' })], { today: '2026-07-20T02:00:00Z' });
+assert(h.length === 1, '同一天的 ISO 本地时间格式结果一致（两种格式必须同进同出）');
+
+// link 命中不受窗口限制（保持原语义）
+h = findDupHints(jdA, [mk({ jd: jdA, link: URL, dateStr: '2020-01-01T00:00:00Z' })], { today, newLink: URL });
+assert(h.length === 1, 'link 精确命中不受 90 天窗口限制');
+console.log('✅ FP-10 深度审查修复回归（kind 保真 / repost 不丢失 / score 实测 / 时区不坍缩）');
 EOF

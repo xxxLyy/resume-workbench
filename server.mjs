@@ -111,7 +111,7 @@ async function computeFpGuard(jd, jdLink, company, metaAll) {
     for (const [k, m] of Object.entries(metaAll)) {
       if (!m || m.kind !== 'job') continue;
       if (!m.jd && !(m.job && m.job.jdFp)) continue;
-      records.push({ jd: m.jd || '', jdFp: (m.job && m.job.jdFp) || '', company: m.company, dateStr: m.createdAt, kind: 'draft', label: `${m.company}·${m.role}`, link: (m.jdSource || '').startsWith('http') ? m.jdSource : '' });
+      records.push({ jd: m.jd || '', jdFp: (m.job && m.job.jdFp) || '', company: m.company, dateStr: m.createdAt, kind: 'draft', label: `${m.company || ''}·${m.role || ''}`, link: (m.jdSource || '').startsWith('http') ? m.jdSource : '' });
     }
     for (const a of loadApps()) {
       if (!a || (!a.jd && !a.link)) continue;
@@ -122,12 +122,18 @@ async function computeFpGuard(jd, jdLink, company, metaAll) {
 }
 
 // 指纹提醒 → todo 条目（模式同 jdError todo）
+// 文案口径（2026-10-18 审查 🔴 问题 1）：只按 kind 的原始来源说话，从不把草稿说成已投递。
+//   kind='draft' → 建过草稿；kind='app' → 已投递（带 status）；byLink=true → 同一链接（额外标注来源）。
 function fpTodo(dupHints) {
   if (!dupHints || !dupHints.length) return [];
-  const top = dupHints.slice(0, 3).map((h) =>
-    `${h.label}（${String(h.dateStr).slice(0, 10)} ${h.kind === 'app' || h.kind === 'link' ? '已投递' + (h.status ? '·' + h.status : '') : '建过草稿'}${h.repost ? '，疑似重发' : ''}）`
-  ).join('；');
-  return [{ section: '岗位信息', question: '疑似重复职位：' + top, why: 'JD 内容指纹命中历史记录（最高相似度 ' + Math.round(dupHints[0].score * 100) + '%），请确认是否仍要适配', resolved: false }];
+  // 按相似度降序：slice(0,3) 取最高的 3 条，why 的百分比取真正最大值——
+  // 原实现取 [0]（输入顺序第一条），多条命中时会系统性向低报，掩盖分数最高的那条（审查 🟡 问题 2）。
+  const ranked = dupHints.slice().sort((a, b) => b.score - a.score);
+  const top = ranked.slice(0, 3).map((h) => {
+    const what = h.kind === 'app' ? '已投递' + (h.status ? '·' + h.status : '') : '建过草稿';
+    return `${h.label}（${String(h.dateStr).slice(0, 10)} ${h.byLink ? '同一链接·' + what : what}${h.repost ? '，疑似重发' : ''}）`;
+  }).join('；');
+  return [{ section: '岗位信息', question: '疑似重复职位：' + top, why: 'JD 内容指纹命中历史记录（最高相似度 ' + Math.round(ranked[0].score * 100) + '%），请确认是否仍要适配', resolved: false }];
 }
 const corruptBanner = () => corrupt.size
   ? `<div class="card" style="border-color:var(--err-soft);background:var(--err-soft);color:var(--err)"><b>⚠️ 检测到数据文件损坏，相关写入已停止：</b>${[...corrupt].map((k) => JSON_FILES[k]).join('、')} —— 请先在设置页用备份恢复，或人工修复 JSON 后刷新。</div>`
@@ -1553,8 +1559,11 @@ async function handler(req, res) {
       const srcHtml = fs.readFileSync(docPath(body.from), 'utf8');
       const srcMeta = metaAll[body.from] || {};
       const normVer = normalizeToCurrent(freezeHtml(srcHtml, srcMeta).html);
-      atomicWrite(docPath(to), normVer.html);
+      // 护栏必须在 atomicWrite 之前算完：它含一次动态 import + 全量指纹计算（最坏数百 ms 的同步计算），
+      // 夹在 atomicWrite 与 updateMeta 之间会把两者原本「紧邻、崩溃窗口为零」的配对撑开一个 await 窗口，
+      // 中途被杀会留下有 doc 无 meta 的孤儿文件（2026-10-18 审查 ⚪ 问题 8）。
       const { jdFp, dupHints } = await computeFpGuard(body.jd, '', body.company.trim(), metaAll);
+      atomicWrite(docPath(to), normVer.html);
       updateMeta(root, to, () => ({ parent: body.from, company: body.company.trim(), role: body.role.trim(), jd: typeof body.jd === 'string' ? body.jd : '',
         createdAt: new Date().toISOString(), tag: (body.company.trim() + '·' + body.role.trim()).slice(0, 20),
         typo: normVer.typo, theme: srcMeta.theme || normVer.theme || null, styleHash: normVer.styleHash, rev: 1,
