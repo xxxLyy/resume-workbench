@@ -16,6 +16,16 @@ import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, 
 import { rotateLogIfNeeded } from './logrotate.mjs';
 import { freezeHtml, normalizeToCurrent, splitDoc, staleInfo } from './freeze.mjs';
 import { beginTx, commitTx, dropSupersededTx, recoverPending, withDocLock, updateMeta, updateMetaAll, rootLock, atomicWrite, LockHeld } from './tx.mjs';
+import { safeUrl } from './safe-url.mjs';   // URL 协议白名单（S4B-9；escAttr 不校验协议）
+import { sumExpandedBytes, MAX_EXPANDED_BYTES } from './restore-guard.mjs';   // 备份包展开尺寸护栏（S4B-10）
+
+/**
+ * JD 文本入库上限（S4B-12）。链接抓取路径 cap 在 4000 字，粘贴路径原本完全没 cap：
+ * 二轮审查实测 6 次 2MB JD 粘贴 → docs-meta.json 涨到 12.59MB，而每次 updateMeta 都整表重写
+ * （12.6MB 时单次 /save 0.088s vs 正常 ~10ms）——一次粘贴把之后每次保存都拖慢一个数量级。
+ * 提到模块级：/job/create、/version/create、/app/add 三个写 jd 的入口必须共用同一上限。
+ */
+const JD_MAX_CHARS = 64 * 1024;
 import { applyOps, reviewConsistency, refFresh, buildEvidencePrompt, parseEvidence, buildInterviewPrompt, parseInterview, guardOps, exportChecks, layoutDiagnose } from './evidence.mjs';
 import { assembleTemplate, themeRegistration } from './template.mjs';
 
@@ -1505,9 +1515,14 @@ async function handler(req, res) {
       const normJob = normalizeToCurrent(freezeHtml(srcHtml, srcMeta).html);
       atomicWrite(docPath(to), normJob.html);
       // JD：优先文本；给了链接且无文本时尝试读取，失败则记录待补充
-      let jd = typeof body.jd === 'string' ? body.jd.trim() : '';
+      let jdRaw = typeof body.jd === 'string' ? body.jd.trim() : '';
+      let jdTruncated = jdRaw.length > JD_MAX_CHARS;
+      let jd = jdTruncated ? jdRaw.slice(0, JD_MAX_CHARS) : jdRaw;
       let jdLink = typeof body.jdLink === 'string' ? body.jdLink.trim() : '';
+      // 截断与「链接读取失败」是两回事，todo 文案必须分开：复用后者的模板会显示成
+      // 「JD 链接读取失败（…），请粘贴 JD 文本」——用户明明已经粘贴了，让它再粘一次是荒谬的（2026-10-18 实测）。
       let jdError = '';
+      let jdTruncNote = jdTruncated ? 'JD 超过 64 KB，仅前 64 KB 纳入分析（尾部未读）。JD 过长通常意味着粘进了整页网页，可只保留「岗位职责 + 任职要求」两段。' : '';
       if (!jd && jdLink) {
         try {
           if (!/^https?:\/\//.test(jdLink)) throw new Error('仅支持 http/https 链接');
@@ -1532,7 +1547,7 @@ async function handler(req, res) {
           sourceSnap: srcSnap, sourceHash: contentHash(srcHtml),
           materials: Array.isArray(body.materials) ? body.materials.filter((x) => typeof x === 'string') : [],
           brief: nb.brief, jdFp,   // S4a-T5 要求卡（渐进默认：无 brief 时字段全默认）
-          changes: [], todos: [...(jdError ? [{ section: '岗位信息', question: 'JD 链接读取失败（' + jdError + '），请粘贴 JD 文本', why: '岗位匹配分析需要 JD', resolved: false }] : []), ...todos],
+          changes: [], todos: [...(jdError ? [{ section: '岗位信息', question: 'JD 链接读取失败（' + jdError + '），请粘贴 JD 文本', why: '岗位匹配分析需要 JD', resolved: false }] : []), ...(jdTruncNote ? [{ section: '岗位信息', question: jdTruncNote, why: '截断部分未参与岗位匹配分析，可能影响要求覆盖度判断', resolved: false }] : []), ...todos],
           generatedAt: null, deliveredAt: null
         }
       }));
@@ -1566,7 +1581,7 @@ async function handler(req, res) {
       // 中途被杀会留下有 doc 无 meta 的孤儿文件（2026-10-18 审查 ⚪ 问题 8）。
       const { jdFp, dupHints, todos } = await computeFpGuard(body.jd, '', body.company.trim(), metaAll);
       atomicWrite(docPath(to), normVer.html);
-      updateMeta(root, to, () => ({ parent: body.from, company: body.company.trim(), role: body.role.trim(), jd: typeof body.jd === 'string' ? body.jd : '',
+      updateMeta(root, to, () => ({ parent: body.from, company: body.company.trim(), role: body.role.trim(), jd: typeof body.jd === 'string' ? body.jd.trim().slice(0, JD_MAX_CHARS) : '',   // S4B-12 同样要截断
         createdAt: new Date().toISOString(), tag: (body.company.trim() + '·' + body.role.trim()).slice(0, 20),
         typo: normVer.typo, theme: srcMeta.theme || normVer.theme || null, styleHash: normVer.styleHash, rev: 1,
         kind: 'job', flow: 'draft', archivedAt: null,
@@ -2098,9 +2113,10 @@ async function handler(req, res) {
       const apps = loadApps();
       apps.push({
         id: now, company: body.company.trim(), role: body.role.trim(), docId: body.docId,
-        jd: typeof body.jd === 'string' ? body.jd : '', note: typeof body.note === 'string' ? body.note : '',
+        jd: typeof body.jd === 'string' ? body.jd.trim().slice(0, JD_MAX_CHARS) : '',   // S4B-12
+        note: typeof body.note === 'string' ? body.note : '',
         channel: typeof body.channel === 'string' ? body.channel.trim() : '',
-        link: typeof body.link === 'string' ? body.link.trim() : '',
+        link: safeUrl(body.link),   // S4B-9：白名单外协议不落库（javascript:/data: 存储型 XSS）
         appliedAt: typeof body.appliedAt === 'string' ? body.appliedAt : '',
         nextStep: typeof body.nextStep === 'string' ? body.nextStep.trim() : '',
         dueDate: typeof body.dueDate === 'string' ? body.dueDate : '',
@@ -2120,7 +2136,12 @@ async function handler(req, res) {
       const apps = loadApps();
       const app = apps.find((a) => a.id === body.id);
       if (!app) return send(404, 'app not found', 'text/plain');
-      for (const k of ['company', 'role', 'note', 'jd', 'docId', 'channel', 'link', 'appliedAt', 'nextStep', 'dueDate', 'interviews']) if (body[k] !== undefined) app[k] = body[k];
+      for (const k of ['company', 'role', 'note', 'jd', 'docId', 'channel', 'link', 'appliedAt', 'nextStep', 'dueDate', 'interviews']) {
+        if (body[k] === undefined) continue;
+        // S4B-9：link 走协议白名单，其余字段原样赋值（这个循环是批量赋值，
+        // 漏一个字段就是缺口——app/add 已单独清洗，这里必须同步，否则 update 能绕过）
+        app[k] = k === 'link' ? safeUrl(body[k]) : body[k];
+      }
       if (body.status !== undefined) app.status = body.status;
       app.updatedAt = timestamp();
       saveApps(apps);
@@ -2608,7 +2629,7 @@ async function handler(req, res) {
       <div style="font-size:13px;color:var(--mut);margin-top:6px">
         状态：<span class="badge">${escHtml(app.status)}</span>
         ${app.channel ? `渠道：<span class="badge">${escHtml(app.channel)}</span>` : ''}
-        ${app.link ? `<a href="${escAttr(app.link)}" target="_blank" rel="noopener">岗位链接</a>` : ''}
+        ${(() => { const u = safeUrl(app.link); return u ? `<a href="${escAttr(u)}" target="_blank" rel="noopener">岗位链接</a>` : (app.link ? '<span class="mut">岗位链接协议不安全，未渲染</span>' : ''); })()}
         简历：<a href="/edit?id=${escHtml(app.docId)}">${escHtml(app.docId)}</a>
         ${app.appliedAt ? `投递日期：${escHtml(app.appliedAt)}` : ''}
         ${app.nextStep ? `下一步：${escHtml(app.nextStep)}` : ''}
@@ -3130,11 +3151,25 @@ async function handler(req, res) {
       const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-restore-'));
       const fail = (msg, code = 400) => { fs.rmSync(stage, { recursive: true, force: true }); fs.rmSync(tmpTar, { force: true }); return sendJson(code, { ok: false, error: msg }); };
       // 条目校验：类型/路径/大小，防路径穿越
+      // 路径列表：tzf 输出纯路径（路径白名单校验依赖这个形状，勿改成 tzvf——
+      //   tzvf 每行带 权限/用户/组/大小/日期，整行当路径校验会把所有备份包全拒，2026-10-18 实测踩过）。
       let list = '';
       try { list = execFileSync('tar', ['tzf', tmpTar], { maxBuffer: 20 * 1024 * 1024 }).toString('utf8'); }
       catch { return fail('不是合法的 tar.gz 备份包'); }
       const entries = list.split('\n').filter(Boolean);
       if (!entries.length || entries.length > 20000) return fail('备份包条目数异常');
+      // S4B-10 展开尺寸上限（解包之前拦）：条目数/路径白名单/禁 symlink 全都挡不住压缩炸弹——
+      // 实测 1.3MB 的包展开 442.5MB（放大 340 倍），上传上限 300MB × 百万倍足以写满数据盘。
+      // 尺寸另跑一次 tzvf 取第 5 列（tzf 没有 -v 拿不到 size）；与 entries 同序，不用于路径校验。
+      // 任一行解析不出 size 就 fail closed：真实备份不会有这种行，解析失败放行等于留后门。
+      try {
+        const verbose = execFileSync('tar', ['tzvf', tmpTar], { maxBuffer: 20 * 1024 * 1024 }).toString('utf8');
+        const { bytes } = sumExpandedBytes(verbose);
+        // 只用绝对上限（校准见 restore-guard.mjs）：倍率限会误拒「多版本快照」这种正常场景（实测 40.5×）
+        if (bytes > MAX_EXPANDED_BYTES) {
+          return fail('备份包展开后 ' + Math.round(bytes / 1024 / 1024) + ' MB，超过 ' + Math.round(MAX_EXPANDED_BYTES / 1024 / 1024) + ' MB 上限，已拒绝（防压缩炸弹）', 413);
+        }
+      } catch (e) { return fail(e.code === 'ENOENT' ? '备份包信息读取失败' : e.message); }
       const ALLOWED = /^(docs\/|snapshots\/|pdfs\/|docs-meta\.json$|applications\.json$|materials\.json$)/;
       for (const e of entries) {
         if (e.startsWith('/') || e.includes('..') || !ALLOWED.test(e.replace(/^\.\//, ''))) return fail('备份包含不允许的条目：' + e.slice(0, 80));

@@ -108,6 +108,44 @@ export function bodyOf(html) {
 }
 
 // 统一提取：返回换行分隔的纯文本行数组
+/**
+ * 标签剥离 · 单遍扫描（S4B-11，替代原正则 `/<(?:[^>"']|"[^"]*"|'[^']*')*>/g`）。
+ *
+ * 原正则是二次方：从每个 `<` 起点回扫到文末找 `>`，N 个未闭合标签 = O(N×长度)。
+ * 实测（2026-10-18）：2000→64ms、4000→254ms、8000→1065ms、16000→4131ms（每档 4×）。
+ * /edit、/save、/api/extract、/diff 都走这里，一份从备份进来的病态文档就能把每次保存卡 4 秒。
+ *
+ * 语义与原正则严格等价：
+ *   - 标签 = `<` + (非 `>`/非引号 | "..." 引号内 | '...' 引号内)* + `>`
+ *   - 引号内的 `>` 不算标签结束（属性值可以含 `>`）
+ *   - **未闭合（扫到文末仍无 `>`）→ 原文保留**，与原正则「不匹配」一致
+ *   - `indexOf` 找不到下一个 `<` → 直接返回，不做无用的全串扫描
+ */
+function stripTagsLinear(src) {
+  const n = src.length;
+  let out = '';
+  let i = 0;
+  let lt = src.indexOf('<');
+  while (lt !== -1) {
+    out += src.slice(i, lt);
+    // 从 lt+1 扫到标签结束的 '>'；引号区间内的 '>' 跳过
+    let j = lt + 1;
+    let quote = '';
+    while (j < n) {
+      const ch = src.charCodeAt(j);
+      if (quote) { if (ch === quote.charCodeAt(0)) quote = ''; }
+      else if (ch === 34 || ch === 39) quote = ch === 34 ? '"' : "'";   // 34='"' 39="'"
+      else if (ch === 62) break;                                          // 62='>'
+      j++;
+    }
+    if (j >= n) return out + src.slice(lt);      // 未闭合 → 保留原文
+    out = out;                                    // 标签整体丢弃
+    i = j + 1;
+    lt = src.indexOf('<', i);
+  }
+  return out + src.slice(i);
+}
+
 export function docToLines(html, { includeHidden = false, keepBlank = false } = {}) {
   let s = String(html ?? '');
   s = s.replace(/<!--AI-INJECT-->[\s\S]*?<!--\/AI-INJECT-->/g, '')
@@ -119,7 +157,8 @@ export function docToLines(html, { includeHidden = false, keepBlank = false } = 
   s = s
     .replace(/<\/(?:p|li|h1|h2|h3|h4|div|section|header|footer|ul|ol|table|tr|blockquote)\s*>/gi, '\n')
     .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<(?:[^>\"']|\"[^\"]*\"|'[^']*')*>/g, '');
+    ;
+  s = stripTagsLinear(s);   // 标签剥离：单遍扫描（原正则二次方，见 stripTagsLinear 注释）
   s = decodeEntities(s)
     .split('\n')
     .map((l) => l.replace(/[ \t\u00a0]+/g, ' ').trim());

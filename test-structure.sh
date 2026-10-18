@@ -3104,3 +3104,133 @@ assert(factGuard({ kind: 'replace', before: 'QPS 从 300 提升到 5000', after:
 assert(factGuard({ kind: 'replace', before: '服务 12 万日活', after: '服务 120000 日活' }).level !== 'conflict', '12万→120000 不得误报');
 console.log('✅ S4B-8 中文数字护栏 + 科学计数法/中文混写归一');
 EOF
+
+# —— S4B-9：URL 协议白名单（javascript:/data: 存储型 XSS）——
+node --input-type=module << 'EOF'
+import { safeUrl } from './safe-url.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ S4B-9 ' + m); process.exit(1); } };
+// 危险协议必须被拒（二轮审查实测：escAttr 只转义不校验协议）
+assert(safeUrl('javascript:alert(1)') === '', 'javascript: 必须拒');
+assert(safeUrl('JavaScript:alert(1)') === '', '协议名大小写不敏感');
+assert(safeUrl('  javascript:alert(1)') === '', '前导空白不得绕过');
+assert(safeUrl('data:text/html,<script>alert(1)</script>') === '', 'data: 必须拒');
+assert(safeUrl('vbscript:msgbox(1)') === '', 'vbscript: 必须拒');
+// 正常 URL 必须放行
+assert(safeUrl('https://www.zhipin.com/job_detail/abc') === 'https://www.zhipin.com/job_detail/abc', 'https 放行');
+assert(safeUrl('http://example.com/a?b=1') === 'http://example.com/a?b=1', 'http 放行');
+assert(safeUrl('mailto:a@b.com') === 'mailto:a@b.com', 'mailto 放行');
+assert(safeUrl('/edit?id=x') === '/edit?id=x', '站内绝对路径放行');
+assert(safeUrl('./a.png') === './a.png', '相对路径放行');
+assert(safeUrl('#sec') === '#sec', '锚点放行');
+// 协议相对 URL 必须拒（//evil.com 会跳到外站）
+assert(safeUrl('//evil.com/x') === '', '协议相对 // 必须拒');
+assert(safeUrl('') === '' && safeUrl(null) === '' && safeUrl(undefined) === '', '空值安全');
+// 渲染点必须走白名单，不能只靠 escAttr
+const srv = (await import('node:fs')).readFileSync('./server.mjs', 'utf8');
+assert(/safeUrl\(app\.link\)/.test(srv), '投递记录 link 渲染前必须过 safeUrl');
+assert(!/href="\$\{escAttr\(app\.link\)\}"/.test(srv), '不得直接 escAttr(app.link) 当 href（escAttr 不校验协议）');
+console.log('✅ S4B-9 URL 协议白名单（javascript:/data: 存储型 XSS）');
+EOF
+
+# —— S4B-10：备份包解压炸弹护栏（/restore 展开尺寸上限）——
+node --input-type=module << 'EOF'
+import { sumExpandedBytes, MAX_EXPANDED_BYTES } from './restore-guard.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ S4B-10 ' + m); process.exit(1); } };
+// macOS bsdtar 的 tzvf 输出：第 5 列是 size（目录条目为 0）
+const bsd = 'drwxr-xr-x  0 xxxly  wheel       0 10月 18 17:40 docs/\n-rw-r--r--  0 xxxly  wheel      32 10月 18 17:40 docs/a.html\n-rw-r--r--  0 xxxly  wheel    5000 10月 18 17:40 big.bin';
+let r = sumExpandedBytes(bsd);
+assert(r.bytes === 5032 && r.parsed === 3 && r.total === 3, `bsdtar 输出求和精确（实得 ${r.bytes}）`);
+// GNU tar（Linux）的 user/group 用 / 连成一列、且没有链接数列 —— 列布局与 bsdtar 不同，
+// 正则若只匹配 bsdtar，fail-closed 会把 Linux 打的合法备份包全拒（2026-10-18 实测踩过）。
+const gnu = '-rw-r--r-- root/root      491 2026-10-18 17:00 docs/b.html\ndrwxr-xr-x root/root        0 2026-10-18 17:00 docs/';
+r = sumExpandedBytes(gnu);
+assert(r.bytes === 491 && r.parsed === 2, `GNU tar 格式求和（实得 ${r.bytes}）`);
+r = sumExpandedBytes('-rw-r--r--  1 root/root   491 2026-10-18 17:00 docs/b.html');
+assert(r.bytes === 491, `GNU tar 带链接数列（实得 ${r.bytes}）`);
+// 路径含空格也不能解析错（size 取的是固定列，不是最后一列）
+r = sumExpandedBytes('-rw-r--r--  0 u g   100 2026-10-18 17:00 my docs/a b.html');
+assert(r.bytes === 100, `路径含空格仍取对 size 列（实得 ${r.bytes}）`);
+// fail closed：解析不出的行必须抛错，绝不放行
+let threw = false;
+try { sumExpandedBytes('-rw-r--r-- 0 u g ??? ??? weird-entry'); } catch (e) { threw = /无法解析/.test(e.message); }
+assert(threw, '解析不出的行必须抛错（fail closed，解析失败放行等于给攻击者留后门）');
+// 只用绝对上限 256MB。校准依据（2026-10-18 全部实测）：
+//   真实备份 2.75MB→4.19MB（余量 61×）／多版本快照 5.1KB→207.8KB（余量 1200×）
+//   炸弹 A 1.30MB→442.5MB ❌ ／ 炸弹 B 0.32MB→314.9MB ❌
+// 刻意**不用压缩倍率限**（原设 50× 已撤）：多版本快照是本项目正常状态（每次 /save 一份快照），
+// 实测压缩比达 40.5×，倍率限会误拒自己的合法备份——这个误拒是 test.sh「自产备份预览失败」抓出来的。
+assert(MAX_EXPANDED_BYTES === 256 * 1024 * 1024, '展开绝对上限 256MB');
+const srv = (await import('node:fs')).readFileSync('./server.mjs', 'utf8');
+assert(/sumExpandedBytes/.test(srv), '/restore 必须调用 sumExpandedBytes');
+assert(/MAX_EXPANDED_BYTES/.test(srv), '/restore 必须用 MAX_EXPANDED_BYTES 判绝对超限');
+assert(!/MAX_COMPRESSION_RATIO/.test(srv), '不得引入压缩倍率限（会误拒多版本快照这种正常备份，实测 40.5×）');
+assert(/'tzvf'/.test(srv), '/restore 必须用 tar tzvf 取 size（tzf 不带 -v 拿不到大小）');
+// 回归：2026-10-18 踩过的坑——把路径列表也改成 tzvf 会让整行（含权限/用户/日期）当路径校验，
+// 结果所有备份包全被拒。路径必须继续用 tzf。
+assert(/\['tzf', tmpTar\]/.test(srv), '路径列表必须用 tzf（tzvf 整行含元信息，当路径校验会全拒备份包）');
+assert(/\['tzvf', tmpTar\]/.test(srv), '尺寸求和用 tzvf');
+console.log('✅ S4B-10 备份包解压炸弹护栏');
+EOF
+
+# —— S4B-11：extract.mjs 标签剥离二次方回溯 → 单遍扫描（S4B-11 性能回归网）——
+node --input-type=module << 'EOF'
+import { docToLines, docToText } from './extract.mjs';
+import { readFileSync } from 'node:fs';
+const assert = (c, m) => { if (!c) { console.error('❌ S4B-11 ' + m); process.exit(1); } };
+// ① 语义等价（单遍扫描不得改变任何提取结果——AI 上下文靠它，改错就毁核心功能）
+const SYN = [
+  ['无标签', '纯文本内容', '纯文本内容'],
+  ['正常标签', '<p>段落</p><div class="a">块</div>', '段落\n块'],   // </p></div> 会被换成换行符（既有行为）
+  ['属性含>', '<a title="a>b" href="x">链接</a>', '链接'],            // 引号内的 > 不算标签结束
+  ['属性含单引号', "<a title='a>b'>链接</a>", '链接'],
+  ['未闭合标签', '前<div class="x 后文', '前<div class="x 后文'],        // 未闭合 → 原文保留（与原正则一致）
+  ['自闭合', '<br/><img src="x.png"/>文本', '文本'],
+  ['CDATA', '<script>var a = "<div>";</script>文本', '文本'],
+  ['注释', '<!-- <p>注释里的标签</p> -->正文', '正文'],
+  ['空', '', ''],
+  ['只有<', '<', '<'],
+  ['只有>', '>', '>'],
+];
+for (const [n, html, want] of SYN) {
+  assert(docToText(html) === want, `${n}：期望 ${JSON.stringify(want)}，实得 ${JSON.stringify(docToText(html))}`);
+}
+assert(JSON.stringify(docToLines('<p>a</p><p>b</p>')) === JSON.stringify(['a', 'b']), 'docToLines 按行切分不变');
+console.log('✅ S4B-11a 标签剥离语义等价（' + SYN.length + ' 种边界形态 + 行切分）');
+
+// ② 性能：N 个未闭合标签。修复前实测 2000→64ms / 4000→254ms / 8000→1065ms / 16000→4131ms
+//    （每档 4×，标准二次方）。线性版 32000 个约 8ms —— 阈值 1000ms 对线性有 125× 余量，
+//    而任何回退到二次方的实现会在 32000 个上跑 16 秒以上被抓住。
+const patho = '<div class="a" '.repeat(32000);
+const t0 = process.hrtime.bigint();
+docToLines(patho);
+const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+assert(ms < 1000, `32000 个未闭合标签须 <1000ms（实测 ${ms.toFixed(1)}ms）— 二次方回溯已回归`);
+// ③ 正常内容不许被拖慢（线性扫描不该比正则慢一个数量级）
+const normal = '<p>普通段落内容</p>'.repeat(8000);
+const t1 = process.hrtime.bigint();
+docToLines(normal);
+const ms2 = Number(process.hrtime.bigint() - t1) / 1e6;
+assert(ms2 < 500, `正常 8000 段须 <500ms（实测 ${ms2.toFixed(1)}ms）`);
+console.log(`✅ S4B-11b 线性化（病态 ${ms.toFixed(1)}ms / 正常 ${ms2.toFixed(1)}ms）`);
+
+// ④ 真实简历文档不受影响
+const real = readFileSync('./docs/linghaoxiang.html', 'utf8');
+const lines = docToLines(real);
+assert(lines.length > 10 && lines.join('').length > 50, '真实简历仍能正常提取（' + lines.length + ' 行）');
+console.log('✅ S4B-11c 真实简历提取正常（' + lines.length + ' 行）');
+EOF
+
+# —— S4B-12：/job/create 粘贴 JD 长度上限（二轮审查实测 2MB → meta 12.59MB）——
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const assert = (c, m) => { if (!c) { console.error('❌ S4B-12 ' + m); process.exit(1); } };
+const srv = readFileSync('./server.mjs', 'utf8');
+assert(/const JD_MAX_CHARS = 64 \* 1024/.test(srv), 'JD 粘贴上限 64KB 且提到模块级（三个入口共用）');
+assert(/jdTruncated/.test(srv), '截断必须留痕（写进 jdError → todo）');
+// 三个写 jd 的入口都要截断：/job/create、/version/create、/app/add。
+// 漏一个就是缺口——二轮审查只点了 /job/create，实际 /version/create 与 /app/add 同样无上限（实测后补上）。
+const caps = (srv.match(/slice\(0, JD_MAX_CHARS\)/g) || []).length;
+assert(caps >= 3, '三个写 jd 的入口都要截断（实得 ' + caps + ' 处）');
+assert(!/jd: typeof body\.jd === 'string' \? body\.jd :/.test(srv), '不得再有裸传 body.jd 的入口');
+console.log('✅ S4B-12 /job/create JD 长度上限');
+EOF
