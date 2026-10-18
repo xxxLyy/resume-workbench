@@ -405,7 +405,16 @@
     Array.prototype.forEach.call(document.querySelectorAll(ZID_SEL), function (el) {
       var z = el.getAttribute('data-zid');
       if (!z) z = edHashZid(el.textContent || '');        // 缺失 → 内容哈希（确定性）
-      if (seen[z]) z = edNewZid();                         // 重复（同内容段落/粘贴克隆）→ 随机重打
+      if (seen[z]) {
+        // 重复内容 → 按出现序号**确定性**派生，不是随机重打。
+        // 随机会让「两条字面相同的段落」在每次加载拿到不同 zid：首次加载的 zid 已被
+        // /zones/init 写进 docs-meta.json，刷新后即成无 DOM 节点的永久孤儿（区域 Tab 出现
+        // 绑在不存在 zid 上的区域，AI 区域级改写找不到节点）。这违反 handoff §6「保证两次加载
+        // 生成相同 zid、初绑 meta 不失配」。粘贴/克隆自带随机 zid 不重复，走不到这里（审查 B3）。
+        var k = 1, cand;
+        do { k++; cand = edHashZid((el.textContent || '') + ' ' + k); } while (seen[cand]);
+        z = cand;
+      }
       el.setAttribute('data-zid', z);
       seen[z] = 1;
     });
