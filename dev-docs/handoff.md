@@ -130,6 +130,38 @@ launchctl kickstart -k gui/$(id -u)/com.lhx.resume-server   # 重启常驻服务
 
 来源 career-ops-hq/career-ops @ `090f787e2499f4fd29b615272946c99dfcab1c28`（MIT）。**同步只 diff `fingerprint-core.mjs` 一个文件**（每季度或遇 bug），diff 后**必跑 FP-7**（CJK 哨兵）。`repost-check.mjs` 是本地自写薄壳，无同步负担。设计/计划文档：`dev-docs/2026-10-18-career-ops-jd-fingerprint-{design,plan}.md`。
 
+### 2026-10-18 二轮深度审查遗留登记
+
+**已修（4 项）**：见 commits `eb6718b`（JD 指纹 4 阻塞+3 可选）、`04ba507`（FP-11 渲染层 + ReDoS + S3-C 断言行为化）、本 commit（中文数字）。
+
+**中文数字护栏的刻意取舍（重要，改 `job.mjs` 前必读）**：
+
+`NUM_RE` 现在认中文数词，但**中文数词必须含百/千/万/亿才算「可核对数字」**。原因：中文里「三段经历」的序数与「三十人」的规模量词**形态完全相同，正则无法区分**。
+
+| 场景 | 处理 | 理由 |
+|---|---|---|
+| 「十二万→十五万」「三千万→四千万」「两百→三百」 | 🔴 拦 | 业绩造假主路径，含大数单位 |
+| 「三段经历」「三部分」 | ✅ 放行 | 否则 generic 要点天天误报（S4B-5 实测会红），用户会关掉护栏 |
+| 「三十人→五十人」 | ⚪ **漏报** | 不含大数单位，形态上与序数不可分。**已知且刻意**，漏报优于误报 |
+
+要扩大覆盖就得引入语境判断（如「团队/规模/编制」邻近词），那是另一轮的事——改前先想清楚会不会把「三段经历」重新变成误报。
+
+**未修（按优先级，等拍板）**：
+
+| # | 问题 | 位置 | 为什么没修 |
+|---|---|---|---|
+| 🟡 | `/restore` 无解压尺寸上限（0.32MB 炸弹 → 314.9MB，放大 98 万倍） | `server.mjs` 备份/恢复 | 这是唯一能整体覆盖用户真实简历的路径，是数据安全网；改它必须跑满全量场景。修法已验证可行：`tar tzvf` 求第 5 列之和，超阈值拒绝，**任一行解析不出 size 就 fail closed** |
+| 🟡 | `extract.mjs` 同型二次方回溯（1482ms vs 正常 0.4ms） | `extract.mjs:122` `matchingClose` | **不能顺手加定量**：`/edit` 页面里 `<img src="data:image/png;base64,…">` 属性可达数十万字符，加上限会把 base64 当正文提取出来，改坏 AI 上下文。要真正线性化得换单遍扫描器（`removeElements` 那种），改动面大且要重跑全部提取相关用例。**单开一轮做** |
+| 🟡 | `app.link` 未过滤 `javascript:` 协议 → 存储型 XSS | `server.mjs` 投递记录 | 修法是一行：写入时校验 `https?://` 开头。触发需用户自粘 `javascript:` URL，概率低但后果是简历外泄 |
+| ⚪ | `/job/create` 粘贴 JD 无长度上限（链接路径 cap 4000 字，粘贴路径无 cap） | `server.mjs:1481` | 实测 6 次 2MB JD → docs-meta.json 涨到 12.59MB。建议 cap 到 64KB |
+| ⚪ | `GET /pdf` / `/export` 的 Origin 绕过（跨域 `<img src>` 不带 Origin） | `server.mjs:1327` | CSRF 门只拦带 Origin 的请求。渲染幂等，影响有限 |
+| ⚪ | `quote` 子串校验语义弱（`quote:'负责'` 存在即过） | `evidence.mjs:479` | 子串存在 ≠ 语义相关。加上中文数字缺口，这条链上「非数字的凭空编造」目前无护栏 |
+| ⚪ | `/ai/jd-text` 是 SSRF 原语（服务端 fetch 任意 http/https） | `server.mjs:2707` | CSRF 已挡死网页触发，只剩用户自粘链接一条路 |
+
+**已实证排除 8 项**（有命令输出，别重复查）：路径穿越 24 种攻击全灭（`VALID_ID` 全局闸门）、tar 条目穿越/绝对路径/symlink 3 种全拒、CSRF 有效（跨站/null Origin 均 403）、服务端 HTML 转义扎实、前端 XSS 0 处可注入、tx 崩溃恢复正确（SIGKILL 实测回滚成功）、rootLock 陈旧判定正确、并发保存无死锁无丢失（50 路全 200 + 双标签 409 冲突闭环）。
+
+> ⚠️ **审计陷阱**：`editor-shell.js` 第 34597 字节是**有意为之的 NUL 分隔符**（`edHashZid()` 哈希输入）。副作用是 `file` 判为 binary、**`grep` 会静默跳过整个文件**。任何 grep 式审计必须加 `-a`。
+
 ### 本批次已知遗留
 
 - 老草稿（无 `job.jdFp`）每次创建都要现算 SimHash，历史量大时会变慢——先量到再优化。

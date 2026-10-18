@@ -65,17 +65,74 @@ changes 最多 12 条，todos 最多 6 条。`;
 // 同时执行确定性事实护栏：改写引入新数字 / 丢失原文数字或日期 → 强制标记 conflict（导出前必须人工处理）
 // 捕获负号与中文数量单位（-30% / 12万 / 12 万），供 normNum 归一化；无单位时保持原样（S4B-1）
 // 负号必须捕获：`-30%` 若被切成 `30%`，符号丢失会让「-30 → 30」这类改写被误判为「数字原值保留」（漏报）
-const NUM_RE = /-?\d+(?:\.\d+)?\s*[千万亿]?\s*%?/g;
+// 中文数字是中文简历最自然的写法（「十二万」「三十人」），只认阿拉伯数字会让 AI 一改就零告警直进 PDF
+// （2026-10-18 二轮审查实测：「年营收十二万」→「十五万」完全不拦）。
+// 因此增加中文数词分支，并把科学计数法（1e3）与阿拉伯数字放进同一个 token，避免它被拆成
+// 「1」和「3」两个新增数字（实测「QPS 1000」→「QPS 1e3」误报）。
+// 中文数词必须含大数单位（百/千/万/亿）才视为「可核对数字」。
+// 原因：中文里「三段经历」的序数与「三十人」的规模量词形态完全相同，无法靠正则区分。
+// 取舍：拦「十二万→十五万」「三千万→四千万」（业绩造假主路径），
+//       放行「三段经历」（否则护栏天天误报，用户会关掉它）——漏报优于误报。
+// 已知漏报：「三十人→五十人」这类不含大数单位的规模表述本轮不拦（见 dev-docs/handoff.md 遗留登记）。
+const CN_NUM = '-?[零一二三四五六七八九十百千万亿两]*[百千万亿][零一二三四五六七八九十百千万亿两]*';
+// 分支顺序即优先级（正则交替取最先能匹配的）：
+//   ① 阿拉伯数字 + 中文单位链 + 可选中文式尾数（1万2 / 12万 / 3千万 / 1.5亿）——必须整块匹配，
+//      否则「1万2」会被拆成 1 / 万 / 2 三个 token，与「10002」判为不等（实测误报）
+//   ② 阿拉伯数字 + 可选科学计数 + 可选中文小单位 + 可选百分号（1000 / 1e3 / 30%）
+//   ③ 纯中文数词（十二万 / 三十 / 两百）
+const NUM_RE = new RegExp(
+  '-?\\d+(?:\\.\\d+)?[十百千万亿两]+(?:\\d+(?:\\.\\d+)?)?(?:e[+-]?\\d+)?' +
+  '|-?\\d+(?:\\.\\d+)?(?:e[+-]?\\d+)?\\s*[千万亿]?\\s*%?' +
+  '|' + CN_NUM, 'gi');
 export const DATE_TOKEN_RE = /(?:19|20)\d{2}(?:\s*[.\-/年]\s*\d{1,2}(?:\s*月)?)?/g;
 
-// 数字归一化：展开中文数量单位，使 12万 与 120000 判为同一个数字（S4B-1）
+const CN_DIGIT = { 零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+const CN_UNIT = { 十: 10, 百: 100, 千: 1000 };
+
+/** 中文数词 → 阿拉伯数字。纯数词段用「小单位累加、万/亿进位」两段算法。 */
+function cnToNum(s) {
+  const t = String(s).replace(/^-/, '');
+  const neg = String(s).startsWith('-');
+  let total = 0, section = 0, num = 0, seen = false;
+  for (const ch of t) {
+    if (ch in CN_DIGIT) { num = CN_DIGIT[ch]; seen = true; }
+    else if (ch in CN_UNIT) { section += (num || 1) * CN_UNIT[ch]; num = 0; seen = true; }
+    else if (ch === '万') { total += (section + num) * 1e4; section = 0; num = 0; seen = true; }
+    else if (ch === '亿') { total = (total + section + num) * 1e8; section = 0; num = 0; seen = true; }
+    else return null;                       // 非数词字符（如混了字母）→ 不认
+  }
+  if (!seen) return null;
+  const v = total + section + num;
+  return neg ? -v : v;
+}
+
+// 数字归一化：展开中文数量单位，使 12万 与 120000、十二万 与 12万 判为同一个数字（S4B-1 / S4B-8）
 // 无单位时保留原字符串——避免 Math.round 把 1.5 变成 2、把 2021.03 变成 2021
+const CN_U = { 十: 10, 百: 100, 千: 1000, 万: 1e4, 亿: 1e8 };
+const CN_U2 = { 两: 2 };
+
+/** 中文单位链累乘：千万 = 1000×10000 = 1e7（三千万 = 3×1e7） */
+function cnUnitVal(chain) {
+  let v = 1;
+  for (const ch of chain) v *= (CN_U[ch] || CN_U2[ch] || 1);
+  return v;
+}
+
 export function normNum(n) {
   const s = String(n).trim();
+  // 1) 纯中文数词：十二万 / 三十 / 两百 / 三千万
+  if (/^-?[零一二三四五六七八九十百千万亿两]*[百千万亿][零一二三四五六七八九十百千万亿两]*$/.test(s)) { const v = cnToNum(s); return v === null ? s : String(v); }
+  // 2) 科学计数法：1e3 必须与 1000 等价，否则「1000 → 1e3」被误判为新增/丢失数字
+  const sci = /^(-?\d+(?:\.\d+)?)e([+-]?\d+)$/i.exec(s);
+  if (sci) return String(Math.round(parseFloat(sci[1]) * Math.pow(10, Number(sci[2]))));
+  // 3) 阿拉伯数字 + 中文单位（可带中文式尾数）：12万 / 1.5亿 / 1万2 / 3千万
+  const mix = /^(-?\d+(?:\.\d+)?)([十百千万亿两]+)(\d+(?:\.\d+)?)?$/.exec(s);
+  if (mix) return String(Math.round(parseFloat(mix[1]) * cnUnitVal(mix[2]) + (mix[3] ? parseFloat(mix[3]) : 0)));
+  // 4) 原有纯阿拉伯分支：30% / -30 / 5000
   const m = /^(-?\d+(?:\.\d+)?)\s*(千|万|亿)?\s*(%)?$/.exec(s);
   if (!m) return s;
   if (!m[2]) return m[1] + (m[3] || '');
-  return String(Math.round(parseFloat(m[1]) * { 千: 1e3, 万: 1e4, 亿: 1e8 }[m[2]])) + (m[3] || '');
+  return String(Math.round(parseFloat(m[1]) * CN_U[m[2]])) + (m[3] || '');
 }
 
 // checkLoss（默认 true）：是否检查「丢失方向」。答法要点等提炼场景传 false——

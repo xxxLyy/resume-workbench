@@ -3072,3 +3072,35 @@ assert(t[0].why.indexOf('100%') < 0, `link 的退化 score 不得污染百分比
 assert(fpTodo([]).length === 0 && fpTodo(null).length === 0, '空 dupHints → 无 todo');
 console.log('✅ FP-11 渲染层回归（排序取真最大值 / 不重复已投递 / 不谎称指纹命中）');
 EOF
+
+# —— S4B-8：中文数字 + 三类误报（2026-10-18 二轮审查实测）——
+node --input-type=module << 'EOF'
+import { factGuard, normNum } from './job.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ S4B-8 ' + m); process.exit(1); } };
+// 中文数字绕过护栏（原实现只认阿拉伯数字，中文简历最自然的写法一改就零告警）
+assert(factGuard({ kind: 'replace', before: '年营收十二万', after: '年营收十五万' }).level === 'conflict', '中文数词「十二万→十五万」必须拦（业绩造假主路径）');
+assert(factGuard({ kind: 'replace', before: '预算三千万', after: '预算四千万' }).level === 'conflict', '「三千万→四千万」必须拦');
+assert(factGuard({ kind: 'replace', before: '管理两百人的团队', after: '管理三百人的团队' }).level === 'conflict', '「两百→三百」必须拦（含「百」单位）');
+assert(factGuard({ kind: 'replace', before: '年营收十二万', after: '年营收12万' }).level !== 'conflict', '「十二万」与「12万」是同一个数字，不得误报');
+assert(factGuard({ kind: 'replace', before: '增长1万2', after: '增长10002' }).level !== 'conflict', '中文式混写「1万2」与「10002」等价，不得误报');
+// 序数/描述性量词必须放行：中文里「三段经历」的序数与「三十人」的规模量词形态相同，无法靠正则区分。
+// 取舍：中文数词必须含百/千/万/亿才算可核对数字——拦业绩造假，放行序数，漏报优于误报（S4B-5 的 generic 要点会误报）。
+assert(factGuard({ kind: 'replace', before: '三段经历', after: '我经历过三段经历，技术方向一致' }).level !== 'conflict', '「三段经历」序数不得误报（护栏天天误报用户会关掉它）');
+assert(factGuard({ kind: 'replace', before: '方案分三部分', after: '我把方案拆成三部分落地' }).level !== 'conflict', '「三部分」不得误报');
+// 已知漏报（刻意不拦，登记在 handoff）：不含大数单位的规模表述形态上与序数不可分
+assert(factGuard({ kind: 'replace', before: '团队三十人', after: '团队五十人' }).level !== 'conflict', '已知漏报：不含大数单位的规模表述刻意不拦');
+// 归一化：中文数词 + 中文式混写 + 科学计数法
+assert(normNum('十二万') === '120000', 'normNum 十二万 → 120000');
+assert(normNum('两百') === '200', 'normNum 两百 → 200（含「百」单位）');
+assert(normNum('一亿') === '100000000', 'normNum 一亿 → 100000000');
+assert(normNum('三千万') === '30000000', 'normNum 三千万 → 30000000');
+assert(normNum('一万二') === '10002', 'normNum 一万二 → 10002（中文式混写）');
+assert(normNum('1万2') === '10002', 'normNum 1万2 → 10002（中文式混写归一）');
+assert(normNum('1e3') === normNum('1000'), 'normNum 科学计数法 1e3 与 1000 等价');
+assert(factGuard({ kind: 'replace', before: 'QPS 从 1000 提升', after: 'QPS 从 1e3 提升' }).level !== 'conflict', '科学计数法等值改写不得误报');
+// 原有的阿拉伯数字能力不得回归
+assert(normNum('12万') === '120000' && normNum('1.5亿') === '150000000' && normNum('30%') === '30%', '阿拉伯数字归一能力保持');
+assert(factGuard({ kind: 'replace', before: 'QPS 从 300 提升到 5000', after: '负责后端优化' }).level === 'conflict', '丢数字仍必须拦');
+assert(factGuard({ kind: 'replace', before: '服务 12 万日活', after: '服务 120000 日活' }).level !== 'conflict', '12万→120000 不得误报');
+console.log('✅ S4B-8 中文数字护栏 + 科学计数法/中文混写归一');
+EOF
