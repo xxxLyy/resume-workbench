@@ -50,7 +50,7 @@ export async function importPdfText(root, pdfPath, name) {
   } else {
     html = buildRawDoc(root, text, name, loadConfig(root) ? 'partial' : null);
   }
-  fs.writeFileSync(path.join(root, 'docs', id + '.html'), html);
+  fs.writeFileSync(path.join(root, 'docs', id + '.html'), html, { mode: 0o600 });   // 导入的简历正文同样收紧（2026-10-19 审查 ⚪-6 扩展）
   // 新建即登记样式来源（meta 唯一写入者 updateMeta）：theme/styleHash/typo/schemaVersion
   updateMeta(root, id, (m) => ({ ...(m || {}), ...themeRegistration('classic') }));
   return id;

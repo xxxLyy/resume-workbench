@@ -43,7 +43,11 @@ function sleepSync(ms) {
 export function atomicWrite(file, data) {
   const dir = path.dirname(file);
   const tmp = path.join(dir, '.' + path.basename(file) + '.' + process.pid + '.' + Date.now() + '.' + Math.floor(Math.random() * 1e6) + '.tmp');
-  fs.writeFileSync(tmp, data);
+  // mode 0o600：数据目录里的内容（简历正文 / 投递记录 / 素材 / 快照 / PDF）同机其他用户不该可读。
+  // 实测历史文件全是 0644（2026-10-19 安全审查 ⚪-6 扩展）。
+  // 这里加 mode 后，rename 保留源文件权限 → 落盘即 0600，一处覆盖全部写入路径。
+  // 已有文件的权限不会被这条改变（需一次性 chmod，见 dev-docs/handoff.md 记录）。
+  fs.writeFileSync(tmp, data, { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
 

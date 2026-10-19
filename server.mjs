@@ -41,6 +41,40 @@ const HERO_SVG = svgAsset('hero-mirror.svg');
 for (const d of ['docs', 'snapshots', 'pdfs', 'backups', 'logs', '.tx']) fs.mkdirSync(path.join(root, d), { recursive: true });
 
 // 服务日志由 launchd 写入 RESUME_LOG_FILE：启动时轮转一次，此后每 24h 检查（copytruncate，50MB 触发、留尾部 2MB 到 .1）
+// 日志权限收紧（2026-10-19 安全审查 ⚪-6）：日志由 launchd 打开，创建时的 umask 决定权限，
+// 实测是 0644（同机其他用户可读），内容含绝对路径与渲染栈。启动时改一次即可。
+// 日志文件不在本仓库的 gitignore 关注范围，但它在数据目录里，权限应与 config.json 一致。
+try {
+  const _lf = process.env.RESUME_LOG_FILE;
+  if (_lf && fs.existsSync(_lf)) fs.chmodSync(_lf, 0o600);
+} catch (e) { console.error('[startup] 日志权限收紧失败: ' + (e && e.message)); }
+// ===== 数据目录权限收紧（2026-10-19 安全审查 ⚪-6 扩展）=====
+// 背景：实测数据目录里的内容（简历正文 / 投递记录 / 素材 / 快照 / PDF）全是 0644，
+// 同机其他用户可读。数据文件属个人隐私，权限应与 config.json 一致（0600）。
+// 覆盖三条路径：① 启动时修历史遗留 ② atomicWrite 落盘即 0600（tx.mjs）
+// ③ 恢复/回退走 cpSync（不经过 atomicWrite），恢复后须再收紧一次。
+function hardenDataPerms(root) {
+  for (const f of ['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json', 'config.json']) {
+    const fp = path.join(root, f);
+    try { if (fs.existsSync(fp)) fs.chmodSync(fp, 0o600); } catch {}
+  }
+  const walk = (dir) => {
+    let ents = [];
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      const fp = path.join(dir, e.name);
+      if (e.isDirectory()) walk(fp);
+      else { try { fs.chmodSync(fp, 0o600); } catch {} }
+    }
+  };
+  for (const d of ['docs', 'snapshots', 'pdfs', 'backups']) {
+    const dp = path.join(root, d);
+    if (!fs.existsSync(dp)) continue;
+    try { fs.chmodSync(dp, 0o700); } catch {}   // 目录不给其他用户列目录
+    walk(dp);
+  }
+}
+try { hardenDataPerms(root); } catch (e) { console.error('[startup] 数据权限收紧失败: ' + (e && e.message)); }
 rotateLogIfNeeded(process.env.RESUME_LOG_FILE);
 setInterval(() => rotateLogIfNeeded(process.env.RESUME_LOG_FILE), 24 * 3600 * 1000).unref();
 
@@ -99,7 +133,7 @@ function assertWritable(name) {
 function writeJson(name, data) {
   assertWritable(name);
   const tmp = dataFile(name) + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(data));
+  fs.writeFileSync(tmp, JSON.stringify(data), { mode: 0o600 });   // 0600：数据文件同机其他用户不该可读（2026-10-19 审查 ⚪-6 扩展）
   fs.renameSync(tmp, dataFile(name));
 }
 const loadMeta = () => readJson('meta', {});
@@ -620,7 +654,7 @@ const loadSnapMeta = (docId) => { try { return JSON.parse(fs.readFileSync(snapMe
 const saveSnapMeta = (docId, meta) => {
   fs.mkdirSync(snapDir(docId), { recursive: true });
   const tmp = snapMetaPath(docId) + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(meta));
+  fs.writeFileSync(tmp, JSON.stringify(meta), { mode: 0o600 });   // 同上
   fs.renameSync(tmp, snapMetaPath(docId));
 };
 function protectedSnaps(id, extraTs) {
@@ -3405,12 +3439,34 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     // ===== 恢复（校验 → 预览 → 安全点 → 合并/替换；支持回退）=====
     if (req.method === 'POST' && url.pathname === '/restore') {
       const ts = Date.now();
-      const tmpTar = path.join(os.tmpdir(), `resume-restore-${ts}.tar.gz`);
+      // 临时名加 pid + 随机串：原来只用 Date.now()，同毫秒的两个并发请求会撞同一个文件，
+      // 其中一个的 finally rmSync 会删掉另一个还在用的（2026-10-19 审查 ⚪-4）。
+      const tmpTar = path.join(os.tmpdir(), `resume-restore-${ts}-${process.pid}-${randomBytes(4).toString('hex')}.tar.gz`);
       try { await readBodyToFile(req, tmpTar, 300 * 1024 * 1024); }
       catch (e) {
         fs.rmSync(tmpTar, { force: true });
         return send(e.message === 'body too large' ? 413 : 400, JSON.stringify({ ok: false, error: '备份包上传失败：' + e.message }), 'application/json');
       }
+      // 恢复全程持 rootLock（2026-10-19 审查 ⚪-4）：/restore 原来不走任何锁，
+      // 两个并发恢复会交错写同一批文档（备份/合并/替换都是整目录操作）。rootLock 是跨进程排他锁，
+      // 与 /save / 迁移共用同一把 —— 已被别人持有时直接拒绝，不排队。
+      try { rootLock.acquire(root); }
+      catch (e) {
+        try { fs.rmSync(tmpTar, { force: true }); } catch {}
+        if (e instanceof LockHeld) return sendJson(409, { ok: false, error: '另一个写操作正在进行（备份/恢复/迁移），请稍后重试' });
+        throw e;
+      }
+      // 释放用 res 的 finish/close 而非 try/finally：/restore 路由是内联在 handler 里的
+      // 大块代码，有多个 return 点（fail / 预览 / 合并 / 替换 / undo），逐点配对释放必漏。
+      // 响应结束即释放，覆盖全部返回路径（2026-10-19 审查 ⚪-4）。
+      let restoreLockReleased = false;
+      const releaseRestoreLock = () => {
+        if (restoreLockReleased) return;
+        restoreLockReleased = true;
+        try { rootLock.release(root); } catch {}
+      };
+      res.on('finish', releaseRestoreLock);
+      res.on('close', releaseRestoreLock);
       const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-restore-'));
       const fail = (msg, code = 400) => { fs.rmSync(stage, { recursive: true, force: true }); fs.rmSync(tmpTar, { force: true }); return sendJson(code, { ok: false, error: msg }); };
       // 条目校验：类型/路径/大小，防路径穿越
@@ -3513,6 +3569,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const safety = path.join(root, 'backups', 'restore-' + ts);
       fs.mkdirSync(path.join(safety, 'data'), { recursive: true });
       for (const d of ['docs', 'snapshots', 'pdfs']) if (fs.existsSync(path.join(root, d))) fs.cpSync(path.join(root, d), path.join(safety, 'data', d), { recursive: true });
+      try { hardenDataPerms(root); } catch {}   // cpSync 不经 atomicWrite → 权限随源文件，恢复后统一收紧
       for (const f of ['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json']) if (fs.existsSync(path.join(root, f))) fs.copyFileSync(path.join(root, f), path.join(safety, 'data', f));
       fs.writeFileSync(path.join(safety, 'manifest.json'), JSON.stringify({ ts, mode, at: new Date().toISOString(), preview }));
       try {
@@ -3523,6 +3580,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
             // 否则本地旧数据残留，与 UI 承诺相反（原先此处 continue 跳过了清理）
             if (fs.existsSync(path.join(root, d))) for (const f of fs.readdirSync(path.join(root, d))) fs.rmSync(path.join(root, d, f), { recursive: true, force: true });
             if (fs.existsSync(src)) fs.cpSync(src, path.join(root, d), { recursive: true });
+            try { hardenDataPerms(root); } catch {}   // cpSync 不经 atomicWrite → 权限随源文件，恢复后统一收紧
           }
           for (const f of ['applications.json', 'materials.json', 'evaluations.json']) if (fs.existsSync(path.join(stage, f))) fs.copyFileSync(path.join(stage, f), path.join(root, f));
           // docs-meta 成对替换：经 updateMeta 逐文档写（唯一写入者），不裸 copyFileSync 覆盖共享文件；损坏 → 抛 CORRUPT（500），绝不当成 {}
@@ -3533,6 +3591,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
           for (const d of ['docs', 'snapshots']) {
             const src = path.join(stage, d);
             if (fs.existsSync(src)) fs.cpSync(src, path.join(root, d), { recursive: true });
+            try { hardenDataPerms(root); } catch {}   // cpSync 不经 atomicWrite → 权限随源文件，恢复后统一收紧
           }
           // PDF：只补本地缺失的（不覆盖本地较新产物）；存档 PDF 缺失时补齐
           const srcP = path.join(stage, 'pdfs');
@@ -3589,6 +3648,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       // 原先只建 safety2 本身并把内容放在其下，等于自己造的回退点无法再回退
       fs.mkdirSync(path.join(safety2, 'data'), { recursive: true });
       for (const d of ['docs', 'snapshots', 'pdfs']) if (fs.existsSync(path.join(root, d))) fs.cpSync(path.join(root, d), path.join(safety2, 'data', d), { recursive: true });
+      try { hardenDataPerms(root); } catch {}   // cpSync 不经 atomicWrite → 权限随源文件，恢复后统一收紧
       for (const f of ['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json']) if (fs.existsSync(path.join(root, f))) fs.copyFileSync(path.join(root, f), path.join(safety2, 'data', f));
       try {
         for (const d of ['docs', 'snapshots', 'pdfs']) {
@@ -3596,6 +3656,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
           if (!fs.existsSync(src)) continue;
           fs.rmSync(path.join(root, d), { recursive: true, force: true });
           fs.cpSync(src, path.join(root, d), { recursive: true });
+          try { hardenDataPerms(root); } catch {}   // cpSync 不经 atomicWrite → 权限随源文件，恢复后统一收紧
         }
         for (const f of ['applications.json', 'materials.json', 'evaluations.json']) if (fs.existsSync(path.join(dir, f))) fs.copyFileSync(path.join(dir, f), path.join(root, f));
         // docs-meta 成对回退：经 updateMeta 逐文档写（唯一写入者）

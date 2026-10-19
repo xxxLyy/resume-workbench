@@ -13,6 +13,7 @@ export function rotateLogIfNeeded(file) {
     fs.readSync(fd, buf, 0, len, st.size - len);
     fs.closeSync(fd);
     fs.writeFileSync(file + '.1', buf);
+    try { fs.chmodSync(file + '.1', 0o600); } catch {}   // 轮转副本同为主日志权限（2026-10-19 审查 ⚪-6）
     fs.truncateSync(file, 0);
   } catch (e) { console.error('日志轮转失败: ' + e.message); }
 }

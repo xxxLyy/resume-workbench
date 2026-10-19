@@ -2,7 +2,7 @@
 // 生产渲染（render.mjs）与浏览器级测试（test-editor.mjs）共用，保证同一二进制。
 // 纪律：RESUME_CHROMIUM 无效必须报错；缓存可失效；探测互斥（等待方不再发探针）。
 import { chromium } from 'playwright-core';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -25,7 +25,12 @@ export function expectedRevision() {
 
 function binIn(dir) {
   try {
-    return execSync(`find "${dir}" -name "chrome-headless-shell" -type f 2>/dev/null | head -1`, { shell: '/bin/bash' }).toString().trim() || null;
+    // execFileSync 而非 execSync + 字符串插值（2026-10-19 安全审查 ⚪-2）：
+    // 原写法把路径插进 shell 命令串，路径含引号/$( ) 就会被 shell 解释。
+    // dir 来自 readdirSync（可控性低）但这是全项目仅剩的两处 shell 插值，消掉整类风险。
+    // 不用 `-quit`（GNU 扩展，BSD 兼容性不稳），改为取输出首行。
+    const out = execFileSync('find', [dir, '-name', 'chrome-headless-shell', '-type', 'f'], { maxBuffer: 4 * 1024 * 1024 }).toString();
+    return out.split('\n').map((s) => s.trim()).filter(Boolean)[0] || null;
   } catch { return null; }
 }
 
@@ -68,7 +73,7 @@ export async function probe(bin, tmpDir) {
   } catch { return { ok: false, reason: 'launch-or-pdf-failed' }; }
   finally { try { await browser?.close(); } catch {} }
   try {
-    const txt = execSync(`pdftotext "${out}" -`, { shell: '/bin/bash', timeout: 30000 }).toString();
+    const txt = execFileSync('pdftotext', [out, '-'], { maxBuffer: 32 * 1024 * 1024, timeout: 30000 }).toString();
     return txt.includes('RESUME-PROBE-中文文本层') ? { ok: true } : { ok: false, reason: 'no-text-layer' };
   } catch { return { ok: false, reason: 'pdftotext-failed' }; }
   finally { try { fs.rmSync(out, { force: true }); } catch {} }

@@ -1,7 +1,7 @@
 // doctor.mjs — 首次启动/开源交付检查。只读；不触发网络连接测试（连接由用户主动触发）。
 import fs from 'node:fs';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { readCache, cacheValid, expectedRevision, playwrightVersion } from './chromium.mjs';
 
 const ROOT = process.env.RESUME_ROOT || path.dirname(new URL(import.meta.url).pathname);
@@ -19,10 +19,12 @@ if (process.argv.includes('--probe')) {
   catch (e) { add('Chromium 探针', false, String(e.message).split('\n')[0], '见 dev-docs/2026-09-23-s0-design.md §2.2'); }
 }
 for (const t of ['pdftotext', 'pdfinfo', 'pdftoppm']) {
-  let ok = false; try { execSync(`command -v ${t}`, { shell: '/bin/bash' }); ok = true; } catch {}
+  // execFileSync 而非 execSync + 字符串插值（2026-10-19 安全审查 ⚪-2 扩展）：
+  // command -v 是 shell 内建，execFileSync 找不到它，改用真实二进制 which（macOS/Linux 都有）。
+  let ok = false; try { execFileSync('which', [t], { stdio: 'ignore' }); ok = true; } catch {}
   add(t, ok, '', 'brew install poppler');
 }
-{ let ok = false; try { execSync('command -v ffmpeg', { shell: '/bin/bash' }); ok = true; } catch {}
+{ let ok = false; try { execFileSync('which', ['ffmpeg'], { stdio: 'ignore' }); ok = true; } catch {}
   add('ffmpeg', ok, '视觉门禁 RGB24 比较依赖（tools/pixel-diff.mjs）', 'brew install ffmpeg'); }
 let cfg = null; try { cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8')); } catch {}
 const p = cfg && cfg.profiles && cfg.profiles[cfg.active || 0];
