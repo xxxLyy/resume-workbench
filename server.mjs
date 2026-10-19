@@ -8,7 +8,7 @@ import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { structureText } from './structure.mjs';
-import { loadProfiles, hasLLM, chat, chatMsgs, listModels } from './llm.mjs';
+import { loadProfiles, hasLLM, chat, chatMsgs, listModels, assertSafeBaseURL } from './llm.mjs';   // assertSafeBaseURL：/ai/jd-text 的 SSRF 防线
 import { buildRewrite, buildChat, parseChanges, buildReview, buildMatch, parseReport } from './ai.mjs';
 import { buildJobPrompt, parseJobOps, pageSuggestions } from './job.mjs';
 import { buildEvalPrompt, parseEvalReport } from './eval.mjs';
@@ -243,6 +243,38 @@ const legacyFlowStatus = (m) => (flowOf(m) === 'reviewed' ? 'deliverable' : 'dra
 const mkGenTask = () => ({ taskId: null, status: 'idle', startedAt: null, baseHash: null, error: null, scope: null });
 // ===== S4a-T4：AI 任务最小可靠性（设计 §6 v1.6——taskId / 原子启动 / 三类回调校验 / 双层超时 / 取消 / 重启恢复）=====
 const GEN_KINDS = ['evidence', 'changes', 'interview'];
+
+// ===== /ai/* 与渲染的全局并发闸门（2026-10-19 安全审查 🟡-1 / 🟡-3）=====
+// 起因：/job/gen-* 有 startGenTask 的「同类型最多 2 个」闸门，但 6 个 /ai/* 端点
+// （rewrite/chat/review/match/zone-analyze/zone-rewrite）直接 await chat()，零闸门 ——
+// 任何本地进程循环打就能无限并发调 AI API 直接烧钱。renderDoc 同理：并发 GET /pdf
+// 在 stale 时各拉起一个 Chromium（实测 3 请求 = 12 个 chrome-headless-shell），无上限打爆内存。
+// 实现：统一在路由分发前取槽，用 res 的 finish/close 释放 —— 不必进每个端点包 try/finally，
+// 也不会漏掉将来新增的端点（豁免表显式列出）。
+// ⚠️ 计数器必须在【模块级】：放请求处理函数内会每次请求归零，等于没有闸门
+//   （2026-10-19 首次实现踩过这个坑，实测 6 并发全 200、假 LLM 峰值 6）。
+const AI_MAX_INFLIGHT = 2;
+const RENDER_MAX_INFLIGHT = 2;
+const AI_EXEMPT = new Set(['/ai/test']);   // 测连接不调 LLM，必须放行否则无法验证配置
+const aiSlot = { value: 0 }, renderSlot = { value: 0 };
+
+function gate(req, res, pathname) {
+  const take = (counter, limit, msg) => {
+    if (counter.value >= limit) return msg;
+    counter.value++;
+    let done = false;
+    const rel = () => { if (!done) { done = true; counter.value--; } };
+    res.on('finish', rel); res.on('close', rel);
+    return null;
+  };
+  if (req.method === 'GET' && (pathname === '/pdf' || pathname === '/export')) {
+    return take(renderSlot, RENDER_MAX_INFLIGHT, '渲染排队已满（最多同时 2 个），请稍候');
+  }
+  if (req.method === 'POST' && /^\/ai\//.test(pathname) && !AI_EXEMPT.has(pathname)) {
+    return take(aiSlot, AI_MAX_INFLIGHT, 'AI 请求排队已满（最多同时 2 个），请稍候');
+  }
+  return null;
+}
 const GEN_TTL_MS = 10 * 60 * 1000;   // 任务级总时限：启动 / 读取 / 完成回调三点校验（兜底 status 永挂 running）
 const genExpired = (t, now) => !!(t && t.status === 'running' && typeof t.startedAt === 'number' && t.startedAt + GEN_TTL_MS < now);
 const newGenTaskId = () => 't-' + randomBytes(4).toString('hex');
@@ -1493,6 +1525,13 @@ async function handler(req, res) {
   const sendJson = (code, obj) => send(code, JSON.stringify(obj), 'application/json; charset=utf-8');
   const redirect = (loc) => { res.writeHead(303, { Location: loc }); res.end(); };
   if (!VALID_ID.test(id)) return send(400, 'invalid id', 'text/plain');
+  // Host 白名单（DNS rebinding 防线，2026-10-19 安全审查 🔴-1）：
+  // 下面的 CSRF 判定比较 origin.host 与 req.headers.host —— 两个值都来自请求，攻击者可控。
+  // DNS rebinding 下（evil.com TTL=0 重绑定到 127.0.0.1）浏览器认为同源，服务端也判定同源，
+  // 于是任意网页可读全部简历正文 + 明文 API Key，可删文档、/restore 覆盖全部简历。
+  // 绑 127.0.0.1 防的是网络，防不住浏览器——用户在同一台机器上开网页是日常。
+  const reqHost = String(req.headers.host || '');
+  if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d{1,5})?$/.test(reqHost)) return send(421, 'bad Host', 'text/plain');
   // 跨进程排他锁：迁移/保存持有 .migrate.lock（他人新鲜持锁）期间，一切写请求一律 503；纯读不受影响。
   // 写请求 = 非 GET/HEAD，外加 WRITE_ON_GET 里"读名义下的写"（GET /pdf、/export 会 renderCurrent→updateMeta 并覆写 PDF）。
   const mutating = (req.method !== 'GET' && req.method !== 'HEAD')
@@ -1508,6 +1547,15 @@ async function handler(req, res) {
     try { sameHost = new URL(req.headers.origin).host === req.headers.host; } catch {}
     if (!sameHost) return send(403, 'cross-origin write rejected', 'text/plain');
   }
+  // ===== /ai/* 与渲染的全局并发闸门（2026-10-19 安全审查 🟡-1 / 🟡-3）=====
+  // 起因：/job/gen-* 有 startGenTask 的「同类型最多 2 个」闸门，但 6 个 /ai/* 端点
+  // （rewrite/chat/review/match/zone-analyze/zone-rewrite）直接 await chat()，零闸门 ——
+  // 任何本地进程循环打就能无限并发调 AI API 直接烧钱。renderDoc 同理：并发 GET /pdf
+  // 在 stale 时会各拉起一个 Chromium（实测 3 请求 = 12 个 chrome-headless-shell），无上限打爆内存。
+  // 实现：统一在路由分发前取槽，用 res 的 finish/close 事件释放 —— 不必进每个端点包 try/finally，
+  // 也不会漏掉将来新增的端点（豁免表显式列出）。
+  const gated = gate(req, res, url.pathname);
+  if (gated) return sendJson(429, { ok: false, error: gated });
   try {
     // ===== 静态资源（代码目录，非数据目录）=====
     if (req.method === 'GET' && url.pathname === '/ai-panel.js') {
@@ -2850,7 +2898,13 @@ async function handler(req, res) {
       };
     </script>`, 'apps'));
     }
-    if (req.method === 'GET' && url.pathname === '/app/ics') {
+    // ICS 文本转义（2026-10-19 安全审查 🟡-2）：CRLF 必须转义，否则 SUMMARY 里的换行
+// 会注入出合法的 ICS 属性行（如 URL:https://evil/），日历客户端直接渲染成攻击者链接。
+// 原实现只转了 , ; \（DESCRIPTION 转了 \n、SUMMARY 漏了）——现已抽成共用函数，两处都覆盖。
+const icsEsc = (x) => String(x == null ? '' : x)
+  .replace(/\\/g, '\\\\').replace(/\r\n|\r|\n/g, '\\n')
+  .replace(/,/g, '\\,').replace(/;/g, '\\;');
+if (req.method === 'GET' && url.pathname === '/app/ics') {
       const aid = url.searchParams.get('id') || '';
       const idx = parseInt(url.searchParams.get('i') || '0', 10);
       if (!/^[0-9-]+$/.test(aid)) return send(404, 'app not found', 'text/plain');
@@ -2864,8 +2918,8 @@ async function handler(req, res) {
       if (!/^\d{8}T\d{6}Z?$/.test(dt)) return send(400, '面试时间未设置或格式非法，无法导出日历', 'text/plain');
       const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'BEGIN:VEVENT',
         `UID:${app.id}-${idx}@resume.local`, `DTSTART:${dt}`,
-        `SUMMARY:${app.company} ${iv.round || '面试'}`.replace(/[,;\\]/g, (m) => '\\' + m),
-        `DESCRIPTION:${String(iv.questions || '').replace(/\\/g, '\\\\').replace(/[,;]/g, (m) => '\\' + m).replace(/\r?\n/g, '\\n')}`.slice(0, 500),
+        `SUMMARY:${icsEsc(app.company)} ${icsEsc(iv.round || '面试')}`,
+        `DESCRIPTION:${icsEsc(iv.questions || '')}`.slice(0, 500),
         'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
       res.writeHead(200, { 'Content-Type': 'text/calendar; charset=utf-8', 'Content-Disposition': `attachment; filename="interview-${idx + 1}.ics"` });
       return res.end(ics);
@@ -2885,6 +2939,10 @@ async function handler(req, res) {
     // ===== JD 链接读取 =====
     if (req.method === 'POST' && url.pathname === '/ai/jd-text') {
       const body = JSON.parse(await readBody(req));
+      // SSRF 防线复用 /ai/test 的同一道 assertSafeBaseURL（2026-10-19 安全审查 🟡-5）：
+      // 原先这里只校验 ^https?://，任意内网/云元数据地址（169.254.169.254 等）都能被服务端抓取并原文回显。
+      try { assertSafeBaseURL(String(body.url || '').trim()); }
+      catch (e) { return sendJson(400, { ok: false, error: 'URL 不安全：' + (e && e.message || '') }); }
       if (typeof body.url !== 'string' || !/^https?:\/\//.test(body.url.trim()))
         return send(400, 'url 仅支持 http/https', 'text/plain');
       try {
@@ -3566,6 +3624,13 @@ async function handler(req, res) {
       if (!fs.existsSync(docPath(id))) return send(404, 'doc not found', 'text/plain');
       // 陈旧判定 = 渲染标识（staleInfo），mtime 仅日志；缺失/过期自动重渲一律走 renderCurrent 冻结组装。
       // 绝不直渲磁盘 HTML：迁移后当前文档不含内联 typo，直渲会丢排版。
+      // PDF 路径存在但不是普通文件（如被外部建成同名目录）时，renderCurrent 会在
+      // atomicWrite 的 rename 上抛 EISDIR，异常冒泡到通用 catch；那时响应头可能已发 →
+      // ERR_HTTP_HEADERS_SENT 撞掉整个进程（2026-10-19 实测）。故在【渲染之前】拦。
+      const _pdfPath0 = pdfPath(id);
+      if (fs.existsSync(_pdfPath0) && !fs.statSync(_pdfPath0).isFile()) {
+        return send(500, 'PDF 路径不是普通文件（可能是同名目录），已拒绝渲染', 'text/plain');
+      }
       let rst = currentRenderState(id);
       if (rst.stale) {
         console.error(`[render] /pdf 自动重渲 id=${id} state=${rst.state} renderInputId=${rst.frozen.renderInputId} docMtime=${rst.docMtime}（mtime 仅日志）`);
@@ -3790,6 +3855,9 @@ async function handler(req, res) {
     }
     send(404, 'not found', 'text/plain');
   } catch (e) {
+    // 头已发出时不能再 send() —— ERR_HTTP_HEADERS_SENT 会撞掉整个进程。
+    // 2026-10-19 修 /pdf 空响应时踩到：深层异常冒泡到这里时 res 已开始写。
+    if (res.headersSent || res.writableEnded) { try { res.end(); } catch {} console.error('[handler] 响应已开始，跳过错误回传:', e && e.message); return; }
     if (e instanceof LockHeld) return send(409, '另一个写操作正在进行，请稍后重试', 'text/plain');
     send(e instanceof SyntaxError ? 400 : e.message === 'body too large' ? 413 : (e.httpCode || 500),
       e instanceof SyntaxError ? 'bad JSON body' : (e.code === 'CORRUPT' ? e.message : 'server error: ' + e.message), 'text/plain');

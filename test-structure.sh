@@ -3877,3 +3877,38 @@ try {
 }
 console.log('✅ EV-7 评估 UI 入口 + 报告卡片转义（XSS）+ restore 预览 evals 计数');
 EOF
+
+# —— SEC-1：Host 白名单（DNS rebinding 防线，2026-10-19 安全审查 🔴-1）——
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const assert = (c, m) => { if (!c) { console.error('❌ SEC-1 ' + m); process.exit(1); } };
+const srv = readFileSync('./server.mjs', 'utf8');
+// 必须有 Host 白名单，且只放行回环地址
+assert(/req\.headers\.host/.test(srv) && /421/.test(srv), '必须校验 Host 头并返回 421');
+assert(/127\\\.0\\\.0\\\.1\|localhost\|\\\[::1\\\]/.test(srv), 'Host 白名单必须含 127.0.0.1 / localhost / [::1]');
+// 反向哨兵：不得出现「后缀放行」这类绕过（evil.com 的子串形式）
+assert(!/host\.endsWith\(|host\.includes\(/.test(srv), 'Host 校验不得用 endsWith/includes（子串可绕过）');
+// CSRF 判定仍在（Host 白名单是它的前提，不是替代）
+assert(/sameHost/.test(srv), 'CSRF 同源判定应保留（Host 白名单是前提）');
+console.log('✅ SEC-1 Host 白名单（DNS rebinding 防线）');
+EOF
+
+# —— SEC-2：/ai/* 与渲染的全局并发闸门（2026-10-19 安全审查 🟡-1 / 🟡-3）——
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const assert = (c, m) => { if (!c) { console.error('❌ SEC-2 ' + m); process.exit(1); } };
+const srv = readFileSync('./server.mjs', 'utf8');
+assert(/const AI_MAX_INFLIGHT = 2/.test(srv), 'AI 并发上限必须是 2');
+assert(/const RENDER_MAX_INFLIGHT = 2/.test(srv), '渲染并发上限必须是 2');
+assert(/sendJson\(429/.test(srv), '超限必须返回 429');
+assert(/AI_EXEMPT = new Set\(\['\/ai\/test'\]\)/.test(srv), '豁免表只能是 /ai/test（它不调 LLM）');
+assert(/'\/pdf' \|\| pathname === '\/export'/.test(srv), '渲染闸门须覆盖 /pdf 与 /export');
+assert(/\/\^\\\/ai\\\//.test(srv), '闸门须按 /ai/ 前缀覆盖全部端点（源码 /^\\/ai\\//）');
+// ⚠️ 关键回归哨兵：计数器必须在模块级 —— 放请求处理函数内会每次请求归零，等于没有闸门
+//    （2026-10-19 实测踩过：6 并发全 200、假 LLM 峰值 6，闸门形同虚设）
+assert(/const aiSlot = \{ value: 0 \}, renderSlot = \{ value: 0 \}/.test(srv), '必须用模块级槽位对象持有计数');
+assert(!/^\s*let aiInFlight = 0/m.test(srv), '不得把计数器声明在请求处理函数内（每请求归零 = 无闸门）');
+// gate 必须显式收 req/res —— 模块级函数访问不到 handler 的局部参数
+assert(/function gate\(req, res, pathname\)/.test(srv), 'gate 必须显式接收 req/res');
+console.log('✅ SEC-2 /ai/* 与渲染并发闸门（429 + 模块级计数器 + 显式参数）');
+EOF

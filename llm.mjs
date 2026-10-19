@@ -28,11 +28,18 @@ export function hasLLM(root) {
 // text/plain + JSON body 属 CORS 简单请求（免预检），任意网页可让本机去请求它指定的地址，
 // 且 Bearer apiKey 会随之发往该地址。此处挡掉无合法用途的高危端点（云元数据）与非 http(s) 协议。
 // 注意：不拦 127.0.0.1/局域网——本地模型（Ollama/LM Studio）是本项目的正当用法。
-function assertSafeBaseURL(u) {
+export function assertSafeBaseURL(u) {   // 导出：/ai/jd-text 的 SSRF 防线复用（2026-10-19 安全审查 🟡-5）
   let url;
   try { url = new URL(String(u)); } catch { throw new Error('LLM 地址非法'); }
   if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('LLM 地址协议不支持');
-  if (/^(169\.254\.|metadata\.|fd00:)/i.test(url.hostname)) throw new Error('禁止访问云元数据端点');
+  // hostname 对 IPv6 保留方括号（new URL('http://[fd00::1]/').hostname === '[fd00::1]'），
+  // 故黑名单两写：带括号与不带括号都要挡（2026-10-19 实测漏了带括号那条）。
+  // 刻意【不挡 loopback / 私网段】：本函数服务于两个不同用途——
+  //   /ai/test      连 LLM 端点，本机模型（如 ollama）就跑在 127.0.0.1，挡了就没法用
+  //   /ai/jd-text   抓 JD 页面，企业内网招聘系统是真实场景（JD 常只在内网可见），挡了会破功能
+  // 云元数据段（169.254 / metadata. / fd00: / fe80:）没有任何正当用途，一律挡死。
+  const _host = String(url.hostname || '').replace(/^\[|\]$/g, '');
+  if (/^(169\.254\.|metadata\.|fd00:|fe80:)/i.test(_host)) throw new Error('禁止访问云元数据端点或内网保留地址');
   return url;
 }
 
