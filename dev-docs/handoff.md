@@ -146,6 +146,27 @@ launchctl kickstart -k gui/$(id -u)/com.lhx.resume-server   # 重启常驻服务
 
 要扩大覆盖就得引入语境判断（如「团队/规模/编制」邻近词），那是另一轮的事——改前先想清楚会不会把「三段经历」重新变成误报。
 
+## 大模型链路现状（2026-10-19 实测，替代原 §4 的「无可用模型」）
+
+**当前配置**：MiniMax · `https://api.minimax.cn/v1` · `MiniMax-M3.1-Flash-Preview` · `reasoningEffort: max` · `timeoutMs: 600000`。API 连通已实测（`content` 正常返回）。
+
+**⚠️ max 思考的真实成本**（实测，不是估算）：
+
+| 项 | 实测值 |
+|---|---|
+| 岗位适配 prompt 规模 | 39890 字符 ≈ **27K token**（简历全文 + JD） |
+| max 思考产出 | **21506 token** |
+| 单次耗时 | 276 秒（真实适配）／160s／265s／简单 prompt 5.68s |
+| `high` 对照 | 4.02s vs max 5.68s（简单 prompt） |
+
+**换模型或调 effort 前必看**：max 下一次岗位适配要等 4–5 分钟，属预期不是卡死。嫌慢就把设置页「思考程度」改 `high`。
+
+**已修的两个坑**：
+
+1. **`reasoning_effort` 落地**（补上原 §4 记的「未实现」）。答案是 MiniMax——官方文档明确支持 `low/medium/high/xhigh/max`，默认 `max`；当初用户说的 max 就是这家。实现为 **profile 级可选**（设置页新增输入框），**有值才发该参数**：不是所有厂商认这个字段，本文件已因硬编码 `temperature` 让 Kimi 报过 400，同一个坑不踩第二次。
+2. **`withRetry` 判定有真 bug**（原实现 POST 只在 `e.status >= 500` 时重试）。但**网络层失败（`fetch failed` / 超时）根本没有 status**，`undefined >= 500` 为 false → **最该重试的「请求没送达」反而不重试**。现象：max + 27K prompt 的长请求偶发断连（实测 302 秒后 `fetch failed`），一次断连整个岗位适配就失败。
+   改为 **POST 只重试网络错误（`status === undefined`），不重试 5xx**——5xx 可能已计费，重发就是重复扣费（POST 重复计费比失败更糟）。
+
 **本轮（第三轮）已修**：
 
 | 项 | 位置 | 要点 |

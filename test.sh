@@ -1057,7 +1057,13 @@ sleep 5.6   # 迟到的成功回调（slow=5000）到达 → taskId 校验不过
 echo '✅ S4a-T4 取消带 taskId（重复取消 409 / 迟到成功回调丢弃不落盘）'
 
 # —— d2. 迟到错误回调同样丢弃 ——
-rm -f "$TEST_DIR/llm-slow"
+# 时序显式控制：llm-slow 保留（不删）+ llm-err → stub 延迟 5 秒才返 500，
+# 让取消先落地，错误回调随后到达（被 finishGenTask 的 status!=='running' 丢弃）。
+# 【为何改】原实现 rm 掉 llm-slow 让 500 立即返回，靠 withRetry 的 1.5s×2 重试延迟
+# 撑出时间窗——那是**被测实现的内部细节**，不是测试意图。2026-10-19 修正 withRetry
+# （POST 只重试网络错误、不重试 5xx，见 llm.mjs）后立即 500 让回调抢在取消前落地，
+# 本断言转红。改为显式延迟后，断言与被测行为（取消后迟到回调必须被丢弃）一字未动。
+echo 5000 > "$TEST_DIR/llm-slow"
 touch "$TEST_DIR/llm-err"
 T4TE=$(curl -s -X POST "$B/job/gen-start?id=$T4DOC&kind=changes" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.ok?j.taskId:"")})')
 [ -n "$T4TE" ] || fail 'S4a-T4 错误路径夹具启动失败'

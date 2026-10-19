@@ -3255,3 +3255,22 @@ const g = parseInterview(JSON.stringify({ generic: [{ question: '自我介绍', 
 assert(g.generic[0].answerPoints.length === 1, 'generic 链 quote 为空不受长度限制');
 console.log('✅ S4B-13 quote 最小长度护栏（短引用丢弃 / 真实引用保留 / generic 不受影响）');
 EOF
+
+# —— S4B-14：reasoning_effort 固定思考程度（profile 级可选，2026-10-19）——
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const assert = (c, m) => { if (!c) { console.error('❌ S4B-14 ' + m); process.exit(1); } };
+const llm = readFileSync('./llm.mjs', 'utf8');
+const srv = readFileSync('./server.mjs', 'utf8');
+// ① 请求体必须按 profile 可选地带上 reasoning_effort
+assert(/reasoningEffort/.test(llm), 'llm.mjs 必须读 profile 的 reasoningEffort');
+assert(/reasoning_effort/.test(llm), 'llm.mjs 必须发 reasoning_effort（MiniMax 官方字段名）');
+// ② 留空 = 不发该参数：不是所有厂商都认这个字段（Kimi 已经因 temperature 硬编码报过 400，
+//    同一个坑不能踩第二次）。因此必须是「有值才带」，不能无条件塞进 body。
+assert(!/body:\s*JSON\.stringify\(\{\s*model:\s*c\.model,\s*messages\s*\}\)/.test(llm), '不得硬编码固定 body（必须可按 profile 切换）');
+// ③ 设置页要能填这个字段
+assert(/'reasoningEffort'/.test(srv), '设置页必须提供 reasoningEffort 输入框');
+// ④ /settings 保存不丢字段：整数组原样 stringify，没有白名单，新增字段自动持久化
+assert(/JSON\.stringify\(\{ active: profiles\.length \? body\.active : 0, profiles \}\)/.test(srv), '/settings 仍应原样保存 profiles（保证新字段不被丢）');
+console.log('✅ S4B-14 reasoning_effort 固定思考程度（profile 级可选）');
+EOF

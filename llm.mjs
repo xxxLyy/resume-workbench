@@ -44,7 +44,16 @@ export async function withRetry(fn, { retries = 2, delayMs = 1500, idempotent = 
   for (let i = 0; ; i++) {
     try { return await fn(); }
     catch (e) {
-      const retryable = idempotent ? (e.status === undefined || e.status >= 500) : e.status >= 500;
+      // 可重试判定分两档：
+      //  幂等请求（GET）：网络错误（status undefined，含 fetch failed / 超时）与 5xx 都重试。
+      //  非幂等请求（POST）：**只重试网络错误**。5xx 不重试——服务端可能已计费，
+      //    重发就是重复扣费（POST 重复计费比失败更糟）。
+      //  修正（2026-10-19 实测）：原实现 POST 判 `e.status >= 500`，而网络层失败根本没有
+      //    status，undefined >= 500 为 false → 最该重试的「请求没送达」反而不重试。
+      //    MiniMax 长请求（max 思考 + 27K token prompt 实测 160–265 秒）偶发断连，
+      //    表现为一次 fetch failed 就整个岗位适配失败。
+      const netErr = e.status === undefined;
+      const retryable = idempotent ? (netErr || e.status >= 500) : netErr;
       if (i >= retries || !retryable) throw e;
       console.warn(`[retry] 第${i + 1}次失败，${delayMs}ms 后重试：${e.message || e}`);
       await sleep(delayMs);
@@ -79,7 +88,11 @@ export async function chatMsgs(root, messages) {
   const r = await withRetry(() => fetch(`${c.baseURL.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${c.apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: c.model, messages }),
+    // reasoning_effort：profile 级可选（设置页「思考程度」）。MiniMax 官方支持
+    // low/medium/high/xhigh/max 且默认 max；填 'max' 即固定为最强思考。
+    // 【必须「有值才带」】——不是所有厂商都认这个字段，盲目塞进去会 400；
+    // 本文件已经因硬编码 temperature 让 Kimi coding 端点报过 400，同一个坑不踩第二次。
+    body: JSON.stringify({ model: c.model, messages, ...(c.reasoningEffort ? { reasoning_effort: c.reasoningEffort } : {}) }),
     // 不带 temperature：Kimi coding 等端点只允许默认值，硬编码会被 400
     // 请求级超时（S4a 设计 §6）：默认 120s，profile 的 timeoutMs 可覆盖
     signal: AbortSignal.timeout(Number(c.timeoutMs) > 0 ? Number(c.timeoutMs) : 120000)

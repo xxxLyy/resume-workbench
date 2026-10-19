@@ -2797,6 +2797,8 @@ async function handler(req, res) {
             + inp(i, 'baseURL', 'Base URL', p.baseURL)
             + inp(i, 'apiKey', 'API Key', p.apiKey, 'size="46" type="password"')
             + inp(i, 'model', '模型（可手填；点「测试连接」成功后可下拉选）', p.model, 'size="46" list="models-' + i + '"')
+            + inp(i, 'reasoningEffort', '思考程度 reasoning_effort（可留空；MiniMax 支持 low/medium/high/xhigh/max，填 max 即固定最强思考）', p.reasoningEffort, 'size="12" list="effort-' + i + '" placeholder="留空=不传该参数"')
+            + '<datalist id="effort-' + i + '">' + ['low', 'medium', 'high', 'xhigh', 'max'].map(function (x) { return '<option value="' + x + '">'; }).join('') + '</datalist>'
             + '<datalist id="models-' + i + '"></datalist>'
             + '<p><button type="button" onclick="testCard(' + i + ')">测试连接</button> <span id="msg-' + i + '"></span></p>';
           box.appendChild(card);
