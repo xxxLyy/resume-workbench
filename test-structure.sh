@@ -1981,14 +1981,14 @@ const COLD = /#F4F5F8|#202737|#697186|#DCE0E8|#5B5DE8|#EEEFFE|#409eff|#2563eb|#d
 fs.readFileSync(F, 'utf8').split('\n').forEach((ln, i) => {
   if (COLD.test(ln)) fail(`${F}:${i + 1} 冷色/靛蓝残留: ${ln.trim().slice(0, 90)}`);
 });
-// 路由集合不变（任何新增 pathname 字面量都会红）。初值 = S2 开工前实测冻结的 54 个字面量；S4a-T10 登记 /export/layout-apply、S4a-T11 登记 /favicon.ico（56，登记非放宽）
+// 路由集合不变（任何新增 pathname 字面量都会红）。初值 = S2 开工前实测冻结的 54 个字面量；S4a-T10 登记 /export/layout-apply、S4a-T11 登记 /favicon.ico（56），批次2-T2 登记 /eval/create、/eval/promote（58，登记非放宽）
 const sm = fs.readFileSync(F, 'utf8');
 const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','/ai/prep','/ai/review','/ai/rewrite','/ai/test',
   '/ai/zone-analyze','/ai/zone-rewrite',
   '/api/extract','/app','/app/add','/app/archive-regenerate','/app/del','/app/ics','/app/jd','/app/update','/applications',
   '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf',
   '/job-panel.js','/job/brief','/job/changes','/job/create','/job/generate','/job/gen-cancel','/job/gen-start','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',
-  '/materials','/new','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings',
+  '/materials','/new','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings','/eval/create','/eval/promote',
   '/snapshot/baseline','/snapshot/note','/snapshot/pdf','/snapshot/view','/snapshots','/stats','/tag','/version/create',
   '/zones','/zones/init','/zone-panel.js'].sort();
 const got = [...new Set([...sm.matchAll(/url\.pathname === '([^']+)'/g)].map((m) => m[1]))].sort();
@@ -3273,4 +3273,596 @@ assert(/'reasoningEffort'/.test(srv), '设置页必须提供 reasoningEffort 输
 // ④ /settings 保存不丢字段：整数组原样 stringify，没有白名单，新增字段自动持久化
 assert(/JSON\.stringify\(\{ active: profiles\.length \? body\.active : 0, profiles \}\)/.test(srv), '/settings 仍应原样保存 profiles（保证新字段不被丢）');
 console.log('✅ S4B-14 reasoning_effort 固定思考程度（profile 级可选）');
+EOF
+
+# —— EV-1：岗位快速评估 prompt 构建（纯函数层，2026-10-19）——
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+import { buildEvalPrompt } from './eval.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ EV-1 ' + m); process.exit(1); } };
+
+// 真实 JD 夹具：首行是 `#` 来源注释（贴 JD 时剥掉），测试走同一条路径
+const jd = readFileSync('./test-fixtures/jd/sample-2.txt', 'utf8')
+  .split('\n').filter((l) => !l.trim().startsWith('#')).join('\n').trim();
+const docText = '徐某某 | 数据工程师\n2021.03-至今 某智能驾驶科技公司 · 数据工程师\n- 使用 SQL 进行数据查询与治理规则实现';
+
+const p = buildEvalPrompt({ docText, jd, company: '某公司', role: '数据工程师' });
+assert(typeof p.sys === 'string' && p.sys.length > 0, 'sys 必须是非空字符串');
+assert(typeof p.user === 'string' && p.user.length > 0, 'user 必须是非空字符串');
+// ① 母版原文与 JD 原文必须逐字进 prompt（证明是真注入，不是占位符拼接）
+assert(p.user.includes('使用 SQL 进行数据查询与治理规则实现'), 'user 必须含母版简历逐字原文');
+assert(p.user.includes('熟悉自动驾驶数据链路'), 'user 必须含 JD 逐字原文');
+assert(p.user.includes('某公司') && p.user.includes('数据工程师'), 'user 必须带目标公司/岗位');
+// ② 输出契约：枚举值必须写进 sys，否则模型无从对齐（解析层按同一套枚举校验）
+for (const k of ['under', 'right', 'over', 'covered', 'sourced', 'partial', 'missing', 'apply', 'caution', 'skip'])
+  assert(p.sys.includes(k), 'sys 必须声明枚举 ' + k);
+assert(p.sys.includes('JD 未提供'), 'sys 必须声明薪资缺失口径');
+assert(p.sys.includes('结构推断（无出处标注）'), 'sys 必须声明 weightFrom 的两种取值');
+// ③ 反编造约束必须落在 sys 里（这是本功能唯一的防线，不能只写注释）
+assert(p.sys.includes('严禁编造'), 'sys 必须含严禁编造约束');
+console.log('✅ EV-1 buildEvalPrompt（母版原文 + JD 原文 + 枚举契约 + 反编造约束）');
+EOF
+
+# —— EV-2：报告解析核心契约（score 作废 / verdict、level 回落）——
+node --input-type=module << 'EOF'
+import { parseEvalReport } from './eval.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ EV-2 ' + m); process.exit(1); } };
+
+const base = {
+  roleSummary: '做自动驾驶数据治理', company: '某公司', roleName: '数据工程师',
+  level: 'right', levelReason: '经验刚好',
+  salary: { text: '15-25K·15薪', source: 'JD 自带' },
+  angle: '强调 SQL 与数据治理',
+  matches: [
+    { req: '熟练使用SQL进行数据查询、质量稽核与治理规则实现', status: 'covered', evidence: '使用 SQL 进行数据查询与治理规则实现', weight: 'must', weightFrom: 'JD 原文' },
+    { req: '有数据治理、标注平台使用或开发经验者优先', status: 'sourced', evidence: '', weight: 'nice', weightFrom: 'JD 原文' }
+  ],
+  score: 4.0, verdict: 'apply', verdictReason: '核心能力命中', gaps: ['标注平台经验']
+};
+
+// ① 合规报告逐字段保真
+const ok = parseEvalReport(JSON.stringify(base));
+assert(ok.ok === true, '合规报告应 ok:true，实际 ' + ok.ok + ' / ' + ok.reason);
+assert(ok.report.score === 4.0, 'score 保留');
+assert(ok.report.verdict === 'apply', '合法 verdict 保留，不回落');
+assert(ok.report.level === 'right', '合法 level 保留');
+assert(ok.report.matches.length === 2, '合法 matches 全保留');
+assert(ok.report.salary.source === 'JD 自带', '合法 salary.source 保留');
+assert(ok.dropped === 0, '合规报告 dropped=0');
+assert(ok.report.gaps.length === 1 && ok.report.gaps[0] === '标注平台经验', 'gaps 保留');
+assert(ok.report.matches[0].evidence === '使用 SQL 进行数据查询与治理规则实现', 'evidence 保留');
+
+// ② score 越界 = 整份作废：总分是这个功能的全部结论，宁可丢弃也不能给出错误分数
+for (const [v, label] of [[6, '上界'], [0, '下界'], [-1, '负值'], ['4.0', '字符串']]) {
+  const r = parseEvalReport(JSON.stringify({ ...base, score: v }));
+  assert(r.ok === false, label + ' score=' + JSON.stringify(v) + ' 应整份作废，实际 ok=' + r.ok);
+  assert(r.report === null, label + ' 越界时不得返回半份报告');
+  assert(typeof r.reason === 'string' && r.reason.length > 0, label + ' 越界必须带 reason');
+}
+for (const v of [1, 3.5, 4.5, 5]) assert(parseEvalReport(JSON.stringify({ ...base, score: v })).ok === true, 'score=' + v + ' 合法，应通过');
+assert(parseEvalReport(JSON.stringify({ ...base, score: undefined })).ok === false, 'score 缺失应作废');
+
+// ③ verdict 非法 → 按 score 回落，不丢弃
+const v1 = parseEvalReport(JSON.stringify({ ...base, score: 4.2, verdict: 'maybe' }));
+assert(v1.ok === true && v1.report.verdict === 'apply', 'score4.2 + 非法 verdict → apply');
+const v2 = parseEvalReport(JSON.stringify({ ...base, score: 3.5, verdict: 'maybe' }));
+assert(v2.ok === true && v2.report.verdict === 'caution', 'score3.5 + 非法 verdict → caution');
+const v3 = parseEvalReport(JSON.stringify({ ...base, score: 2.0, verdict: 'maybe' }));
+assert(v3.ok === true && v3.report.verdict === 'skip', 'score2.0 + 非法 verdict → skip');
+assert(parseEvalReport(JSON.stringify({ ...base, score: 4.5, verdict: 'skip' })).report.verdict === 'skip', '合法 verdict 不得被 score 覆盖');
+
+// ④ level 非法 → 回落 'right'，不丢弃
+const l1 = parseEvalReport(JSON.stringify({ ...base, level: 'superman' }));
+assert(l1.ok === true && l1.report.level === 'right', '非法 level → right 且不丢弃');
+assert(l1.report.levelReason === '经验刚好', 'level 回落不影响其它字段');
+console.log('✅ EV-2 合规保真 + score 越界作废 + verdict/level 回落');
+EOF
+
+# —— EV-3：报告解析护栏（matches 丢弃 / 围栏 / 坏 JSON / 字段归一）——
+node --input-type=module << 'EOF'
+import { parseEvalReport } from './eval.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ EV-3 ' + m); process.exit(1); } };
+
+const base = {
+  roleSummary: '做数据治理', company: '某公司', roleName: '数据工程师', level: 'right',
+  levelReason: '刚好', salary: { text: '15-25K', source: 'JD 自带' }, angle: '强调 SQL',
+  matches: [], score: 4.0, verdict: 'apply', verdictReason: '命中', gaps: []
+};
+
+// ① matches 逐条校验：status 不在枚举内（含缺失）/ req 空 / 非对象 → 丢弃并计数
+//    设计文档 §5.3：逐条匹配状态枚举校验，畸形块丢弃并计数。
+//    status 缺失同样丢弃而不是回落 'missing'——模型没分类，我们不知道这条是 covered 还是 missing，
+//    猜一个会凭空改掉用户的匹配视图；丢掉只损失一条，猜错会误导判断。
+const m = parseEvalReport(JSON.stringify({
+  ...base,
+  matches: [
+    { req: '要求A', status: 'covered', evidence: '原文A', weight: 'must', weightFrom: 'JD 原文' },
+    { req: '要求B', status: '全覆盖了吧', evidence: '原文B', weight: 'must' },
+    { req: '   ', status: 'covered', evidence: '原文C' },
+    { req: '要求D' },
+    null
+  ]
+}));
+assert(m.ok === true, 'matches 畸形不应让整份作废');
+assert(m.report.matches.length === 1, '只留 1 条合法，实际 ' + m.report.matches.length);
+assert(m.dropped === 4, 'dropped 应为 4（status 枚举外 / req 空 / status 缺失 / 非对象），实际 ' + m.dropped);
+assert(m.report.matches[0].evidence === '原文A' && m.report.matches[0].weight === 'must', '合法条保真');
+
+// ② status 合法但其余字段缺失/枚举外 → 填空串（保留该条，不丢）
+const d = parseEvalReport(JSON.stringify({ ...base, matches: [{ req: '要求E', status: 'missing', weight: '超级重要', weightFrom: '我自己想的' }] }));
+assert(d.ok === true && d.dropped === 0 && d.report.matches.length === 1, '仅 status 合法的条必须保留');
+const de = d.report.matches[0];
+assert(de.evidence === '', 'evidence 缺失填空串');
+assert(de.weight === '' && de.weightFrom === '', 'weight/weightFrom 缺失或枚举外 → 填空串');
+assert(parseEvalReport(JSON.stringify({ ...base, matches: '不是数组' })).report.matches.length === 0, 'matches 非数组 → []');
+
+// ② ```json 围栏可剥（两种围栏形态）
+assert(parseEvalReport('```json\n' + JSON.stringify(base) + '\n```').ok === true, '```json 围栏应能剥离');
+assert(parseEvalReport('```\n' + JSON.stringify(base) + '\n```').ok === true, '裸 ``` 围栏应能剥离');
+assert(parseEvalReport('  \n' + JSON.stringify(base) + '  ').ok === true, '前后空白应被容忍');
+
+// ③ 坏 JSON → ok:false，绝不抛异常
+for (const bad of ['', '   ', '这不是 JSON', '{"score":', 'null', '[1,2]', undefined]) {
+  let r = null, threw = false;
+  try { r = parseEvalReport(bad); } catch { threw = true; }
+  assert(!threw, '坏输入不得抛异常: ' + String(bad));
+  assert(r && r.ok === false, '坏输入应 ok:false: ' + String(bad));
+  assert(typeof r.reason === 'string' && r.reason.length > 0, 'ok:false 必须带 reason');
+}
+
+// ④ salary.source 非法 → 归一为 'JD 未提供'（禁止外部薪资数据兜底）
+const s1 = parseEvalReport(JSON.stringify({ ...base, salary: { text: '面议', source: 'BOSS 官网' } }));
+assert(s1.report.salary.source === 'JD 未提供', '非法 salary.source 归一，实际 ' + s1.report.salary.source);
+assert(s1.report.salary.text === '面议', 'salary.text 原样保留（只抄 JD，不校验数值）');
+assert(parseEvalReport(JSON.stringify({ ...base, salary: {} })).report.salary.source === 'JD 未提供', 'salary 缺字段 → 归一');
+assert(parseEvalReport(JSON.stringify({ ...base, salary: '面议' })).report.salary.source === 'JD 未提供', 'salary 非对象 → 归一');
+
+// ⑤ gaps 非数组 → []；数组元素非字符串丢弃
+assert(parseEvalReport(JSON.stringify({ ...base, gaps: '缺个啥' })).report.gaps.length === 0, 'gaps 非数组 → []');
+const gp = parseEvalReport(JSON.stringify({ ...base, gaps: ['缺A', 3, null, ' 缺B '] }));
+assert(gp.report.gaps.length === 2 && gp.report.gaps[0] === '缺A' && gp.report.gaps[1] === '缺B', 'gaps 非字符串元素丢弃 + trim');
+
+// ⑥ 字符串字段 trim + 缺失填空串
+const t = parseEvalReport(JSON.stringify({ ...base, angle: '  强调 SQL  ', company: undefined, roleName: undefined, levelReason: undefined, verdictReason: undefined, roleSummary: undefined }));
+assert(t.report.angle === '强调 SQL', 'angle 必须 trim');
+assert(t.report.company === '' && t.report.roleName === '' && t.report.levelReason === '' && t.report.verdictReason === '', '缺失字符串字段填 ""');
+assert(t.report.roleSummary === '', 'roleSummary 缺失填 ""');
+console.log('✅ EV-3 matches 丢弃计数 + 围栏 + 坏 JSON 不抛 + salary/gaps/字符串归一');
+EOF
+
+# —— EV-4：evidence 子串验证（第二道事实护栏，2026-10-19 补设计文档的洞）——
+node --input-type=module << 'EOF'
+import { parseEvalReport } from './eval.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ EV-4 ' + m); process.exit(1); } };
+const DOC = '负责存储层改造，QPS 从 300 提升到 5000，主导跨部门容量规划';
+const mk = (st, ev) => JSON.stringify({ score: 4, verdict: 'apply', matches: [{ req: '后端能力', status: st, evidence: ev }] });
+
+// 编造的 evidence 必须被清空并降级——模型编一段像简历的话，用户在 UI 上无从分辨，
+// 而这份报告的全部意义就是帮他判断自己有没有这段经历。
+let r = parseEvalReport(mk('covered', '主导过公司级战略并购与海外分拆上市'), { docText: DOC });
+assert(r.report.matches[0].evidence === '', '编造 evidence 必须清空');
+assert(r.report.matches[0].status === 'partial', `编造 evidence 必须把 covered 降级为 partial（实得 ${r.report.matches[0].status}）`);
+// 真实逐字子串必须原样保留（空白差异不算：比较时去空白）
+r = parseEvalReport(mk('covered', '负责存储层改造'), { docText: DOC });
+assert(r.report.matches[0].status === 'covered' && r.report.matches[0].evidence === '负责存储层改造', '真实子串必须保留 covered + 原文');
+r = parseEvalReport(mk('covered', '负责存储层改造，QPS 从 300 提升到 5000'), { docText: DOC });
+assert(r.report.matches[0].status === 'covered', '整段逐字子串必须保留');
+// sourced 声称来自素材（非简历正文），不参与子串验证
+r = parseEvalReport(mk('sourced', '素材库里的任意表述'), { docText: DOC });
+assert(r.report.matches[0].status === 'sourced' && r.report.matches[0].evidence === '素材库里的任意表述', 'sourced 不验证（它不声称简历原文命中）');
+// partial/missing 本就不声称原文命中，同样不验证
+for (const st of ['partial', 'missing']) {
+  r = parseEvalReport(mk(st, '任何内容'), { docText: DOC });
+  assert(r.report.matches[0].status === st, `${st} 不参与子串验证`);
+}
+// 未传 docText（无基准则无从验证）时不改变任何东西
+r = parseEvalReport(mk('covered', '任意'));
+assert(r.report.matches[0].status === 'covered', '未传 docText 时不验证（调用方需保证传）');
+// 护栏不得放宽既有校验：score 越界仍然整份作废
+assert(parseEvalReport(JSON.stringify({ score: 9, matches: [] }), { docText: DOC }).ok === false, 'docText 不得影响 score 校验');
+console.log('✅ EV-4 evidence 子串验证（编造清空降级 / 真实保留 / sourced 不参与）');
+EOF
+
+# —— EV-5：评估存储 + /eval/create + /eval/promote + 指纹第五路（路由集成，stub 模拟验证）——
+node --input-type=module << 'EOF'
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import { spawn, execFileSync } from 'node:child_process';
+
+const fail = (m) => { console.error('❌ EV-5 ' + m); process.exit(1); };
+const assert = (c, m) => { if (!c) fail(m); };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ev5-'));
+
+// 母版正文：evidence 子串验证的基准（parseEvalReport 会拿它做逐字校验）
+const DOC_BODY = '负责存储层改造，QPS 从 300 提升到 5000，主导跨部门容量规划';
+const doc = (id, body) => '<!doctype html>\n<html><head><meta charset="utf-8"><style>.sheet{color:#111}</style></head><body>\n<h1>' + id + '</h1>\n<div class="sheet"><p>' + body + '</p></div>\n</body></html>\n';
+
+// JD 需 >200 字（fingerprint-core 的 FINGERPRINT_MIN_TEXT），否则指纹为空、第五路不生效
+const JD = '负责公司核心交易链路的架构设计与研发，使用 Node.js 与 TypeScript 构建高并发服务，支撑每秒数万次请求。负责存储层改造与缓存策略设计，主导容量规划与压测。参与微服务拆分与服务治理，推动 CI/CD 流水线建设。要求五年以上后端研发经验，熟悉分布式系统、消息队列与缓存中间件，具备容量规划与故障演练经验，有大型互联网公司背景者优先。熟悉 Node.js 生态与 PostgreSQL，有高并发系统设计落地经验者优先。';
+
+const MODE = path.join(tmp, 'mode.txt');
+const setMode = (m) => fs.writeFileSync(MODE, m);
+setMode('good');
+const EVAL_REPORT = JSON.stringify({
+  roleSummary: '做核心交易链路的后端', company: '测试公司', roleName: '高级后端工程师',
+  level: 'right', levelReason: '技术栈与年限都吻合', salary: { text: '30-50K·14薪', source: 'JD 自带' },
+  angle: '强调存储层与容量规划', matches: [
+    { req: 'Node.js 与 TypeScript', status: 'covered', evidence: DOC_BODY, weight: 'must', weightFrom: 'JD 原文' },
+    { req: 'Kubernetes 运维', status: 'missing', evidence: '', weight: 'should', weightFrom: '结构推断（无出处标注）' }
+  ],
+  score: 4.5, verdict: 'apply', verdictReason: '值得投', gaps: ['Kubernetes']
+});
+
+const llmSrv = http.createServer((req, res) => {
+  let b = ''; req.on('data', (d) => { b += d; });
+  req.on('end', () => {
+    const mode = fs.existsSync(MODE) ? fs.readFileSync(MODE, 'utf8').trim() : 'good';
+    const content = mode === 'bad' ? '这不是 JSON 报告' : EVAL_REPORT;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+  });
+});
+await new Promise((r) => llmSrv.listen(0, '127.0.0.1', r));
+const llmBase = 'http://127.0.0.1:' + llmSrv.address().port + '/v1';
+
+const fr = path.join(tmp, 'fake-render.sh');
+fs.writeFileSync(fr, '#!/bin/bash\nexit 0\n');
+fs.chmodSync(fr, 0o755);
+const freePort = () => new Promise((resolve, reject) => { const s = http.createServer(); s.once('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
+async function startSrv(rootDir) {
+  const port = await freePort();
+  const srv = spawn(process.execPath, ['server.mjs'], {
+    cwd: process.cwd(),
+    env: { ...process.env, RESUME_ROOT: rootDir, PORT: String(port), RESUME_RENDER_BIN: fr },
+    stdio: ['ignore', 'ignore', 'pipe']
+  });
+  let serrBuf = ''; srv.stderr.on('data', (d) => { serrBuf += d; });
+  const inst = { B: 'http://127.0.0.1:' + port, stop: async () => { srv.kill('SIGKILL'); await sleep(60); } };
+  const t0 = Date.now(); let up = false;
+  while (Date.now() - t0 < 15000) { if (srv.exitCode !== null) break; try { await fetch(inst.B + '/'); up = true; break; } catch {} await sleep(80); }
+  if (!up) { await inst.stop(); fail('测试服务启动失败: ' + serrBuf.slice(0, 400)); }
+  return inst;
+}
+const seedRoot = (name, withCfg) => {
+  const r = path.join(tmp, name);
+  for (const d of ['docs', 'snapshots', 'pdfs']) fs.mkdirSync(path.join(r, d), { recursive: true });
+  fs.writeFileSync(path.join(r, 'docs-meta.json'), JSON.stringify({ master: { kind: 'master', flow: 'reviewed', theme: 'classic', styleHash: 'h', typo: '', schemaVersion: 2 } }));
+  fs.writeFileSync(path.join(r, 'applications.json'), '[]');
+  fs.writeFileSync(path.join(r, 'materials.json'), '[]');
+  fs.writeFileSync(path.join(r, 'docs', 'master.html'), doc('master', DOC_BODY));
+  if (withCfg) fs.writeFileSync(path.join(r, 'config.json'), JSON.stringify({ active: 0, profiles: [{ name: 'stub', baseURL: llmBase, apiKey: 'k123456', model: 'stub-model' }] }));
+  return r;
+};
+const readEvals = (r) => JSON.parse(fs.readFileSync(path.join(r, 'evaluations.json'), 'utf8'));
+const post = (B, p, body) => fetch(B + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+try {
+  // ===== ① 未配置大模型 → 409（评估必须过模型，不做无模型降级）=====
+  {
+    const R = seedRoot('nocfg', false);
+    const s = await startSrv(R);
+    try {
+      const r = await post(s.B, '/eval/create', { company: '甲', role: '后端', jd: JD, from: 'master' });
+      const j = await r.json();
+      assert(r.status === 409, '未配置大模型时 /eval/create 应 409，实际 ' + r.status);
+      assert(j.ok === false && typeof j.error === 'string' && j.error.length > 0, '409 应带错误说明: ' + JSON.stringify(j));
+      assert(!fs.existsSync(path.join(R, 'evaluations.json')), '409 不得写出 evaluations.json');
+    } finally { await s.stop(); }
+  }
+  // ===== ② 参数校验：from 非法 / 母版不存在 / JD 为空，均不得落库 =====
+  {
+    const R = seedRoot('valid', true);
+    const s = await startSrv(R);
+    try {
+      let r = await post(s.B, '/eval/create', { company: '甲', role: '后端', jd: JD, from: '../etc' });
+      assert(r.status === 400, '非法 from 应 400，实际 ' + r.status);
+      r = await post(s.B, '/eval/create', { company: '甲', role: '后端', jd: JD, from: 'ghost' });
+      assert(r.status === 404, '母版不存在应 404，实际 ' + r.status);
+      r = await post(s.B, '/eval/create', { company: '甲', role: '后端', jd: '   ', from: 'master' });
+      assert(r.status === 400, 'JD 为空应 400，实际 ' + r.status);
+      assert(!fs.existsSync(path.join(R, 'evaluations.json')), '校验失败不得落库');
+    } finally { await s.stop(); }
+  }
+  // ===== ③ 主路径：创建 → 落盘字段完整 → promote 建草稿并回写 promotedTo → 重复 promote 409 =====
+  let evId = '';
+  {
+    const R = seedRoot('main', true);
+    const s = await startSrv(R);
+    try {
+      const r = await post(s.B, '/eval/create', { company: '测试公司', role: '高级后端工程师', jd: JD, from: 'master' });
+      const j = await r.json();
+      assert(r.status === 200 && j.ok === true, '/eval/create 应 200 ok，实际 ' + r.status + ' ' + JSON.stringify(j).slice(0, 300));
+      const ev = j.eval || {};
+      evId = ev.id || '';
+      for (const k of ['id', 'jd', 'jdFp', 'company', 'role', 'score', 'verdict', 'blocks', 'model', 'createdAt', 'promotedTo'])
+        assert(Object.prototype.hasOwnProperty.call(ev, k), '评估记录缺字段 ' + k + '：' + JSON.stringify(Object.keys(ev)));
+      assert(typeof ev.id === 'string' && ev.id.length > 0, 'id 必须非空字符串');
+      assert(ev.jd === JD, 'jd 应原样入库');
+      assert(/^[0-9a-f]{16}$/.test(ev.jdFp || ''), 'jdFp 应为 16 位 hex，实际 ' + JSON.stringify(ev.jdFp) + '（JD 足够长）');
+      assert(ev.company === '测试公司' && ev.role === '高级后端工程师', 'company/role 应入库');
+      assert(ev.score === 4.5 && ev.verdict === 'apply', 'score/verdict 应取自报告');
+      assert(ev.blocks && ev.blocks.roleSummary === '做核心交易链路的后端', 'blocks 应为解析后的报告');
+      assert(Array.isArray(ev.blocks.matches) && ev.blocks.matches.length === 2, 'blocks.matches 应保留 2 条');
+      assert(ev.blocks.matches[0].status === 'covered', 'evidence 命中母版应保持 covered');
+      assert(ev.model === 'stub-model', 'model 应取当前 profile');
+      assert(!Number.isNaN(Date.parse(ev.createdAt)), 'createdAt 应为可解析时间：' + JSON.stringify(ev.createdAt));
+      assert(ev.promotedTo === null, '未转适配时 promotedTo 应为 null');
+      assert(JSON.stringify(readEvals(R)).length > 2 && readEvals(R).length === 1, 'evaluations.json 应恰有 1 条：' + readEvals(R).length);
+
+      // promote：建草稿 + 回写 promotedTo
+      const rp = await post(s.B, '/eval/promote', { evalId: evId, from: 'master' });
+      const jp = await rp.json();
+      assert(rp.status === 200 && jp.ok === true && jp.id, '/eval/promote 应 200 且回新 docId，实际 ' + rp.status + ' ' + JSON.stringify(jp).slice(0, 300));
+      const newId = jp.id;
+      assert(fs.existsSync(path.join(R, 'docs', newId + '.html')), 'promote 应生成岗位草稿文档：' + newId);
+      const mm = JSON.parse(fs.readFileSync(path.join(R, 'docs-meta.json'), 'utf8'))[newId] || {};
+      assert(mm.kind === 'job', 'promote 草稿 kind 应为 job，实际 ' + mm.kind);
+      assert(mm.parent === 'master', 'promote 草稿 parent 应为母版，实际 ' + mm.parent);
+      assert(mm.company === '测试公司' && mm.role === '高级后端工程师', 'promote 草稿应沿用评估的公司/职位：' + JSON.stringify({ c: mm.company, r: mm.role }));
+      assert(mm.jd === JD, 'promote 草稿应带同一份 JD');
+      assert(readEvals(R)[0].promotedTo === newId, 'promotedTo 应回写为新 docId，实际 ' + JSON.stringify(readEvals(R)[0].promotedTo));
+      // 重复转 → 409
+      const rp2 = await post(s.B, '/eval/promote', { evalId: evId, from: 'master' });
+      assert(rp2.status === 409, '同一评估重复 promote 应 409，实际 ' + rp2.status);
+      // 未知评估 → 404
+      const rp3 = await post(s.B, '/eval/promote', { evalId: 'ev-not-exist', from: 'master' });
+      assert(rp3.status === 404, '未知 evalId 应 404，实际 ' + rp3.status);
+
+      // ===== ④ 备份纳入 evaluations.json 且恢复白名单放行（否则整包会被判「不允许的条目」）=====
+      {
+        const tarFile = path.join(tmp, 'bk.tar.gz');
+        const rb = await fetch(s.B + '/backup');
+        assert(rb.status === 200, '/backup 应 200，实际 ' + rb.status);
+        fs.writeFileSync(tarFile, Buffer.from(await rb.arrayBuffer()));
+        const listed = execFileSync('tar', ['tzf', tarFile], { encoding: 'utf8' });
+        assert(listed.includes('evaluations.json'), '备份包应含 evaluations.json，实际条目：\n' + listed.slice(0, 400));
+        assert(!listed.includes('config.json'), '备份包不得含 config.json（密钥泄漏）');
+        // 白名单必须放行（放行失败会让用户自己的备份再也恢复不了）
+        const up = path.join(tmp, 'up.tar.gz');
+        execFileSync('tar', ['czf', up, '-C', R, 'docs', 'docs-meta.json', 'evaluations.json']);
+        const body = fs.readFileSync(up);
+        const rr = await fetch(s.B + '/restore', { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body });
+        const jr = await rr.json();
+        assert(rr.status === 200 && jr.ok === true, '含 evaluations.json 的备份包应通过恢复校验，实际 ' + rr.status + ' ' + JSON.stringify(jr).slice(0, 200));
+      }
+      // ===== ⑤ 指纹第五路：同一 JD 再建草稿 → dupHints 命中 kind='eval' + todo 文案带评估分 =====
+      // 公司/职位必须换一组：promote 刚用同一组建过 master-v2，/job/create 的去重会 409（行为正确）
+      const rj = await post(s.B, '/job/create', { from: 'master', company: '另一家公司', role: '后端工程师', jd: JD });
+      const jj = await rj.json();
+      assert(rj.status === 200 && jj.ok === true, '/job/create 应成功，实际 ' + rj.status + ' ' + JSON.stringify(jj).slice(0, 200));
+      const evHit = (jj.dupHints || []).find((h) => h.kind === 'eval');
+      assert(!!evHit, 'dupHints 应命中评估记录（第五路），实际 ' + JSON.stringify(jj.dupHints));
+      const jm = JSON.parse(fs.readFileSync(path.join(R, 'docs-meta.json'), 'utf8'))[jj.id] || {};
+      const todos = ((jm.job || {}).todos || []).map((t) => t.question).join(' | ');
+      assert(todos.includes('评估过'), 'todo 文案应渲染评估来源，实际 ' + todos.slice(0, 300));
+      assert(todos.includes('4.5') && todos.includes('apply'), 'todo 文案应带评估分与结论，实际 ' + todos.slice(0, 300));
+    } finally { await s.stop(); }
+  }
+  // ===== ⑥ 模型报告无法解析 → 502 且绝不落库（脏数据不入库）=====
+  {
+    const R = seedRoot('bad', true);
+    const s = await startSrv(R);
+    try {
+      setMode('bad');
+      const r = await post(s.B, '/eval/create', { company: '乙', role: '后端', jd: JD, from: 'master' });
+      const j = await r.json();
+      assert(r.status === 502, '报告不可解析应 502，实际 ' + r.status);
+      assert(j.ok === false && String(j.error).includes('无法解析'), '502 应说明无法解析：' + JSON.stringify(j).slice(0, 200));
+      const evs = fs.existsSync(path.join(R, 'evaluations.json')) ? readEvals(R) : [];
+      assert(evs.length === 0, '解析失败不得落库，实际记录数 ' + evs.length);
+      // 恢复好模式后同一条 JD 可正常落库（证明上一步不是被其它校验挡住）
+      setMode('good');
+      const r2 = await post(s.B, '/eval/create', { company: '乙', role: '后端', jd: JD, from: 'master' });
+      assert(r2.status === 200, '好报告应落库成功，实际 ' + r2.status);
+      assert(readEvals(R).length === 1, '好报告应恰有 1 条记录');
+    } finally { await s.stop(); }
+  }
+  console.log('✅ EV-5 评估存储 + /eval/create + /eval/promote + 指纹第五路（stub 模拟验证）');
+} finally {
+  llmSrv.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+EOF
+
+# —— EV-6：verdict / score 矛盾组合回落（用户照 verdict 决定投不投）——
+node --input-type=module << 'EOF'
+import { parseEvalReport } from './eval.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ EV-6 ' + m); process.exit(1); } };
+const v = (score, verdict) => parseEvalReport(JSON.stringify({ score, verdict, matches: [] })).report.verdict;
+// 一致的组合必须原样保留（不被 score 覆盖——score 只在冲突时介入）
+assert(v(4.5, 'apply') === 'apply', '4.5/apply 一致 → 保留 apply');
+assert(v(3.5, 'caution') === 'caution', '3.5/caution 一致 → 保留 caution');
+assert(v(4.5, 'caution') === 'caution', '4.5/caution 合法但保守 → 保留（不被 score 提升为 apply）');
+assert(v(2.0, 'skip') === 'skip', '2.0/skip 一致 → 保留 skip');
+// 矛盾组合必须以 score 为准回落：prompt 硬约束第 5 条禁止「score<4 却 verdict=apply」，
+// 但模型不听是常态。用户照 verdict 决定投不投，自相矛盾的报告会误导他。
+assert(v(3.5, 'apply') === 'caution', `3.5/apply 矛盾 → 必须降级 caution（实得 ${v(3.5, 'apply')}）`);
+assert(v(2.0, 'apply') === 'skip', '2.0/apply 矛盾 → 必须降级 skip');
+// 枚举外仍然回落（EV-2 已覆盖，这里确认矛盾判定没有破坏它）
+assert(v(3.5, 'maybe') === 'caution', '枚举外 → 回落');
+// score 越界仍然整份作废（矛盾回落不得放宽这条）
+assert(parseEvalReport(JSON.stringify({ score: 9, verdict: 'apply', matches: [] })).ok === false, 'score 越界仍整份作废');
+assert(parseEvalReport(JSON.stringify({ score: 2.5, verdict: 'apply', matches: [] })).ok === true, 'score 合法时矛盾回落才发生');
+console.log('✅ EV-6 verdict/score 矛盾回落（一致保留 / 矛盾以 score 为准 / 越界仍作废）');
+EOF
+
+# —— EV-7：评估 UI 入口 + 报告卡片转义（XSS）+ restore 预览 evals 计数 ——
+node --input-type=module << 'EOF'
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import { spawn, execFileSync } from 'node:child_process';
+
+const fail = (m) => { console.error('❌ EV-7 ' + m); process.exit(1); };
+const assert = (c, m) => { if (!c) fail(m); };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ev7-'));
+
+// 母版正文：评估的 evidence 逐字校验以它为基准
+const DOC_BODY = '负责存储层改造，QPS 从 300 提升到 5000，主导跨部门容量规划';
+const doc = (id, body) => '<!doctype html>\n<html><head><meta charset="utf-8"><style>.sheet{color:#111}</style></head><body>\n<h1>' + id + '</h1>\n<div class="sheet"><p>' + body + '</p></div>\n</body></html>\n';
+
+const JD = '负责公司核心交易链路的架构设计与研发，使用 Node.js 与 TypeScript 构建高并发服务，支撑每秒数万次请求。负责存储层改造与缓存策略设计，主导容量规划与压测。参与微服务拆分与服务治理，推动 CI/CD 流水线建设。要求五年以上后端研发经验，熟悉分布式系统、消息队列与缓存中间件，具备容量规划与故障演练经验，有大型互联网公司背景者优先。熟悉 Node.js 生态与 PostgreSQL，有高并发系统设计落地经验者优先。';
+
+// XSS 载荷：同时踩 < > " 三类边界，放进模型可写的每一个字符串字段。
+// 断言口径：渲染结果里不得出现裸标签（<script / <img）、不得出现属性形态 onerror="、
+// 载荷原文不得原样出现；正确形态是全部转成 HTML 实体。
+const XSS = '<script>alert(1)</script><img src=x onerror="alert(2)">" onmouseover="alert(3)';
+
+const MODE = path.join(tmp, 'mode.txt');
+const setMode = (m) => fs.writeFileSync(MODE, m);
+setMode('xss');
+const XSS_REPORT = JSON.stringify({
+  roleSummary: XSS, company: XSS, roleName: XSS, level: 'right', levelReason: XSS,
+  salary: { text: XSS, source: 'JD 未提供' }, angle: XSS,
+  matches: [{ req: XSS, status: 'sourced', evidence: XSS, weight: 'must', weightFrom: 'JD 原文' }],
+  score: 4.5, verdict: 'apply', verdictReason: XSS, gaps: [XSS]
+});
+const GOOD_REPORT = JSON.stringify({
+  roleSummary: '做核心交易链路的后端', company: '测试公司', roleName: '高级后端工程师',
+  level: 'right', levelReason: '技术栈与年限都吻合', salary: { text: '30-50K·14薪', source: 'JD 自带' },
+  angle: '强调存储层与容量规划',
+  matches: [{ req: 'Node.js 与 TypeScript', status: 'covered', evidence: DOC_BODY, weight: 'must', weightFrom: 'JD 原文' }],
+  score: 4.5, verdict: 'apply', verdictReason: '值得投', gaps: ['Kubernetes']
+});
+
+const llmSrv = http.createServer((req, res) => {
+  let b = ''; req.on('data', (d) => { b += d; });
+  req.on('end', () => {
+    const mode = fs.existsSync(MODE) ? fs.readFileSync(MODE, 'utf8').trim() : 'xss';
+    const content = mode === 'good' ? GOOD_REPORT : XSS_REPORT;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+  });
+});
+await new Promise((r) => llmSrv.listen(0, '127.0.0.1', r));
+const llmBase = 'http://127.0.0.1:' + llmSrv.address().port + '/v1';
+
+const fr = path.join(tmp, 'fake-render.sh');
+fs.writeFileSync(fr, '#!/bin/bash\nexit 0\n');
+fs.chmodSync(fr, 0o755);
+const freePort = () => new Promise((resolve, reject) => { const s = http.createServer(); s.once('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
+async function startSrv(rootDir) {
+  const port = await freePort();
+  const srv = spawn(process.execPath, ['server.mjs'], {
+    cwd: process.cwd(),
+    env: { ...process.env, RESUME_ROOT: rootDir, PORT: String(port), RESUME_RENDER_BIN: fr },
+    stdio: ['ignore', 'ignore', 'pipe']
+  });
+  let serrBuf = ''; srv.stderr.on('data', (d) => { serrBuf += d; });
+  const inst = { B: 'http://127.0.0.1:' + port, stop: async () => { srv.kill('SIGKILL'); await sleep(60); } };
+  const t0 = Date.now(); let up = false;
+  while (Date.now() - t0 < 15000) { if (srv.exitCode !== null) break; try { await fetch(inst.B + '/'); up = true; break; } catch {} await sleep(80); }
+  if (!up) { await inst.stop(); fail('测试服务启动失败: ' + serrBuf.slice(0, 400)); }
+  return inst;
+}
+const seedRoot = (name, withCfg) => {
+  const r = path.join(tmp, name);
+  for (const d of ['docs', 'snapshots', 'pdfs']) fs.mkdirSync(path.join(r, d), { recursive: true });
+  fs.writeFileSync(path.join(r, 'docs-meta.json'), JSON.stringify({ master: { kind: 'master', flow: 'reviewed', theme: 'classic', styleHash: 'h', typo: '', schemaVersion: 2 } }));
+  fs.writeFileSync(path.join(r, 'applications.json'), '[]');
+  fs.writeFileSync(path.join(r, 'materials.json'), '[]');
+  fs.writeFileSync(path.join(r, 'docs', 'master.html'), doc('master', DOC_BODY));
+  if (withCfg) fs.writeFileSync(path.join(r, 'config.json'), JSON.stringify({ active: 0, profiles: [{ name: 'stub', baseURL: llmBase, apiKey: 'k123456', model: 'stub-model' }] }));
+  return r;
+};
+const post = (B, p, body) => fetch(B + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+try {
+  const R = seedRoot('ui', true);
+  const s = await startSrv(R);
+  try {
+    // ===== ① UI 结构：首页含 /eval/create 调用 + 转义函数 + 耗时提示 =====
+    const home = await (await fetch(s.B + '/')).text();
+    assert(home.includes('/eval/create'), '首页应含 /eval/create 调用');
+    assert(home.includes('/eval/promote'), '首页应含 /eval/promote 调用');
+    assert(/1[-–—]5\s*分钟/.test(home), '首页应显示评估耗时提示（1-5 分钟）');
+    const mk = home.match(/\/\*EVAL_CARD_JS_START\*\/([\s\S]*?)\/\*EVAL_CARD_JS_END\*\//);
+    assert(!!mk, '首页应带 EVAL_CARD_JS 标记块（可独立执行的报告渲染器）');
+    const cardSrc = mk[1];
+    assert(/function esc\s*\(/.test(cardSrc), '报告渲染器应有转义函数 esc()');
+    assert(/&lt;/.test(cardSrc) && /&amp;/.test(cardSrc), '转义函数应产出 HTML 实体');
+    for (const f of ['roleSummary', 'levelReason', 'angle', 'verdictReason', 'req', 'evidence']) {
+      assert(new RegExp('esc\\([^)]*' + f + '\\b').test(cardSrc), '模型字段 ' + f + ' 应被 esc() 包裹');
+    }
+    // /eval/promote 的响应字段（id）必须被 UI 消费 → 跳编辑器
+    assert(/\/eval\/promote[\s\S]{0,900}?d\.id/.test(home), 'UI 应消费 /eval/promote 响应的 id 字段');
+    assert(/\/eval\/promote[\s\S]{0,900}?\/edit\?id=/.test(home), 'UI 应把 promote 结果拼成 /edit?id= 跳转');
+
+    // ===== ② XSS：模型载荷经 stub → 服务端 → 客户端渲染器，输出必须全是实体 =====
+    setMode('xss');
+    const rc = await post(s.B, '/eval/create', { company: '甲公司', role: '后端', jd: JD, from: 'master' });
+    const dj = await rc.json();
+    assert(rc.status === 200 && dj.ok === true, '/eval/create 应成功，实际 ' + rc.status + ' ' + JSON.stringify(dj).slice(0, 200));
+    // 反空洞：载荷必须真的到了客户端（未被服务端预处理掉），否则下面的转义断言是空跑
+    assert(String(dj.eval.blocks.roleSummary).includes('<script>alert(1)</script>'), '模型载荷应原样进入评估记录（证明转义发生在渲染层）');
+    const render = new Function(cardSrc + '\nreturn evalCardHtml;')();
+    const out = render(dj.eval);
+    assert(typeof out === 'string' && out.length > 0, '报告渲染器应返回 HTML 字符串');
+    assert(!/<script/i.test(out), '渲染结果不得含裸 <script> 标签');
+    assert(!/<img/i.test(out), '渲染结果不得含裸 <img> 标签');
+    assert(!/onerror="/i.test(out), '渲染结果不得含属性形态 onerror="');
+    assert(!out.includes(XSS), '渲染结果不得原样包含模型载荷');
+    assert(out.includes('&lt;script&gt;'), '模型载荷应被转义成实体');
+    assert(out.includes('&quot;'), '模型载荷里的引号应被转义成 &quot;');
+    // 薪资来源必须显式显示；JD 未提供时要显眼提示「无外部薪资数据」
+    assert(out.includes('JD 未提供'), '报告必须显示薪资来源');
+    assert(out.includes('无外部薪资数据'), 'JD 未提供时必须提示「无外部薪资数据」');
+
+    // ===== ③ 报告卡片不得进简历正文 / 落盘文档 =====
+    const master = fs.readFileSync(path.join(R, 'docs', 'master.html'), 'utf8');
+    assert(!master.includes('<script>alert(1)'), '评估内容不得写进简历正文');
+    const metaTxt = fs.readFileSync(path.join(R, 'docs-meta.json'), 'utf8');
+    assert(!metaTxt.includes('<script>alert(1)'), '评估内容不得写进 docs-meta.json');
+    const evTxt = fs.readFileSync(path.join(R, 'evaluations.json'), 'utf8');
+    assert(evTxt.includes('<script>alert(1)'), '评估内容应落在 evaluations.json（独立存储）');
+    const docFiles = fs.readdirSync(path.join(R, 'docs'));
+    assert(docFiles.length === 1 && docFiles[0] === 'master.html', '评估不得在 docs/ 落盘新文件，实际：' + JSON.stringify(docFiles));
+
+    // ===== ④ 正常报告的中文标签映射（结论 / 级别 / 状态 / 薪资来源）=====
+    setMode('good');
+    const rg = await post(s.B, '/eval/create', { company: '乙公司', role: '后端', jd: JD, from: 'master' });
+    const dg = await rg.json();
+    assert(rg.status === 200 && dg.ok === true, '正常报告应评估成功，实际 ' + rg.status);
+    const out2 = render(dg.eval);
+    const labels = [['建议投', 'verdict=apply'], ['恰好匹配', 'level=right'], ['已有证据', 'status=covered'], ['JD 自带', 'salary.source=JD 自带']];
+    for (const [label, why] of labels) assert(out2.includes(label), '报告应显示 ' + why + ' 的中文：' + label);
+    // level 三档必须逐档验证：good 夹具只产 right，另两档要各自构造一份报告渲染
+    // （一条报告里不可能同时出现三种 level——2026-10-19 修：原先把三档并进同一个 labels 数组，
+    //   而 stub 恒为 right，under/over 两条断言永远红）。
+    for (const [lv, want] of [['under', '低于岗位要求'], ['right', '恰好匹配'], ['over', '高于岗位要求']]) {
+      const r3 = render(Object.assign({}, dg.eval, { blocks: Object.assign({}, dg.eval.blocks, { level: lv }) }));
+      assert(r3.includes(want), 'level=' + lv + ' 应渲染为「' + want + '」，实际输出：' + r3.slice(0, 160));
+      for (const [other, bad] of [['under', '高于岗位要求'], ['over', '低于岗位要求']]) {
+        if (lv === other) assert(!r3.includes(bad), 'level=' + lv + ' 不得渲染成「' + bad + '」');
+      }
+    }
+    assert(!out2.includes('无外部薪资数据'), 'JD 自带时不应显示「无外部薪资数据」');
+
+    // ===== ⑤ restore 预览：evals 计数进 JSON，也进 total =====
+    const fake = path.join(tmp, 'fake');
+    fs.mkdirSync(path.join(fake, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(fake, 'docs-meta.json'), JSON.stringify({}));
+    fs.writeFileSync(path.join(fake, 'evaluations.json'), JSON.stringify([{ id: 'ev-fake-1' }, { id: 'ev-fake-2' }]));
+    const up = path.join(tmp, 'up.tar.gz');
+    execFileSync('tar', ['czf', up, '-C', fake, 'docs', 'docs-meta.json', 'evaluations.json']);
+    const rr = await fetch(s.B + '/restore?apply=0', { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: fs.readFileSync(up) });
+    const jr = await rr.json();
+    assert(rr.status === 200 && jr.ok === true, '恢复预览应成功，实际 ' + rr.status + ' ' + JSON.stringify(jr).slice(0, 200));
+    assert(jr.evals && Array.isArray(jr.evals.add) && Array.isArray(jr.evals.conflict), '预览 JSON 应含 evals 计数（add/conflict），实际 ' + JSON.stringify(jr.evals));
+    assert(jr.evals.add.length === 2, '备份里 2 条评估应记为新增，实际 ' + JSON.stringify(jr.evals.add));
+    const sum = jr.docs.add.length + jr.docs.conflict.length + jr.apps.add.length + jr.apps.conflict.length + jr.mats.add.length + jr.mats.conflict.length + jr.evals.add.length + jr.evals.conflict.length;
+    assert(jr.total === sum, 'total 应把 evals 算进去，实际 ' + jr.total + '，期望 ' + sum);
+    const bk = await (await fetch(s.B + '/settings')).text();
+    assert(bk.includes('prev.evals'), '设置页预览渲染应读取 evals 计数');
+  } finally { await s.stop(); }
+} finally {
+  llmSrv.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+console.log('✅ EV-7 评估 UI 入口 + 报告卡片转义（XSS）+ restore 预览 evals 计数');
 EOF

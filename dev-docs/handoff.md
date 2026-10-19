@@ -146,6 +146,40 @@ launchctl kickstart -k gui/$(id -u)/com.lhx.resume-server   # 重启常驻服务
 
 要扩大覆盖就得引入语境判断（如「团队/规模/编制」邻近词），那是另一轮的事——改前先想清楚会不会把「三段经历」重新变成误报。
 
+## 批次2：岗位快速评估（2026-10-19，已实现并经真实模型验证）
+
+**做了什么**：粘贴 JD → AI 一次调用 → 前置快筛报告（1–5 分 + 结论 + 逐条匹配 + 缺失能力）→ 高分一键转 S4a 完整适配。评估记录存 `evaluations.json`，并作为**指纹比对第五路**（建草稿时提醒「这个岗位评估过 4.5 分 apply」）。
+
+- 新增 `eval.mjs`（92 行：`buildEvalPrompt` + `parseEvalReport`）
+- 新增路由 `POST /eval/create`、`POST /eval/promote`（已登记 `ROUTES_FROZEN`）
+- UI：首页岗位表单内「🧭 先评估」按钮 + 报告卡片（**未新建独立页**，照设计文档）
+
+**真实 MiniMax 实测**（`MiniMax-M3.1-Flash-Preview` + max 思考，104 秒）：
+
+| 验证点 | 结果 |
+|---|---|
+| JSON 契约被遵守 | ✅ 完整结构化报告 |
+| 12 条 matches，weightFrom 如实标注 | ✅ |
+| **evidence 逐字子串** | ✅ **10/10 命中真实简历原文，0 条编造** |
+| score/verdict 一致 | ✅ 3 分 / caution，无矛盾 |
+| 判断质量 | ✅ 感知算法背景投标注管理岗 → 判 3 分 caution，指出学历不符 + 缺管理经验 + 驻场问题——判断正确 |
+
+**三道护栏（都是这轮补的，不在原设计里）**：
+
+1. **score 越界 → 整份报告作废**。score 是这个功能的全部结论，用户照它决定投不投；错分的代价远大于白做一次。
+2. **verdict/score 矛盾 → 以 score 为准回落**。prompt 硬约束禁止「score<4 却 verdict=apply」，但模型不听是常态。一致的组合原样保留，**包括「4.5 分但 verdict=caution」这种保守判断——不被 score 提升**。
+3. **evidence 子串验证**（只对 `status='covered'`）。模型编一段像简历的话，用户在 UI 上无从分辨，与本项目事实护栏的核心承诺直接相反。验证不过 → 清空 evidence + 降级 `partial`。sourced（声称来自素材）/ partial / missing 不参与。
+
+**`level` 语义必须写进 prompt**（本轮补）：原 schema 只给 `"level":"under|right|over"` 三个枚举**没说含义**，模型只能瞎猜。已补硬约束第 6 条（under=简历资历**低于**岗位要求 / right=恰好 / over=高于），UI 文案同步改为「低于岗位要求 / 恰好匹配 / 高于岗位要求」——写明方向，不只给档位名。
+
+**promote 复用 `createJobDraft()`**：`/job/create` 与 `/eval/promote` 调同一个函数，去重判定/快照冻结/指纹护栏/meta 落盘只有一份。改草稿创建逻辑只改一处。
+
+**⚠️ 备份改动（踩过的坑）**：`/backup` 的 tar 清单原本硬编码文件路径，而 `evaluations.json` 首次评估前**根本不存在** → tar 遇到不存在的路径**整包失败** → 备份功能直接 500。已改为按 `existsSync` 过滤 JSON（目录不过滤，启动时必在）。**加任何新的运行时数据文件都要过这一关。**
+
+**遗留**：报告卡片不跨刷新保留（记录在 `evaluations.json`，首页无「最近评估」列表）；耗时文案「1–5 分钟」写死无服务端预估；恢复后 evaluations 的冲突语义照 applications。
+
+---
+
 ## 大模型链路现状（2026-10-19 实测，替代原 §4 的「无可用模型」）
 
 **当前配置**：MiniMax · `https://api.minimax.cn/v1` · `MiniMax-M3.1-Flash-Preview` · `reasoningEffort: max` · `timeoutMs: 600000`。API 连通已实测（`content` 正常返回）。

@@ -2,6 +2,7 @@ node_modules/
 config.json
 applications.json
 materials.json
+evaluations.json
 docs-meta.json
 docs/
 snapshots/

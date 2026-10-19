@@ -11,6 +11,7 @@ import { structureText } from './structure.mjs';
 import { loadProfiles, hasLLM, chat, chatMsgs, listModels } from './llm.mjs';
 import { buildRewrite, buildChat, parseChanges, buildReview, buildMatch, parseReport } from './ai.mjs';
 import { buildJobPrompt, parseJobOps, pageSuggestions } from './job.mjs';
+import { buildEvalPrompt, parseEvalReport } from './eval.mjs';
 import { docToLines, docToText, contentHash, sectionsOf } from './extract.mjs';
 import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, digestOf, buildZoneAnalyzePrompt, parseZoneAnalysis, buildZoneRewritePrompt, parseZoneRewrites, FACT_KEYS, MAT_STATES, migrateMats, parasOf, zidsOf } from './zone.mjs';
 import { rotateLogIfNeeded } from './logrotate.mjs';
@@ -65,7 +66,7 @@ function timestamp() {
 }
 
 // ===== JSON 数据层：读容忍缺失、损坏必须显式暴露；写前校验，损坏即停写 =====
-const JSON_FILES = { meta: 'docs-meta.json', apps: 'applications.json', mats: 'materials.json' };
+const JSON_FILES = { meta: 'docs-meta.json', apps: 'applications.json', mats: 'materials.json', evals: 'evaluations.json' };
 const corrupt = new Set();
 const dataFile = (name) => path.join(root, JSON_FILES[name]);
 // 根值形状要求：可解析 ≠ 形状正确。docs-meta.json 必须是普通对象，applications/materials 必须是数组。
@@ -105,8 +106,10 @@ const loadMeta = () => readJson('meta', {});
 // 读时迁移视图（S3-T7）：旧形状（confirmed 布尔/缺 facts）在读取时补齐，不写盘；saveMats 往返自然渐进迁移
 const loadMats = () => migrateMats(readJson('mats', []));
 const loadApps = () => { const a = readJson('apps', []); return Array.isArray(a) ? a : []; };
+const loadEvals = () => { const a = readJson('evals', []); return Array.isArray(a) ? a : []; };
 const saveMats = (mats) => writeJson('mats', mats);
 const saveApps = (apps) => writeJson('apps', apps);
+const saveEvals = (list) => writeJson('evals', list);
 // docs-meta.json 无 saveMeta：唯一写入者为 tx.mjs 的 updateMeta（读最新→只 patch 目标文档→原子 rename），见各写路径。
 // —— JD 指纹护栏（career-ops 移植，设计: dev-docs/2026-10-18-career-ops-jd-fingerprint-design.md）——
 // 用动态 import 而非顶部静态 import：vendors 模块损坏（如上游同步引入语法错误）时
@@ -127,10 +130,88 @@ async function computeFpGuard(jd, jdLink, company, metaAll) {
       if (!a || (!a.jd && !a.link)) continue;
       records.push({ jd: a.jd || '', company: a.company, dateStr: a.appliedAt || a.createdAt || '', kind: 'app', label: `${a.company || ''}·${a.role || ''}`, link: a.link || '', status: a.status });
     }
+    // 第五路：岗位评估记录（/eval/create 落库）。评估过但没投的岗位同样要提醒，
+    // 否则用户会对同一个 JD 反复评估、反复适配。score/verdict 供 fpTodo 渲染「评估过 X 分」。
+    for (const e of loadEvals()) {
+      if (!e || !e.jd) continue;
+      records.push({ jd: e.jd, jdFp: e.jdFp || '', company: e.company, dateStr: e.createdAt, kind: 'eval', label: `${e.company || ''}·${e.role || ''}`, score: e.score, verdict: e.verdict });
+    }
     // todo 与 dupHints 同源同 try：vendors 模块损坏时两者一起降级，绝不产出半截提醒。
     const dupHints = findDupHints(jd, records, { newCompany: company, newLink: jdLink || '' });
     return { jdFp, dupHints, todos: fpTodo(dupHints) };
   } catch (e) { console.error('[fp-guard] 降级跳过:', e && e.message); return { jdFp: '', dupHints: [], todos: [] }; }
+}
+
+/**
+ * 岗位草稿的唯一创建路径：/job/create（用户粘贴 JD）与 /eval/promote（高分评估转适配）都调它。
+ * 抽成函数而不是各写一份：去重判定、冻结快照、正文落盘、JD 截断、指纹护栏、meta 落库
+ * 任一环节两处漂移，promote 就会造出与 /job/create 行为不一致的草稿——而这种不一致只在
+ * 「先评估后转换」这条低频路径上暴露，正则级回归也测不出来。改这里，两条路径一起改。
+ * 返回 {ok:true, id, jdError, dupHints} 或 {ok:false, status, body}（body 直接可 sendJson）。
+ */
+async function createJobDraft(root, o) {
+  const from = String(o.from || '');
+  const company = String(o.company || '').trim();
+  const role = String(o.role || '').trim();
+  if (!VALID_ID.test(from)) return { ok: false, status: 400, body: { ok: false, error: 'invalid from' } };
+  if (!company || !role) return { ok: false, status: 400, body: { ok: false, error: '公司、岗位必填' } };
+  const nb = normBrief(o.brief);   // S4a-T5：brief 可选（缺省渐进默认），非法值 400
+  if (nb.error) return { ok: false, status: 400, body: { ok: false, error: nb.error } };
+  if (!fs.existsSync(docPath(from))) return { ok: false, status: 404, body: { ok: false, error: '母版文档不存在' } };
+  const metaAll = loadMeta();
+  const dup = Object.keys(metaAll).find((k) => {
+    const m = metaAll[k];
+    return m && m.parent === from && m.company === company && m.role === role && fs.existsSync(docPath(k));
+  });
+  if (dup) return { ok: false, status: 409, body: { ok: false, existing: dup } };
+  // 冻结来源版本（快照 = freezeHtml + manifest），返回冻结 ts 供之后追溯
+  const srcSnap = snapshot(from);
+  let to, n = 2;
+  while (fs.existsSync(docPath(`${from}-v${n}`))) n++;
+  to = `${from}-v${n}`;
+  // 冻结点：母版 freezeHtml（自包含内联 typo）→ 归一化为当前格式落活文档（禁止直接 copy 冻结字节）
+  const srcHtml = fs.readFileSync(docPath(from), 'utf8');
+  const srcMeta = metaAll[from] || {};
+  const normJob = normalizeToCurrent(freezeHtml(srcHtml, srcMeta).html);
+  atomicWrite(docPath(to), normJob.html);
+  // JD：优先文本；给了链接且无文本时尝试读取，失败则记录待补充
+  let jdRaw = typeof o.jd === 'string' ? o.jd.trim() : '';
+  let jdTruncated = jdRaw.length > JD_MAX_CHARS;
+  let jd = jdTruncated ? jdRaw.slice(0, JD_MAX_CHARS) : jdRaw;
+  let jdLink = typeof o.jdLink === 'string' ? o.jdLink.trim() : '';
+  // 截断与「链接读取失败」是两回事，todo 文案必须分开：复用后者的模板会显示成
+  // 「JD 链接读取失败（…），请粘贴 JD 文本」——用户明明已经粘贴了，让它再粘一次是荒谬的（2026-10-18 实测）。
+  let jdError = '';
+  let jdTruncNote = jdTruncated ? 'JD 超过 64 KB，仅前 64 KB 纳入分析（尾部未读）。JD 过长通常意味着粘进了整页网页，可只保留「岗位职责 + 任职要求」两段。' : '';
+  if (!jd && jdLink) {
+    try {
+      if (!/^https?:\/\//.test(jdLink)) throw new Error('仅支持 http/https 链接');
+      const r = await fetch(jdLink, { signal: AbortSignal.timeout(15000) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.length > 5 * 1024 * 1024) throw new Error('页面超过 5MB 上限');
+      jd = buf.toString('utf8').replace(/<script[\s\S]*?<\/script>/g, '').replace(/<style[\s\S]*?<\/style>/g, '')
+        .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 4000);
+    } catch (e) { jdError = String(e.message || e); }
+  }
+  const { jdFp, dupHints, todos } = await computeFpGuard(jd, jdLink, company, metaAll);
+  const nowIso = new Date().toISOString();
+  // meta 唯一写入者 updateMeta：只写目标文档 to（不整表覆盖，避免踩并发更新）；状态维度 kind/flow/archivedAt（job.status 不再写，单源 flow）
+  updateMeta(root, to, () => ({
+    parent: from, company, role, jd, jdSource: jd ? (o.jdSource ? String(o.jdSource) : (jdLink ? jdLink : '手动')) : (jdLink || ''),
+    createdAt: nowIso,
+    tag: (company + '·' + role).slice(0, 20),
+    typo: normJob.typo, theme: srcMeta.theme || normJob.theme || null, styleHash: normJob.styleHash, rev: 1,
+    kind: 'job', flow: 'draft', archivedAt: null,
+    job: {
+      sourceSnap: srcSnap, sourceHash: contentHash(srcHtml),
+      materials: Array.isArray(o.materials) ? o.materials.filter((x) => typeof x === 'string') : [],
+      brief: nb.brief, jdFp,   // S4a-T5 要求卡（渐进默认：无 brief 时字段全默认）
+      changes: [], todos: [...(jdError ? [{ section: '岗位信息', question: 'JD 链接读取失败（' + jdError + '），请粘贴 JD 文本', why: '岗位匹配分析需要 JD', resolved: false }] : []), ...(jdTruncNote ? [{ section: '岗位信息', question: jdTruncNote, why: '截断部分未参与岗位匹配分析，可能影响要求覆盖度判断', resolved: false }] : []), ...todos],
+      generatedAt: null, deliveredAt: null
+    }
+  }));
+  return { ok: true, id: to, jdError: jdError || null, dupHints };
 }
 
 const corruptBanner = () => corrupt.size
@@ -958,8 +1039,10 @@ function listPage(showArchived = false) {
               <button type="button" class="secondary" data-pages="2" aria-pressed="true">2 页（默认）</button></span></label>
           </div>
         </details>
-        <div style="grid-column:1/-1"><button type="submit">生成岗位草稿</button><span id="jobMsg" style="font-size:12px;color:var(--mut)"></span></div>
+        <div style="grid-column:1/-1"><button type="submit">生成岗位草稿</button><button type="button" class="secondary" id="evalBtn">🧭 先评估这个岗位</button><span id="jobMsg" style="font-size:12px;color:var(--mut)"></span><span id="evalMsg" style="font-size:12px;color:var(--mut)"></span></div>
+        <div style="grid-column:1/-1;font-size:12px;color:var(--mut)">💡 「先评估」先用大模型判断这个岗位值不值得投（max 思考，通常需要 1–5 分钟），评估通过后再一键转成岗位适配草稿。</div>
       </form>
+      <div id="evalResult"></div>
     </details>
     ${drafts.length ? `<div class="card" style="margin-top:12px"><b>继续处理岗位草稿</b>
       ${drafts.map((d) => { const dl = deliverableNow(d.id, meta[d.id] || {}, d);   // 每草稿只算一次：原写法在同一模板串里调两次，2N 次同步解析卡首屏
@@ -1073,6 +1156,90 @@ function listPage(showArchived = false) {
           msg.textContent = ' ❌ ' + ((d && d.error) || (await r.text()));
         } catch (err) { msg.textContent = ' ❌ ' + err.message; }
       });
+      // ===== 岗位评估 UI：/eval/create → 报告卡片 → /eval/promote =====
+      // 报告内容全部来自模型：渲染前逐字段转义（模型输出直接进 innerHTML = XSS）。
+      /*EVAL_CARD_JS_START*/
+      function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+      function evalCardHtml(rec) {
+        var b = (rec && rec.blocks) || {};
+        var VERDICT = { apply: '建议投', caution: '谨慎', skip: '不建议' };
+        // 文案写明方向而不只给档位名：under/right/over 说的是「简历资历 vs 岗位要求」，
+        // 用户看到「偏保守」不知道是谁对谁保守（2026-10-19 补 prompt 语义时同步）。
+        var LEVEL = { under: '低于岗位要求', right: '恰好匹配', over: '高于岗位要求' };
+        var STATUS = { covered: '已有证据', sourced: '素材支持', partial: '部分匹配', missing: '未找到' };
+        var sal = b.salary || {};
+        var h = [];
+        h.push('<div class="card" style="margin-top:12px">');
+        h.push('<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap"><b style="font-size:24px">' + esc(rec.score == null ? '-' : rec.score) + ' / 5</b><b style="font-size:16px">' + esc(VERDICT[rec.verdict] || rec.verdict || '未定') + '</b><span style="font-size:12px;color:var(--mut)">岗位评估报告</span></div>');
+        h.push('<p style="margin:6px 0"><b>角色摘要：</b>' + esc(b.roleSummary) + '</p>');
+        h.push('<p style="margin:6px 0"><b>级别：</b>' + esc(LEVEL[b.level] || b.level || '') + (b.levelReason ? '（' + esc(b.levelReason) + '）' : '') + '</p>');
+        if (sal.source === 'JD 未提供') {
+          h.push('<p style="margin:6px 0"><b>薪资：</b><b style="color:var(--warn)">JD 未提供</b> ⚠️ 无外部薪资数据（本系统不查外部薪资库，别当成市场价）</p>');
+        } else {
+          h.push('<p style="margin:6px 0"><b>薪资：</b>' + esc(sal.text) + ' <span style="font-size:12px;color:var(--mut)">（来源：' + esc(sal.source) + '）</span></p>');
+        }
+        h.push('<p style="margin:6px 0"><b>最该强调：</b>' + esc(b.angle) + '</p>');
+        h.push('<p style="margin:6px 0"><b>结论理由：</b>' + esc(b.verdictReason) + '</p>');
+        h.push('<div style="margin-top:10px"><b>逐条匹配</b>');
+        var ms = Array.isArray(b.matches) ? b.matches : [];
+        if (!ms.length) h.push('<p style="font-size:13px;color:var(--mut)">（无）</p>');
+        ms.forEach(function (m) {
+          h.push('<div style="margin-top:6px;font-size:13px">· ' + esc(m.req) + ' — ' + esc(STATUS[m.status] || m.status || '') +
+            (m.evidence ? '<div style="color:var(--mut);font-size:12px">证据：' + esc(m.evidence) + '</div>' : '') + '</div>');
+        });
+        h.push('</div>');
+        h.push('<div style="margin-top:10px"><b>缺失能力</b>');
+        var gs = Array.isArray(b.gaps) ? b.gaps : [];
+        if (!gs.length) h.push('<p style="font-size:13px;color:var(--mut)">（无）</p>');
+        gs.forEach(function (g) { h.push('<div style="font-size:13px">· ' + esc(g) + '</div>'); });
+        h.push('</div>');
+        h.push('<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button type="button" data-eval-act="promote" data-eval-id="' + esc(rec.id) + '">✅ 就它了，转入适配</button><button type="button" class="secondary" data-eval-act="redo">重新评估</button></div>');
+        h.push('</div>');
+        return h.join('');
+      }
+      /*EVAL_CARD_JS_END*/
+      (function () {
+        var btn = document.getElementById('evalBtn');
+        var box = document.getElementById('evalResult');
+        var msg = document.getElementById('evalMsg');
+        if (!btn || !box || !msg) return;
+        var ctx = null;   // {id, from}：评估用哪个母版，转适配必须用同一个母版
+        var run = async function () {
+          var from = document.getElementById('jobFrom').value;
+          var jd = document.getElementById('jobJd').value.trim();
+          if (!jd) { msg.textContent = ' ❌ JD 必填：评估需要岗位描述文本'; return; }
+          btn.disabled = true;
+          btn.textContent = '评估中，通常需要 1–5 分钟…';
+          msg.textContent = '';
+          box.innerHTML = '';
+          try {
+            var r = await fetch('/eval/create', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ from: from, company: document.getElementById('jobCompany').value.trim(), role: document.getElementById('jobRole').value.trim(), jd: jd }) });
+            var d = await r.json().catch(function () { return null; });
+            if (!r.ok || !d || !d.ok || !d.eval) { msg.textContent = ' ❌ ' + ((d && d.error) || ('HTTP ' + r.status)); return; }
+            ctx = { id: d.eval.id, from: from };
+            box.innerHTML = evalCardHtml(d.eval);
+          } catch (err) { msg.textContent = ' ❌ ' + err.message; }
+          finally { btn.disabled = false; btn.textContent = '🧭 先评估这个岗位'; }
+        };
+        btn.addEventListener('click', run);
+        // 事件委托：卡片会被重新渲染，监听器不能绑在会被替换的节点上
+        box.addEventListener('click', async function (e) {
+          var t = e.target.closest('[data-eval-act]');
+          if (!t) return;
+          if (t.getAttribute('data-eval-act') === 'redo') { run(); return; }
+          if (!ctx) return;
+          t.disabled = true;
+          try {
+            var r = await fetch('/eval/promote', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ evalId: t.getAttribute('data-eval-id'), from: ctx.from }) });
+            var d = await r.json().catch(function () { return null; });
+            if (d && d.existing) { location.href = '/edit?id=' + encodeURIComponent(d.existing); return; }
+            if (!r.ok || !d || !d.ok || !d.id) { msg.textContent = ' ❌ ' + ((d && d.error) || ('HTTP ' + r.status)); t.disabled = false; return; }
+            location.href = '/edit?id=' + encodeURIComponent(d.id);
+          } catch (err) { msg.textContent = ' ❌ ' + err.message; t.disabled = false; }
+        });
+      })();
       document.getElementById('searchBox').addEventListener('input', function () {
         var q = this.value.toLowerCase();
         document.querySelectorAll('#doclist > li').forEach(function (li) {
@@ -1490,71 +1657,60 @@ async function handler(req, res) {
     // ===== 岗位草稿（独立文档；不依赖模型；同岗位不重复建）=====
     if (req.method === 'POST' && url.pathname === '/job/create') {
       const body = await readBodyAuto(req);
+      const r = await createJobDraft(root, { from: body.from, company: body.company, role: body.role, jd: body.jd, jdLink: body.jdLink, jdSource: body.jdSource, brief: body.brief, materials: body.materials });
+      if (!r.ok) return sendJson(r.status, r.body);
+      if ((req.headers.accept || '').includes('application/json') || (req.headers['content-type'] || '').includes('application/json')) {
+        return sendJson(200, { ok: true, id: r.id, jdError: r.jdError, dupHints: r.dupHints });
+      }
+      return redirect(`/edit?id=${r.id}`);
+    }
+    // ===== 岗位快速评估（前置筛）：粘贴 JD → 一次模型调用 → 1–5 分报告落库 =====
+    // 不复用 genTasks 三态机制：那是 S4a 给「同一文档反复生成建议」设计的（可取消/可重启恢复/可查状态），
+    // 评估是一次性同步请求——UI 拿不到 docId 也没有可恢复的东西需要恢复。用 genTasks 只会凭空多一份状态。
+    // 超时/失败语义直接沿用 chat() 的 profile 级 timeoutMs（默认 120s）+ withRetry 的 POST 不重试，
+    // 失败一律 502 回到调用方，不写半条记录。
+    if (req.method === 'POST' && url.pathname === '/eval/create') {
+      if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型，请先到首页的"⚙️ 大模型设置"' });
+      const body = await readBodyAuto(req);
       const from = String(body.from || '');
+      if (!VALID_ID.test(from)) return sendJson(400, { ok: false, error: 'invalid from' });
+      if (!fs.existsSync(docPath(from))) return sendJson(404, { ok: false, error: '母版文档不存在' });
+      let jd = typeof body.jd === 'string' ? body.jd.trim() : '';
+      if (!jd) return sendJson(400, { ok: false, error: 'JD 必填：评估需要岗位描述文本' });
+      if (jd.length > JD_MAX_CHARS) jd = jd.slice(0, JD_MAX_CHARS);   // 与 /job/create 同上限（S4B-12）
       const company = String(body.company || '').trim();
       const role = String(body.role || '').trim();
-      if (!VALID_ID.test(from)) return sendJson(400, { ok: false, error: 'invalid from' });
-      if (!company || !role) return sendJson(400, { ok: false, error: '公司、岗位必填' });
-      const nb = normBrief(body.brief);   // S4a-T5：brief 可选（缺省渐进默认），非法值 400
-      if (nb.error) return sendJson(400, { ok: false, error: nb.error });
-      if (!fs.existsSync(docPath(from))) return sendJson(404, { ok: false, error: '母版文档不存在' });
-      const metaAll = loadMeta();
-      const dup = Object.keys(metaAll).find((k) => {
-        const m = metaAll[k];
-        return m && m.parent === from && m.company === company && m.role === role && fs.existsSync(docPath(k));
-      });
-      if (dup) return sendJson(409, { ok: false, existing: dup });
-      // 冻结来源版本（快照 = freezeHtml + manifest），返回冻结 ts 供之后追溯
-      const srcSnap = snapshot(from);
-      let to, n = 2;
-      while (fs.existsSync(docPath(`${from}-v${n}`))) n++;
-      to = `${from}-v${n}`;
-      // 冻结点：母版 freezeHtml（自包含内联 typo）→ 归一化为当前格式落活文档（禁止直接 copy 冻结字节）
-      const srcHtml = fs.readFileSync(docPath(from), 'utf8');
-      const srcMeta = metaAll[from] || {};
-      const normJob = normalizeToCurrent(freezeHtml(srcHtml, srcMeta).html);
-      atomicWrite(docPath(to), normJob.html);
-      // JD：优先文本；给了链接且无文本时尝试读取，失败则记录待补充
-      let jdRaw = typeof body.jd === 'string' ? body.jd.trim() : '';
-      let jdTruncated = jdRaw.length > JD_MAX_CHARS;
-      let jd = jdTruncated ? jdRaw.slice(0, JD_MAX_CHARS) : jdRaw;
-      let jdLink = typeof body.jdLink === 'string' ? body.jdLink.trim() : '';
-      // 截断与「链接读取失败」是两回事，todo 文案必须分开：复用后者的模板会显示成
-      // 「JD 链接读取失败（…），请粘贴 JD 文本」——用户明明已经粘贴了，让它再粘一次是荒谬的（2026-10-18 实测）。
-      let jdError = '';
-      let jdTruncNote = jdTruncated ? 'JD 超过 64 KB，仅前 64 KB 纳入分析（尾部未读）。JD 过长通常意味着粘进了整页网页，可只保留「岗位职责 + 任职要求」两段。' : '';
-      if (!jd && jdLink) {
-        try {
-          if (!/^https?:\/\//.test(jdLink)) throw new Error('仅支持 http/https 链接');
-          const r = await fetch(jdLink, { signal: AbortSignal.timeout(15000) });
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          const buf = Buffer.from(await r.arrayBuffer());
-          if (buf.length > 5 * 1024 * 1024) throw new Error('页面超过 5MB 上限');
-          jd = buf.toString('utf8').replace(/<script[\s\S]*?<\/script>/g, '').replace(/<style[\s\S]*?<\/style>/g, '')
-            .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 4000);
-        } catch (e) { jdError = String(e.message || e); }
-      }
-      const { jdFp, dupHints, todos } = await computeFpGuard(jd, jdLink, company, metaAll);
-      const nowIso = new Date().toISOString();
-      // meta 唯一写入者 updateMeta：只写目标文档 to（不整表覆盖，避免踩并发更新）；状态维度 kind/flow/archivedAt（job.status 不再写，单源 flow）
-      updateMeta(root, to, () => ({
-        parent: from, company, role, jd, jdSource: jd ? (body.jdSource ? String(body.jdSource) : (jdLink ? jdLink : '手动')) : (jdLink || ''),
-        createdAt: nowIso,
-        tag: (company + '·' + role).slice(0, 20),
-        typo: normJob.typo, theme: srcMeta.theme || normJob.theme || null, styleHash: normJob.styleHash, rev: 1,
-        kind: 'job', flow: 'draft', archivedAt: null,
-        job: {
-          sourceSnap: srcSnap, sourceHash: contentHash(srcHtml),
-          materials: Array.isArray(body.materials) ? body.materials.filter((x) => typeof x === 'string') : [],
-          brief: nb.brief, jdFp,   // S4a-T5 要求卡（渐进默认：无 brief 时字段全默认）
-          changes: [], todos: [...(jdError ? [{ section: '岗位信息', question: 'JD 链接读取失败（' + jdError + '），请粘贴 JD 文本', why: '岗位匹配分析需要 JD', resolved: false }] : []), ...(jdTruncNote ? [{ section: '岗位信息', question: jdTruncNote, why: '截断部分未参与岗位匹配分析，可能影响要求覆盖度判断', resolved: false }] : []), ...todos],
-          generatedAt: null, deliveredAt: null
-        }
-      }));
-      if ((req.headers.accept || '').includes('application/json') || (req.headers['content-type'] || '').includes('application/json')) {
-        return sendJson(200, { ok: true, id: to, jdError: jdError || null, dupHints });
-      }
-      return redirect(`/edit?id=${to}`);
+      const docText = fs.readFileSync(docPath(from), 'utf8');
+      const p = buildEvalPrompt({ docText, jd, company, role });
+      let raw;
+      try { raw = await chat(root, p.sys, p.user); }
+      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
+      const parsed = parseEvalReport(raw, { docText });
+      // 解析失败一律不落库：半条/错分记录会进指纹护栏（第五路）反过来污染后续所有岗位提醒
+      if (!parsed.ok) return sendJson(502, { ok: false, error: '模型报告无法解析：' + parsed.reason });
+      const { fingerprintText } = await import('./vendors/jd-fingerprint/fingerprint-core.mjs');
+      const cfg = loadProfiles(root);
+      const rec = {
+        id: 'ev-' + timestamp(), jd, jdFp: fingerprintText(jd),
+        company, role, score: parsed.report.score, verdict: parsed.report.verdict,
+        blocks: parsed.report, model: (cfg.profiles[cfg.active] || {}).model || '',
+        createdAt: new Date().toISOString(), promotedTo: null
+      };
+      saveEvals([rec, ...loadEvals()]);   // 新记录在前：列表按时间倒序读
+      return sendJson(200, { ok: true, eval: rec });
+    }
+    // 高分评估转岗位适配：与 /job/create 共用 createJobDraft（同一套去重/冻结/截断/指纹/meta 落库）
+    if (req.method === 'POST' && url.pathname === '/eval/promote') {
+      const body = await readBodyAuto(req);
+      const list = loadEvals();
+      const rec = list.find((e) => e && e.id === String(body.evalId || ''));
+      if (!rec) return sendJson(404, { ok: false, error: '评估记录不存在' });
+      if (rec.promotedTo) return sendJson(409, { ok: false, error: '该评估已转为岗位草稿', existing: rec.promotedTo });
+      const r = await createJobDraft(root, { from: body.from, company: rec.company, role: rec.role, jd: rec.jd, jdSource: '评估' });
+      if (!r.ok) return sendJson(r.status, r.body);
+      rec.promotedTo = r.id;
+      saveEvals(list);
+      return sendJson(200, { ok: true, id: r.id });
     }
     // 兼容旧入口（编辑器旧按钮）：按 /job/create 语义处理
     if (req.method === 'POST' && url.pathname === '/version/create') {
@@ -2768,7 +2924,7 @@ async function handler(req, res) {
     <p><button type="button" id="addBtn">➕ 添加配置</button> <button type="button" id="saveBtn">保存</button> <a href="/">返回首页</a> <span id="msg"></span></p>
     <div class="card" style="margin-top:20px">
       <b style="font-family:var(--serif);font-size:14px">💾 备份与恢复</b>
-      <p style="font-size:13px;color:var(--mut)">备份含 docs/snapshots/pdfs 与三个 JSON（docs-meta/applications/materials），<b>不含 config.json（密钥不进备份）</b>。</p>
+      <p style="font-size:13px;color:var(--mut)">备份含 docs/snapshots/pdfs 与四个 JSON（docs-meta/applications/materials/evaluations），<b>不含 config.json（密钥不进备份）</b>。</p>
       <p><a href="/backup"><button>下载备份</button></a> <span style="font-size:12px;color:var(--mut)">恢复默认「合并」：本地独有记录保留，同 id 冲突以备份为准，预览里逐条列出</span></p>
       <form id="restoreForm"><input type="file" id="restoreFile" accept=".tar.gz,.tgz">
         <label style="font-size:13px"><input type="radio" name="rmode" value="merge" checked> 合并（推荐）</label>
@@ -2860,7 +3016,7 @@ async function handler(req, res) {
         // x 来自备份包内的文件名/记录（可由构造的备份控制），拼进 innerHTML 前必须转义
         var e = function (s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
         function sec(title, items) { if (!items || !items.length) return; lines.push('<div style="margin-top:6px"><b>' + title + '</b></div>'); items.forEach(function (x) { lines.push('<div>· ' + e(x) + '</div>'); }); }
-        var d = prev.docs || {}, a = prev.apps || {}, m = prev.mats || {}, meta = prev.meta || {};
+        var d = prev.docs || {}, a = prev.apps || {}, m = prev.mats || {}, ev = prev.evals || {}, meta = prev.meta || {};
         sec('文档（新增 ' + (d.add || []).length + ' / 冲突 ' + (d.conflict || []).length + ' / 本地保留 ' + (d.keep || []).length + '）',
           (d.add || []).slice(0, 10).map(function (x) { return '新增 ' + x; })
             .concat((d.conflict || []).slice(0, 10).map(function (x) { return '覆盖（同 id 内容不同）' + x; }))
@@ -2869,7 +3025,9 @@ async function handler(req, res) {
           (a.conflict || []).slice(0, 8).map(function (x) { return '以备份为准覆盖：' + x; }));
         sec('素材（新增 ' + (m.add || []).length + ' / 冲突 ' + (m.conflict || []).length + '）',
           (m.conflict || []).slice(0, 8).map(function (x) { return '以备份为准覆盖：' + x; }));
-        lines.push('<div style="margin-top:6px;color:var(--mut)">快照 ' + (prev.snapshots || 0) + ' 个 · PDF ' + (prev.pdfs || 0) + ' 个 · 预计恢复点数 ' + (prev.total || 0) + '</div>');
+        sec('评估（新增 ' + (ev.add || []).length + ' / 冲突 ' + (ev.conflict || []).length + '）',
+          (ev.conflict || []).slice(0, 8).map(function (x) { return '以备份为准覆盖：' + x; }));
+        lines.push('<div style="margin-top:6px;color:var(--mut)">快照 ' + (prev.snapshots || 0) + ' 个 · PDF ' + (prev.pdfs || 0) + ' 个 · 评估记录 新增 ' + (ev.add || []).length + ' / 冲突 ' + (ev.conflict || []).length + ' · 预计恢复点数 ' + (prev.total || 0) + '</div>');
         return lines.join('');
       }
       document.getElementById('restoreForm').addEventListener('submit', async function (e) {
@@ -3128,7 +3286,11 @@ async function handler(req, res) {
       const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + new Date().toTimeString().slice(0, 5).replace(':', '');
       // 先落临时文件再回传：原先 stdout 直接 pipe 且不监听退出码，tar 失败时客户端仍收到 200 + 残缺包
       const tmpTar = path.join(os.tmpdir(), `resume-backup-${Date.now()}.tar.gz`);
-      const child = spawn('tar', ['czf', tmpTar, '-C', root, 'docs', 'snapshots', 'pdfs', 'docs-meta.json', 'applications.json', 'materials.json'], { stdio: ['ignore', 'ignore', 'pipe'] });
+      // 清单里的 4 个 JSON 是运行时产物，首次写入前根本不存在。tar 遇到不存在的路径会整包失败
+      // （Cannot stat → 非零退出 → 500），所以按存在性过滤；目录恒在（启动时 mkdir），不过滤。
+      const bakFiles = ['docs', 'snapshots', 'pdfs']
+        .concat(['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json'].filter((f) => fs.existsSync(path.join(root, f))));
+      const child = spawn('tar', ['czf', tmpTar, '-C', root, ...bakFiles], { stdio: ['ignore', 'ignore', 'pipe'] });
       let err = '';
       child.stderr.on('data', (c) => { err += c; });
       child.on('close', (code) => {
@@ -3172,7 +3334,7 @@ async function handler(req, res) {
           return fail('备份包展开后 ' + Math.round(bytes / 1024 / 1024) + ' MB，超过 ' + Math.round(MAX_EXPANDED_BYTES / 1024 / 1024) + ' MB 上限，已拒绝（防压缩炸弹）', 413);
         }
       } catch (e) { return fail(e.code === 'ENOENT' ? '备份包信息读取失败' : e.message); }
-      const ALLOWED = /^(docs\/|snapshots\/|pdfs\/|docs-meta\.json$|applications\.json$|materials\.json$)/;
+      const ALLOWED = /^(docs\/|snapshots\/|pdfs\/|docs-meta\.json$|applications\.json$|materials\.json$|evaluations\.json$)/;
       for (const e of entries) {
         if (e.startsWith('/') || e.includes('..') || !ALLOWED.test(e.replace(/^\.\//, ''))) return fail('备份包含不允许的条目：' + e.slice(0, 80));
       }
@@ -3183,7 +3345,7 @@ async function handler(req, res) {
       for (const ent of fs.readdirSync(stage, { withFileTypes: true, recursive: true })) {
         if (ent.isSymbolicLink()) return fail('备份包含符号链接，已拒绝：' + ent.name.slice(0, 80));
       }
-      const hasContent = ['docs', 'snapshots', 'pdfs', 'docs-meta.json', 'applications.json', 'materials.json'].some((x) => fs.existsSync(path.join(stage, x)));
+      const hasContent = ['docs', 'snapshots', 'pdfs', 'docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json'].some((x) => fs.existsSync(path.join(stage, x)));
       if (!hasContent) return fail('备份包中没有可恢复的内容');
       // 预览：逐条差异（新增/冲突/保留）
       const idsOf = (dir) => fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.html')).map((f) => f.replace('.html', '')) : [];
@@ -3211,7 +3373,7 @@ async function handler(req, res) {
         const bak = jsonIds(file);
         if (bak === 'CORRUPT') return { corrupt: true, add: [], conflict: [], keep: [] };
         if (bak === null) return { add: [], conflict: [], keep: [] };
-        const local = file === 'materials.json' ? loadMats() : loadApps();
+        const local = file === 'materials.json' ? loadMats() : file === 'evaluations.json' ? loadEvals() : loadApps();
         const localIds = new Set(local.map((x) => x.id));
         const bakIds = new Set(bak.map((x) => x.id));
         const result = { add: [], conflict: [], keep: [] };
@@ -3233,11 +3395,12 @@ async function handler(req, res) {
         docs: compareDocs(),
         apps: compareJson('applications.json'),
         mats: compareJson('materials.json'),
+        evals: compareJson('evaluations.json'),
         meta: metaPreview,
         snapshots: entries.filter((l) => l.startsWith('snapshots/') && l.endsWith('.html')).length,
         pdfs: entries.filter((l) => l.startsWith('pdfs/') && l.endsWith('.pdf')).length
       };
-      preview.total = preview.docs.add.length + preview.docs.conflict.length + preview.apps.add.length + preview.apps.conflict.length + preview.mats.add.length + preview.mats.conflict.length;
+      preview.total = preview.docs.add.length + preview.docs.conflict.length + preview.apps.add.length + preview.apps.conflict.length + preview.mats.add.length + preview.mats.conflict.length + preview.evals.add.length + preview.evals.conflict.length;
       if (url.searchParams.get('apply') !== '1') {
         fs.rmSync(stage, { recursive: true, force: true });
         fs.rmSync(tmpTar, { force: true });
@@ -3251,7 +3414,7 @@ async function handler(req, res) {
       const safety = path.join(root, 'backups', 'restore-' + ts);
       fs.mkdirSync(path.join(safety, 'data'), { recursive: true });
       for (const d of ['docs', 'snapshots', 'pdfs']) if (fs.existsSync(path.join(root, d))) fs.cpSync(path.join(root, d), path.join(safety, 'data', d), { recursive: true });
-      for (const f of ['docs-meta.json', 'applications.json', 'materials.json']) if (fs.existsSync(path.join(root, f))) fs.copyFileSync(path.join(root, f), path.join(safety, 'data', f));
+      for (const f of ['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json']) if (fs.existsSync(path.join(root, f))) fs.copyFileSync(path.join(root, f), path.join(safety, 'data', f));
       fs.writeFileSync(path.join(safety, 'manifest.json'), JSON.stringify({ ts, mode, at: new Date().toISOString(), preview }));
       try {
         if (mode === 'replace') {
@@ -3262,7 +3425,7 @@ async function handler(req, res) {
             if (fs.existsSync(path.join(root, d))) for (const f of fs.readdirSync(path.join(root, d))) fs.rmSync(path.join(root, d, f), { recursive: true, force: true });
             if (fs.existsSync(src)) fs.cpSync(src, path.join(root, d), { recursive: true });
           }
-          for (const f of ['applications.json', 'materials.json']) if (fs.existsSync(path.join(stage, f))) fs.copyFileSync(path.join(stage, f), path.join(root, f));
+          for (const f of ['applications.json', 'materials.json', 'evaluations.json']) if (fs.existsSync(path.join(stage, f))) fs.copyFileSync(path.join(stage, f), path.join(root, f));
           // docs-meta 成对替换：经 updateMeta 逐文档写（唯一写入者），不裸 copyFileSync 覆盖共享文件；损坏 → 抛 CORRUPT（500），绝不当成 {}
           const repMeta = readMetaSnapshotAt(path.join(stage, 'docs-meta.json'));
           if (repMeta) applyMetaSnapshot(repMeta);
@@ -3295,6 +3458,7 @@ async function handler(req, res) {
           };
           mergeById('applications.json', loadApps, saveApps);
           mergeById('materials.json', loadMats, saveMats);
+          mergeById('evaluations.json', loadEvals, saveEvals);
           const metaStage = path.join(stage, 'docs-meta.json');
           const bakMeta = readMetaSnapshotAt(metaStage);      // 损坏 → 抛 CORRUPT（500），绝不静默跳过或当成 {}
           if (bakMeta) {
@@ -3326,7 +3490,7 @@ async function handler(req, res) {
       // 原先只建 safety2 本身并把内容放在其下，等于自己造的回退点无法再回退
       fs.mkdirSync(path.join(safety2, 'data'), { recursive: true });
       for (const d of ['docs', 'snapshots', 'pdfs']) if (fs.existsSync(path.join(root, d))) fs.cpSync(path.join(root, d), path.join(safety2, 'data', d), { recursive: true });
-      for (const f of ['docs-meta.json', 'applications.json', 'materials.json']) if (fs.existsSync(path.join(root, f))) fs.copyFileSync(path.join(root, f), path.join(safety2, 'data', f));
+      for (const f of ['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json']) if (fs.existsSync(path.join(root, f))) fs.copyFileSync(path.join(root, f), path.join(safety2, 'data', f));
       try {
         for (const d of ['docs', 'snapshots', 'pdfs']) {
           const src = path.join(dir, d);
@@ -3334,7 +3498,7 @@ async function handler(req, res) {
           fs.rmSync(path.join(root, d), { recursive: true, force: true });
           fs.cpSync(src, path.join(root, d), { recursive: true });
         }
-        for (const f of ['applications.json', 'materials.json']) if (fs.existsSync(path.join(dir, f))) fs.copyFileSync(path.join(dir, f), path.join(root, f));
+        for (const f of ['applications.json', 'materials.json', 'evaluations.json']) if (fs.existsSync(path.join(dir, f))) fs.copyFileSync(path.join(dir, f), path.join(root, f));
         // docs-meta 成对回退：经 updateMeta 逐文档写（唯一写入者）
         if (undoMeta) applyMetaSnapshot(undoMeta);
       } catch (e) {

@@ -31,7 +31,7 @@ function parseAnyDate(s) {
  * 新 JD 与历史记录比对，产出提醒（纯函数）。
  * records: [{ jd?, jdFp?, company?, dateStr?, kind: 'draft'|'app', label?, link?, status? }]
  * opts: { newCompany?, newLink?, threshold?, windowDays?, today? }
- * 返回 [{ kind: 'draft'|'app', byLink, label, dateStr, score, sameCompany, repost, status? }]
+ * 返回 [{ kind: 'draft'|'app'|'eval', byLink, label, dateStr, score, sameCompany, repost, status?, evalScore?, evalVerdict? }]
  *   kind = 记录原始来源（draft 建过草稿 / app 投递记录）；byLink = 是否由 link 精确匹配命中
  */
 export function findDupHints(jdText, records, opts = {}) {
@@ -53,14 +53,14 @@ export function findDupHints(jdText, records, opts = {}) {
     // byLink 单独标记命中方式；score 用实测相似度（有 JD 时），无 JD 时按同源链接记 1。
     // repost 取 sameCompany —— HR 把同一链接重发给同公司是最常见的重发形态，不能在这里丢标记。
     if (r.link && opts.newLink && r.link === opts.newLink) {
-      hints.push({ kind: r.kind || 'draft', byLink: true, label: r.label || '', dateStr: r.dateStr || '', score: rfp ? score : 1, sameCompany, repost: sameCompany, status: r.status });
+      hints.push({ kind: r.kind || 'draft', byLink: true, label: r.label || '', dateStr: r.dateStr || '', score: rfp ? score : 1, sameCompany, repost: sameCompany, status: r.status, evalScore: r.score, evalVerdict: r.verdict });
       continue;                              // 已记一条，不重复走相似路径
     }
     const t = parseAnyDate(r.dateStr);
     if (Number.isNaN(t) || t < cutoff) continue;
     if (!rfp) continue;                     // 历史条目不可指纹 → 跳过
     if (score < threshold) continue;
-    hints.push({ kind: r.kind, byLink: false, label: r.label || '', dateStr: r.dateStr || '', score, sameCompany, repost: sameCompany, status: r.status });
+    hints.push({ kind: r.kind, byLink: false, label: r.label || '', dateStr: r.dateStr || '', score, sameCompany, repost: sameCompany, status: r.status, evalScore: r.score, evalVerdict: r.verdict });
   }
   return hints;
 }
@@ -68,7 +68,8 @@ export function findDupHints(jdText, records, opts = {}) {
 /**
  * dupHints → todo 条目（纯函数，与 findDupHints 同文件，保证渲染层可被测试直接导入）。
  * 文案口径（2026-10-18 审查 🔴 问题 1）：只按 kind 的原始来源说话，从不把草稿说成已投递。
- *   kind='draft' → 建过草稿；kind='app' → 已投递（带 status）；byLink=true → 同一链接（额外标注来源）。
+ *   kind='draft' → 建过草稿；kind='app' → 已投递（带 status）；kind='eval' → 评估过（带评分与结论）。
+ *   byLink=true → 同一链接（额外标注来源）。
  */
 export function fpTodo(dupHints) {
   if (!dupHints || !dupHints.length) return [];
@@ -77,7 +78,11 @@ export function fpTodo(dupHints) {
   const top = ranked.slice(0, 3).map((h) => {
     // status 已是「已投递」时不重复拼接 —— /app/add 的默认 status 就是「已投递」，
     // 直接拼会输出「已投递·已投递」（2026-10-18 端到端实测确认）。
-    const what = h.kind === 'app' ? '已投递' + (h.status && h.status !== '已投递' ? '·' + h.status : '') : '建过草稿';
+    // kind='eval' → 评估过（带分数与结论）。评估记录是「用户已经看过这个岗位」的独立一类：
+    // 沿用 draft/app 的文案会把「只评估过、没建草稿」说成「建过草稿」（与 🔴 问题 1 同源的口径错误）。
+    const what = h.kind === 'app' ? '已投递' + (h.status && h.status !== '已投递' ? '·' + h.status : '')
+      : h.kind === 'eval' ? '评估过 ' + h.evalScore + ' 分（' + (h.evalVerdict || '') + '）'
+        : '建过草稿';
     return `${h.label}（${String(h.dateStr).slice(0, 10)} ${h.byLink ? '同一链接·' + what : what}${h.repost ? '，疑似重发' : ''}）`;
   }).join('；');
   // 百分比只对「真的比过指纹」的命中负责：纯 link 命中的 score 是退化值 1，不是相似度，

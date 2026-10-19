@@ -160,7 +160,7 @@ career-ops 的「先筛后投」落在工作台 =「先评估后适配」。评�
 | 件 | 内容 |
 |---|---|
 | `eval.mjs`（新文件 ~150 行） | `buildEvalPrompt`（输入 = JD + 简历母版文本，同 buildJobPrompt 数据源）、`parseEvalReport`（块标记解析，学 parseJobOps 风格） |
-| 解析护栏（学 parseInterview 双护栏模式） | 分数必须是 1–5 数字（允许 .5）；逐条匹配状态枚举校验；畸形块丢弃并计数。**不跑 factGuard**——报告不改正文，无事实污染面 |
+| 解析护栏 | ① score 必须是 1–5 数字（允许 .5），越界/非数字**整份作废**（score 是本功能全部结论，错分代价远大于白评估一次）；② verdict/level 枚举外则**由 score 无损推导回落**（apply/caution/skip、'right'），不丢弃；③ matches 逐条丢弃计数；④ **evidence 子串验证**：status='covered' 声称「简历原文里有」，若 evidence 不是母版逐字子串 → 清空 evidence + 降级为 partial。sourced/partial/missing 不参与（它们不声称原文命中）。**不跑 factGuard**——报告不改正文 |
 | `evaluations.json`（新轻量库） | 每条：`id, jd, jdFp, company, role, score, verdict, blocks, model, createdAt, promotedTo(转草稿后 docId，可 null)`。与 applications.json 同风格，独立读写 |
 | `server.mjs` 路由 | `POST /eval/create`（评估）、`POST /eval/promote`（转适配 = 复用 /job/create 逻辑，字段预填）；报告卡片展示 |
 | UI | 生成页表单旁加「先评估」入口 + 报告卡片（分数、结论、A–E 块、[转入适配] 按钮）。不新建独立页 |
@@ -172,6 +172,20 @@ career-ops 的「先筛后投」落在工作台 =「先评估后适配」。评�
 1. 批次 2 完成标准 = **stub 验证通过**（纪律 §4：AI 测试一律本地 stub + 标注「模拟验证」）。
 2. 真实 LLM 链路（模型是否遵守输出格式、分数是否合理）**未验证**，登记为遗留——与 S4b③ 同款困境，同款登记。
 3. 批次 2 的实施时点可排在指纹之后任意时间；结构就绪后模型到位即插即用（llm.mjs 通道不变）。
+
+---
+
+### 设计实现偏差（2026-10-19 实施期发现并修正）
+
+**原设计写「不跑 factGuard——报告不改正文，无事实污染面」。前半句成立，后半句对 `evidence` 不成立。**
+
+`evidence` 是要**贴进 UI 给用户看的简历原文片段**。模型编一段像简历的话，用户在界面上无从分辨——而这份报告的全部意义就是帮他判断「我到底有没有这段经历」。编造的 evidence 会让用户误以为自己拥有它，与本项目事实护栏的核心承诺**直接相反**。
+
+修正：`parseEvalReport(raw, { docText })` 增第二道护栏（只验证 `status==='covered'` 的条目，sourced 声称来自素材、partial/missing 本就不声称原文命中）。与 S4a 的「before 必须逐字出现在文档中，找不到就不要输出」同口径。测试见 EV-4。
+
+**另一个偏差**：原设计说「公司/职位名可由评估顺手提取候选」，实现**未做**（YAGNI）——表单让用户填，`/eval/promote` 才能干净复用 `/job/create` 的字段。若日后发现手填太烦再加提取。
+
+**`gaps` 元素丢弃不计入 `dropped`**：`dropped` 的语义是「匹配条目被丢弃」，把 gaps 混进去会让这个数字在两个任务间含义漂移。
 
 ---
 
@@ -195,14 +209,17 @@ career-ops 的「先筛后投」落在工作台 =「先评估后适配」。评�
 
 ### 6.2 EV 组（批次 2：评估，stub 模拟验证）
 
-| 组 | 断言 | 防什么 |
-|---|---|---|
-| EV-1 | parseEvalReport：合规报告文本 → 各块结构完整 | 解析缺陷 |
-| EV-2 | parseEvalReport：畸形块（分数越界/枚举外状态/残缺块）→ 丢弃并计数，不抛错 | 崩溃/脏数据 |
-| EV-3 | buildEvalPrompt：输入 JD + 母版文本 → prompt 含必要段（夹具用真实产出） | prompt 拼装错误 |
-| EV-4 | 路由集成：stub LLM 返回固定报告 → evaluations.json 落盘字段完整 | 存储缺陷 |
-| EV-5 | promote：评估 → 转适配 → 岗位草稿建立且 jd 预填、promotedTo 回写 | 链路断裂 |
-| EV-6 | 指纹四路：评估库命中 → 创建草稿时提醒历史分数 | 闭环断裂 |
+| 组 | 断言 | 防什么 | 状态 |
+|---|---|---|---|
+| EV-1 | buildEvalPrompt：母版原文 + JD 原文 + 枚举契约 + 反编造约束进 prompt | prompt 拼装错误 | ✅ |
+| EV-2 | 合规保真 + score 越界（6/0/-1/"4.0"）整份作废 + verdict/level 非法回落 | **错分比不给更危险** | ✅ |
+| EV-3 | matches 丢弃计数 + 围栏剥离 + 7 种坏输入不抛 + salary/gaps 归一 | 崩溃/脏数据 | ✅ |
+| EV-4 | **evidence 子串验证**：编造的 evidence 清空并把 covered 降级为 partial；真实逐字子串保留；sourced/partial/missing 不参与 | **模型编造简历片段**（见下） | ✅ |
+| EV-5 | 路由集成：stub LLM 返回固定报告 → evaluations.json 落盘字段完整 | 存储缺陷 | ⏳ 待做 |
+| EV-6 | promote：评估 → 转适配 → 岗位草稿建立且 jd 预填、promotedTo 回写 | 链路断裂 | ⏳ 待做 |
+| EV-7 | 指纹五路：评估库命中 → 创建草稿时提醒历史分数与结论 | 闭环断裂 | ⏳ 待做 |
+
+> 编号修正（2026-10-19）：原表把 EV-1 定为「解析」、EV-3 定为「prompt 构建」，与实现顺序错位一格。实现按「先 prompt 后解析」组织，**以实现为准，本表已对齐**。
 
 - 真实 LLM 链路 **未验证**，登记遗留（同 S4b③ 模式，见 §5.4）。
 - 四件套全绿，基线 338+83 只增不减；冻结件不动。
