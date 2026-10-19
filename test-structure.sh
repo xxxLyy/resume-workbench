@@ -3269,7 +3269,18 @@ assert(/reasoning_effort/.test(llm), 'llm.mjs 必须发 reasoning_effort（MiniM
 //    同一个坑不能踩第二次）。因此必须是「有值才带」，不能无条件塞进 body。
 assert(!/body:\s*JSON\.stringify\(\{\s*model:\s*c\.model,\s*messages\s*\}\)/.test(llm), '不得硬编码固定 body（必须可按 profile 切换）');
 // ③ 设置页要能填这个字段
-assert(/'reasoningEffort'/.test(srv), '设置页必须提供 reasoningEffort 输入框');
+assert(/reasoningEffort/.test(srv), '设置页必须提供 reasoningEffort 控件');
+// 2026-10-19：从 <input list=datalist> 改成 <select>——datalist 在 input 已有值时
+// 下拉极难点开（实测：填了模型名后切换不了模型）。故此处断言 select 形态而非 inp()。
+assert(/<select onchange="state\.profiles\[' \+ i \+ '\]\.reasoningEffort=this\.value">/.test(srv), '思考程度必须是 <select>（datalist 在有值时不可用）');
+assert(!/^\s*\+?\s*'[^']*list="effort-/.test(srv), '不得再用 datalist 承载思考程度');
+// 模型切换同理：改成可点按钮组 + data-* 事件委托，不用内联 onclick 拼字面量
+// （JSON.stringify 的双引号会截断 onclick 属性 → SyntaxError → 点击静默无效，实测栽过两次）。
+assert(/data-pm="/.test(srv) && /function pickModel/.test(srv), '模型切换必须用 data-* + 事件委托按钮组');
+assert(!/onclick="pickModel\(/.test(srv), '不得用内联 onclick 拼模型名字面量（会被引号截断）');
+assert(!/^\s*\+?\s*'[^']*list="models-/.test(srv), '模型不得再用 datalist');
+assert(!/^\s*\+?\s*'[^']*<datalist/.test(srv), '设置页不得再有 datalist（只看代码行，注释里提到不算）');
+assert(/modelButtonsHtml\(p, i\)/.test(srv), '按钮组重建必须传对 profile 下标（漏传会让 data-pi=undefined → 第二次切换报错）');
 // ④ /settings 保存不丢字段：整数组原样 stringify，没有白名单，新增字段自动持久化
 assert(/JSON\.stringify\(\{ active: profiles\.length \? body\.active : 0, profiles \}\)/.test(srv), '/settings 仍应原样保存 profiles（保证新字段不被丢）');
 console.log('✅ S4B-14 reasoning_effort 固定思考程度（profile 级可选）');

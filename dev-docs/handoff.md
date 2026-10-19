@@ -180,6 +180,33 @@ launchctl kickstart -k gui/$(id -u)/com.lhx.resume-server   # 重启常驻服务
 
 ---
 
+## ⚠️ 交付纪律补丁（2026-10-19 因连续翻车新增，两条硬规矩）
+
+### 规矩一：改完必须重启真实服务，并用浏览器实际点一遍
+
+**起因**：连续三次「代码写完、隔离实例验证通过、报告说已完成」，但 **launchd 真实服务（7766）从没重启过**——用户看到的是旧代码，等于我给了一个没兑现的功能（他报「设置里看不到思考程度」）。修的时候又连栽三次，全是同一个根因：**只跑 `node --check` 就宣布完成**。
+
+| # | 错误 | 怎么暴露的 |
+|---|---|---|
+| 1 | 设置页用了 `esc()`，但该页只有 `escAttr()` | 点「测试连接」→ `esc is not defined` |
+| 2 | `onclick="pickModel(0,"` 被双引号截断（`JSON.stringify` 的引号与 HTML 属性冲突） | 点按钮无反应 + 控制台 `SyntaxError: Unexpected end of input` |
+| 3 | `modelButtonsHtml(p)` 漏传 `i` → `data-pi="undefined"` | 第二次切换报 `Cannot read properties of undefined` |
+
+**硬规矩**：
+- **前端改动必须用浏览器实际点一遍**才算完成。`node --check`/`grep` 只能证明代码能解析，**不能证明它能跑**。
+- **改动提交后必须 `launchctl kickstart -k "gui/$(id -u)/com.lhx.resume-server"`**，并提示用户 `Cmd+Shift+R` 硬刷新，否则他看到的永远是旧代码（这与纪律 §3「改服务端 JS 后旧标签页跑旧逻辑」同源，但更隐蔽：不是标签页，是**服务进程本身**）。
+- 端到端验证一律用**隔离实例 + 真实浏览器**，`curl` 只够看 HTTP 状态码，看不见控制台报错。
+
+### 规矩二：`<datalist>` 在 input 已有值时不可用，别再用它做选择器
+
+实测：模型名一旦填进 input，datalist 下拉就点不开、换不了模型（同理思考程度）。**设置页的选择器一律用**：
+- 固定少量选项 → `<select>`
+- 服务端返回的动态列表 → **可点按钮组 + `data-*` + 事件委托**
+
+事件委托还有一条硬要求：**不要用内联 `onclick` 拼 JS 字面量**（`JSON.stringify` 的双引号会截断 HTML 属性），改用 `data-pi`/`data-pm` 索引 + `document.addEventListener('click', ...)` 委托。回归哨兵见 `test-structure.sh` 的 S4B-14（含「不得出现内联 onclick 拼字面量」「按钮组重建必须传对下标」两条）。
+
+---
+
 ## 大模型链路现状（2026-10-19 实测，替代原 §4 的「无可用模型」）
 
 **当前配置**：MiniMax · `https://api.minimax.cn/v1` · `MiniMax-M3.1-Flash-Preview` · `reasoningEffort: max` · `timeoutMs: 600000`。API 连通已实测（`content` 正常返回）。

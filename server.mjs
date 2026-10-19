@@ -2941,6 +2941,17 @@ async function handler(req, res) {
       function inp(i, f, label, val, extra) {
         return '<p>' + label + '<br><input ' + (extra || 'size="46"') + ' value="' + escAttr(val) + '" oninput="state.profiles[' + i + '].' + f + '=this.value"></p>';
       }
+      // 模型按钮组：pickModel 之后 render() 会重建卡片，按钮组必须跟着重建，
+      // 否则切换一次模型后按钮就消失了，还得重新点「测试连接」（2026-10-19 实测）。
+      function modelButtonsHtml(p, i) {
+        var list = p && p.__models;
+        if (!list || !list.length) return '';
+        return '<span style="font-size:12px;color:var(--mut)">可点选：</span>'
+          + list.map(function (m, k) {
+              return '<button type="button" class="secondary" data-pi="' + i + '" data-pm="' + k + '"'
+                + ' style="margin:2px;padding:2px 8px;font-size:12px">' + escAttr(String(m)) + '</button>';
+            }).join('');
+      }
       function render() {
         var box = document.getElementById('cards');
         box.innerHTML = '';
@@ -2952,10 +2963,15 @@ async function handler(req, res) {
             + inp(i, 'name', '名称', p.name, 'size="12"')
             + inp(i, 'baseURL', 'Base URL', p.baseURL)
             + inp(i, 'apiKey', 'API Key', p.apiKey, 'size="46" type="password"')
-            + inp(i, 'model', '模型（可手填；点「测试连接」成功后可下拉选）', p.model, 'size="46" list="models-' + i + '"')
-            + inp(i, 'reasoningEffort', '思考程度 reasoning_effort（可留空；MiniMax 支持 low/medium/high/xhigh/max，填 max 即固定最强思考）', p.reasoningEffort, 'size="12" list="effort-' + i + '" placeholder="留空=不传该参数"')
-            + '<datalist id="effort-' + i + '">' + ['low', 'medium', 'high', 'xhigh', 'max'].map(function (x) { return '<option value="' + x + '">'; }).join('') + '</datalist>'
-            + '<datalist id="models-' + i + '"></datalist>'
+            + inp(i, 'model', '模型（可手填；点「测试连接」成功后下方出现可点的模型按钮）', p.model, 'size="46"')
+            + '<div id="models-' + i + '" style="margin:-6px 0 8px">' + modelButtonsHtml(p, i) + '</div>'
+            + '<p>思考程度 reasoning_effort（留空=不传该参数；部分厂商不认这个字段，硬传会 400）<br>'
+            + '<select onchange="state.profiles[' + i + '].reasoningEffort=this.value">'
+            + '<option value=""' + (!p.reasoningEffort ? ' selected' : '') + '>（不设置）</option>'
+            + ['low', 'medium', 'high', 'xhigh', 'max'].map(function (x) {
+                return '<option value="' + x + '"' + (p.reasoningEffort === x ? ' selected' : '') + '>' + x + '</option>';
+              }).join('')
+            + '</select></p>'
             + '<p><button type="button" onclick="testCard(' + i + ')">测试连接</button> <span id="msg-' + i + '"></span></p>';
           box.appendChild(card);
         });
@@ -2991,6 +3007,14 @@ async function handler(req, res) {
         document.getElementById('msg').textContent = r.ok ? ' ✅ 已保存' : ' ❌ ' + (await r.text());
         return r.ok;
       }
+      function pickModel(btn) {
+        var i = Number(btn.getAttribute('data-pi'));
+        var list = state.profiles[i].__models || [];
+        var m = list[Number(btn.getAttribute('data-pm'))];
+        if (m === undefined) return;
+        state.profiles[i].model = String(m);
+        render();
+      }
       async function testCard(i) {
         var p = state.profiles[i];
         // 每次现取：fetch 期间用户可能删配置触发 render()，缓存的 msg 会变 detached 节点，
@@ -3003,11 +3027,28 @@ async function handler(req, res) {
           var data = await r.json();
           if (data.ok) {
             say(' ✅ 连接成功，' + data.models.length + ' 个模型可用');
-            var dl = document.getElementById('models-' + i);
-            if (dl) dl.innerHTML = data.models.map(function (m) { return '<option value="' + String(m).replace(/"/g, '') + '">'; }).join('');
+            state.profiles[i].__models = data.models.map(String);   // 供按钮 data-pm 索引取值（不入 config）
+            // 模型做成「点一下就填」的按钮组，不用 <datalist>：
+            // datalist 在 input 已有值时下拉极难点开（实测 2026-10-19：填了模型名后
+            // 就点不开、换不了模型），而按钮组点击即切换，行为确定。
+            var box = document.getElementById('models-' + i);
+            if (box) {
+              box.innerHTML = '<span style="font-size:12px;color:var(--mut)">可点选：</span>'
+                + data.models.map(function (m, k) {
+                    // 模型名走 data-* + 事件绑定，不用 onclick 内联拼字面量：
+                    // JSON.stringify 产生的双引号会与 HTML 属性双引号冲突，把 onclick 截断成
+                    // "pickModel(0," → 浏览器 SyntaxError，点击静默无效（2026-10-19 实测）。
+                    return '<button type="button" class="secondary" data-pi="' + i + '" data-pm="' + k + '"'
+                      + ' style="margin:2px;padding:2px 8px;font-size:12px">' + escAttr(String(m)) + '</button>';
+                  }).join('');
+            }
           } else say(' ❌ 连接失败（' + (p.baseURL || '未填 Base URL') + '）：' + data.error + '　—— 不影响手填模型名，保存即可');
         } catch (e) { say(' ❌ 连接失败（' + (p.baseURL || '未填 Base URL') + '）：' + (e.message || e) + '　—— 不影响手填模型名，保存即可'); }
       }
+      document.addEventListener('click', function (ev) {
+        var b = ev.target && ev.target.closest ? ev.target.closest('button[data-pm]') : null;
+        if (b) pickModel(b);
+      });
       document.getElementById('addBtn').onclick = function () { state.profiles.push({ name: '', baseURL: '', apiKey: '', model: '' }); render(); };
       document.getElementById('saveBtn').onclick = save;
       render();
