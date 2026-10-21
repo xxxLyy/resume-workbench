@@ -3942,3 +3942,59 @@ for (const n of NAMES) {
 }
 console.log('✅ UI-1 图标数据完整（44 个）');
 EOF
+
+# —— UI-2：浅色克制 token + icon() helper（批次A）——
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+import { ICONS } from './vendors/icons.js';
+const assert = (c, m) => { if (!c) { console.error('❌ UI-2 ' + m); process.exit(1); } };
+const srv = readFileSync('./server.mjs', 'utf8');
+// 新 token 必须存在（同名覆盖旧 A-VARS）
+for (const [k, v] of Object.entries({
+  '--background': '#ffffff', '--foreground': '#0a0a0a', '--muted': '#737373',
+  '--card': '#ffffff', '--card-2': '#fafafa', '--border': '#e5e5e5',
+  '--accent': '#18181b', '--accent-fg': '#ffffff',
+  '--success': '#16a34a', '--warning': '#d97706', '--danger': '#dc2626',
+})) {
+  assert(srv.includes(k) && srv.includes(v), `token ${k} 应存在且值为 ${v}`);
+}
+assert(/--shadow:\s*none/.test(srv), '主阴影应为 none（靠边框不靠阴影）');
+// icon() helper 必须存在且白名单化（防 XSS：名字只允许 ICONS 里的）
+assert(/function icon\(/.test(srv), '必须有 icon() helper');
+assert(/ICONS\[/.test(srv), 'icon() 必须走 ICONS 白名单查表（不拼字符串）');
+assert(/currentColor/.test(srv), 'icon() 输出必须用 currentColor（跟随主题）');
+assert(/viewBox/.test(srv), 'icon() 输出必须带 viewBox');
+
+// —— icon() 运行时行为（源码文本扫描不够：白名单外必须空串，非法 size/class 不得逃逸属性）——
+// 把 server.mjs 里**实际发布的** icon() 原样抠出来跑（server.mjs 顶层会 listen，不能直接 import）。
+const iStart = srv.indexOf('function icon(');
+const iEnd = srv.indexOf('function page(');
+assert(iStart > 0 && iEnd > iStart, '应能定位 icon() 源码区间');
+const icon = new Function('ICONS', srv.slice(iStart, iEnd) + '\nreturn icon;')(ICONS);
+const a = icon('file-text');
+assert(a.startsWith('<svg ') && a.includes('viewBox="0 0 24 24"'), 'icon() 应输出带 viewBox 的 <svg>');
+assert(a.includes('stroke="currentColor"'), 'icon() 应使用 currentColor');
+assert(a.includes('aria-hidden="true"'), 'icon() 应带 aria-hidden');
+assert(a.includes('<path d="M15 2H6a2'), 'icon() 应逐属性输出 path 的 d');
+// 非 path 元素（circle/rect/line/polyline/...）不得假设有 d
+const circ = icon('circle-alert');
+assert(circ.includes('<circle') && !/d=""/.test(circ), 'circle 类图标应逐属性输出');
+assert(icon('circle-slash').includes('<line'), 'line 类属性也应输出');
+// 白名单：不存在（含原型链名）一律空串
+for (const bad of ['nope', 'constructor', '__proto__', 'toString', '']) {
+  assert(icon(bad) === '', '白名单外的名字应返回空串: ' + bad);
+}
+// 全部图标可渲染
+for (const n of Object.keys(ICONS)) {
+  const s2 = icon(n);
+  assert(s2.includes('<svg') && !s2.includes('undefined'), n + ' 应可渲染且无 undefined');
+}
+// 尺寸/class 不得逃逸（属性注入防线）
+assert(icon('x', '"><script>alert(1)</script>').includes('width="16"'), '非法 size 应回落 16 且不注入');
+const evil = icon('x', 16, '"><script>alert(1)</script>');
+assert(!evil.includes('<script'), 'class 不得注入标签');
+const clsAttr = (evil.match(/class="([^"]*)"/) || [])[1] || '';
+assert(/^[a-zA-Z0-9_ -]*$/.test(clsAttr), 'class 值须只含安全字符，实际: ' + clsAttr);
+assert(icon('x', 16, 'badge ok').includes('class="badge ok"'), '正常 class 应保留');
+console.log('✅ UI-2 浅色 token + icon() helper');
+EOF

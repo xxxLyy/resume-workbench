@@ -29,6 +29,7 @@ import { sumExpandedBytes, MAX_EXPANDED_BYTES } from './restore-guard.mjs';   //
 const JD_MAX_CHARS = 64 * 1024;
 import { applyOps, reviewConsistency, refFresh, buildEvidencePrompt, parseEvidence, buildInterviewPrompt, parseInterview, guardOps, exportChecks, layoutDiagnose } from './evidence.mjs';
 import { assembleTemplate, themeRegistration } from './template.mjs';
+import { ICONS } from './vendors/icons.js';   // Lucide 图标数据（纯数据文件，零 npm 依赖）
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const root = process.env.RESUME_ROOT || APP_ROOT;   // 数据根（docs/snapshots/pdfs/JSON/backups 全在此）
@@ -818,11 +819,31 @@ function readBodyToFile(req, file, maxSize) {
   });
 }
 
+/**
+ * 内联 SVG 图标（Lucide path 数据，ISC）。
+ * 名字走 ICONS 白名单查表 —— 不存在就返回空串，**绝不把调用方传入的字符串拼进 SVG**（XSS）。
+ * stroke 用 currentColor，跟随主题色。
+ * @param name  ICONS 里的键名（白名单外一律返回空串）
+ * @param size  像素边长（非数字回落 16）
+ * @param cls   附加 class（只保留安全字符，防属性逃逸）
+ */
+function icon(name, size = 16, cls = '') {
+  if (!Object.prototype.hasOwnProperty.call(ICONS, name)) return '';   // 白名单外 → 空串
+  const parts = ICONS[name];
+  const s = Number(size) > 0 ? Number(size) : 16;
+  const c = String(cls).replace(/[^a-zA-Z0-9_ -]/g, '');
+  const body = parts.map(([tag, a]) => `<${tag} ${Object.entries(a).map(([k, v]) => `${k}="${String(v).replace(/"/g, '&quot;')}"`).join(' ')}/>`).join('');
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"${c ? ` class="${c}"` : ''} aria-hidden="true" focusable="false">${body}</svg>`;
+}
+
 function page(title, inner, active = '', wide = false) {
   const nav = (key, href, label) => `<a href="${href}"${active === key ? ' class="on"' : ''}>${label}</a>`;
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
 <style>/*BENTO-V1*/
-/*A-VARS*/:root{--bg:#F6F1E7;--panel:#FFFCF5;--ink:#26221C;--mut:#6E675C;--line:#E2D9C8;--accent:#C2410C;--accent-ink:#FFF7ED;--accent-soft:#FBE9D8;--ok:#2F6B4F;--ok-soft:#E4EFE6;--warn:#A25711;--warn-soft:#FBEEDC;--err:#A32B2B;--err-soft:#F7E4E1;--ai:#7A5C3E;--ai-soft:#F1E7D8;--radius:8px;--shadow:0 1px 2px rgba(60,45,25,.07);--shadow-up:0 10px 24px rgba(60,45,25,.12);--serif:"Songti SC","Noto Serif CJK SC","Source Han Serif SC",Georgia,serif;--sans:"PingFang SC",-apple-system,sans-serif}
+/* 浅色克制设计系统（2026-10-21 UI 重设计，设计文档 dev-docs/2026-10-21-ui-redesign-design.md）：
+   主行动用近黑不用蓝；彩色只承载状态；零阴影靠 1px 边框 + 背景差表达层级。
+   旧名（--bg/--panel/--ink/...）保留为别名，既有 CSS 几百处零改动即生效。 */
+/*A-VARS*/:root{--background:#ffffff;--foreground:#0a0a0a;--muted:#737373;--muted-2:#a1a1aa;--card:#ffffff;--card-2:#fafafa;--border:#e5e5e5;--accent:#18181b;--accent-fg:#ffffff;--success:#16a34a;--success-bg:#f0fdf4;--warning:#d97706;--warning-bg:#fffbeb;--danger:#dc2626;--danger-bg:#fef2f2;--radius:4px;--radius-lg:6px;--shadow:none;--font:"Geist",-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;--font-mono:"Geist Mono",ui-monospace,Menlo,monospace;--bg:var(--background);--panel:var(--card);--ink:var(--foreground);--fg:var(--foreground);--mut:var(--muted);--line:var(--border);--accent-ink:var(--accent-fg);--accent-soft:var(--card-2);--ok:var(--success);--ok-soft:var(--success-bg);--warn:var(--warning);--warn-soft:var(--warning-bg);--err:var(--danger);--err-soft:var(--danger-bg);--ai:var(--foreground);--ai-soft:var(--card-2);--serif:var(--font);--sans:var(--font);--shadow-up:0 10px 24px rgba(0,0,0,.10)}
 *{box-sizing:border-box}
 body{font-family:var(--sans);line-height:1.6;max-width:1100px;margin:0 auto;padding:0 20px 40px;font-size:14px;background:var(--bg);color:var(--ink)}
 body.wide{max-width:min(1440px,100%)}
