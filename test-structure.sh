@@ -4122,3 +4122,35 @@ NAV.forEach(([ic, label], idx) => {
 assert(links[1].includes('class="on"'), '当前项（文档）应高亮 class="on"');
 console.log('✅ UI-4 导航图标化');
 EOF
+
+# —— UI-5：首页侧栏 + 内容区（批次B）——
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const assert = (c, m) => { if (!c) { console.error('❌ UI-5 ' + m); process.exit(1); } };
+const srv = readFileSync('./server.mjs', 'utf8');
+assert(/class="sidenav"/.test(srv), '应有侧栏 .sidenav');
+assert(/class="mainarea"/.test(srv), '应有内容区 .mainarea');
+// 侧栏含五个导航入口
+const side = (srv.match(/<aside class="sidenav">[\s\S]*?<\/aside>/) || [''])[0];
+for (const t of ['文档', '素材库', '投递看板', '复盘', '设置']) {
+  assert(side.includes(t), '侧栏应含入口: ' + t);
+}
+// 侧栏必须由 page() 渲染（第三参数 active 即当前页 key），而不是 listPage()——
+// listPage() 拿不到 active，无法做当前项高亮。断言侧栏模板落在 page() 与 listPage() 之间。
+const pStart = srv.indexOf('function page(');
+const listStart = srv.indexOf('function listPage(');
+const sideAt = srv.indexOf('<aside class="sidenav">');
+assert(pStart > 0 && listStart > pStart, '应能定位 page() 与 listPage()');
+assert(sideAt > pStart && sideAt < listStart, '侧栏模板必须落在 page() 内（不能落进 listPage()——listPage 拿不到 active）');
+assert(/function page\([^)]*active/.test(srv), 'page() 应保留 active 参数（侧栏高亮依赖它）');
+// 统计块：原 statusline 横条拆成独立统计块
+assert(/class="stat-grid"/.test(srv), '首页应有统计块区 .stat-grid');
+assert((srv.match(/class="stat"/g) || []).length >= 3, '至少 3 个统计块');
+// 旧 hero 保留但不再独占首屏（内容区有 H1）
+assert(/<h1[^>]*>文档<\/h1>/.test(srv) || /class="mainarea"[\s\S]{0,400}<h1/.test(srv), '内容区应有 H1');
+// 窄屏 scroll-padding 档位（WCAG 2.4.11 Focus Not Obscured）：
+// 窄屏 topnav 折成两行时，默认 64px 不够，必须有媒体查询单独加一档。
+assert(/@media\s*\(max-width:\s*\d+px\)\s*\{html\{[^}]*scroll-padding-top\s*:\s*\d+px/.test(srv),
+  '窄屏应有 scroll-padding-top 档位（媒体查询内单独覆盖）');
+console.log('✅ UI-5 首页侧栏 + 内容区');
+EOF

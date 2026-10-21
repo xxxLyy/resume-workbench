@@ -860,6 +860,16 @@ function icon(name, size = 16, cls = '') {
 function page(title, inner, active = '', wide = false) {
   // 第 4 参 ic = Lucide 图标名（白名单外 icon() 返回空串 → 退化为纯文字，不炸）
   const nav = (key, href, label, ic) => `<a href="${href}"${active === key ? ' class="on"' : ''}>${ic ? icon(ic, 15) : ''}${label}</a>`;
+  // 侧栏（全站唯一一份，渲染在 page() 里 —— 只有 page() 拿得到 active，listPage() 拿不到，
+  // 放 listPage() 里就没法做当前项高亮）。侧栏 = 图标 + 文字（WCAG nav-label-icon），不搞 icon-only。
+  const side = `<aside class="sidenav">
+    <div class="side-brand">${icon('file-text', 17)}简历工作台</div>
+    <a href="/" class="${active === 'docs' ? 'on' : ''}">${icon('file-text', 15)}文档</a>
+    <a href="/materials" class="${active === 'materials' ? 'on' : ''}">${icon('box', 15)}素材库</a>
+    <a href="/applications" class="${active === 'apps' ? 'on' : ''}">${icon('columns-3', 15)}投递看板</a>
+    <a href="/stats" class="${active === 'stats' ? 'on' : ''}">${icon('chart-bar', 15)}复盘</a>
+    <a href="/settings" class="${active === 'settings' ? 'on' : ''}">${icon('settings', 15)}设置</a>
+  </aside>`;
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
 <style>/*BENTO-V1*/
 /* 浅色克制设计系统（2026-10-21 UI 重设计，设计文档 dev-docs/2026-10-21-ui-redesign-design.md）：
@@ -867,21 +877,43 @@ function page(title, inner, active = '', wide = false) {
    旧名（--bg/--panel/--ink/...）保留为别名，既有 CSS 几百处零改动即生效。 */
 /*A-VARS*/:root{--background:#ffffff;--foreground:#0a0a0a;--muted:#737373;--muted-2:#a1a1aa;--card:#ffffff;--card-2:#fafafa;--border:#e5e5e5;--accent:#18181b;--accent-fg:#ffffff;--success:#16a34a;--success-bg:#f0fdf4;--warning:#d97706;--warning-bg:#fffbeb;--danger:#dc2626;--danger-bg:#fef2f2;--radius:4px;--radius-lg:6px;--shadow:none;--font:"Geist",-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;--font-mono:"Geist Mono",ui-monospace,Menlo,monospace;--bg:var(--background);--panel:var(--card);--ink:var(--foreground);--fg:var(--foreground);--mut:var(--muted);--line:var(--border);--accent-ink:var(--accent-fg);--accent-soft:var(--card-2);--ok:var(--success);--ok-soft:var(--success-bg);--warn:var(--warning);--warn-soft:var(--warning-bg);--err:var(--danger);--err-soft:var(--danger-bg);--ai:var(--foreground);--ai-soft:var(--card-2);--serif:var(--font);--sans:var(--font);--shadow-up:0 10px 24px rgba(0,0,0,.10)}
 *{box-sizing:border-box}
-body{font-family:var(--sans);line-height:1.6;max-width:1100px;margin:0 auto;padding:0 20px 40px;font-size:14px;background:var(--bg);color:var(--ink)}
+/* 批次B：body 不再限宽（max-width:1100px 会把「侧栏+内容」压扁）——
+   页面总宽改由 .home / .topnav 自身定宽居中（各 1400px），body 只留左右 20px 内边距。 */
+body{font-family:var(--sans);line-height:1.6;margin:0;padding:0 20px 40px;font-size:14px;background:var(--bg);color:var(--ink)}
 body.wide{max-width:min(1440px,100%)}
 a{color:var(--accent);text-decoration:none;font-weight:600}
 /* S4B-2：键盘 Tab 焦点不被 sticky 顶栏遮挡（WCAG 2.4.11 Focus Not Obscured, AA 级）。
    64px = topnav 的 top:12px + 单行实测高约 40px + 12px 余量。
-   窄屏 .topnav 两行、或快照只读横幅（sticky top:0 z-index:1000）叠加时可能仍偏小，
-   届时用媒体查询 / :has() 单独加一档，不改此默认值。 */
+   窄屏 .topnav 折成两行时 64px 不够 —— 见下方窄屏档位（媒体查询单独加一档，不改此默认值）。 */
 html{scroll-padding-top:64px}
-.topnav{display:flex;justify-content:space-between;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-lg);box-shadow:var(--shadow);padding:10px 18px;margin:16px 0 20px;position:sticky;top:12px;z-index:50;flex-wrap:wrap;gap:8px}
+/* 窄屏档位（批次B 实测补）：390px 下 .topnav 折成两行，实测高 106px，
+   sticky 顶栏底部 = top:12px + 106px = 118px，64px 的 scroll-padding 会被顶栏压住 Tab 焦点。
+   取值 = top 偏移 12px + 两行实测高 106px + 12px 余量 = 130px。 */
+@media (max-width:640px){html{scroll-padding-top:130px}}
+/* 批次B：body 不再限宽，页面总宽由 .topnav / .home 各自定宽居中（1400px），两者左右对齐。 */
+.topnav{display:flex;justify-content:space-between;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-lg);box-shadow:var(--shadow);padding:10px 18px;margin:16px auto 20px;max-width:1400px;position:sticky;top:12px;z-index:50;flex-wrap:wrap;gap:8px}
 .topnav .brand{display:inline-flex;align-items:center;gap:6px;font-family:var(--serif);letter-spacing:.4px;font-weight:800;font-size:16px;color:var(--ink)}
 .topnav .brand svg{width:17px;height:17px;flex:none}
 .topnav .links a{display:inline-flex;align-items:center;gap:5px;margin-left:16px;color:var(--mut);font-weight:600}
 .topnav .links a svg{width:15px;height:15px;flex:none}
 .topnav .links a.on{color:var(--accent)}
 .topnav .links a:hover{color:var(--ink)}
+/* 批次B：侧栏 + 内容区（全站布局，shadcn 范式）
+   .home 自身定宽居中（body 不限宽，见 body 规则）；侧栏 sticky，当前项高亮 --card-2 底 + --foreground 字。
+   断点取 860px：设计 §5.1 写「<768px 收为顶部横条」，这里放宽到 860px —— 800px 窗口也该收成横条，
+   否则 200px 侧栏会把内容区压到 500px 出横条。 */
+.home{display:grid;grid-template-columns:200px minmax(0,1fr);gap:24px;align-items:start;margin:0 auto 40px;max-width:1400px}
+.sidenav{position:sticky;top:76px;border-right:1px solid var(--border);padding-right:16px;min-height:320px}
+.sidenav .side-brand{display:flex;align-items:center;gap:7px;font-weight:700;font-size:15px;margin-bottom:14px;color:var(--foreground)}
+.sidenav .side-brand svg{width:17px;height:17px;flex:none}
+.sidenav a{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:var(--radius);color:var(--muted);font-weight:500;font-size:13px;text-decoration:none;margin-bottom:2px}
+.sidenav a svg{width:15px;height:15px;flex:none}
+.sidenav a:hover{background:var(--card-2);color:var(--foreground)}
+.sidenav a.on{background:var(--card-2);color:var(--foreground);font-weight:600}
+.mainarea{min-width:0}
+/* 内容区页标题：用直接子选择器，首页 hero 里的大标题（.hero-title）不受影响 */
+.mainarea>h1{font-size:20px;font-weight:700;letter-spacing:-.01em;margin:0 0 4px}
+@media (max-width:860px){.home{grid-template-columns:1fr}.sidenav{position:static;border-right:0;border-bottom:1px solid var(--border);padding:0 0 10px;min-height:0}.sidenav a{display:inline-flex;margin:0 4px 2px 0}}
 h1{font-family:var(--serif);font-size:26px;font-weight:800;letter-spacing:.6px;margin:6px 0 12px}
 button{cursor:pointer;background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--radius);min-height:32px;padding:0 12px;font-weight:600;font-size:13px;transition:transform .12s,box-shadow .12s,background .12s}
 button.secondary{background:var(--panel);color:var(--ink);border:1px solid var(--line)}
@@ -950,7 +982,7 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 </style></head><body${wide ? ' class="wide"' : ''}>
 <script>${STATUS_SCRIPT}</script>
 <nav class="topnav"><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><span class="links">${nav('docs', '/', '文档', 'file-text')}${nav('materials', '/materials', '素材库', 'box')}${nav('apps', '/applications', '投递看板', 'columns-3')}${nav('stats', '/stats', '复盘', 'chart-bar')}${nav('settings', '/settings', '设置', 'settings')}</span></nav>
-${inner}
+<div class="home">${side}<div class="mainarea">${inner}</div></div>
 <footer>简历平台 · 本地优先 · 数据在 ${path.basename(root) === 'resume' ? '~/resume' : 'RESUME_ROOT'}</footer>
 </body></html>`;
 }
@@ -1140,6 +1172,13 @@ function listPage(showArchived = false) {
       </div>
       <div class="hero-art" aria-hidden="true">${HERO_SVG}</div>
     </section>
+    <h1>文档</h1>
+    <div class="stat-grid">
+      <div class="stat"><b>${infos.length}</b><span>文档</span></div>
+      <div class="stat"><b>${degradedCount}</b><span>待结构化</span></div>
+      <div class="stat"><b>${activeApps}</b><span>投递中</span></div>
+      <div class="stat"><b>${todoBits.length}</b><span>待办提醒</span></div>
+    </div>
     ${corruptBanner()}
     <details class="card" id="jobCard">
       <summary style="cursor:pointer;font-weight:700">🎯 针对岗位生成简历</summary>
@@ -3467,7 +3506,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     // ===== 复盘 =====
     if (req.method === 'GET' && url.pathname === '/stats') {
       const apps = loadApps();
-      if (!apps.length) return send(200, page('复盘', `<h1>📊 复盘统计</h1><div class="card" style="text-align:center;padding:40px;color:var(--mut)">暂无投递记录<br><br><a href="/applications">先去投递看板添加记录</a></div>`, 'apps'));
+      if (!apps.length) return send(200, page('复盘', `<h1>📊 复盘统计</h1><div class="card" style="text-align:center;padding:40px;color:var(--mut)">暂无投递记录<br><br><a href="/applications">先去投递看板添加记录</a></div>`, 'stats'));
       const funnel = APP_STATUSES.map((s) => [s, apps.filter((a) => a.status === s).length]);
       const byCh = {}; apps.forEach((a) => { byCh[a.channel || '未填'] = (byCh[a.channel || '未填'] || 0) + 1; });
       const byDoc = {}; apps.forEach((a) => { byDoc[a.docId] = (byDoc[a.docId] || 0) + 1; });
@@ -3483,7 +3522,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       <div class="card"><b style="font-family:var(--serif);font-size:14px">按简历版本</b>${Object.entries(byDoc).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
       <div class="card"><b style="font-family:var(--serif);font-size:14px">按岗位方向</b>${Object.entries(byTag).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
     </div>
-    <div class="card" style="margin-top:12px"><b style="font-family:var(--serif);font-size:14px">面试参与</b><p style="font-size:13px">${interviewed}/${n} 有面试安排或已进入面试（${n ? Math.round(interviewed / n * 100) : 0}%）；预约不等于完成。</p></div>`, 'apps'));
+    <div class="card" style="margin-top:12px"><b style="font-family:var(--serif);font-size:14px">面试参与</b><p style="font-size:13px">${interviewed}/${n} 有面试安排或已进入面试（${n ? Math.round(interviewed / n * 100) : 0}%）；预约不等于完成。</p></div>`, 'stats'));
     }
     // ===== 备份 =====
     if (req.method === 'GET' && url.pathname === '/backup') {
