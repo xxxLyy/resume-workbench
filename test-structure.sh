@@ -4050,3 +4050,29 @@ assert(/^[a-zA-Z0-9_ -]*$/.test(clsAttr), 'class 值须只含安全字符，实�
 assert(icon('x', 16, 'badge ok').includes('class="badge ok"'), '正常 class 应保留');
 console.log('✅ UI-2 浅色 token + icon() helper');
 EOF
+
+# —— UI-3：状态徽章图标化（消灭裸 emoji 状态标记）——
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const assert = (c, m) => { if (!c) { console.error('❌ UI-3 ' + m); process.exit(1); } };
+const srv = readFileSync('./server.mjs', 'utf8');
+// 四类语义徽章必须存在，且各带对应图标
+for (const [cls, ic] of [['ok', 'circle-check'], ['warn', 'circle-alert'], ['err', 'circle-x'], ['mute', 'circle-help']]) {
+  assert(new RegExp('\\.badge\\.' + cls + '\\{').test(srv), '应有 .badge.' + cls + ' 徽章类');
+  assert(srv.includes("'" + ic + "'") || srv.includes('"' + ic + '"'), cls + ' 徽章应使用图标 ' + ic);
+}
+// 徽章必须是小圆角胶囊 + 语义底色
+assert(/\.badge\{[^}]*border-radius:999px/.test(srv), '.badge 应为胶囊形');
+assert(/--success-bg/.test(srv) && /--warning-bg/.test(srv) && /--danger-bg/.test(srv), '徽章语义底色 token 缺失');
+// 状态标记不得再用裸 emoji：⚠️ ❌ ✅ ⚪ 🟡 🔴 在 HTML 模板中不得出现。
+// 【必须剥掉注释再查】——代码注释里大量用这些符号做安全审查标记
+//   （如「2026-10-19 审查 ⚪-6」「⚠️ 计数器必须在模块级」，实测 server.mjs 有 13 处）。
+//   不剥注释的断言会让执行者去删安全审查记录，把审计痕迹毁掉。
+const stripComments = (src) => src
+  .replace(/\/\*[\s\S]*?\*\//g, '')      // 块注释
+  .split('\n').map((l) => l.replace(/^\s*\/\/.*$/, '').replace(/\s\/\/.*$/, '')).join('\n');
+const code = stripComments(srv);
+const emojiHits = ['⚠️','❌','✅','⚪','🟡','🔴'].filter(e => code.includes(e));
+assert(emojiHits.length === 0, 'server.mjs 代码/模板中仍含状态 emoji: ' + emojiHits.join(' '));
+console.log('✅ UI-3 状态徽章图标化');
+EOF

@@ -250,7 +250,7 @@ async function createJobDraft(root, o) {
 }
 
 const corruptBanner = () => corrupt.size
-  ? `<div class="card" style="border-color:var(--err-soft);background:var(--err-soft);color:var(--err)"><b>⚠️ 检测到数据文件损坏，相关写入已停止：</b>${[...corrupt].map((k) => JSON_FILES[k]).join('、')} —— 请先在设置页用备份恢复，或人工修复 JSON 后刷新。</div>`
+  ? `<div class="card" style="border-color:var(--err-soft);background:var(--err-soft);color:var(--err)"><b>${icon('circle-alert', 13)}检测到数据文件损坏，相关写入已停止：</b>${[...corrupt].map((k) => JSON_FILES[k]).join('、')} —— 请先在设置页用备份恢复，或人工修复 JSON 后刷新。</div>`
   : '';
 
 // ===== 状态维度与派生关联（S1-T8，spec §7/§8，binding）=====
@@ -874,28 +874,33 @@ a{color:var(--accent);text-decoration:none;font-weight:600}
    窄屏 .topnav 两行、或快照只读横幅（sticky top:0 z-index:1000）叠加时可能仍偏小，
    届时用媒体查询 / :has() 单独加一档，不改此默认值。 */
 html{scroll-padding-top:64px}
-.topnav{display:flex;justify-content:space-between;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:10px 18px;margin:16px 0 20px;position:sticky;top:12px;z-index:50;flex-wrap:wrap;gap:8px}
+.topnav{display:flex;justify-content:space-between;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-lg);box-shadow:var(--shadow);padding:10px 18px;margin:16px 0 20px;position:sticky;top:12px;z-index:50;flex-wrap:wrap;gap:8px}
 .topnav .brand{font-family:var(--serif);letter-spacing:.4px;font-weight:800;font-size:16px;color:var(--ink)}
 .topnav .links a{margin-left:16px;color:var(--mut);font-weight:600}
 .topnav .links a.on{color:var(--accent)}
 .topnav .links a:hover{color:var(--ink)}
 h1{font-family:var(--serif);font-size:26px;font-weight:800;letter-spacing:.6px;margin:6px 0 12px}
-button{cursor:pointer;background:var(--accent);color:var(--accent-ink);border:none;border-radius:8px;min-height:32px;padding:0 12px;font-weight:600;font-size:13px;transition:transform .12s,box-shadow .12s,background .12s}
+button{cursor:pointer;background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--radius);min-height:32px;padding:0 12px;font-weight:600;font-size:13px;transition:transform .12s,box-shadow .12s,background .12s}
 button.secondary{background:var(--panel);color:var(--ink);border:1px solid var(--line)}
 button.danger{background:var(--panel);color:var(--err);border:1px solid var(--err-soft)}
 button.danger:hover{background:var(--err-soft)}
-button:hover{transform:translateY(-1px);box-shadow:0 3px 9px rgba(60,45,25,.16)}
+button:hover{transform:translateY(-1px);box-shadow:0 3px 9px rgba(0,0,0,.06)}
 button:active{transform:translateY(1px);box-shadow:none}
 button.secondary:hover{background:var(--bg)}
 button:disabled{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none}
-input,textarea{border:1px solid var(--line);border-radius:8px;padding:7px 10px;background:var(--panel);color:var(--ink);font-size:13px;max-width:100%}
-select{border:1px solid var(--line);border-radius:8px;padding:7px 10px;background:var(--panel);color:var(--ink);font-size:13px}
+input,textarea{border:1px solid var(--line);border-radius:var(--radius);padding:7px 10px;background:var(--panel);color:var(--ink);font-size:13px;max-width:100%}
+select{border:1px solid var(--line);border-radius:var(--radius);padding:7px 10px;background:var(--panel);color:var(--ink);font-size:13px}
 button:focus-visible,input:focus-visible,a:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 16px}
-.badge{display:inline-block;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:600;background:var(--bg);color:var(--mut);margin-right:6px}
+.badge{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:2px 9px;font-size:11px;font-weight:500;background:var(--card-2);color:var(--mut);margin-right:6px}
+.badge svg{width:11px;height:11px;stroke-width:2.4;flex:none}
 .chip{border:1px solid var(--line);border-radius:999px;padding:3px 11px;font-size:12px;background:var(--panel);cursor:pointer}
 .chip[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
-.badge.ok{background:var(--ok-soft);color:var(--ok)}.badge.warn{background:var(--warn-soft);color:var(--warn)}.badge.ai{background:var(--ai-soft);color:var(--ai)}.badge.err{background:var(--err-soft);color:var(--err)}
+/* 语义徽章：底色 + 语义色 + 图标 + 文字（颜色不单独承载语义，WCAG color-not-only）。
+   类名沿用既有的 .badge ok/.warn/.err/.ai（既有 43 处在用），只新增 .badge.mute
+   —— 不另起 badge--ok 体系，避免两套命名并存。
+   不用 white-space:nowrap：长文案徽章（导出页「旧版本 PDF」那条）要能换行，与改前一致。 */
+.badge.ok{background:var(--success-bg);color:var(--success)}.badge.warn{background:var(--warning-bg);color:var(--warning)}.badge.err{background:var(--danger-bg);color:var(--danger)}.badge.ai{background:var(--card-2);color:var(--foreground)}.badge.mute{background:var(--card-2);color:var(--muted)}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:12px 0}
 .stat{border-radius:var(--radius);padding:12px 14px;box-shadow:var(--shadow);border:1px solid var(--line)}
 .stat b{font-size:22px;display:block}
@@ -915,9 +920,9 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .hero-acts{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .hero-art{flex:0 0 200px;color:var(--accent);opacity:.9}
 .hero-art svg{width:100%;height:auto;max-height:150px}
-.cta{display:inline-block;background:var(--accent);color:var(--accent-ink);border:none;border-radius:8px;padding:9px 16px;font-weight:700;font-size:14px;cursor:pointer}
-.cta:hover{transform:translateY(-1px);box-shadow:0 3px 9px rgba(60,45,25,.16)}
-.cta-alt{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:9px 14px;font-weight:600;font-size:13px;cursor:pointer}
+.cta{display:inline-block;background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--radius);padding:9px 16px;font-weight:700;font-size:14px;cursor:pointer}
+.cta:hover{transform:translateY(-1px);box-shadow:0 3px 9px rgba(0,0,0,.06)}
+.cta-alt{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:var(--radius);padding:9px 14px;font-weight:600;font-size:13px;cursor:pointer}
 .statusline{margin-top:12px;font-size:13px;line-height:1.7;color:var(--mut)}
 .statusline .sep{margin:0 8px;color:var(--line)}
 /* 搜索行（S2-T6 窄屏修复）：整行可换行 + 输入框可收缩到 0，按钮/链接标签一律 nowrap。
@@ -940,11 +945,25 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .doc-card:focus-within{outline:2px solid var(--accent);outline-offset:2px}
 @media(prefers-reduced-motion:reduce){.doc-card{transition:none!important}.doc-card:hover{transform:none!important}}
 </style></head><body${wide ? ' class="wide"' : ''}>
+<script>${STATUS_SCRIPT}</script>
 <nav class="topnav"><a class="brand" href="/">📄 简历工作台</a><span class="links">${nav('docs', '/', '文档')}${nav('materials', '/materials', '🧱 素材库')}${nav('apps', '/applications', '📋 投递看板')}${nav('stats', '/stats', '📊 复盘')}${nav('settings', '/settings', '⚙️ 设置')}</span></nav>
 ${inner}
 <footer>简历平台 · 本地优先 · 数据在 ${path.basename(root) === 'resume' ? '~/resume' : 'RESUME_ROOT'}</footer>
 </body></html>`;
 }
+
+// 徽章：底色 + 语义色 + 小图标 + 文字。类名沿用既有的 .badge ok/.warn/.err/.ai（既有 43 处在用），
+// 只新增 .mute —— 不另起 badge--ok 体系。ic 省略时按 cls 取默认图标；cls 为空（纯标签徽章）默认无图标。
+const BADGE_ICON = Object.assign(Object.create(null), { ok: 'circle-check', warn: 'circle-alert', err: 'circle-x', mute: 'circle-help' });
+const badge = (cls, text, ic) => `<span class="badge${cls ? ' ' + cls : ''}">${icon(ic || BADGE_ICON[cls] || '', 11)}${text}</span>`;
+
+// 客户端状态提示：浏览器端 textContent 装不下 SVG，改用 innerHTML + 逐字符转义。
+// 图标由服务端 icon() 生成后随页面下发（唯一来源仍是 vendors/icons.mjs），文本绝不原样进 HTML。
+const STATUS_ICONS = Object.assign(Object.create(null), { ok: icon('circle-check', 12), warn: icon('circle-alert', 12), err: icon('circle-x', 12) });
+const STATUS_SCRIPT = `window.__STATUS_ICONS__=${JSON.stringify(STATUS_ICONS).replace(/</g, '\\u003c')};`
+  + `window.__status=function(el,kind,text){if(!el)return;var s=String(text==null?'':text)`
+  + `.replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});`
+  + `el.innerHTML=(window.__STATUS_ICONS__[kind]||'')+s;};`;
 
 // 注入块（serve 幂等注入；/save 按注释对剥离，文档永不落盘）
 const AI_MARK = '<!--AI-INJECT-->';
@@ -1033,21 +1052,21 @@ function listPage(showArchived = false) {
       pdfNone > 0 && `未生成 ${pdfNone}`
     ].filter(Boolean).join(' · ');
   const todoBits = [
-    { p: 1, t: degradedCount && `⚠️ ${degradedCount} 份待结构化` },
-    { p: 2, t: upcoming.length && `⏰ ${upcoming.length} 份逾期/近期面试提醒` },
-    { p: 3, t: activeApps && `📋 ${activeApps} 份投递中` },
+    { p: 1, t: degradedCount && icon('circle-alert', 12) + ` ${degradedCount} 份待结构化` },
+    { p: 2, t: upcoming.length && icon('clock', 12) + ` ${upcoming.length} 份逾期/近期面试提醒` },
+    { p: 3, t: activeApps && icon('list-checks', 12) + ` ${activeApps} 份投递中` },
     { p: 4, t: pdfChip },
-    { p: 5, t: cfg ? `🤖 AI：${escHtml(cfg.name || '')}` : '🤖 AI 未配置（岗位草稿仍可手动生成）' }
+    { p: 5, t: cfg ? icon('bot', 12) + ` AI：${escHtml(cfg.name || '')}` : icon('bot', 12) + ' AI 未配置（岗位草稿仍可手动生成）' }
   ].filter((b) => b.t).sort((a, b) => a.p - b.p).map((b) => b.t);
   // 岗位状态徽章 = 全部派生（S1-T8）：已投递 ← applications.json（权威）；可投递 ← flow+冲突+stale 三条件；其余按 flow
   const jobStatusBadge = (id) => {
     const m = meta[id] || {};
-    if (deliveredRefs(id).length) return '<span class="badge ai">已记录投递</span>';
+    if (deliveredRefs(id).length) return badge('ai', '已记录投递', 'circle-check');
     const f = flowOf(m);
     if (f === 'reviewed') return deliverableNow(id, m, docInfoMap.get(id))
-      ? '<span class="badge ok">可投递</span>'
-      : '<span class="badge warn">已审阅·PDF 未同步</span>';
-    return f === 'reviewing' ? '<span class="badge warn">审阅中</span>' : '<span class="badge warn">草稿</span>';
+      ? badge('ok', '可投递')
+      : badge('warn', '已审阅·PDF 未同步');
+    return f === 'reviewing' ? badge('warn', '审阅中') : badge('warn', '草稿');
   };
   const cardHtml = (id) => {
     const m = meta[id] || {};
@@ -1057,12 +1076,12 @@ function listPage(showArchived = false) {
     const snaps = fs.existsSync(snapDir(id)) ? fs.readdirSync(snapDir(id)).filter((s) => s.endsWith('.html')).length : 0;
     // 徽章三态 = staleInfo（渲染标识）：none 未生成｜stale 较旧｜fresh 同步（mtime 不参与判定）
     const si = staleInfo(m, { renderInputId: info.renderInputId, pdfExists: fs.existsSync(pdfPath(id)) });
-    const pdfBadge = si.state === 'none' ? '<span class="badge warn">PDF 未生成</span>'
-      : si.state === 'stale' ? '<span class="badge warn">PDF 较旧</span>'
-      : '<span class="badge ok">PDF 同步</span>';
+    const pdfBadge = si.state === 'none' ? badge('warn', 'PDF 未生成')
+      : si.state === 'stale' ? badge('warn', 'PDF 较旧')
+      : badge('ok', 'PDF 同步');
     return `<li class="card doc-card"><b style="font-family:var(--serif);font-size:16px">${info.title}</b>
       <div style="color:var(--mut);font-size:12px;margin:6px 0">${id} · 更新于 ${info.mtime}</div>
-      <div style="margin-bottom:8px"><span class="badge">快照 ${snaps}</span>${pdfBadge}${m.job ? jobStatusBadge(id) : ''}${m.archivedAt ? '<span class="badge">🗄 已归档</span>' : ''}${tag ? `<span class="badge">${escHtml(tag)}</span>` : ''}${info.degraded ? '<span class="badge warn">待结构化</span>' : ''}</div>
+      <div style="margin-bottom:8px"><span class="badge">快照 ${snaps}</span>${pdfBadge}${m.job ? jobStatusBadge(id) : ''}${m.archivedAt ? badge('', '已归档', 'archive') : ''}${tag ? `<span class="badge">${escHtml(tag)}</span>` : ''}${info.degraded ? badge('warn', '待结构化') : ''}</div>
       ${m.parent ? `<div style="font-size:12px;color:var(--mut)">岗位版：${escHtml((m.company || '') + '·' + (m.role || ''))}（母版 ${escHtml(m.parent)}）</div>` : ''}
       <a href="/edit?id=${id}">继续编辑</a> ·
       <a href="/export?id=${id}">导出</a>
@@ -1073,7 +1092,7 @@ function listPage(showArchived = false) {
       <a href="/diff?base=${id}">对比</a> ·
       ${m.parent ? `<a href="/diff?base=${escHtml(m.parent)}&to=${id}">对比母版</a> · ` : ''}
       ${info.degraded ? `<form method="post" action="/restructure?id=${id}" style="display:inline" onsubmit="return confirm('用 LLM 重新结构化这份文档？会先自动留快照')"><button class="secondary">🔁 结构化</button></form> · ` : ''}
-      <form method="post" action="/archive?id=${id}" style="display:inline" onsubmit="event.preventDefault();fetch('/archive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'${id}'})}).then(()=>location.reload())"><button class="secondary">${m.archivedAt ? '🗄 取消归档' : '🗄 归档'}</button></form> ·
+      <form method="post" action="/archive?id=${id}" style="display:inline" onsubmit="event.preventDefault();fetch('/archive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'${id}'})}).then(()=>location.reload())"><button class="secondary">${m.archivedAt ? icon('archive', 13) + ' 取消归档' : icon('archive', 13) + ' 归档'}</button></form> ·
       <form method="post" action="/tag" style="display:inline" onsubmit="event.preventDefault();const t=prompt('标签（≤20字，留空清除）','${tag}');if(t!==null){fetch('/tag',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'${id}',tag:t})}).then(()=>location.reload())}"><button class="secondary">🏷</button></form> ·
       <form method="post" action="/duplicate?id=${id}" style="display:inline" onsubmit="event.preventDefault();const t=prompt('新文档 id（小写字母数字横线）');if(t){this.action='/duplicate?id=${id}&to='+t;this.submit()}"><button>复制</button></form> ·
       <form method="post" action="/delete?id=${id}" style="display:inline" onsubmit="return confirm('确认删除 ${id}？快照会保留')"><button class="danger">删除</button></form>
@@ -1128,7 +1147,7 @@ function listPage(showArchived = false) {
         <label style="font-size:12px">母版简历<select id="jobFrom" style="width:100%">${infos.map((d) => `<option value="${d.id}">${d.title}（${d.id}）</option>`).join('')}</select></label>
         <label style="font-size:12px">JD 链接（可留空）<input id="jobLink" placeholder="https://…读取失败可改贴文本" style="width:100%"></label>
         <label style="font-size:12px;grid-column:1/-1">JD 文本（可留空，稍后补）<textarea id="jobJd" rows="3" style="width:100%"></textarea></label>
-        <details style="grid-column:1/-1;border:1px solid var(--line);border-radius:8px;background:var(--panel)">
+        <details style="grid-column:1/-1;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel)">
           <summary style="cursor:pointer;padding:8px 12px;font-size:13px;font-weight:600">本次定制要求（可选，默认已按经验填好）</summary>
           <div style="padding:2px 12px 12px;display:grid;gap:6px">
             <label style="font-size:12px">预设<span style="display:flex;gap:6px;margin-top:3px">
@@ -1154,7 +1173,7 @@ function listPage(showArchived = false) {
     </details>
     ${drafts.length ? `<div class="card" style="margin-top:12px"><b>继续处理岗位草稿</b>
       ${drafts.map((d) => { const dl = deliverableNow(d.id, meta[d.id] || {}, d);   // 每草稿只算一次：原写法在同一模板串里调两次，2N 次同步解析卡首屏
-        return `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><span><b>${d.title}</b> <span class="badge ${dl ? 'ok' : 'warn'}">${dl ? '可投递' : '草稿'}</span><span style="color:var(--mut);font-size:12px">${escHtml(((meta[d.id] || {}).company || '') + '·' + ((meta[d.id] || {}).role || ''))} · ${d.mtime}</span></span><a href="/edit?id=${d.id}"><button>继续处理</button></a></div>`; }).join('')}
+        return `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><span><b>${d.title}</b> ${badge(dl ? 'ok' : 'warn', dl ? '可投递' : '草稿')}<span style="color:var(--mut);font-size:12px">${escHtml(((meta[d.id] || {}).company || '') + '·' + ((meta[d.id] || {}).role || ''))} · ${d.mtime}</span></span><a href="/edit?id=${d.id}"><button>继续处理</button></a></div>`; }).join('')}
     </div>` : ''}
     <div class="card" style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <form method="post" action="/new"><button class="secondary">＋ 新建空白文档</button></form>
@@ -1169,7 +1188,7 @@ function listPage(showArchived = false) {
     <div class="searchrow">
       <input id="searchBox" placeholder="搜索文档（标题/id/标签）" aria-label="搜索文档">
       <button class="secondary" id="viewToggle">▤ 切换</button>
-      <a class="secondary" style="border:1px solid var(--line);border-radius:8px;padding:7px 12px;background:var(--panel);color:var(--ink);font-weight:600;font-size:13px" href="${showArchived ? '/' : '/?archived=1'}">${showArchived ? '🗄 隐藏已归档' : '🗄 显示已归档'}</a>
+      <a class="secondary" style="border:1px solid var(--line);border-radius:var(--radius);padding:7px 12px;background:var(--panel);color:var(--ink);font-weight:600;font-size:13px" href="${showArchived ? '/' : '/?archived=1'}">${showArchived ? icon('archive', 13) + ' 隐藏已归档' : icon('archive', 13) + ' 显示已归档'}</a>
     </div>
     <ul class="doclist" id="doclist">${cards}</ul>
     <script>
@@ -1261,12 +1280,15 @@ function listPage(showArchived = false) {
           if (r.redirected) { location.href = r.url; return; }
           if (d && d.existing) { if (confirm('已存在同一母版+岗位的草稿（' + d.existing + '）。打开它？')) location.href = '/edit?id=' + d.existing; return; }
           if (d && d.ok && d.id) { location.href = '/edit?id=' + d.id; return; }
-          msg.textContent = ' ❌ ' + ((d && d.error) || (await r.text()));
-        } catch (err) { msg.textContent = ' ❌ ' + err.message; }
+          __status(msg, 'err', (d && d.error) || (await r.text()));
+        } catch (err) { __status(msg, 'err', err.message); }
       });
       // ===== 岗位评估 UI：/eval/create → 报告卡片 → /eval/promote =====
       // 报告内容全部来自模型：渲染前逐字段转义（模型输出直接进 innerHTML = XSS）。
       /*EVAL_CARD_JS_START*/
+      // 报告渲染器必须能独立执行（测试会单独把本块抽出来跑）——图标在服务端内联进块内，
+      // 不依赖页面级全局（vendors/icons.mjs 仍是唯一来源）。
+      var EVAL_ICON = { ok: ${jsonScript(icon('circle-check', 12))}, warn: ${jsonScript(icon('circle-alert', 12))} };
       function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
       function evalCardHtml(rec) {
         var b = (rec && rec.blocks) || {};
@@ -1282,7 +1304,7 @@ function listPage(showArchived = false) {
         h.push('<p style="margin:6px 0"><b>角色摘要：</b>' + esc(b.roleSummary) + '</p>');
         h.push('<p style="margin:6px 0"><b>级别：</b>' + esc(LEVEL[b.level] || b.level || '') + (b.levelReason ? '（' + esc(b.levelReason) + '）' : '') + '</p>');
         if (sal.source === 'JD 未提供') {
-          h.push('<p style="margin:6px 0"><b>薪资：</b><b style="color:var(--warn)">JD 未提供</b> ⚠️ 无外部薪资数据（本系统不查外部薪资库，别当成市场价）</p>');
+          h.push('<p style="margin:6px 0"><b>薪资：</b><b style="color:var(--warn)">JD 未提供</b> ' + EVAL_ICON.warn + ' 无外部薪资数据（本系统不查外部薪资库，别当成市场价）</p>');
         } else {
           h.push('<p style="margin:6px 0"><b>薪资：</b>' + esc(sal.text) + ' <span style="font-size:12px;color:var(--mut)">（来源：' + esc(sal.source) + '）</span></p>');
         }
@@ -1301,7 +1323,7 @@ function listPage(showArchived = false) {
         if (!gs.length) h.push('<p style="font-size:13px;color:var(--mut)">（无）</p>');
         gs.forEach(function (g) { h.push('<div style="font-size:13px">· ' + esc(g) + '</div>'); });
         h.push('</div>');
-        h.push('<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button type="button" data-eval-act="promote" data-eval-id="' + esc(rec.id) + '">✅ 就它了，转入适配</button><button type="button" class="secondary" data-eval-act="redo">重新评估</button></div>');
+        h.push('<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button type="button" data-eval-act="promote" data-eval-id="' + esc(rec.id) + '">' + EVAL_ICON.ok + ' 就它了，转入适配</button><button type="button" class="secondary" data-eval-act="redo">重新评估</button></div>');
         h.push('</div>');
         return h.join('');
       }
@@ -1315,7 +1337,7 @@ function listPage(showArchived = false) {
         var run = async function () {
           var from = document.getElementById('jobFrom').value;
           var jd = document.getElementById('jobJd').value.trim();
-          if (!jd) { msg.textContent = ' ❌ JD 必填：评估需要岗位描述文本'; return; }
+          if (!jd) { __status(msg, 'err', 'JD 必填：评估需要岗位描述文本'); return; }
           btn.disabled = true;
           btn.textContent = '评估中，通常需要 1–5 分钟…';
           msg.textContent = '';
@@ -1324,10 +1346,10 @@ function listPage(showArchived = false) {
             var r = await fetch('/eval/create', { method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ from: from, company: document.getElementById('jobCompany').value.trim(), role: document.getElementById('jobRole').value.trim(), jd: jd }) });
             var d = await r.json().catch(function () { return null; });
-            if (!r.ok || !d || !d.ok || !d.eval) { msg.textContent = ' ❌ ' + ((d && d.error) || ('HTTP ' + r.status)); return; }
+            if (!r.ok || !d || !d.ok || !d.eval) { __status(msg, 'err', (d && d.error) || ('HTTP ' + r.status)); return; }
             ctx = { id: d.eval.id, from: from };
             box.innerHTML = evalCardHtml(d.eval);
-          } catch (err) { msg.textContent = ' ❌ ' + err.message; }
+          } catch (err) { __status(msg, 'err', err.message); }
           finally { btn.disabled = false; btn.textContent = '🧭 先评估这个岗位'; }
         };
         btn.addEventListener('click', run);
@@ -1343,9 +1365,9 @@ function listPage(showArchived = false) {
               body: JSON.stringify({ evalId: t.getAttribute('data-eval-id'), from: ctx.from }) });
             var d = await r.json().catch(function () { return null; });
             if (d && d.existing) { location.href = '/edit?id=' + encodeURIComponent(d.existing); return; }
-            if (!r.ok || !d || !d.ok || !d.id) { msg.textContent = ' ❌ ' + ((d && d.error) || ('HTTP ' + r.status)); t.disabled = false; return; }
+            if (!r.ok || !d || !d.ok || !d.id) { __status(msg, 'err', (d && d.error) || ('HTTP ' + r.status)); t.disabled = false; return; }
             location.href = '/edit?id=' + encodeURIComponent(d.id);
-          } catch (err) { msg.textContent = ' ❌ ' + err.message; t.disabled = false; }
+          } catch (err) { __status(msg, 'err', err.message); t.disabled = false; }
         });
       })();
       document.getElementById('searchBox').addEventListener('input', function () {
@@ -2465,7 +2487,7 @@ async function handler(req, res) {
       const mats = loadMats();
       const unconfirmed = mats.filter((m) => m.factStatus !== 'confirmed').length;
       const FACT_LABELS = { company: '公司', role: '职位', dates: '日期', education: '学历', metrics: '成果指标', contribution: '个人贡献', conditions: '条件', source: '来源' };
-      const matBadge = (s) => s === 'confirmed' ? '<span class="badge ok">已确认</span>' : s === 'outdated' ? '<span class="badge warn">已过时</span>' : '<span class="badge warn">待确认</span>';
+      const matBadge = (s) => s === 'confirmed' ? badge('ok', '已确认') : s === 'outdated' ? badge('warn', '已过时') : badge('warn', '待确认');
       const matCard = (m) => `<div class="card mat-card" data-mat="${escHtml(m.id)}" style="margin:10px 0">
         <b>${escHtml(m.title)}</b>${(m.tags || []).map((t) => `<span class="badge">${escHtml(t)}</span>`).join('')}${matBadge(m.factStatus)}
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin-top:8px;font-size:13px">
@@ -2514,7 +2536,7 @@ async function handler(req, res) {
       function copyMat(btn, key) {
         var card = btn.closest('.mat-card');
         var sel = card.querySelector(key === 'brief' ? '.mat-brief' : key === 'tech' ? '.mat-tech' : '.mat-itv');
-        navigator.clipboard.writeText(sel.textContent).then(function () { btn.textContent = '✓'; setTimeout(function () { btn.textContent = '复制'; }, 800); });
+        navigator.clipboard.writeText(sel.textContent).then(function () { btn.innerHTML = __STATUS_ICONS__.ok; setTimeout(function () { btn.textContent = '复制'; }, 800); });
       }
       function matStatus(id, s) {
         fetch('/mat/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id, factStatus: s }) }).then(function () { location.reload(); });
@@ -2569,9 +2591,9 @@ async function handler(req, res) {
             tags: document.getElementById('mtags').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean) }) });
         try {
           if (r.ok) { location.reload(); return; }
-          document.getElementById('matmsg').textContent = ' ❌ ' + (await r.text());
+          __status(document.getElementById('matmsg'), 'err', '保存失败：' + (await r.text()));
         } catch (err) {
-          document.getElementById('matmsg').textContent = ' ❌ 保存失败：' + (err.message || err) + '（输入已保留，可重试）';
+          __status(document.getElementById('matmsg'), 'err', '保存失败：' + (err.message || err) + '（输入已保留，可重试）');
         }
       });
       document.getElementById('matSearch').addEventListener('input', function () {
@@ -2687,14 +2709,14 @@ async function handler(req, res) {
         const m = meta[ts] || {};
         return `<li class="card" style="margin:6px 0;padding:10px 12px">
           <div style="display:flex;justify-content:space-between;align-items:center">
-            <div><b>${ts}</b>${m.name ? ` <span class="badge">${escHtml(m.name)}</span>` : ''}${ts === baseline ? ' <span class="badge ok">📌 基准</span>' : ''}${referenced.has(ts) ? ' <span class="badge ai">📋 投递引用（不会被清理）</span>' : ''}${exportReferenced.has(ts) ? ' <span class="badge ai">📦 导出引用（不会被清理）</span>' : ''}
+            <div><b>${ts}</b>${m.name ? ` <span class="badge">${escHtml(m.name)}</span>` : ''}${ts === baseline ? ' ' + badge('ok', '基准', 'pin') : ''}${referenced.has(ts) ? ' ' + badge('ai', '投递引用（不会被清理）', 'list-checks') : ''}${exportReferenced.has(ts) ? ' <span class="badge ai">📦 导出引用（不会被清理）</span>' : ''}
             ${m.note ? `<div style="font-size:12px;color:var(--mut);margin-top:2px">${escHtml(m.note)}</div>` : ''}</div>
             <div style="font-size:12px">
               <a href="/snapshot/view?id=${id}&ts=${ts}">预览</a> ·
               <a href="/snapshot/pdf?id=${id}&ts=${ts}" target="_blank">下载该版本 PDF</a> ·
               <a href="/diff?base=${id}@${ts}&to=${id}">对比当前</a> ·
               <button class="secondary" style="padding:2px 8px" onclick="snapNote('${id}','${ts}')">✏️</button>
-              <button class="secondary" style="padding:2px 8px" onclick="snapBaseline('${id}','${ts}')">📌</button>
+              <button class="secondary" style="padding:2px 8px" onclick="snapBaseline('${id}','${ts}')" aria-label="设为基准" title="设为基准">${icon('pin', 13)}</button>
               <form method="post" action="/rollback?id=${id}&ts=${ts}" style="display:inline" onsubmit="return confirm('回滚到 ${ts}？当前版本会先自动留一份快照')"><button class="secondary" style="padding:2px 8px">回滚</button></form>
             </div>
           </div>
@@ -2786,8 +2808,8 @@ async function handler(req, res) {
       if (url.searchParams.get('view') === 'table') {
         const channels = [...new Set(apps.map((a) => a.channel).filter(Boolean))];
         const row = (a) => {
-          const due = a.dueDate && (new Date(a.dueDate).getTime() - nowMs) < 48 * 3600 * 1000 && new Date(a.dueDate).getTime() >= nowMs - 24 * 3600 * 1000 ? '<span class="badge warn">⚠️</span>' : '';
-          const archiveBadge = a.archive && a.archive.status === 'failed' ? '<span class="badge err">存档缺失</span>' : '';
+          const due = a.dueDate && (new Date(a.dueDate).getTime() - nowMs) < 48 * 3600 * 1000 && new Date(a.dueDate).getTime() >= nowMs - 24 * 3600 * 1000 ? '<span class="badge warn" role="img" aria-label="临近截止" title="临近截止">' + icon('circle-alert', 11) + '</span>' : '';
+          const archiveBadge = a.archive && a.archive.status === 'failed' ? badge('err', '存档缺失') : '';
           return `<tr data-ch="${escHtml(a.channel || '')}"><td><b>${escHtml(a.company)}</b></td><td>${escHtml(a.role)}</td><td>${escHtml(a.channel || '')}</td><td>${escHtml(a.status)}</td><td>${escHtml(a.appliedAt || '')}</td><td>${escHtml(a.nextStep || '')}</td><td>${escHtml(a.dueDate || '')}${due}</td><td>${archiveBadge}<a href="/app?id=${escHtml(a.id)}">详情</a></td></tr>`;
         };
         return send(200, page('投递看板·表格', `<h1>投递看板 <a href="/applications" style="font-size:13px;font-weight:400">⇄ 看板视图</a></h1>
@@ -2825,12 +2847,12 @@ async function handler(req, res) {
       }
       const appCard = (a) => {
         const idx = APP_STATUSES.indexOf(a.status);
-        const due = a.dueDate && (new Date(a.dueDate).getTime() - nowMs) < 48 * 3600 * 1000 && new Date(a.dueDate).getTime() >= nowMs - 24 * 3600 * 1000 ? '<span class="badge warn">⚠️</span>' : '';
-        const arch = a.archive && a.archive.status === 'failed' ? '<span class="badge err" title="存档 PDF 生成失败">存档缺失</span>' : '';
+        const due = a.dueDate && (new Date(a.dueDate).getTime() - nowMs) < 48 * 3600 * 1000 && new Date(a.dueDate).getTime() >= nowMs - 24 * 3600 * 1000 ? '<span class="badge warn" role="img" aria-label="临近截止" title="临近截止">' + icon('circle-alert', 11) + '</span>' : '';
+        const arch = a.archive && a.archive.status === 'failed' ? '<span class="badge err" title="存档 PDF 生成失败">' + icon('circle-x', 11) + '存档缺失</span>' : '';
         return `<div class="app-card card" data-status="${escHtml(a.status)}" data-app="${escHtml(a.id)}" style="margin:8px 0;padding:8px 10px;background:var(--panel);border:1px solid var(--line)">
           <div style="font-family:var(--serif);font-size:14px;font-weight:800;color:var(--ink)">${escHtml(a.company)}${due}</div>
           <div style="color:var(--mut);font-size:12px">${escHtml(a.role)}</div>
-          <div style="font-size:12px;color:var(--mut);margin:2px 0"><a href="/edit?id=${escHtml(a.docId)}">${escHtml(a.docId)}</a> <span class="badge ${a.jd ? 'ok' : 'warn'}">${a.jd ? 'JD ✓' : 'JD ✗'}</span>${arch}${a.channel ? `<span class="badge">${escHtml(a.channel)}</span>` : ''}</div>
+          <div style="font-size:12px;color:var(--mut);margin:2px 0"><a href="/edit?id=${escHtml(a.docId)}">${escHtml(a.docId)}</a> ${badge(a.jd ? 'ok' : 'warn', 'JD')}${arch}${a.channel ? `<span class="badge">${escHtml(a.channel)}</span>` : ''}</div>
           ${a.nextStep || a.dueDate ? `<div style="font-size:12px;color:var(--mut)">${a.nextStep ? '下一步：' + escHtml(a.nextStep) : ''}${a.dueDate ? ' 截止：' + escHtml(a.dueDate) : ''}</div>` : ''}
           ${a.note ? `<div style="font-size:12px;color:var(--mut)">${escHtml(a.note)}</div>` : ''}
           <div style="margin-top:4px;font-size:12px">
@@ -2886,7 +2908,7 @@ async function handler(req, res) {
             channel: document.getElementById('channel').value.trim(), link: document.getElementById('link').value.trim(),
             appliedAt: document.getElementById('appliedAt').value, nextStep: document.getElementById('nextStep').value.trim(), dueDate: document.getElementById('dueDate').value }) });
         if (r.ok) { var d = await r.json().catch(function () { return null; }); if (d && d.warning) alert(d.warning); location.reload(); }
-        else document.getElementById('appmsg').textContent = ' ❌ ' + (await r.text());
+        else __status(document.getElementById('appmsg'), 'err', await r.text());
       });
     </script>`, 'apps', true));
     }
@@ -2898,11 +2920,11 @@ async function handler(req, res) {
       if (!app) return send(404, 'app not found', 'text/plain');
       const interviews = Array.isArray(app.interviews) ? app.interviews : [];
       const now = Date.now();
-      const dueBadge = app.dueDate && (new Date(app.dueDate).getTime() - now) < 48 * 3600 * 1000 ? '<span class="badge warn">⚠️ 到期</span>' : '';
+      const dueBadge = app.dueDate && (new Date(app.dueDate).getTime() - now) < 48 * 3600 * 1000 ? badge('warn', '到期') : '';
       const archiveMissing = !app.archive || app.archive.status !== 'ok';
       const archiveLine = archiveMissing
-        ? `<span class="badge err">存档 PDF 缺失</span> <button class="secondary" style="padding:2px 8px;font-size:12px" onclick="regenArchive()">从快照重新生成</button><span id="regenMsg" style="font-size:12px"></span>`
-        : `<a href="/archive-pdf?id=${escAttr(app.id)}" target="_blank">存档 PDF</a> <span class="badge ok">内容哈希 ${escHtml((app.contentHash || '').slice(0, 8))}</span>`;
+        ? `${badge('err', '存档 PDF 缺失')} <button class="secondary" style="padding:2px 8px;font-size:12px" onclick="regenArchive()">从快照重新生成</button><span id="regenMsg" style="font-size:12px"></span>`
+        : `<a href="/archive-pdf?id=${escAttr(app.id)}" target="_blank">存档 PDF</a> ${badge('ok', '内容哈希 ' + escHtml((app.contentHash || '').slice(0, 8)))}`;
       return send(200, page('投递详情', `<h1>投递详情</h1>
     <div class="card">
       <b style="font-size:16px">${escHtml(app.company)}</b> ${escHtml(app.role)} ${dueBadge}
@@ -2951,12 +2973,12 @@ async function handler(req, res) {
         document.getElementById('regenMsg').textContent = ' 生成中…';
         fetch('/app/archive-regenerate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: APPID }) })
           .then(function (r) { return r.json(); })
-          .then(function (d) { document.getElementById('regenMsg').textContent = d.ok ? ' ✅ 已生成' : (' ❌ ' + (d.error || '失败')); if (d.ok) location.reload(); })
-          .catch(function (e) { document.getElementById('regenMsg').textContent = ' ❌ ' + e.message; });
+          .then(function (d) { var el = document.getElementById('regenMsg'); if (d.ok) __status(el, 'ok', '已生成'); else __status(el, 'err', d.error || '失败'); if (d.ok) location.reload(); })
+          .catch(function (e) { __status(document.getElementById('regenMsg'), 'err', e.message); });
       }
       document.getElementById('ivSave').onclick = function () {
         var round = document.getElementById('ivRound').value.trim();
-        if (!round) { document.getElementById('ivMsg').textContent = ' ❌ 轮次必填'; return; }
+        if (!round) { __status(document.getElementById('ivMsg'), 'err', '轮次必填'); return; }
         var ivs = ${jsonScript(interviews)};
         ivs.push({ round: round, time: document.getElementById('ivTime').value,
           questions: document.getElementById('ivQ').value, answer: document.getElementById('ivA').value,
@@ -2968,9 +2990,11 @@ async function handler(req, res) {
         try {
           var r = await fetch('/ai/prep', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: APPID }) });
           var data = await r.json();
-          document.getElementById('prepOut').textContent = data.ok ? data.text : '❌ ' + (data.error || '失败');
-          document.getElementById('prepMsg').textContent = data.ok ? ' ✅' : '';
-        } catch (e) { document.getElementById('prepMsg').textContent = ' ❌ ' + e.message; }
+          var prepOutEl = document.getElementById('prepOut');
+          var prepMsgEl = document.getElementById('prepMsg');
+          if (data.ok) { prepOutEl.textContent = data.text; prepMsgEl.textContent = ''; }
+          else { prepOutEl.textContent = ''; __status(prepMsgEl, 'err', data.error || '失败'); }
+        } catch (e) { __status(document.getElementById('prepMsg'), 'err', e.message); }
       };
     </script>`, 'apps'));
     }
@@ -3138,7 +3162,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       }
       async function save() {
         var r = await fetch('/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state) });
-        document.getElementById('msg').textContent = r.ok ? ' ✅ 已保存' : ' ❌ ' + (await r.text());
+        var msgEl = document.getElementById('msg');
+        if (r.ok) __status(msgEl, 'ok', '已保存'); else __status(msgEl, 'err', await r.text());
         return r.ok;
       }
       function pickModel(btn) {
@@ -3153,14 +3178,14 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         var p = state.profiles[i];
         // 每次现取：fetch 期间用户可能删配置触发 render()，缓存的 msg 会变 detached 节点，
         // 写它抛 TypeError，且 catch 里再抛一次 → 未捕获 rejection（2026-10-18 蓝军自检发现）
-        var say = function (t) { var m = document.getElementById('msg-' + i); if (m) m.textContent = t; };
-        say(' 测试中…');
+        var say = function (kind, t) { var m = document.getElementById('msg-' + i); if (!m) return; if (kind) __status(m, kind, t); else m.textContent = t; };
+        say(null, ' 测试中…');
         try {
           var r = await fetch('/ai/test', { method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ baseURL: p.baseURL.trim(), apiKey: p.apiKey.trim() }) });
           var data = await r.json();
           if (data.ok) {
-            say(' ✅ 连接成功，' + data.models.length + ' 个模型可用');
+            say('ok', '连接成功，' + data.models.length + ' 个模型可用');
             state.profiles[i].__models = data.models.map(String);   // 供按钮 data-pm 索引取值（不入 config）
             // 模型做成「点一下就填」的按钮组，不用 <datalist>：
             // datalist 在 input 已有值时下拉极难点开（实测 2026-10-19：填了模型名后
@@ -3176,8 +3201,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
                       + ' style="margin:2px;padding:2px 8px;font-size:12px">' + escAttr(String(m)) + '</button>';
                   }).join('');
             }
-          } else say(' ❌ 连接失败（' + (p.baseURL || '未填 Base URL') + '）：' + data.error + '　—— 不影响手填模型名，保存即可');
-        } catch (e) { say(' ❌ 连接失败（' + (p.baseURL || '未填 Base URL') + '）：' + (e.message || e) + '　—— 不影响手填模型名，保存即可'); }
+          } else say('err', '连接失败（' + (p.baseURL || '未填 Base URL') + '）：' + data.error + '　—— 不影响手填模型名，保存即可');
+        } catch (e) { say('err', '连接失败（' + (p.baseURL || '未填 Base URL') + '）：' + (e.message || e) + '　—— 不影响手填模型名，保存即可'); }
       }
       document.addEventListener('click', function (ev) {
         var b = ev.target && ev.target.closest ? ev.target.closest('button[data-pm]') : null;
@@ -3213,14 +3238,14 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         msg.textContent = ' 上传中…';
         var buf = await f.arrayBuffer();
         var prev = await fetch('/restore?apply=0', { method: 'POST', body: buf }).then(function (r) { return r.json(); }).catch(function () { return { ok: false, error: '上传失败' }; });
-        if (!prev.ok) { msg.textContent = ' ❌ ' + (prev.error || '非法备份包'); return; }
+        if (!prev.ok) { __status(msg, 'err', prev.error || '非法备份包'); return; }
         document.getElementById('restorePreview').innerHTML = diffLinesToHtml(prev);
         var mode = document.querySelector('input[name=rmode]:checked').value;
         if (!confirm('按「' + (mode === 'merge' ? '合并' : '替换') + '」恢复？恢复前会自动生成回退点。')) { msg.textContent = ' 已取消'; return; }
         msg.textContent = ' 执行恢复…';
         var r2 = await fetch('/restore?apply=1&mode=' + mode, { method: 'POST', body: buf });
         var data = await r2.json();
-        msg.textContent = data.ok ? ' ✅ 已恢复' : ' ❌ ' + (data.error || '失败');
+        if (data.ok) __status(msg, 'ok', '已恢复'); else __status(msg, 'err', data.error || '失败');
         if (data.ok && data.safety) {
           document.getElementById('undoBox').innerHTML = '<button class="secondary" onclick="undoRestore(\\'' + data.safety + '\\')">↩ 回退这次恢复</button> <span id="undoMsg" style="font-size:12px"></span>';
         }
@@ -3229,7 +3254,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         if (!confirm('回退到恢复前状态？')) return;
         var r = await fetch('/restore/undo?ts=' + encodeURIComponent(ts), { method: 'POST' });
         var d = await r.json().catch(function () { return { ok: false }; });
-        document.getElementById('undoMsg').textContent = d.ok ? ' ✅ 已回退' : ' ❌ ' + (d.error || '失败');
+        var undoEl = document.getElementById('undoMsg');
+        if (d.ok) __status(undoEl, 'ok', '已回退'); else __status(undoEl, 'err', d.error || '失败');
       }
     </script>`, 'settings'));
     }
@@ -3446,7 +3472,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const interviewed = apps.filter((a) => ['面试中', 'offer'].includes(a.status) || (Array.isArray(a.interviews) && a.interviews.length)).length;
       const n = apps.length;
       const funnelBar = funnel.map(([s, c]) => `<div style="display:flex;align-items:center;margin:6px 0"><span style="width:70px;font-size:12px">${s}</span><div style="flex:1;background:var(--bg);border-radius:4px;height:20px"><div style="background:var(--accent);height:100%;border-radius:4px;width:${n ? (c / n * 100) : 0}%"></div></div><span style="width:30px;text-align:right;font-size:12px">${c}</span></div>`).join('');
-      const warn = n < 10 ? `<div class="badge warn" style="margin-bottom:10px">样本量小（n=${n}），仅供参考</div>` : '';
+      const warn = n < 10 ? `<div class="badge warn" style="margin-bottom:10px">${icon('circle-alert', 11)}样本量小（n=${n}），仅供参考</div>` : '';
       return send(200, page('复盘', `<h1>📊 复盘统计 <span style="font-size:13px;font-weight:400;color:var(--mut)">n=${n}</span></h1>${warn}
     <div class="card"><b style="font-family:var(--serif);font-size:14px">状态分布</b><div style="font-size:11px;color:var(--mut);margin:4px 0">当前状态计数（非阶段漏斗；有面试记录即计入面试口径）</div>${funnelBar}</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px">
@@ -3780,6 +3806,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       
       const pageTexts = [];   // S4a-T10：分页文本层（排版诊断输入）
       const rows = [];   // PDF 体检结论行（页面/空白页/孤立标题/字符量）
+      // 体检结论的通过/告警标记：图标 + 语义色（颜色不单独承载语义，WCAG color-not-only）
+      const mark = (ok) => `<span style="color:var(--${ok ? 'ok' : 'warn'})">${icon(ok ? 'check' : 'circle-alert', 12)}</span>`;
       let pages = 0;   // 块外 3254 的 layout 门控要用到，声明须在 pdfStat 分支之前
       if (pdfStat) {
         try { pages = parseInt(execFileSync('pdfinfo', [pdfPath(id)]).toString().match(/Pages:\s*(\d+)/)?.[1] || '0', 10); } catch { pages = 0; }
@@ -3794,10 +3822,10 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
           if (lastLine && lastLine.length <= 10 && !/[，。、；：！？,.0-9]/.test(lastLine) && clean.length >= 10) orphan.push(p);
         }
         const totalChars = (() => { try { return execFileSync('pdftotext', [pdfPath(id), '-'], { timeout: 30000 }).toString('utf8').length; } catch { return 0; } })();
-        rows.push(`${pages > 0 ? '✓' : '⚠️'} 实际页数：${pages || '读取失败'}${pages === 2 ? '（符合两页目标）' : pages > 2 ? '（超过两页，见下方建议）' : ''}`);
-        rows.push(`${blank.length ? '⚠️' : '✓'} 空白页检查：${blank.length ? `疑似空白页：${blank.join('、')}` : '无'}`);
-        rows.push(`${orphan.length ? '⚠️' : '✓'} 孤立标题检查：${orphan.length ? orphan.map((p) => `第${p}页末疑似孤立标题`).join('；') : '无'}`);
-        rows.push(`${totalChars >= 200 ? '✓' : '⚠️'} 文本层字符量：${totalChars}`);
+        rows.push(`${mark(pages > 0)} 实际页数：${pages || '读取失败'}${pages === 2 ? '（符合两页目标）' : pages > 2 ? '（超过两页，见下方建议）' : ''}`);
+        rows.push(`${mark(!blank.length)} 空白页检查：${blank.length ? `疑似空白页：${blank.join('、')}` : '无'}`);
+        rows.push(`${mark(!orphan.length)} 孤立标题检查：${orphan.length ? orphan.map((p) => `第${p}页末疑似孤立标题`).join('；') : '无'}`);
+        rows.push(`${mark(totalChars >= 200)} 文本层字符量：${totalChars}`);
         
       }
       const suggestions = pageSuggestions(lines, { projects }).map((s) => `<li>${escHtml(s.text)}</li>`).join('');
@@ -3831,19 +3859,19 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
            <p><a href="/edit?id=${id}">去处理 →</a></p></div>`
         : '';
       const importantWarn = pendingImportant.length
-        ? `<div class="badge warn">${pendingImportant.length} 条重点审阅建议待处理（不阻塞导出）</div>`
+        ? `<div class="badge warn">${icon('circle-alert', 11)}${pendingImportant.length} 条重点审阅建议待处理（不阻塞导出）</div>`
         : '';
       // S4a 上线后修复3：可投递改为显式确认——整体审阅完成 + 当前 PDF 才出按钮；确认后 S1 flow 契约不变
       const flowNow = flowOf(meta);
       const confirmDeliverable = meta.parent && pdfCurrent && expChecks.reviewComplete && flowNow !== 'reviewed'
         ? `<form method="post" action="/job/changes?id=${id}" style="display:inline" onsubmit="event.preventDefault();fetch('/job/changes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'${id}',status:'deliverable'})}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);location.reload()}).catch(function(e){alert('确认失败：'+e.message)})"><button class="ok" type="submit">确认可投递（整体审阅已完成）</button></form>`
-        : flowNow === 'reviewed' ? '<span class="badge ok">已确认可投递</span>'
-        : `<span class="badge" title="整体审阅完成 + 当前 PDF 后可确认">未确认可投递</span>`;
+        : flowNow === 'reviewed' ? badge('ok', '已确认可投递')
+        : `<span class="badge mute" title="整体审阅完成 + 当前 PDF 后可确认">${icon('circle-help', 11)}未确认可投递</span>`;
       const versionLine = pdfCurrent
-        ? `<span class="badge ok">PDF 与当前内容一致</span>`
+        ? badge('ok', 'PDF 与当前内容一致')
         : pdfStat
-          ? `<span class="badge err">当前显示的是旧版本 PDF（生成于 ${new Date(pdfStat.mtimeMs).toLocaleString('zh-CN')}），不是最新内容</span>`
-          : `<span class="badge err">尚无 PDF</span>`;
+          ? `${badge('err', '当前显示的是旧版本 PDF（生成于 ' + new Date(pdfStat.mtimeMs).toLocaleString('zh-CN') + '），不是最新内容')}`
+          : `${badge('err', '尚无 PDF')}`;
       const trackSrc = meta.parent ? `<span class="badge ai">${escHtml((meta.company || '') + '·' + (meta.role || ''))}</span>` : '';
       // 导出记录（S1-T8）：不可变产物列表；usedBy/deliveredRefs 读取时派生自 applications.json（权威来源，绝不存储）
       const apps4ex = loadApps();
@@ -3853,16 +3881,16 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         const fOk = e.file && fs.existsSync(path.join(root, path.normalize(String(e.file))));
         const isCur = e.renderInputId === rst.frozen.renderInputId;
         return `<div style="display:flex;justify-content:space-between;gap:8px;margin:6px 0;font-size:12px;flex-wrap:wrap">
-          <span>${escHtml(String(e.at || ''))}${isCur ? ' <span class="badge ok">当前内容</span>' : ''} · <code>${escHtml(String(e.renderInputId || '').slice(0, 12))}…</code> · ${Number(e.pages) || 0} 页 · 主题 ${escHtml(String(e.theme || '-'))}${used.length ? ` <span class="badge ai">投递使用：${used.map((a) => escHtml(String(a.company || '') + '·' + String(a.role || ''))).join('、')}</span>` : ''}</span>
-          <span>${fOk ? `<a href="/history-pdf?exportId=${encodeURIComponent(String(e.exportId || ''))}">下载</a>` : '<span class="badge err">产物缺失</span>'}</span>
+          <span>${escHtml(String(e.at || ''))}${isCur ? ' ' + badge('ok', '当前内容') : ''} · <code>${escHtml(String(e.renderInputId || '').slice(0, 12))}…</code> · ${Number(e.pages) || 0} 页 · 主题 ${escHtml(String(e.theme || '-'))}${used.length ? ` <span class="badge ai">投递使用：${used.map((a) => escHtml(String(a.company || '') + '·' + String(a.role || ''))).join('、')}</span>` : ''}</span>
+          <span>${fOk ? `<a href="/history-pdf?exportId=${encodeURIComponent(String(e.exportId || ''))}">下载</a>` : badge('err', '产物缺失')}</span>
         </div>`;
       }).join('');
       return send(200, page('导出', `<h1>导出 PDF</h1>
     <div class="card">
       <p>正在导出：<b>${escHtml(id)}</b> ${trackSrc} ${versionLine}</p>
       <p style="font-size:13px;color:var(--mut)">最后编辑 ${docStat.mtime.toLocaleString('zh-CN')}${pdfStat ? ` ｜ PDF 生成于 ${new Date(pdfStat.mtimeMs).toLocaleString('zh-CN')}` : ''}</p>
-      ${renderError ? `<p style="color:var(--err)">❌ 重新生成失败：${escHtml(renderError)}。下方数据基于${pdfStat ? '旧版本 PDF' : '无 PDF'}，请修复渲染环境后重试。</p>` : ''}
-      ${!pdfCurrent && pdfStat && !renderError ? `<p style="color:var(--warn)">⚠️ 文档内容已更新（渲染标识不一致），当前 PDF 不是最新内容。</p>` : ''}
+      ${renderError ? `<p style="color:var(--err)">${icon('circle-x', 13)}重新生成失败：${escHtml(renderError)}。下方数据基于${pdfStat ? '旧版本 PDF' : '无 PDF'}，请修复渲染环境后重试。</p>` : ''}
+      ${!pdfCurrent && pdfStat && !renderError ? `<p style="color:var(--warn)">${icon('circle-alert', 13)}文档内容已更新（渲染标识不一致），当前 PDF 不是最新内容。</p>` : ''}
       ${gate}
       ${importantWarn}
       <p>
@@ -3891,7 +3919,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         if (imp) parts.push('重点审阅 ' + imp + ' 条');
         return parts.length ? parts.join('；') + '（不阻塞导出）' : '无';
       })()}</div>
-      <div style="font-size:13px;margin:6px 0">整体审阅完成：${expChecks.reviewComplete ? '✅ 是（可进入投递）' : '否（仍有待处理/稍后处理/待核对项——不阻塞导出）'}</div>
+      <div style="font-size:13px;margin:6px 0">整体审阅完成：${expChecks.reviewComplete ? icon('circle-check', 13) + ' 是（可进入投递）' : '否（仍有待处理/稍后处理/待核对项——不阻塞导出）'}</div>
       ${suggestions ? `<div style="font-size:13px;margin:6px 0">风格建议：<ul style="margin:4px 0">${suggestions}</ul></div>` : ''}
     </div>
     ${suggestions ? `<div class="card" style="margin-top:12px"><b>超过两页的可读处理建议</b><ol style="font-size:13px">${suggestions}</ol><p style="font-size:12px;color:var(--mut)">不需要靠缩小字号硬塞：优先去重、精简、隐藏低相关项目；也可以保留更多页。</p></div>` : ''}
@@ -3910,7 +3938,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         <button ${pdfCurrent && !pendingConflicts.length ? '' : 'disabled title="先解决上方问题"'}>记录已投递</button><span id="tkMsg" style="font-size:12px"></span>
       </form>
     </div>
-    ${pdfStat ? `<iframe src="/pdf?id=${id}" title="PDF 预览" style="width:100%;height:70vh;margin-top:12px;border:1px solid var(--line);border-radius:12px"></iframe><p style="color:var(--mut);font-size:12px">预览为「最新版」便利文件；下载请用上方的导出记录（不可变产物）。</p>` : ''}
+    ${pdfStat ? `<iframe src="/pdf?id=${id}" title="PDF 预览" style="width:100%;height:70vh;margin-top:12px;border:1px solid var(--line);border-radius:var(--radius-lg)"></iframe><p style="color:var(--mut);font-size:12px">预览为「最新版」便利文件；下载请用上方的导出记录（不可变产物）。</p>` : ''}
     <script>
       // S4a 上线后修复3：移除「打开导出页即自动标记可投递」——改为契约判定（整体审阅完成 + 当前 PDF）下的显式用户确认。
       async function rerender() {
@@ -3919,9 +3947,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         try {
           var r = await fetch('/render?id=${id}', { method: 'POST' });
           var d = await r.json();
-          msg.textContent = d.ok ? ' ✅ 已重新生成' : (' ❌ ' + (d.error || '失败'));
+          if (d.ok) __status(msg, 'ok', '已重新生成'); else __status(msg, 'err', d.error || '失败');
           if (d.ok) setTimeout(function () { location.reload(); }, 600);
-        } catch (e) { msg.textContent = ' ❌ ' + e.message; }
+        } catch (e) { __status(msg, 'err', e.message); }
       }
       // 下载按钮 = POST /export（唯一记录者，幂等）→ 导航到 /history-pdf?exportId=… 下载不可变产物（不再链 /pdf）
       var dlBtn = document.getElementById('dlBtn');
@@ -3931,9 +3959,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         try {
           var r = await fetch('/export?id=${id}', { method: 'POST' });
           var d = await r.json().catch(function () { return null; });
-          if (d && d.ok && d.url) { msg.textContent = d.reused ? ' ✅ 复用既有导出记录' : ' ✅ 已创建导出记录'; location.href = d.url; dlBtn.disabled = false; }
-          else { msg.textContent = ' ❌ ' + ((d && d.error) || '导出失败'); dlBtn.disabled = false; }
-        } catch (e) { msg.textContent = ' ❌ ' + e.message; dlBtn.disabled = false; }
+          if (d && d.ok && d.url) { __status(msg, 'ok', d.reused ? '复用既有导出记录' : '已创建导出记录'); location.href = d.url; dlBtn.disabled = false; }
+          else { __status(msg, 'err', (d && d.error) || '导出失败'); dlBtn.disabled = false; }
+        } catch (e) { __status(msg, 'err', e.message); dlBtn.disabled = false; }
       };
       // 记录已投递：先 POST /export 取得（或复用）当前身份的导出记录 → /app/add 绑定 exportId（存档来自该导出的冻结快照）
       document.getElementById('trackForm').addEventListener('submit', async function (e) {
@@ -3943,16 +3971,16 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         try {
           var er = await fetch('/export?id=${id}', { method: 'POST' });
           var ed = await er.json().catch(function () { return null; });
-          if (!ed || !ed.ok || !ed.exportId) { msg.textContent = ' ❌ 导出失败，未记录投递：' + ((ed && ed.error) || ''); return; }
+          if (!ed || !ed.ok || !ed.exportId) { __status(msg, 'err', '导出失败，未记录投递：' + ((ed && ed.error) || '')); return; }
           var r = await fetch('/app/add', { method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ company: document.getElementById('tkCompany').value.trim(), role: document.getElementById('tkRole').value.trim(),
               docId: '${id}', channel: document.getElementById('tkChannel').value.trim(), appliedAt: document.getElementById('tkDate').value, exportId: ed.exportId }) });
           var d = await r.json().catch(function () { return null; });
           if (d && d.ok) {
-            msg.textContent = ' ✅ 已记录（未自动发送；存档绑定本次导出快照）';
+            __status(msg, 'ok', '已记录（未自动发送；存档绑定本次导出快照）');
             if (d.warning) alert(d.warning);
-          } else msg.textContent = ' ❌ ' + ((d && d.error) || '失败');
-        } catch (err) { msg.textContent = ' ❌ ' + err.message; }
+          } else __status(msg, 'err', (d && d.error) || '失败');
+        } catch (err) { __status(msg, 'err', err.message); }
       });
     </script>`, 'docs'));
     }
