@@ -52,7 +52,7 @@
 - Create: `vendors/icons.LICENSE`（上游 ISC 许可全文）
 - Modify: `test-structure.sh`（末尾追加 UI-1 组）
 
-- [ ] **Step 1.1: 写提取脚本**
+- [x] **Step 1.1: 写提取脚本**
 
 创建 `scripts/extract-icons.mjs`：
 
@@ -67,7 +67,7 @@
   5. 探测路径：显式参数 → 本仓库 node_modules → 用户级 node_modules（HOME 未设置则跳过）。
 ```
 
-- [ ] **Step 1.2: 运行提取脚本**
+- [x] **Step 1.2: 运行提取脚本**
 
 ```bash
 cd /Users/xxxly/resume && node scripts/extract-icons.mjs
@@ -77,7 +77,7 @@ Expected: `提取图标数: 44 | 来源版本: v0.468.0 | 输出: /Users/xxxly/r
 
 若报「找不到 lucide-react 图标目录」，用 `find /Users/xxxly -maxdepth 6 -type d -name icons -path "*lucide-react*" 2>/dev/null | head -3` 定位真实路径后传参：`node scripts/extract-icons.mjs <该路径>`。
 
-- [ ] **Step 1.3: 写失败断言（UI-1）**
+- [x] **Step 1.3: 写失败断言（UI-1）**
 
 用 python3 追加到 `test-structure.sh` 末尾（**不要用 heredoc**）：
 
@@ -92,7 +92,7 @@ UI-1 断言组现行内容见 test-structure.sh 末尾的「UI-1：图标数据�
 追加/替换文件用 python3 脚本（**不要用 heredoc 写文件**），写完立刻 bash -n test-structure.sh。
 ```
 
-- [ ] **Step 1.4: 跑测试确认绿**
+- [x] **Step 1.4: 跑测试确认绿**
 
 ```bash
 cd /Users/xxxly/resume && bash test-structure.sh > /tmp/s.log 2>&1; echo "exit=$?"; grep -c "✅" /tmp/s.log; grep "UI-1" /tmp/s.log
@@ -101,7 +101,7 @@ cd /Users/xxxly/resume && bash test-structure.sh > /tmp/s.log 2>&1; echo "exit=$
 Expected: `exit=0`，✅ 数 = **116**（115 基线 + 1），输出含 `✅ UI-1 图标数据完整（44 个）`
 > 注：真实基线 115（实测），不是 96 —— 原计划此处笔误。
 
-- [ ] **Step 1.5: 提交**
+- [x] **Step 1.5: 提交**
 
 ```bash
 cd /Users/xxxly/resume && git add scripts/extract-icons.mjs scripts/icons.list.json vendors/icons.mjs vendors/icons.LICENSE test-structure.sh && git commit -m "feat(ui): 批次A 地基 — Lucide 图标数据 + 可重现提取脚本
@@ -122,7 +122,7 @@ test-structure 115 → 116 组 ✅。" && git log --oneline -1
 - Modify: `server.mjs`（825 行 A-VARS 块；新增 icon() helper；853/856 行徽章 CSS）
 - Modify: `test-structure.sh`（追加 UI-2 组）
 
-- [ ] **Step 2.1: 写失败断言（UI-2）**
+- [x] **Step 2.1: 写失败断言（UI-2）**
 
 ```bash
 python3 - << 'PYEOF'
@@ -160,7 +160,7 @@ PYEOF
 bash -n test-structure.sh
 ```
 
-- [ ] **Step 2.2: 跑测试确认红**
+- [x] **Step 2.2: 跑测试确认红**
 
 ```bash
 cd /Users/xxxly/resume && bash test-structure.sh > /tmp/s.log 2>&1; echo "exit=$?"; grep "UI-2" /tmp/s.log
@@ -168,7 +168,7 @@ cd /Users/xxxly/resume && bash test-structure.sh > /tmp/s.log 2>&1; echo "exit=$
 
 Expected: `exit=1`，输出 `❌ UI-2 token --background 应存在且值为 #ffffff`
 
-- [ ] **Step 2.3: 写实现**
+- [x] **Step 2.3: 写实现**
 
 **① 替换 825 行的 A-VARS 块**（保留旧变量名作为别名，避免既有 CSS 一次性全改）：
 
@@ -224,7 +224,7 @@ function icon(name, size = 16, cls = '') {
 }
 ```
 
-- [ ] **Step 2.4: 跑测试确认绿**
+- [x] **Step 2.4: 跑测试确认绿**
 
 ```bash
 cd /Users/xxxly/resume && bash test-structure.sh > /tmp/s.log 2>&1; echo "exit=$?"; grep -c "✅" /tmp/s.log; grep "UI-2" /tmp/s.log
@@ -233,7 +233,7 @@ cd /Users/xxxly/resume && bash test-structure.sh > /tmp/s.log 2>&1; echo "exit=$
 Expected: `exit=0`，✅ 数 = **117**（116 基线 + 1）
 > 真实基线 116（Task 1 实测），不是 97 —— 原计划此处笔误。
 
-- [ ] **Step 2.5: 提交**
+- [x] **Step 2.5: 提交**
 
 ```bash
 cd /Users/xxxly/resume && git add server.mjs test-structure.sh && git commit -m "feat(ui): 批次A — 浅色克制 token + icon() helper
@@ -259,7 +259,7 @@ currentColor / viewBox。test-structure 116 → 117 组 ✅。" && git log --one
 - Modify: `server.mjs`（853/856 行徽章 CSS；`jobStatusBadge()` 派生逻辑）
 - Modify: `test-structure.sh`（追加 UI-3 组）
 
-- [ ] **Step 3.1: 写失败断言（UI-3）**
+- [x] **Step 3.1: 写失败断言（UI-3）**
 
 ```bash
 python3 - << 'PYEOF'
@@ -300,7 +300,7 @@ PYEOF
 bash -n test-structure.sh
 ```
 
-- [ ] **Step 3.2: 跑测试确认红**
+- [x] **Step 3.2: 跑测试确认红**
 
 ```bash
 cd /Users/xxxly/resume && bash test-structure.sh > /tmp/s.log 2>&1; echo "exit=$?"; grep "UI-3" /tmp/s.log
@@ -308,7 +308,7 @@ cd /Users/xxxly/resume && bash test-structure.sh > /tmp/s.log 2>&1; echo "exit=$
 
 Expected: `exit=1`，输出形如 `❌ UI-3 server.mjs 仍含状态 emoji: ⚠️ ❌ ✅ ...`
 
-- [ ] **Step 3.3: 写实现**
+- [x] **Step 3.3: 写实现**
 
 **① 替换 853/856 行的徽章 CSS**：
 
@@ -349,7 +349,7 @@ Expected: `exit=1`，输出形如 `❌ UI-3 server.mjs 仍含状态 emoji: ⚠�
 > - **不要碰代码注释里的 emoji** —— `2026-10-19 审查 ⚪-6`、`⚠️ 计数器必须在模块级` 这类是**安全审计记录**，
 >   清理掉等于毁掉审查痕迹。断言已按「剥注释后检查」实现，不会误报它们。
 
-- [ ] **Step 3.4: 跑测试确认绿**
+- [x] **Step 3.4: 跑测试确认绿**
 
 ```bash
 cd /Users/xxxly/resume && bash test-structure.sh > /tmp/s.log 2>&1; echo "exit=$?"; grep -c "✅" /tmp/s.log; grep "UI-3" /tmp/s.log
@@ -357,7 +357,7 @@ cd /Users/xxxly/resume && bash test-structure.sh > /tmp/s.log 2>&1; echo "exit=$
 
 Expected: `exit=0`，✅ 数 = **98**
 
-- [ ] **Step 3.5: 跑主套件确认无回归**
+- [x] **Step 3.5: 跑主套件确认无回归**
 
 ```bash
 cd /Users/xxxly/resume && bash test.sh > /tmp/t.log 2>&1; echo "exit=$?"; grep -c "✅" /tmp/t.log
@@ -365,7 +365,7 @@ cd /Users/xxxly/resume && bash test.sh > /tmp/t.log 2>&1; echo "exit=$?"; grep -
 
 Expected: `exit=0`，✅ 数 = **339**（若减少说明替换破坏了功能，**回退本 Task**）
 
-- [ ] **Step 3.6: 提交**
+- [x] **Step 3.6: 提交**
 
 ```bash
 cd /Users/xxxly/resume && git add server.mjs test-structure.sh && git commit -m "feat(ui): 批次A — 状态徽章图标化
@@ -389,7 +389,7 @@ UI-3 断言 + test.sh 339 ✅ 回归。" && git log --oneline -1
 - Modify: `server.mjs`（901 行 topnav 模板）
 - Modify: `test-structure.sh`（追加 UI-4 组）
 
-- [ ] **Step 4.1: 写失败断言（UI-4）**
+- [x] **Step 4.1: 写失败断言（UI-4）**
 
 ```bash
 python3 - << 'PYEOF'
@@ -422,11 +422,11 @@ PYEOF
 bash -n test-structure.sh
 ```
 
-- [ ] **Step 4.2: 跑测试确认红**
+- [x] **Step 4.2: 跑测试确认红**
 
 Expected: `exit=1`，`❌ UI-4 导航条仍含 emoji: 📄 🧱 📋 📊 ⚙️`
 
-- [ ] **Step 4.3: 写实现**
+- [x] **Step 4.3: 写实现**
 
 替换 901 行的 topnav 模板：
 
@@ -448,7 +448,7 @@ const nav = (key, href, label, ic) => `<a href="${href}" class="${active === key
 .topnav .brand{display:inline-flex;align-items:center;gap:6px}
 ```
 
-- [ ] **Step 4.4: 跑测试确认绿 + 主套件**
+- [x] **Step 4.4: 跑测试确认绿 + 主套件**
 
 ```bash
 cd /Users/xxxly/resume && bash test-structure.sh > /tmp/s.log 2>&1; echo "structure=$?"; grep -c "✅" /tmp/s.log
@@ -457,7 +457,7 @@ bash test.sh > /tmp/t.log 2>&1; echo "main=$?"; grep -c "✅" /tmp/t.log
 
 Expected: structure `exit=0` ✅=**99**；main `exit=0` ✅=**339**
 
-- [ ] **Step 4.5: 提交**
+- [x] **Step 4.5: 提交**
 
 ```bash
 cd /Users/xxxly/resume && git add server.mjs test-structure.sh && git commit -m "feat(ui): 导航图标化 — emoji 导航条 → Lucide 图标 + 文字
@@ -476,7 +476,7 @@ UI-4 断言 + test.sh 339 ✅。" && git log --oneline -1
 - Modify: `server.mjs`（`listPage()` 957–1349；hero 1066 起；statusline；doclist）
 - Modify: `test-structure.sh`（追加 UI-5 组）
 
-- [ ] **Step 5.1: 写失败断言（UI-5）**
+- [x] **Step 5.1: 写失败断言（UI-5）**
 
 ```bash
 python3 - << 'PYEOF'
@@ -514,11 +514,11 @@ PYEOF
 bash -n test-structure.sh
 ```
 
-- [ ] **Step 5.2: 跑测试确认红**
+- [x] **Step 5.2: 跑测试确认红**
 
 Expected: `exit=1`，`❌ UI-5 首页应有侧栏 .sidenav`
 
-- [ ] **Step 5.3: 写实现**
+- [x] **Step 5.3: 写实现**
 
 **① 加 CSS**（放在 `.topnav` 相关样式之后）：
 
@@ -585,11 +585,11 @@ Expected: `exit=1`，`❌ UI-5 首页应有侧栏 .sidenav`
 
 （变量名沿用现有：`infos` / `degradedCount` / `activeApps` / `todoBits` 已在 `listPage()` 内存在。）
 
-- [ ] **Step 5.4: 跑测试确认绿 + 主套件**
+- [x] **Step 5.4: 跑测试确认绿 + 主套件**
 
 Expected: structure `exit=0` ✅=**100**；main `exit=0` ✅=**339**
 
-- [ ] **Step 5.5: 浏览器实测（必须，不能只靠断言）**
+- [x] **Step 5.5: 浏览器实测（必须，不能只靠断言）**
 
 ```bash
 cd /Users/xxxly/resume && launchctl kickstart -k "gui/$(id -u)/com.lhx.resume-server" && sleep 3
@@ -604,7 +604,7 @@ cd /Users/xxxly/resume && launchctl kickstart -k "gui/$(id -u)/com.lhx.resume-se
 ④ 首页额外确认：H1 + 4 个统计块 + 文档列表
 ⑤ 窗口缩到 800px 宽：侧栏变顶部横条，不破版
 
-- [ ] **Step 5.6: 提交**
+- [x] **Step 5.6: 提交**
 
 ```bash
 cd /Users/xxxly/resume && git add server.mjs test-structure.sh && git commit -m "feat(ui): 批次B — 首页侧栏 + 内容区重排
@@ -627,7 +627,7 @@ UI-5 断言 + 浏览器实测（侧栏/统计块/响应式/零控制台错误）
 - Modify: `editor-shell.js`（Pointer Events 逻辑）
 - Modify: `test-editor.mjs`（追加拖拽用例）
 
-- [ ] **Step 6.1: 写失败断言（UI-6，结构层）**
+- [x] **Step 6.1: 写失败断言（UI-6，结构层）**
 
 ```bash
 python3 - << 'PYEOF'
@@ -663,11 +663,11 @@ PYEOF
 bash -n test-structure.sh
 ```
 
-- [ ] **Step 6.2: 跑测试确认红**
+- [x] **Step 6.2: 跑测试确认红**
 
 Expected: `exit=1`，`❌ UI-6 编辑器页应有拖柄 #ed-grip`
 
-- [ ] **Step 6.3: 写实现**
+- [x] **Step 6.3: 写实现**
 
 **① editor-shell.js：注入层创建拖柄 DOM + 覆盖式 CSS + 拖拽逻辑**
 
@@ -820,11 +820,11 @@ Expected: `exit=1`，`❌ UI-6 编辑器页应有拖柄 #ed-grip`
 })();
 ```
 
-- [ ] **Step 6.4: 跑测试确认绿 + 主套件**
+- [x] **Step 6.4: 跑测试确认绿 + 主套件**
 
 Expected: structure `exit=0` ✅=**101**；main `exit=0` ✅=**339**
 
-- [ ] **Step 6.5: 浏览器实测（必须）**
+- [x] **Step 6.5: 浏览器实测（必须）**
 
 ```bash
 cd /Users/xxxly/resume && launchctl kickstart -k "gui/$(id -u)/com.lhx.resume-server" && sleep 3
@@ -838,7 +838,7 @@ cd /Users/xxxly/resume && launchctl kickstart -k "gui/$(id -u)/com.lhx.resume-se
 ⑤ 窗口缩到 767px 以下 → 右栏变抽屉、拖柄隐藏
 ⑥ 控制台零错误
 
-- [ ] **Step 6.6: 跑浏览器级测试套件**
+- [x] **Step 6.6: 跑浏览器级测试套件**
 
 ```bash
 cd /Users/xxxly/resume && bash test.sh > /tmp/t.log 2>&1; echo "exit=$?"; grep -c "✅" /tmp/t.log
@@ -847,7 +847,7 @@ cd /Users/xxxly/resume && bash test.sh > /tmp/t.log 2>&1; echo "exit=$?"; grep -
 Expected: `exit=0`、✅ 数 = **339**。**浏览器级编辑器测试（`test-editor.mjs`）在 `test.sh` 内部被调用**
 （`test.sh:1986` 带参），随 main 套件一起跑，**不需要单独执行**（少传参数会 exit=2）。
 
-- [ ] **Step 6.7: 提交**
+- [x] **Step 6.7: 提交**
 
 ```bash
 cd /Users/xxxly/resume && git add server.mjs editor-shell.js test-structure.sh && git commit -m "feat(ui): 批次C — 编辑器可拖拽分栏
@@ -872,7 +872,7 @@ UI-6 结构断言 + 浏览器实测 + test-editor.mjs 全量回归。" && git lo
 - Modify: `server.mjs` / `editor-shell.js` / `job-panel.js` / `zone-panel.js` / `ai-panel.js`
 - Modify: `test-structure.sh`（追加 UI-7 组）
 
-- [ ] **Step 7.1: 写失败断言（UI-7）**
+- [x] **Step 7.1: 写失败断言（UI-7）**
 
 ```bash
 python3 - << 'PYEOF'
@@ -906,13 +906,13 @@ PYEOF
 bash -n test-structure.sh
 ```
 
-- [ ] **Step 7.2: 跑测试确认红**，记录哪些文件还剩哪些 emoji：
+- [x] **Step 7.2: 跑测试确认红**，记录哪些文件还剩哪些 emoji：
 
 ```bash
 cd /Users/xxxly/resume && bash test-structure.sh > /tmp/s.log 2>&1; grep "UI-7" /tmp/s.log
 ```
 
-- [ ] **Step 7.3: 逐处替换**
+- [x] **Step 7.3: 逐处替换**
 
 按设计文档 §4.2 映射表替换。**注意**：
 - `docToText`/`extract.mjs` 里的 emoji 属数据处理，**不动**
@@ -928,11 +928,11 @@ cd /Users/xxxly/resume && for f in server.mjs editor-shell.js job-panel.js zone-
 done
 ```
 
-- [ ] **Step 7.4: 跑测试确认绿 + 主套件 + 浏览器套件**
+- [x] **Step 7.4: 跑测试确认绿 + 主套件 + 浏览器套件**
 
-Expected: structure `exit=0` ✅=**102**；main `exit=0` ✅=**339**；`node test-editor.mjs` exit=0
+Expected: structure `exit=0` ✅=**122**；main `exit=0` ✅=**339**；`node test-editor.mjs` exit=0
 
-- [ ] **Step 7.5: 提交**
+- [x] **Step 7.5: 提交**
 
 ```bash
 cd /Users/xxxly/resume && git add -A && git commit -m "feat(ui): 批次D — 剩余 emoji 批量替换
@@ -950,7 +950,7 @@ UI-7 断言：5 个前端源码零 emoji 残留。" && git log --oneline -1
 **Files:**
 - Modify: `dev-docs/handoff.md`
 
-- [ ] **Step 8.1: 冻结件终检**
+- [x] **Step 8.1: 冻结件终检**
 
 ```bash
 cd /Users/xxxly/resume && git diff --stat bbbad60 -- template.html themes/ render.mjs
@@ -958,7 +958,7 @@ cd /Users/xxxly/resume && git diff --stat bbbad60 -- template.html themes/ rende
 
 Expected: **空输出**
 
-- [ ] **Step 8.2: 依赖终检**
+- [x] **Step 8.2: 依赖终检**
 
 ```bash
 cd /Users/xxxly/resume && node -e "const p=require('./package.json');console.log('dependencies:',Object.keys(p.dependencies||{}).join(', '))"
@@ -966,7 +966,7 @@ cd /Users/xxxly/resume && node -e "const p=require('./package.json');console.log
 
 Expected: `dependencies: playwright-core`（**只有这一个**）
 
-- [ ] **Step 8.3: 四件套全跑**
+- [x] **Step 8.3: 四件套全跑**
 
 ```bash
 cd /Users/xxxly/resume
@@ -976,12 +976,12 @@ bash privacy-check.sh  > /tmp/f-p.log 2>&1; echo "privacy=$?"
 bash test.sh           > /tmp/f-t.log 2>&1; echo "main=$?  ✅=$(grep -c '✅' /tmp/f-t.log)"
 ```
 
-Expected: 全部 exit=0；structure ✅=**102**；main ✅=**339**
+Expected: 全部 exit=0；structure ✅=**122**；main ✅=**339**
 > 注：`test-editor.mjs`（浏览器级编辑器测试）**在 test.sh 内部被调用**（`test.sh:1986` 带参），
 > 随 main 套件一起跑，**不需要单独执行**。它需要 `<baseURL> <docId> <dataRoot>` 三个参数，
 > 少传会 exit=2 打印用法。
 
-- [ ] **Step 8.4: 浏览器最终实测**
+- [x] **Step 8.4: 浏览器最终实测**
 
 ```bash
 cd /Users/xxxly/resume && launchctl kickstart -k "gui/$(id -u)/com.lhx.resume-server" && sleep 3
@@ -989,7 +989,7 @@ cd /Users/xxxly/resume && launchctl kickstart -k "gui/$(id -u)/com.lhx.resume-se
 
 逐页检查 `/`、`/edit?id=linghaoxiang`、`/materials`、`/applications`、`/stats`、`/settings`：无 emoji 图标残留、无控制台错误、侧栏/拖柄工作正常、设置页「思考程度」下拉仍可见。
 
-- [ ] **Step 8.5: 登记 handoff**
+- [x] **Step 8.5: 登记 handoff**
 
 在 `dev-docs/handoff.md` 末尾追加：
 
@@ -1010,7 +1010,7 @@ cd /Users/xxxly/resume && launchctl kickstart -k "gui/$(id -u)/com.lhx.resume-se
 - 设计文档 `dev-docs/2026-10-21-ui-redesign-design.md`，实施计划 `dev-docs/2026-10-21-ui-redesign-plan.md`。
 ```
 
-- [ ] **Step 8.6: 提交**
+- [x] **Step 8.6: 提交**
 
 ```bash
 cd /Users/xxxly/resume && git add dev-docs/handoff.md && git commit -m "docs: UI 重设计交付快照（2026-10-21）
