@@ -274,3 +274,31 @@ launchctl kickstart -k gui/$(id -u)/com.lhx.resume-server   # 重启常驻服务
 - `/version/create` 传 `newLink: ''`，link 精确去重那条路在该入口不触发（该入口 body 无 jdLink 字段），spec 定的行为非缺陷。
 - 夹具缺「同公司同岗位的两个版本」（重发检测最真实场景），该场景目前靠 FP-9 合成文本 + Task 5 端到端（同 JD 换公司名 → score=1 命中）覆盖。
 - **批次 2（岗位快速评估，AI）未开工**：当前 `config.json` 无可用模型，评估类功能只能 stub 验证。结构就绪后模型到位即插即用。设计见 design 文档 §5。
+
+## UI 重设计交付快照（2026-10-21）
+
+- 路线 A：零构建 + 借鉴设计系统。**新增 npm 依赖 0**（`package.json` 实测仍只有 `playwright-core`）。
+- 浅色克制 token（主行动近黑不用蓝、彩色只承载状态、`--shadow:none` 靠边框）+ 旧名别名（既有 CSS 零改动生效）。
+- 图标：一次性从 lucide-react v0.468.0（ISC）提取 44 个 path → `vendors/icons.mjs`（约 8 KB 纯数据）。
+  提取脚本 `scripts/extract-icons.mjs` 可重现（改 `scripts/icons.list.json` 重跑）。
+  2026-10-21 ocr 审查修正：不再执行源文本（JSON 规范化 + JSON.parse）、清单单一来源、
+  版本动态读、属性名/元素名白名单、ISC 版权声明补齐。
+- 徽章四件套（底色+语义色+小图标+文字），颜色不单独承载语义（WCAG color-not-only）。
+- 首页侧栏+内容区（860px 以下侧栏变顶部横条）；编辑器可拖拽分栏（`--ed-right-w` 260–460px，
+  双击复位、←/→ 16px、localStorage 持久化、窄屏抽屉）。
+- 冻结件 `template.html` / `themes/` / `render.mjs` 零改动（终检实测 `git diff --stat bbbad60 -- template.html themes/ render.mjs` 输出为空）。
+- **冻结件 emoji 残留处置（2026-10-21 终检追加）**：`template.html` 是冻结件、不可改，
+  残留的 `已保存 ✓` / toast `⚠️`·`✅` / 恢复条·冲突条 `⚠️` 改由**注入层运行时覆盖**——
+  `editor-shell.js` 用 MutationObserver 观察 `#saveState`、`.toast`、`.recovery-bar > span`，
+  把文本首尾的 emoji 字面量换成 Lucide `circle-check` / `circle-alert` 内联 SVG。
+  顶栏 `💾`·`📄`·`🕘` 沿用同一机制（早已覆盖）。源码里 emoji 字面量一律 `\u` 转义写，UI-7 断言仍为零 emoji。
+  带子元素的节点（如外壳撤销 toast 的按钮）一律跳过，绝不拆 DOM 结构。
+- 测试基线（终检实测）：`test-structure.sh` exit=0 / **122 ✅**；`test.sh` exit=0 / **339 ✅**
+  （内含浏览器级 `test-editor.mjs` 通过）；`test-render.sh` exit=0；`privacy-check.sh` exit=0。
+- emoji 终检（独立脚本，行注释优先 + 字符串/模板/正则/嵌套模板全感知）：
+  5 个前端源码真实 UI 残留 **0**；注释里的审查标记 15 处（`⚪-4/6`·`🟡-1/2/3/5`·`🔴-1`·`☰` 顶栏说明）**保留**；
+  `docs/` 用户数据 26 处**保留**；`template.html` 13 处全部是冻结件字面量（运行时已覆盖，用户看不到）。
+- 浏览器终检（6 页：首页/编辑器/素材库/投递/复盘/设置）：emoji 残留 0、控制台错误 0、横向溢出 0px；
+  编辑器侧栏/拖柄/下拉正常（拖柄实测 `--ed-right-w` → 380px）；设置页「思考程度」下拉可见
+  （(空)/low/medium/high/xhigh/max）。保存链路用 `route.fulfill` 拦截，**未落盘、未产生快照**。
+- 设计文档 `dev-docs/2026-10-21-ui-redesign-design.md`，实施计划 `dev-docs/2026-10-21-ui-redesign-plan.md`。

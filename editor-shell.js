@@ -282,6 +282,52 @@
   if (histBtn) { histBtn.classList.remove('secondary'); histBtn.innerHTML = __icon('clock') + ' 历史'; histBtn.title = '版本历史'; }
   if (homeBtn) { homeBtn.textContent = '‹ 工作台'; homeBtn.title = '返回工作台'; homeBtn.classList.add('ed-ghost'); }
 
+  // ===== 冻结件 template.html 的 emoji → 运行时覆盖成 SVG（模板是冻结件，不改）=====
+  // template.html 的 setState()/toast() 在它自己的 IIFE 私有作用域里，注入层拿不到这两个函数，
+  // 只能看 DOM：文本首/尾的 emoji 字面量 → 换成 Lucide 图标（circle-check / circle-alert）。
+  // 字面量一律 \u 转义写 —— 源码里不再出现 emoji 字面量（UI-7 断言要求前端源码零 emoji）。
+  var GLYPH_ICON = {
+    '\u2705': 'circle-check',        // 绿勾
+    '\u26a0\ufe0f': 'circle-alert',  // 警告（带变体选择符）
+    '\u26a0': 'circle-alert',        // 警告（无变体选择符）
+    '\u2713': 'circle-check'         // 勾
+  };
+  var GLYPH_SEL = '#saveState, .toast, .recovery-bar > span';
+  function iconifyGlyph(el) {
+    if (!el) return;
+    var txt = el.textContent || '';
+    if (!txt) return;
+    var name = null, rest = txt;
+    for (var k in GLYPH_ICON) {                       // 前缀字面量（toast / 提示条）
+      if (rest.indexOf(k) === 0) { name = GLYPH_ICON[k]; rest = rest.slice(k.length).replace(/^\s+/, ''); break; }
+    }
+    if (!name) {
+      for (var k2 in GLYPH_ICON) {                    // 后缀字面量（保存状态末尾的勾号）
+        if (rest.length > k2.length && rest.slice(-k2.length) === k2) { name = GLYPH_ICON[k2]; rest = rest.slice(0, -k2.length).replace(/\s+$/, ''); break; }
+      }
+    }
+    if (!name) return;                                // 没有字面量 → 不动（幂等，observer 不会自激）
+    if (el.children.length) return;                   // 带子元素的（如外壳的撤销 toast 按钮）一律不碰，绝不拆结构
+    el.innerHTML = __icon(name) + ' ' + escHtml(rest);
+  }
+  function sweepGlyphs(root) {
+    if (!root || root.nodeType !== 1) return;
+    if (root.id === 'saveState' || (root.matches && root.matches(GLYPH_SEL))) iconifyGlyph(root);
+    var list = root.querySelectorAll(GLYPH_SEL);
+    for (var i = 0; i < list.length; i++) iconifyGlyph(list[i]);
+  }
+  // 模板私有 toast()、恢复条/冲突条是运行时插进来的；保存状态是模板改 textContent —— 都靠观察。
+  var glyphObs = new MutationObserver(function (recs) {
+    for (var i = 0; i < recs.length; i++) {
+      var r = recs[i];
+      if (r.type !== 'childList') continue;
+      if (r.target && r.target.id === 'saveState') iconifyGlyph(r.target);
+      for (var j = 0; j < r.addedNodes.length; j++) sweepGlyphs(r.addedNodes[j]);
+    }
+  });
+  glyphObs.observe(document.body, { childList: true, subtree: true });
+  sweepGlyphs(document.body);
+
   // 预览按钮（幂等：class 标记；事件不落盘，serve 后由本脚本绑定）
   var previewBtn = toolbar && toolbar.querySelector('.ed-preview-btn');
   if (toolbar && !previewBtn) {
