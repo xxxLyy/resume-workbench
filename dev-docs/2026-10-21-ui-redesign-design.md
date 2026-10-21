@@ -106,7 +106,7 @@
 ```
 lucide-react v0.468.0 (ISC 许可)
   → 提取 44 个图标的 path 数据（[["path",{d:"..."}],...]）
-  → vendors/icons.js   （约 8 KB 纯数据，无任何 npm 依赖）
+  → vendors/icons.mjs   （约 8 KB 纯数据，无任何 npm 依赖）
   → 服务端 icon(name, size) helper 输出内联 SVG（stroke:currentColor 跟随主题）
 ```
 
@@ -240,7 +240,7 @@ lucide-react v0.468.0 (ISC 许可)
 
 | 文件 | 改动 | 量 |
 |---|---|---|
-| `vendors/icons.js` | **新建** — 44 图标 path 数据 | 生成物约 8 KB |
+| `vendors/icons.mjs` | **新建** — 44 图标 path 数据 | 生成物约 8 KB |
 | `scripts/extract-icons.mjs` | **新建** — 提取脚本（可重现） | ~40 行 |
 | `server.mjs` | `icon()` helper + A-VARS 覆盖 + 徽章 CSS + 首页侧栏重排 | ~200 行 |
 | `server.mjs`（编辑器页） | 拖柄 DOM + Pointer Events 脚本 | ~80 行 |
@@ -313,7 +313,7 @@ lucide-react v0.468.0 (ISC 许可)
 ## 10. 实施批次
 
 ```
-批次 A · 地基     token 覆盖 + vendors/icons.js + icon() helper + 徽章 CSS
+批次 A · 地基     token 覆盖 + vendors/icons.mjs + icon() helper + 徽章 CSS
 批次 B · 首页     侧栏 + 内容区重排 + 统计块
 批次 C · 编辑器   拖柄 + Pointer Events + 持久化
 批次 D · 收尾     剩余 emoji 批量替换 + 新增断言 + 四件套回归

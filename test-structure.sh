@@ -3915,9 +3915,23 @@ EOF
 
 # —— UI-1：图标数据完整且可渲染（批次A 地基）——
 node --input-type=module << 'EOF'
-import { ICONS } from './vendors/icons.js';
+import { readFileSync } from 'node:fs';
+import { ICONS } from './vendors/icons.mjs';
 const assert = (c, m) => { if (!c) { console.error('❌ UI-1 ' + m); process.exit(1); } };
-const NAMES = ['file-text','box','columns-3','chart-bar','settings','house','archive','trash-2','pencil','plus','save','link','map-pin','bot','lightbulb','target','sparkles','hand','message-square','stethoscope','palette','refresh-cw','menu','calendar','type','x','check','circle-alert','circle-check','circle-x','circle-help','clock','list-checks','database','package','folder-open','layout-dashboard','square-pen','text-quote','compass','pin','tag','undo-2','circle-slash'];
+
+// —— 图标清单的唯一来源：scripts/icons.list.json（提取脚本与本测试共用，杜绝双份维护）——
+const NAMES = JSON.parse(readFileSync('./scripts/icons.list.json', 'utf8'));
+assert(Array.isArray(NAMES) && NAMES.length > 0, 'icons.list.json 必须是非空数组');
+assert(new Set(NAMES).size === NAMES.length, 'icons.list.json 不得有重复名');
+// 键集合必须完全一致（不只数量）：缺哪些/多哪些都要能报出来
+const dataKeys = Object.keys(ICONS);
+const listed = new Set(NAMES);
+const missing = NAMES.filter((n) => !Object.prototype.hasOwnProperty.call(ICONS, n));
+const extra = dataKeys.filter((n) => !listed.has(n));
+assert(missing.length === 0, 'icons.list.json 列了但 icons.mjs 缺失: ' + missing.join(', '));
+assert(extra.length === 0, 'icons.mjs 多出未登记的图标: ' + extra.join(', '));
+assert(dataKeys.length === NAMES.length, '图标总数应为 ' + NAMES.length + '，实际 ' + dataKeys.length);
+
 // lucide 的 circle/rect/line/polyline/ellipse 元素没有 d 属性，只有 path 才有 —— 按标签断言各自几何属性
 const REQUIRED = {
   path: ['d'],
@@ -3928,8 +3942,13 @@ const REQUIRED = {
   polygon: ['points'],
   ellipse: ['cx', 'cy', 'rx', 'ry'],
 };
-assert(Object.keys(ICONS).length === 44, '图标总数 44，实际 ' + Object.keys(ICONS).length);
-for (const n of NAMES) {
+// 属性名白名单：数据里出现的属性名必须都是 SVG 几何/呈现属性（外部来源目录可被替换）
+const ATTR_WHITELIST = new Set([
+  'd', 'cx', 'cy', 'r', 'rx', 'ry', 'x', 'y', 'width', 'height',
+  'x1', 'x2', 'y1', 'y2', 'points',
+  'fill', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'opacity',
+]);
+for (const n of dataKeys) {
   assert(Array.isArray(ICONS[n]) && ICONS[n].length > 0, n + ' 存在且非空');
   for (const [tag, attrs] of ICONS[n]) {
     const req = REQUIRED[tag];
@@ -3938,15 +3957,45 @@ for (const n of NAMES) {
       assert(typeof attrs[a] === 'string' && attrs[a].length > 0, n + ' 的 ' + tag + ' 缺少 ' + a);
     }
     assert(!('key' in attrs), n + ' 不应残留 key 属性');
+    for (const k of Object.keys(attrs)) {
+      assert(ATTR_WHITELIST.has(k), n + ' 含白名单外的属性名: ' + k);
+    }
   }
 }
-console.log('✅ UI-1 图标数据完整（44 个）');
+
+// —— 提取脚本的可重现 + 安全断言（回归哨兵：改脚本坏规矩必须红）——
+const ex = readFileSync('./scripts/extract-icons.mjs', 'utf8');
+assert(!/\bnew\s+Function\s*\(/.test(ex), '提取脚本不得用 Function 构造器执行磁盘文本');
+assert(!/(^|[^.\w])eval\s*\(/.test(ex), '提取脚本不得用 eval 执行磁盘文本');
+assert(!/const NAMES = \[/.test(ex), '提取脚本的图标清单必须来自 scripts/icons.list.json（单一来源）');
+assert(!/v0\.\d+\.\d+/.test(ex), '版本号不得写死（要从来源包 package.json 动态读）');
+assert(ex.lastIndexOf('process.exit(1)') < ex.indexOf('writeFileSync('), '写文件必须在所有失败检查之后（失败路径不得覆盖已有产物）');
+const me = readFileSync('./test-structure.sh', 'utf8');
+assert(!/const NAMES = \[/.test(me), '本测试里不得再硬编码图标清单（单一来源）');
+
+// —— icon() 的运行时行为：白名单外的属性名/元素名必须被丢弃（数据级断言不够，icon() 才是注入面）——
+const srv = readFileSync('./server.mjs', 'utf8');
+const iStart = srv.indexOf('const ICON_TAG_WHITELIST');
+const iEnd = srv.indexOf('function page(');
+assert(iStart > 0 && iEnd > iStart, '应能定位 icon() 源码区间');
+assert(srv.slice(iStart, iEnd).includes('function icon('), 'icon() 源码区间内必须有 icon() 函数');
+// 注意：这里传的是**投毒的**图标表 —— icon() 必须对白名单外的属性名/元素名一律丢弃
+const icon = new Function('ICONS', srv.slice(iStart, iEnd) + '\nreturn icon;')({
+  evil: [['path', { d: 'M0 0', onload: 'alert(1)', 'xlink:href': 'javascript:alert(1)' }]],
+  evil2: [['script', { d: 'M0 0' }]],
+});
+const p1 = icon('evil');
+assert(p1.includes('d="M0 0"'), 'icon() 必须保留白名单内的属性');
+assert(!/onload|xlink:href/i.test(p1), 'icon() 必须丢弃白名单外的属性名，实际: ' + p1);
+const p2 = icon('evil2');
+assert(!/<script/i.test(p2), 'icon() 必须丢弃白名单外的元素名，实际: ' + p2);
+console.log('✅ UI-1 图标数据完整（' + NAMES.length + ' 个）');
 EOF
 
 # —— UI-2：浅色克制 token + icon() helper（批次A）——
 node --input-type=module << 'EOF'
 import { readFileSync } from 'node:fs';
-import { ICONS } from './vendors/icons.js';
+import { ICONS } from './vendors/icons.mjs';
 const assert = (c, m) => { if (!c) { console.error('❌ UI-2 ' + m); process.exit(1); } };
 const srv = readFileSync('./server.mjs', 'utf8');
 // 新 token 必须存在（同名覆盖旧 A-VARS）
@@ -3964,10 +4013,13 @@ assert(/function icon\(/.test(srv), '必须有 icon() helper');
 assert(/ICONS\[/.test(srv), 'icon() 必须走 ICONS 白名单查表（不拼字符串）');
 assert(/currentColor/.test(srv), 'icon() 输出必须用 currentColor（跟随主题）');
 assert(/viewBox/.test(srv), 'icon() 输出必须带 viewBox');
+// 属性名/元素名白名单必须存在（外部图标数据不得直接进 HTML）
+assert(/ICON_ATTR_WHITELIST/.test(srv), '必须有属性名白名单 ICON_ATTR_WHITELIST');
+assert(/ICON_TAG_WHITELIST/.test(srv), '必须有元素名白名单 ICON_TAG_WHITELIST');
 
 // —— icon() 运行时行为（源码文本扫描不够：白名单外必须空串，非法 size/class 不得逃逸属性）——
 // 把 server.mjs 里**实际发布的** icon() 原样抠出来跑（server.mjs 顶层会 listen，不能直接 import）。
-const iStart = srv.indexOf('function icon(');
+const iStart = srv.indexOf('const ICON_TAG_WHITELIST');
 const iEnd = srv.indexOf('function page(');
 assert(iStart > 0 && iEnd > iStart, '应能定位 icon() 源码区间');
 const icon = new Function('ICONS', srv.slice(iStart, iEnd) + '\nreturn icon;')(ICONS);

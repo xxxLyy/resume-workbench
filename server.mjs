@@ -29,7 +29,7 @@ import { sumExpandedBytes, MAX_EXPANDED_BYTES } from './restore-guard.mjs';   //
 const JD_MAX_CHARS = 64 * 1024;
 import { applyOps, reviewConsistency, refFresh, buildEvidencePrompt, parseEvidence, buildInterviewPrompt, parseInterview, guardOps, exportChecks, layoutDiagnose } from './evidence.mjs';
 import { assembleTemplate, themeRegistration } from './template.mjs';
-import { ICONS } from './vendors/icons.js';   // Lucide 图标数据（纯数据文件，零 npm 依赖）
+import { ICONS } from './vendors/icons.mjs';  // Lucide 图标数据（纯数据文件，零 npm 依赖）
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const root = process.env.RESUME_ROOT || APP_ROOT;   // 数据根（docs/snapshots/pdfs/JSON/backups 全在此）
@@ -819,9 +819,22 @@ function readBodyToFile(req, file, maxSize) {
   });
 }
 
+/* icon() 的渲染白名单。
+   ⚠️ 图标数据来自**外部来源目录**（lucide 提取产物可被替换）——属性名/标签名若原样
+   拼进 HTML，onload / onfocus 之类就会进到每一页的 SVG 里。这里只放行 SVG 的
+   几何与呈现属性、只放行 lucide 用到的元素名；白名单外的一律**丢弃**，不原样输出。
+   本段被 test-structure.sh 的 UI-1/UI-2 抽取做运行时断言，改这里必须同步改断言。 */
+const ICON_TAG_WHITELIST = new Set(['path', 'circle', 'rect', 'line', 'polyline', 'polygon', 'ellipse']);
+const ICON_ATTR_WHITELIST = new Set([
+  'd', 'cx', 'cy', 'r', 'rx', 'ry', 'x', 'y', 'width', 'height',
+  'x1', 'x2', 'y1', 'y2', 'points',
+  'fill', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'opacity',
+]);
+
 /**
  * 内联 SVG 图标（Lucide path 数据，ISC）。
  * 名字走 ICONS 白名单查表 —— 不存在就返回空串，**绝不把调用方传入的字符串拼进 SVG**（XSS）。
+ * 元素名与属性名再走 ICON_*_WHITELIST —— 外部数据里的 onload 之类一律丢弃。
  * stroke 用 currentColor，跟随主题色。
  * @param name  ICONS 里的键名（白名单外一律返回空串）
  * @param size  像素边长（非数字回落 16）
@@ -832,7 +845,15 @@ function icon(name, size = 16, cls = '') {
   const parts = ICONS[name];
   const s = Number(size) > 0 ? Number(size) : 16;
   const c = String(cls).replace(/[^a-zA-Z0-9_ -]/g, '');
-  const body = parts.map(([tag, a]) => `<${tag} ${Object.entries(a).map(([k, v]) => `${k}="${String(v).replace(/"/g, '&quot;')}"`).join(' ')}/>`).join('');
+  const body = parts.map(([tag, a]) => {
+    if (!ICON_TAG_WHITELIST.has(tag)) return '';                        // 白名单外的元素名 → 丢弃
+    if (!a || typeof a !== 'object' || Array.isArray(a)) return '';    // 形状非法 → 丢弃
+    const attrs = Object.entries(a)
+      .filter(([k]) => ICON_ATTR_WHITELIST.has(k))                      // 白名单外的属性名 → 丢弃
+      .map(([k, v]) => `${k}="${String(v).replace(/"/g, '&quot;')}"`)
+      .join(' ');
+    return `<${tag} ${attrs}/>`;
+  }).join('');
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"${c ? ` class="${c}"` : ''} aria-hidden="true" focusable="false">${body}</svg>`;
 }
 

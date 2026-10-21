@@ -4,7 +4,7 @@
 
 **Goal:** 把简历工作台从「emoji 堆砌 + 布局写死」改造成 token 化、Lucide 图标、可拖拽分栏的浅色克制界面，新增 npm 依赖 0 个。
 
-**Architecture:** 零构建——全部改动落在服务端模板字符串（`server.mjs`）与既有注入层 JS（`editor-shell.js` 等）。图标走「一次性从 lucide-react 提取 path 数据 → `vendors/icons.js` 纯数据」路线，服务端 `icon()` helper 输出内联 SVG（`stroke:currentColor`）。分栏用原生 Pointer Events，不引 React 生态。
+**Architecture:** 零构建——全部改动落在服务端模板字符串（`server.mjs`）与既有注入层 JS（`editor-shell.js` 等）。图标走「一次性从 lucide-react 提取 path 数据 → `vendors/icons.mjs` 纯数据」路线，服务端 `icon()` helper 输出内联 SVG（`stroke:currentColor`）。分栏用原生 Pointer Events，不引 React 生态。
 
 **Tech Stack:** 纯 Node.js（`node:crypto` 已在用）、原生 HTML/CSS/JS、lucide-react v0.468.0 **仅作为离线提取源**（ISC 许可，不进依赖）。
 
@@ -28,7 +28,9 @@
 
 | 文件 | 责任 | 本轮改动 |
 |---|---|---|
-| `vendors/icons.js` | **新建** — 44 个 Lucide 图标的 path 数据（纯数据，无代码） | 新建 |
+| `vendors/icons.mjs` | **新建** — 44 个 Lucide 图标的 path 数据（纯数据，无代码） | 新建（ocr 审查后由 .js 改名，ESM 导出） |
+| `scripts/icons.list.json` | **新建** — 44 个图标名的唯一来源 | 新建（脚本与 UI-1 断言共用） |
+| `vendors/icons.LICENSE` | **新建** — 上游 lucide 的 ISC 许可全文 | 新建（再分发须保留版权声明） |
 | `scripts/extract-icons.mjs` | **新建** — 从 lucide-react 提取 path 数据（可重现） | 新建 |
 | `server.mjs` | 服务端模板 + 全站 CSS + `icon()` helper | token 覆盖、徽章、侧栏、拖柄、首页重排 |
 | `editor-shell.js` | 编辑器注入层 | 拖拽逻辑、emoji 替换 |
@@ -45,68 +47,24 @@
 
 **Files:**
 - Create: `scripts/extract-icons.mjs`
-- Create: `vendors/icons.js`
+- Create: `vendors/icons.mjs`（ESM 导出）
+- Create: `scripts/icons.list.json`（图标清单唯一来源）
+- Create: `vendors/icons.LICENSE`（上游 ISC 许可全文）
 - Modify: `test-structure.sh`（末尾追加 UI-1 组）
 
 - [ ] **Step 1.1: 写提取脚本**
 
 创建 `scripts/extract-icons.mjs`：
 
-```javascript
-#!/usr/bin/env node
-// 从本机 lucide-react 提取图标 path 数据 → vendors/icons.js（零运行时依赖）
-// 用法: node scripts/extract-icons.mjs [lucide-icons-dir]
-// 缺省从常见位置探测；探测不到就报错退出（不静默产出空文件）。
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
-
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const NAMES = [
-  'file-text','box','columns-3','chart-bar','settings','house','archive','trash-2',
-  'pencil','plus','save','link','map-pin','bot','lightbulb','target','sparkles',
-  'hand','message-square','stethoscope','palette','refresh-cw','menu','calendar',
-  'type','x','check','circle-alert','circle-check','circle-x','circle-help','clock',
-  'list-checks','database','package','folder-open','layout-dashboard','square-pen',
-  'text-quote','compass','pin','tag','undo-2','circle-slash',
-];
-
-const candidates = [
-  process.argv[2],
-  join(process.env.HOME || '', 'projects/get_jobs/front/node_modules/lucide-react/dist/esm/icons'),
-  join(process.env.HOME || '', 'node_modules/lucide-react/dist/esm/icons'),
-].filter(Boolean);
-const SRC = candidates.find((d) => existsSync(join(d, 'file-text.js')));
-if (!SRC) {
-  console.error('找不到 lucide-react 图标目录。已尝试:\n  ' + candidates.join('\n  '));
-  console.error('用法: node scripts/extract-icons.mjs <lucide-icons-dir>');
-  process.exit(1);
-}
-
-const out = {};
-const missing = [];
-for (const n of NAMES) {
-  const f = join(SRC, n + '.js');
-  if (!existsSync(f)) { missing.push(n); continue; }
-  const s = readFileSync(f, 'utf8');
-  const m = s.match(/createLucideIcon\("[^"]+",\s*(\[[\s\S]*?\])\s*\)/);
-  if (!m) { missing.push(n + '(解析失败)'); continue; }
-  // 源文件是 JS 字面量（key 未加引号），不能 JSON.parse —— 用 Function 构造器求值
-  const arr = new Function('return ' + m[1])();
-  out[n] = arr.map(([tag, attrs]) => { const a = { ...attrs }; delete a.key; return [tag, a]; });
-}
-if (missing.length) {
-  console.error('以下图标未找到（先修 NAMES 列表再重跑）:\n  ' + missing.join('\n  '));
-  process.exit(1);
-}
-mkdirSync(join(ROOT, 'vendors'), { recursive: true });
-const js = `// 图标数据 —— 一次性从 lucide-react v0.468.0 提取（ISC 许可，路径数据可自由使用/修改）。
-// 零运行时依赖：不含任何 npm 包，直接内联 SVG path。生成脚本: scripts/extract-icons.mjs
-// 共 ${Object.keys(out).length} 个图标。改图标集 → 改脚本 NAMES → 重跑。
-export const ICONS = ${JSON.stringify(out)};
-`;
-writeFileSync(join(ROOT, 'vendors', 'icons.js'), js);
-console.log('提取图标数:', Object.keys(out).length, '| 输出:', join(ROOT, 'vendors', 'icons.js'));
+```text
+⚠️ 2026-10-21 ocr 审查后已修正 —— 现行实现见 scripts/extract-icons.mjs（唯一来源，勿照抄旧版）。
+相对本计划初稿的修正：
+  1. 绝不执行源文件文本：初稿用 Function 构造器求值 JS 字面量 —— 投毒目录等于在你机器上跑任意代码。
+     现行做法是「给未加引号的 key 补引号」的纯文本规范化 + JSON.parse，解析失败即 exit 1、不覆盖已有产物。
+  2. 图标清单来自 scripts/icons.list.json（唯一来源，脚本与 UI-1 断言共用，杜绝双份维护）。
+  3. 版本号从来源包 package.json 动态读，来源路径也写进产物头部（换目录重跑不再谎报版本）。
+  4. 产物是 ESM（vendors/icons.mjs）、null 原型对象、一个图标一行（diff 看得见改了哪个）。
+  5. 探测路径：显式参数 → 本仓库 node_modules → 用户级 node_modules（HOME 未设置则跳过）。
 ```
 
 - [ ] **Step 1.2: 运行提取脚本**
@@ -115,7 +73,7 @@ console.log('提取图标数:', Object.keys(out).length, '| 输出:', join(ROOT,
 cd /Users/xxxly/resume && node scripts/extract-icons.mjs
 ```
 
-Expected: `提取图标数: 44 | 输出: /Users/xxxly/resume/vendors/icons.js`
+Expected: `提取图标数: 44 | 来源版本: v0.468.0 | 输出: /Users/xxxly/resume/vendors/icons.mjs`
 
 若报「找不到 lucide-react 图标目录」，用 `find /Users/xxxly -maxdepth 6 -type d -name icons -path "*lucide-react*" 2>/dev/null | head -3` 定位真实路径后传参：`node scripts/extract-icons.mjs <该路径>`。
 
@@ -123,34 +81,15 @@ Expected: `提取图标数: 44 | 输出: /Users/xxxly/resume/vendors/icons.js`
 
 用 python3 追加到 `test-structure.sh` 末尾（**不要用 heredoc**）：
 
-```bash
-python3 - << 'PYEOF'
-import io
-p = 'test-structure.sh'
-s = io.open(p, encoding='utf-8').read()
-add = '''
-# —— UI-1：图标数据完整且可渲染（批次A 地基）——
-node --input-type=module << 'EOF'
-import { ICONS } from './vendors/icons.js';
-const assert = (c, m) => { if (!c) { console.error('❌ UI-1 ' + m); process.exit(1); } };
-const NAMES = ['file-text','box','columns-3','chart-bar','settings','house','archive','trash-2','pencil','plus','save','link','map-pin','bot','lightbulb','target','sparkles','hand','message-square','stethoscope','palette','refresh-cw','menu','calendar','type','x','check','circle-alert','circle-check','circle-x','circle-help','clock','list-checks','database','package','folder-open','layout-dashboard','square-pen','text-quote','compass','pin','tag','undo-2','circle-slash'];
-assert(Object.keys(ICONS).length === 44, '图标总数 44，实际 ' + Object.keys(ICONS).length);
-for (const n of NAMES) {
-  assert(Array.isArray(ICONS[n]) && ICONS[n].length > 0, n + ' 存在且非空');
-  for (const [tag, attrs] of ICONS[n]) {
-    assert(tag === 'path' || tag === 'circle' || tag === 'rect' || tag === 'line' || tag === 'polyline' || tag === 'polygon' || tag === 'ellipse', n + ' 的标签类型合法: ' + tag);
-    assert(typeof attrs.d === 'string' && attrs.d.length > 0, n + ' 的 d 属性非空');
-    assert(!('key' in attrs), n + ' 不应残留 key 属性');
-  }
-}
-console.log('✅ UI-1 图标数据完整（44 个）');
-EOF
-'''
-assert 'UI-1：图标数据完整' not in s
-io.open(p, 'w', encoding='utf-8').write(s.rstrip('\n') + '\n' + add)
-print('UI-1 断言已追加')
-PYEOF
-bash -n test-structure.sh
+```text
+UI-1 断言组现行内容见 test-structure.sh 末尾的「UI-1：图标数据完整且可渲染」块。
+2026-10-21 ocr 审查后新增/改写（相对本计划初稿）：
+  · import 路径是 './vendors/icons.mjs'（ESM，不再是 CJS 探测导出）。
+  · 图标名不再硬编码：从 scripts/icons.list.json 读，并断言**键集合完全一致**（缺/多都要报出来）。
+  · 新增属性名白名单断言（数据级）+ icon() 运行时断言（白名单外的属性名/元素名必须被丢弃）。
+  · 新增提取脚本安全哨兵：不得出现 Function 构造器 / eval、清单不得硬编码、版本不得写死、
+    写文件必须在失败检查之后（失败路径不得覆盖已有产物）。
+追加/替换文件用 python3 脚本（**不要用 heredoc 写文件**），写完立刻 bash -n test-structure.sh。
 ```
 
 - [ ] **Step 1.4: 跑测试确认绿**
@@ -159,19 +98,20 @@ bash -n test-structure.sh
 cd /Users/xxxly/resume && bash test-structure.sh > /tmp/s.log 2>&1; echo "exit=$?"; grep -c "✅" /tmp/s.log; grep "UI-1" /tmp/s.log
 ```
 
-Expected: `exit=0`，✅ 数 = **96**（115 + 1），输出含 `✅ UI-1 图标数据完整（44 个）`
+Expected: `exit=0`，✅ 数 = **116**（115 基线 + 1），输出含 `✅ UI-1 图标数据完整（44 个）`
+> 注：真实基线 115（实测），不是 96 —— 原计划此处笔误。
 
 - [ ] **Step 1.5: 提交**
 
 ```bash
-cd /Users/xxxly/resume && git add scripts/extract-icons.mjs vendors/icons.js test-structure.sh && git commit -m "feat(ui): 批次A 地基 — Lucide 图标数据 + 可重现提取脚本
+cd /Users/xxxly/resume && git add scripts/extract-icons.mjs scripts/icons.list.json vendors/icons.mjs vendors/icons.LICENSE test-structure.sh && git commit -m "feat(ui): 批次A 地基 — Lucide 图标数据 + 可重现提取脚本
 
-从 lucide-react v0.468.0（ISC）一次性提取 44 个图标 path 数据 → vendors/icons.js
+从 lucide-react v0.468.0（ISC）一次性提取 44 个图标 path 数据 → vendors/icons.mjs
 （约 8 KB 纯数据）。零运行时依赖、零 npm 依赖，路径可读可改。
-提取脚本保留在 scripts/extract-icons.mjs，换图标集改 NAMES 重跑即可。
+提取脚本保留在 scripts/extract-icons.mjs，换图标集改 scripts/icons.list.json 重跑即可。
 
 新增 UI-1 断言组：图标总数、各图标非空、标签类型合法、d 属性非空、无 key 残留。
-test-structure 115 → 116 组。" && git log --oneline -1
+test-structure 115 → 116 组 ✅。" && git log --oneline -1
 ```
 
 ---
@@ -232,6 +172,10 @@ Expected: `exit=1`，输出 `❌ UI-2 token --background 应存在且值为 #fff
 
 **① 替换 825 行的 A-VARS 块**（保留旧变量名作为别名，避免既有 CSS 一次性全改）：
 
+> ⚠️ **`:root` 必须保持单行**（2026-10-18 实施实测）：`test-structure.sh` 的 S2-B1 断言
+> `ALLOW_DECL = /\/\*A-VARS\*\/:root{/` **只放行含该标记的那一行**出现 hex。
+> 计划原文的多行写法会让 S2-B1 必红（"组件层残留字面色"）。保持单行，不要改断言。
+
 ```javascript
 /*A-VARS*/:root{
   /* 浅色克制设计系统（2026-10-21 UI 重设计，设计文档 dev-docs/2026-10-21-ui-redesign-design.md）
@@ -258,8 +202,14 @@ Expected: `exit=1`，输出 `❌ UI-2 token --background 应存在且值为 #fff
 
 **② 新增 `icon()` helper**（放在 `server.mjs` 顶部 import 之后，`page()` 之前）：
 
+> ⚠️ 计划原文的 `icon()` 有三个洞，实施时必须补上（2026-10-18 实测）：
+> ① `ICONS[name]` 直接查表会命中**原型链**（`icon('constructor')` 返回函数）→ 必须用
+>    `Object.prototype.hasOwnProperty.call(ICONS, name)` 守卫
+> ② `size` 直接插值可注入 → 必须是数值，非正数回落 16
+> ③ `cls` 直接插值可逃逸属性（`"><img src=x onerror=...>`）→ 必须过滤为 `[A-Za-z0-9_ -]`
+
 ```javascript
-import { ICONS } from './vendors/icons.js';
+import { ICONS } from './vendors/icons.mjs';
 
 /**
  * 内联 SVG 图标（Lucide path 数据，ISC）。
@@ -280,7 +230,8 @@ function icon(name, size = 16, cls = '') {
 cd /Users/xxxly/resume && bash test-structure.sh > /tmp/s.log 2>&1; echo "exit=$?"; grep -c "✅" /tmp/s.log; grep "UI-2" /tmp/s.log
 ```
 
-Expected: `exit=0`，✅ 数 = **97**
+Expected: `exit=0`，✅ 数 = **117**（116 基线 + 1）
+> 真实基线 116（Task 1 实测），不是 97 —— 原计划此处笔误。
 
 - [ ] **Step 2.5: 提交**
 
@@ -297,7 +248,7 @@ icon(name,size) helper：ICONS 白名单查表（不存在→空串，绝不拼�
 输出内联 SVG，stroke:currentColor 跟随主题。
 
 UI-2 断言：13 个新 token 存在且值正确 / shadow:none / icon() 存在 / 走 ICONS 查表 /
-currentColor / viewBox。test-structure 116 → 117 组。" && git log --oneline -1
+currentColor / viewBox。test-structure 116 → 117 组 ✅。" && git log --oneline -1
 ```
 
 ---
@@ -890,10 +841,11 @@ cd /Users/xxxly/resume && launchctl kickstart -k "gui/$(id -u)/com.lhx.resume-se
 - [ ] **Step 6.6: 跑浏览器级测试套件**
 
 ```bash
-cd /Users/xxxly/resume && node test-editor.mjs > /tmp/te.log 2>&1; echo "exit=$?"; tail -20 /tmp/te.log
+cd /Users/xxxly/resume && bash test.sh > /tmp/t.log 2>&1; echo "exit=$?"; grep -c "✅" /tmp/t.log
 ```
 
-Expected: `exit=0`。**若因本次改动变红，先定位是否与拖拽相关；是则修，是既有 flaky 则记录。**
+Expected: `exit=0`、✅ 数 = **339**。**浏览器级编辑器测试（`test-editor.mjs`）在 `test.sh` 内部被调用**
+（`test.sh:1986` 带参），随 main 套件一起跑，**不需要单独执行**（少传参数会 exit=2）。
 
 - [ ] **Step 6.7: 提交**
 
@@ -1022,10 +974,12 @@ bash test-structure.sh > /tmp/f-s.log 2>&1; echo "structure=$?  ✅=$(grep -c '�
 bash test-render.sh    > /tmp/f-r.log 2>&1; echo "render=$?"
 bash privacy-check.sh  > /tmp/f-p.log 2>&1; echo "privacy=$?"
 bash test.sh           > /tmp/f-t.log 2>&1; echo "main=$?  ✅=$(grep -c '✅' /tmp/f-t.log)"
-node test-editor.mjs   > /tmp/f-te.log 2>&1; echo "editor=$?"
 ```
 
 Expected: 全部 exit=0；structure ✅=**102**；main ✅=**339**
+> 注：`test-editor.mjs`（浏览器级编辑器测试）**在 test.sh 内部被调用**（`test.sh:1986` 带参），
+> 随 main 套件一起跑，**不需要单独执行**。它需要 `<baseURL> <docId> <dataRoot>` 三个参数，
+> 少传会 exit=2 打印用法。
 
 - [ ] **Step 8.4: 浏览器最终实测**
 
@@ -1044,8 +998,10 @@ cd /Users/xxxly/resume && launchctl kickstart -k "gui/$(id -u)/com.lhx.resume-se
 
 - 路线 A：零构建 + 借鉴设计系统。**新增 npm 依赖 0**（`package.json` 仍只有 playwright-core）。
 - 浅色克制 token（主行动近黑不用蓝、彩色只承载状态、`--shadow:none` 靠边框）+ 旧名别名（既有 CSS 零改动生效）。
-- 图标：一次性从 lucide-react v0.468.0（ISC）提取 44 个 path → `vendors/icons.js`（约 8 KB 纯数据）。
-  提取脚本 `scripts/extract-icons.mjs` 可重现（改 NAMES 重跑）。
+- 图标：一次性从 lucide-react v0.468.0（ISC）提取 44 个 path → `vendors/icons.mjs`（约 8 KB 纯数据）。
+  提取脚本 `scripts/extract-icons.mjs` 可重现（改 `scripts/icons.list.json` 重跑）。
+  2026-10-21 ocr 审查修正：不再执行源文本（JSON 规范化 + JSON.parse）、清单单一来源、
+  版本动态读、属性名/元素名白名单、ISC 版权声明补齐。
 - 徽章四件套（底色+语义色+小图标+文字），颜色不单独承载语义（WCAG color-not-only）。
 - 首页侧栏+内容区（860px 以下侧栏变顶部横条）；编辑器可拖拽分栏（`--ed-right-w` 260–460px，
   双击复位、←/→ 16px、localStorage 持久化、窄屏抽屉）。
