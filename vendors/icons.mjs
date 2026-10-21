@@ -1,6 +1,6 @@
 // 图标数据 —— 一次性从 lucide-react v0.468.0 提取（ISC 许可，路径数据可自由使用/修改）。
-// 上游 lucide：Copyright (c) Lucide Contributors 2020；
-// 其中源自 Feather 的部分：Copyright (c) Cole Bemis 2013-2023。
+// 上游 lucide（依上游 LICENSE 原文）：Cole Bemis 2013-2022（源自 Feather，MIT）
+// 与 Lucide Contributors 2022。
 // 许可全文见 vendors/icons.LICENSE（ISC）。
 // 零运行时依赖：不含任何 npm 包，直接内联 SVG path。生成脚本: scripts/extract-icons.mjs
 // 来源: /Users/xxxly/projects/get_jobs/front/node_modules/lucide-react/dist/esm/icons

@@ -45,6 +45,9 @@ const candidates = [
   process.argv[2],
   join(ROOT, 'node_modules', 'lucide-react', 'dist', 'esm', 'icons'),
   HOME ? join(HOME, 'node_modules', 'lucide-react', 'dist', 'esm', 'icons') : null,
+  // 本机现状：lucide-react 只装在别的项目里（不作为本仓库依赖），
+  // 放在末尾当兜底 —— 换机器/换项目后这候选自然失效，靠前两个 + 传参定位。
+  HOME ? join(HOME, 'projects', 'get_jobs', 'front', 'node_modules', 'lucide-react', 'dist', 'esm', 'icons') : null,
 ].filter(Boolean);
 const SRC = candidates.find((d) => existsSync(join(d, 'file-text.js')));
 if (!SRC) {
@@ -158,8 +161,8 @@ if (missing.length) {
 // —— 生成产物：ESM + null 原型对象 + 一个图标一行（便于 diff）——
 const body = NAMES.map((n) => '  ' + JSON.stringify(n) + ': ' + JSON.stringify(out[n]) + ',').join('\n');
 const js = `// 图标数据 —— 一次性从 lucide-react v${version} 提取（ISC 许可，路径数据可自由使用/修改）。
-// 上游 lucide：Copyright (c) Lucide Contributors 2020；
-// 其中源自 Feather 的部分：Copyright (c) Cole Bemis 2013-2023。
+// 上游 lucide（依上游 LICENSE 原文）：Cole Bemis 2013-2022（源自 Feather，MIT）
+// 与 Lucide Contributors 2022。
 // 许可全文见 vendors/icons.LICENSE（ISC）。
 // 零运行时依赖：不含任何 npm 包，直接内联 SVG path。生成脚本: scripts/extract-icons.mjs
 // 来源: ${SRC}
