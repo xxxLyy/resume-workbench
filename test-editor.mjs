@@ -1038,10 +1038,11 @@ async function runS1T9Tests() {
       else {
         const page = await (await fetch(srvA.base + '/snapshots?id=t9')).text();
         const liOf = (ts) => page.split('<li class="card"').find((s) => s.includes('<b>' + ts + '</b>')) || '';
-        const badgeTxt = '📦 导出引用（不会被清理）';
+        // 徽章文案（批次D 后：📦 emoji 已换成内联 SVG 图标，文字部分保持不变）
+        const badgeTxt = '导出引用（不会被清理）';
         if (!liOf(committed.snapTs)) bad('T9③ /snapshots 应列出 committed 快照', committed.snapTs);
         else if (!liOf(committed.snapTs).includes(badgeTxt)) bad('T9③ exports[].snapTs 引用的快照应显示导出引用保护徽章（Task 8 Minor-1）');
-        else if (page.includes('📦') && !page.includes(badgeTxt)) bad('T9③ 徽章文案不完整');
+        else if (page.includes('📦')) bad('T9③ 导出引用徽章不应再用 emoji（应改用内联 SVG 图标）');
         else ok('T9③ /snapshots 保护徽章含 exports[].snapTs 引用（导出引用快照标注「不会被清理」）');
       }
     }

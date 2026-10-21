@@ -4068,9 +4068,14 @@ assert(/--success-bg/.test(srv) && /--warning-bg/.test(srv) && /--danger-bg/.tes
 // 【必须剥掉注释再查】——代码注释里大量用这些符号做安全审查标记
 //   （如「2026-10-19 审查 ⚪-6」「⚠️ 计数器必须在模块级」，实测 server.mjs 有 13 处）。
 //   不剥注释的断言会让执行者去删安全审查记录，把审计痕迹毁掉。
+// 【顺序：先剥行注释，再剥块注释】—— 反过来会有假阳性吞代码：
+// 块注释正则 /\/\*[\s\S]*?\*\// 会被「行注释里的 /* 」误触发（实测 server.mjs 第 282 行
+// 「/ai/* 与渲染的全局并发闸门」里的 /* 吞掉了 282–826 行、第 1690 行的 /ai/* 又吞掉
+// 1690–2387 行）—— 合计 70KB 真实代码根本没进断言，emoji 藏里面也测不出来。
+// 先剥行注释再剥块注释后，两处误吞消失，真实块注释仍是小段（实测 ≤20 行）。
 const stripComments = (src) => src
-  .replace(/\/\*[\s\S]*?\*\//g, '')      // 块注释
-  .split('\n').map((l) => l.replace(/^\s*\/\/.*$/, '').replace(/\s\/\/.*$/, '')).join('\n');
+  .split('\n').map((l) => l.replace(/^\s*\/\/.*$/, '').replace(/\s\/\/.*$/, '')).join('\n')
+  .replace(/\/\*[\s\S]*?\*\//g, '');
 const code = stripComments(srv);
 const emojiHits = ['⚠️','❌','✅','⚪','🟡','🔴'].filter(e => code.includes(e));
 assert(emojiHits.length === 0, 'server.mjs 代码/模板中仍含状态 emoji: ' + emojiHits.join(' '));
@@ -4174,4 +4179,30 @@ assert(/localStorage/.test(sh), '宽度须持久化到 localStorage');
 // 键盘可达（WCAG dragging-alternative）
 assert(/keydown/.test(sh) && /ArrowLeft|ArrowRight/.test(sh), '拖柄须支持方向键调节');
 console.log('✅ UI-6 可拖拽分栏（结构层）');
+EOF
+
+# —— UI-7：前端源码无 emoji 残留（批次D 收尾）——
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const assert = (c, m) => { if (!c) { console.error('❌ UI-7 ' + m); process.exit(1); } };
+// UI 层的 emoji 必须清零（数据层的正文文本不在此列）
+// 清单覆盖设计文档 §4.2 的全部 UI 标记：图标类 + 状态类 + PDF chip 的 📑，
+// 并额外收口「裸形态」变体（⚠ / ✓ 不带变体选择符），避免 emoji 只换皮不换形。
+const UI_EMOJI = ['📄','🧱','📋','📊','⚙️','🤖','💡','🎯','✨','👋','💬','🩺','📍','🎨','✏️','🗑','➕','💾','📌','🏷','🔗','☰','✕','📅','🔁','🏠','📜','📦','🗄','🧭','✎','⛔','🟡','🔴','⚪','✅','❌','⚠️','📑','⚠','✓'];
+// 剥掉注释再查：注释里的 emoji 是安全审查记录（⚪-6 / 🟡-1 / 🔴-1），
+// 属于审计痕迹，**不得清理**。只要求 UI 层（代码与模板字符串）零 emoji。
+// 【顺序：先剥行注释，再剥块注释】—— 反过来会有假阳性吞代码：
+// 块注释正则 /\/\*[\s\S]*?\*\// 会被「行注释里的 /* 」误触发（实测 server.mjs 第 282 行
+// 「/ai/* 与渲染的全局并发闸门」里的 /* 吞掉了 282–826 行、第 1690 行的 /ai/* 又吞掉
+// 1690–2387 行）—— 合计 70KB 真实代码根本没进断言，emoji 藏里面也测不出来。
+// 先剥行注释再剥块注释后，两处误吞消失，真实块注释仍是小段（实测 ≤20 行）。
+const stripComments = (src) => src
+  .split('\n').map((l) => l.replace(/^\s*\/\/.*$/, '').replace(/\s\/\/.*$/, '')).join('\n')
+  .replace(/\/\*[\s\S]*?\*\//g, '');
+for (const f of ['server.mjs','editor-shell.js','job-panel.js','zone-panel.js','ai-panel.js']) {
+  const code = stripComments(readFileSync('./' + f, 'utf8'));
+  const hits = UI_EMOJI.filter(e => code.includes(e));
+  assert(hits.length === 0, f + ' 代码/模板中仍含 emoji: ' + hits.join(' '));
+}
+console.log('✅ UI-7 前端源码无 emoji 残留');
 EOF

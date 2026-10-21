@@ -3,6 +3,10 @@
   var DOC_ID = document.currentScript.getAttribute('data-doc');
   var sheet = document.querySelector('.sheet');
   if (!sheet) return;
+  // 图标：服务端把 SVG 随页面下发（vendors/icons.mjs 是唯一来源，客户端不自己拼 SVG）；
+  // 没有注入时降级为空串 —— 不炸，也不显示图标。
+  var __icon = window.__icon || function () { return ''; };
+  var __status = window.__status || function (el, kind, text) { if (el) el.textContent = text; };
 
   // 幂等护栏：清掉历史保存意外落盘/重复注入的面板 DOM 与样式，防复利膨胀
   ['ai-toggle', 'ai-drawer', 'ai-sel-btn', 'ai-pop'].forEach(function (id) {
@@ -22,6 +26,7 @@
   var css = document.createElement('style');
   css.setAttribute('data-ai-panel', '1');
   css.textContent = '#ai-toggle{position:fixed;right:16px;bottom:16px;z-index:101;width:44px;height:44px;border-radius:50%;border:none;background:var(--ed-accent);color:var(--ed-accent-ink);font-size:20px;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.18)}'
+    + '#ai-toggle svg{width:20px;height:20px}'
     + '#ai-drawer{position:fixed;right:0;top:0;bottom:0;width:380px;background:var(--ed-panel);border-left:1px solid var(--ed-line);z-index:101;display:none;flex-direction:column;box-shadow:-4px 0 16px rgba(60,45,25,.08);font-size:13px;font-family:"PingFang SC",-apple-system,sans-serif}'
     + '#ai-drawer.open{display:flex}'
     + '#ai-drawer header{padding:10px 12px;font-weight:700;border-bottom:1px solid var(--ed-line);display:flex;justify-content:space-between;align-items:center;background:var(--ed-panel)}'
@@ -72,12 +77,12 @@
   var embedded = !!edPaneAi;
 
   var root = document.createElement('div');
-  root.innerHTML = (embedded ? '' : '<button id="ai-toggle" title="AI 助手" aria-label="AI 助手">🤖</button>')
-    + '<div id="ai-drawer"' + (embedded ? ' style="display:none"' : '') + '><header><span>🤖 AI 助手</span><span id="ai-close" role="button" aria-label="关闭">✕</span></header>'
-    + '<div id="ai-tabs"><button data-tab="chat" class="on">💬 对话</button><button data-tab="review">🩺 体检</button></div>'
+  root.innerHTML = (embedded ? '' : '<button id="ai-toggle" title="AI 助手" aria-label="AI 助手">' + __icon('bot') + '</button>')
+    + '<div id="ai-drawer"' + (embedded ? ' style="display:none"' : '') + '><header><span>' + __icon('bot') + ' AI 助手</span><span id="ai-close" role="button" aria-label="关闭">' + __icon('x') + '</span></header>'
+    + '<div id="ai-tabs"><button data-tab="chat" class="on">' + __icon('message-square') + ' 对话</button><button data-tab="review">' + __icon('stethoscope') + ' 体检</button></div>'
     + '<div id="ai-pane-chat" class="ai-pane on"><div id="ai-log"></div><div id="ai-input"><input id="ai-msg" placeholder="例如：把项目3精简一点" aria-label="对话输入"><button id="ai-send">发送</button></div></div>'
     + '<div id="ai-pane-review" class="ai-pane"><div class="ai-actions"><button id="ai-review-full">全面体检</button><button id="ai-review-quant">仅量化增强</button></div><div id="ai-review-out"></div></div></div>'
-    + '<button id="ai-sel-btn">✨ AI 改写</button>'
+    + '<button id="ai-sel-btn">' + __icon('sparkles') + ' AI 改写</button>'
     + '<div id="ai-pop" role="dialog" aria-label="选区改写"><textarea id="ai-inst" placeholder="改写指令，例如：精简到两行、突出量化成果" aria-label="改写指令"></textarea>'
     + '<div class="row"><button id="ai-gen">生成预览</button></div><div class="preview" id="ai-preview"></div>'
     + '<div class="row" id="ai-actions" style="display:none"><button id="ai-apply">应用</button><button id="ai-cancel">取消</button></div></div>';
@@ -105,11 +110,27 @@
     log.appendChild(d);
     log.scrollTop = log.scrollHeight;
   }
+  // 状态提示：图标（服务端下发）+ 转义文本 —— 替代原来的裸 emoji 前缀
+  function addStatus(text, kind) {
+    var d = document.createElement('div');
+    d.className = 'msg';
+    log.appendChild(d);
+    __status(d, kind, text);
+    log.scrollTop = log.scrollHeight;
+  }
+  // 静态引导文案（无用户数据）：允许内联图标
+  function addHtml(html) {
+    var d = document.createElement('div');
+    d.className = 'msg';
+    d.innerHTML = html;
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+  }
 
   // 空态引导（不持久、不进对话历史）；S4a-T7：岗位匹配已退役，引导不再提及
-  addMsg(embedded
-    ? '👋 使用引导：\n· 选中正文文字 → 浮动工具条选改写方向\n· 「🩺 体检」出多维诊断报告\n所有建议都可逐条 应用 / 📍定位 / 跳过 / 撤销'
-    : '👋 使用引导：\n· 选中正文一句话 → 点「✨ AI 改写」逐句精简\n· 「🩺 体检」出五维诊断报告\n所有建议都可逐条 应用 / 📍定位 / 跳过 / 撤销', false);
+  addHtml(embedded
+    ? __icon('hand') + ' 使用引导：\n· 选中正文文字 → 浮动工具条选改写方向\n· 「' + __icon('stethoscope') + ' 体检」出多维诊断报告\n所有建议都可逐条 应用 / ' + __icon('map-pin') + ' 定位 / 跳过 / 撤销'
+    : __icon('hand') + ' 使用引导：\n· 选中正文一句话 → 点「' + __icon('sparkles') + ' AI 改写」逐句精简\n· 「' + __icon('stethoscope') + ' 体检」出五维诊断报告\n所有建议都可逐条 应用 / ' + __icon('map-pin') + ' 定位 / 跳过 / 撤销');
 
   // 共享应用通道：在文档里找 before 文本并替换（支持跨加粗等 DOM 节点、定位第 N 个重复位置）
   // opts: { occurrence?: number, context?: string }
@@ -167,7 +188,7 @@
   function isStale(r) { return r.status === 409; }
 
   function aiError(e) {
-    addMsg('⚠️ ' + (e.message || e), false);
+    addStatus(e.message || e, 'warn');
   }
 
   // ===== 对话抽屉 =====
@@ -200,7 +221,7 @@
       var r = await fetch('/ai/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: DOC_ID, message: msg, history: history, baseMtime: mt }) });
       if (r.status === 409 && (r.headers.get('content-type') || '').includes('application/json')) {
-        addMsg('⚠️ 文档有未同步的修改，已自动保存，请重发这条消息', false);
+        addStatus('文档有未同步的修改，已自动保存，请重发这条消息', 'warn');
         return;
       }
       if (r.status === 409) { addMsg(await r.text(), false); return; }
@@ -250,9 +271,9 @@
     var skip = document.createElement('button');
     skip.textContent = '跳过';
     var loc = document.createElement('button');
-    loc.textContent = '📍 定位';
+    loc.innerHTML = __icon('map-pin') + ' 定位';
     loc.title = '在正文中选中并滚动到原文位置';
-    loc.onclick = function () { if (!locateText(c.before)) note.textContent = '⚠️ 原文未找到（可能已被修改）'; };
+    loc.onclick = function () { if (!locateText(c.before)) __status(note, 'warn', '原文未找到（可能已被修改）'); };
     apply.onclick = function () {
       // 应用前检查：找不到原文即拒绝（文档可能已被改/重复文本按位置区分）
       if (window.__edPushUndo) window.__edPushUndo('AI：' + (c.note || '修改'));
@@ -267,11 +288,11 @@
             undo.remove();
             apply.style.display = skip.style.display = loc.style.display = '';
             apply.disabled = skip.disabled = false;
-          } else { note.textContent = '⚠️ 撤销失败：改写后的文本已被再次修改'; }
+          } else { __status(note, 'warn', '撤销失败：改写后的文本已被再次修改'); }
         };
         box.appendChild(undo);
       }
-      else { note.textContent = '⚠️ 未在文档中找到原文（可能已被修改），未应用（可手动改）'; }
+      else { __status(note, 'warn', '未在文档中找到原文（可能已被修改），未应用（可手动改）'); }
     };
     skip.onclick = function () { box.style.opacity = '0.5'; apply.disabled = skip.disabled = true; loc.disabled = true; };
     box.append(note, b, a, apply, skip, loc);
@@ -341,10 +362,10 @@
       var mt = await flushFirst();
       var r = await fetch('/ai/review', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: DOC_ID, mode: mode, baseMtime: mt }) });
-      if (r.status === 409 && (r.headers.get('content-type') || '').includes('application/json')) { out.textContent = '⚠️ 文档有未同步修改，已自动保存，请重试'; return; }
+      if (r.status === 409 && (r.headers.get('content-type') || '').includes('application/json')) { __status(out, 'warn', '文档有未同步修改，已自动保存，请重试'); return; }
       if (r.status === 409) { out.textContent = await r.text(); return; }
       renderReport(out, await r.json());
-    } catch (e) { out.textContent = '⚠️ ' + (e.message || e); }
+    } catch (e) { __status(out, 'warn', e.message || e); }
     finally { reviewing = false; btn.disabled = false; }
   }
   $('ai-review-full').onclick = function () { runReview('full'); };
@@ -435,14 +456,14 @@
       var a = document.createElement('div'); a.className = 'ai-after'; a.textContent = pendingAfter;
       $('ai-preview').append(b, a);
       $('ai-actions').style.display = 'block';
-    } catch (e) { $('ai-preview').textContent = '⚠️ ' + (e.message || e); }
+    } catch (e) { __status($('ai-preview'), 'warn', e.message || e); }
     finally { $('ai-gen').disabled = false; }
   };
   $('ai-apply').onclick = function () {
     if (pendingAfter) {
       if (window.__edPushUndo) window.__edPushUndo('AI 改写');
       if (findAndReplace(pendingBefore, pendingAfter)) $('ai-pop').style.display = 'none';
-      else $('ai-preview').textContent = '⚠️ 原文未找到（可能已被修改），未应用';
+      else __status($('ai-preview'), 'warn', '原文未找到（可能已被修改），未应用');
     }
   };
   $('ai-cancel').onclick = function () { $('ai-pop').style.display = 'none'; pendingAfter = null; pendingBefore = ''; };

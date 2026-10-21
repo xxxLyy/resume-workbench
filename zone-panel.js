@@ -7,6 +7,10 @@
   if (!pane) return;
   var sheet = document.querySelector('.sheet');
   if (!sheet) return;
+  // 图标：服务端把 SVG 随页面下发（vendors/icons.mjs 是唯一来源，客户端不自己拼 SVG）；
+  // 没有注入时降级为空串 —— 不炸，也不显示图标。
+  var __icon = window.__icon || function () { return ''; };
+  var esc = function (v) { return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
 
   // 幂等清理
   ['zp-root'].forEach(function (id) { var el = document.getElementById(id); if (el) el.remove(); });
@@ -103,14 +107,14 @@
     var c = counts();
     var pend = Object.keys(state.zones).filter(function (zid) { return state.zones[zid].status === 'pending'; }).length;
     var order = state.zoneOrder && state.zoneOrder.length ? state.zoneOrder : ZONES.map(function (z) { return z[0]; });
-    var html = '<div class="zp-head"><button type="button" id="zp-color" aria-pressed="' + (state.colorOn ? 'true' : 'false') + '">🎨 着色</button>'
+    var html = '<div class="zp-head"><button type="button" id="zp-color" aria-pressed="' + (state.colorOn ? 'true' : 'false') + '">' + __icon('palette') + ' 着色</button>'
       + (pend ? '<button type="button" class="zp-c warn" id="zp-pend">待确认分类 ' + pend + ' 段</button>' : '<span class="zp-c">绑定完成</span>') + '</div>';
     order.forEach(function (k) {
       if (!ZONE_HUES[k]) return;
       var name = (ZONES.filter(function (z) { return z[0] === k; })[0] || ['', '?'])[1];
       html += '<div class="zp-row" data-zone="' + k + '"><span class="zp-dot" style="background:' + ZONE_HUES[k] + '"></span>'
         + '<span class="zp-n">' + name + (state.zoneRounds[k] ? ' · 轮次' + state.zoneRounds[k] : '') + '</span>'
-        + '<span class="zp-c">' + (c[k].ok ? '✓' + c[k].ok : '') + (c[k].pend ? ' ⚠' + c[k].pend : '') + '</span></div>'
+        + '<span class="zp-c">' + (c[k].ok ? __icon('check') + c[k].ok : '') + (c[k].pend ? ' ' + __icon('circle-alert') + c[k].pend : '') + '</span></div>'
         // 空 zone 空态（D5）：无任何段落的区域行给一行说明（正文添加后自动进入待确认）
         + (!c[k].ok && !c[k].pend ? '<div class="zp-empty">' + name + '区域暂无内容——正文添加相关段落后会自动进入待确认</div>' : '');
     });
@@ -217,13 +221,13 @@
     if (d.reminder) {
       var p1 = document.createElement('p');
       p1.className = 'zp-remind';
-      p1.textContent = '⚠ ' + d.reminder;
+      p1.innerHTML = __icon('circle-alert') + ' ' + esc(d.reminder);
       out.appendChild(p1);
     }
     if (d.suggestion) {
       var p2 = document.createElement('p');
       p2.className = 'zp-sugg';
-      p2.textContent = '✎ ' + d.suggestion;
+      p2.innerHTML = __icon('square-pen') + ' ' + esc(d.suggestion);
       out.appendChild(p2);
     }
     if (!(d.echoes || []).length && !d.reminder && !d.suggestion) out.textContent = '（本轮无具体意见）';
@@ -293,7 +297,7 @@
       if (r.level === 'conflict') {
         var flag = document.createElement('div');
         flag.className = 'zp-cand-flag';
-        flag.textContent = '⚠ ' + (r.reason || '事实冲突，需人工核对');
+        flag.innerHTML = __icon('circle-alert') + ' ' + esc(r.reason || '事实冲突，需人工核对');
         card.appendChild(flag);
       }
       prev.appendChild(card);

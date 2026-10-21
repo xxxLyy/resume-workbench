@@ -7,6 +7,10 @@
   if (!pane) return;
   var sheet = document.querySelector('.sheet');
   if (!sheet) return;
+// 图标：服务端把 SVG 随页面下发（vendors/icons.mjs 是唯一来源，客户端不自己拼 SVG）；
+// 没有注入时降级为空串 —— 不炸，也不显示图标。
+var __icon = window.__icon || function () { return ''; };
+var __status = window.__status || function (el, kind, text) { if (el) el.textContent = text; };
 
   // 幂等清理
   ['jp-root'].forEach(function (id) { var el = document.getElementById(id); if (el) el.remove(); });
@@ -96,7 +100,8 @@
       return r.json().catch(function () { return { ok: false, error: 'HTTP ' + r.status }; }).then(function (d) { d._status = r.status; return d; });
     });
   }
-  function note(msg) { var m = root.querySelector('.jp-msg'); if (m) m.textContent = msg; }
+  // kind 省略 → 纯文本；给了（ok/warn/err）→ 状态图标 + 转义文本（替代原来的裸 emoji 前缀）
+  function note(msg, kind) { var m = root.querySelector('.jp-msg'); if (!m) return; if (kind) __status(m, kind, msg); else m.textContent = msg; }
 
   // ===== DOM 定位（章节/条目锚点）=====
   function sections() { return Array.prototype.slice.call(sheet.querySelectorAll('.section')); }
@@ -274,7 +279,7 @@
 
   function setStatus(updates, extra) {
     return api('/job/changes?id=' + DOC_ID, Object.assign({ updates: updates }, extra || {})).then(function (d) {
-      if (d.ok) job = d.job; else note('⚠️ ' + (d.error || '状态保存失败'));
+      if (d.ok) job = d.job; else note(d.error || '状态保存失败', 'warn');
       render();
       return d;
     });
@@ -301,7 +306,7 @@
     var csheet = clone.querySelector('.sheet');
     if (csheet) { csheet.style.zoom = ''; csheet.style.transform = ''; csheet.setAttribute('contenteditable', 'true'); }
     var cstate = clone.querySelector('#saveState');
-    if (cstate) { cstate.dataset.state = 'saved'; cstate.textContent = '已保存 ✓'; }
+    if (cstate) { cstate.dataset.state = 'saved'; cstate.innerHTML = '已保存 ' + __icon('check'); }
     var csave = clone.querySelector('#saveBtn');
     if (csave) csave.removeAttribute('disabled');
     return '<!doctype html>\n' + clone.outerHTML;
@@ -314,16 +319,16 @@
       if (d.ok) {
         if (d.receipt && d.receipt.mtime) window.__edDocMtime = d.receipt.mtime;   // 同步旧路径冲突基线
       } else {
-        note('⚠️ ' + (d.error || (label + '失败')));
+        note(d.error || (label + '失败'), 'warn');
       }
       refresh();   // 成败都按服务器最新状态重渲染（409/400 的 DOM 差异由后续保存收敛）
-    }).catch(function (e) { note('⚠️ ' + (e.message || e)); refresh(); });
+    }).catch(function (e) { note(e.message || e, 'warn'); refresh(); });
   }
   function accept(c, viaGate) {
     if (busy) return; busy = true;
     var hits = c.consistency || [];
-    if (hits.indexOf('anchor-gone') >= 0) { busy = false; note('⚠️ 目标已删除，不可接受'); return; }
-    if (hits.indexOf('locked-now') >= 0) { busy = false; note('⚠️ 该段已锁定，不可接受'); return; }
+    if (hits.indexOf('anchor-gone') >= 0) { busy = false; note('目标已删除，不可接受', 'warn'); return; }
+    if (hits.indexOf('locked-now') >= 0) { busy = false; note('该段已锁定，不可接受', 'warn'); return; }
     // needs-compare 确认门（设计 §4.2 决策 4）：先展示当前正文 vs 候选差异，确认后才应用
     if (hits.indexOf('needs-compare') >= 0 && !viaGate) { busy = false; renderGate(c); return; }
     if (window.__edPushUndo) window.__edPushUndo('接受修改：' + (c.note || c.kind));
@@ -344,7 +349,7 @@
       op.newZid = nz;
     }
     busy = false;
-    if (!r.ok) { note('⚠️ ' + r.error); return; }
+    if (!r.ok) { note(r.error, 'warn'); return; }
     postSaveOps([op], '接受');
   }
   function revert(c) {
@@ -364,7 +369,7 @@
       r = replaceText(anchorEl.textContent, c.origText) ? { ok: true } : r;   // 确认门整段接受过的：整段恢复接受时快照
     }
     busy = false;
-    if (!r.ok) { note('⚠️ ' + r.error); return; }
+    if (!r.ok) { note(r.error, 'warn'); return; }
     postSaveOps([op], '撤回');
   }
   function batchAccept(ids) {
@@ -399,7 +404,7 @@
       }
     });
     busy = false;
-    if (fails) note('⚠️ ' + fails + ' 条未能应用（原文可能已变化），其余已接受');
+    if (fails) note(fails + ' 条未能应用（原文可能已变化），其余已接受', 'warn');
     if (failedUpdates.length) setStatus(failedUpdates);
     if (ops.length) postSaveOps(ops, '批量接受'); else render();
   }
@@ -451,7 +456,7 @@
     var pick = function (reason) {
       var updates = [{ id: c.id, status: 'rejected', note: reason }];
       api('/job/changes?id=' + DOC_ID, { updates: updates, feedback: reason }).then(function (d) {
-        if (d.ok) job = d.job; else note('⚠️ ' + (d.error || '状态保存失败'));
+        if (d.ok) job = d.job; else note(d.error || '状态保存失败', 'warn');
         render();
       });
       chips.remove();
@@ -483,10 +488,10 @@
       try {
         var prefs = JSON.parse(localStorage.getItem('s4a-feedback-prefs') || '[]');
         var v = custom.value.trim();
-        if (!v) { note('⚠️ 先填写自定义原因再记住偏好'); return; }
+        if (!v) { note('先填写自定义原因再记住偏好', 'warn'); return; }
         prefs.push(v);
         localStorage.setItem('s4a-feedback-prefs', JSON.stringify(prefs.slice(-20)));
-        note('✅ 偏好已存本机（生成时随请求提交）');
+        note('偏好已存本机（生成时随请求提交）', 'ok');
       } catch (e) {}
     });
     chips.appendChild(remember);
@@ -502,7 +507,7 @@
       (job.evidence || []).forEach(function (e) { (e.refs || []).forEach(function (r) { if (r.refId === rid) refs[rid] = r.hash; }); });
     });
     setStatus([], { resolve: { changeId: c.id, text: text, refs: refs } });
-    note('✅ 已保留当前版本（再变化会重新进入待核对）');
+    note('已保留当前版本（再变化会重新进入待核对）', 'ok');
   }
   // 主操作流转（决策 5）：浏览→「下一条」；候选待定→「接受」；全部处理→「去导出检查」；至多一个橙色
   function pendingList() {
@@ -541,7 +546,7 @@
     if (Array.isArray(c.consistency) && c.consistency.length) {
       var cons = document.createElement('div');
       cons.className = 'jp-reason';
-      cons.textContent = '⚠ ' + c.consistency.map(function (h) { return CONS_LABEL[h] || h; }).join('；');
+      cons.innerHTML = __icon('circle-alert') + ' ' + esc(c.consistency.map(function (h) { return CONS_LABEL[h] || h; }).join('；'));
       div.appendChild(cons);
     }
     if (c.reason) { var why = document.createElement('div'); why.className = 'jp-reason'; why.textContent = '理由：' + c.reason + (c.source ? '（来源：' + c.source + '）' : ''); div.appendChild(why); }
@@ -578,7 +583,7 @@
           return;
         }
       }
-      note('⚠️ 未找到定位目标（内容可能已变化）');
+      note('未找到定位目标（内容可能已变化）', 'warn');
     };
     var blocked = (c.consistency || []).indexOf('anchor-gone') >= 0 || (c.consistency || []).indexOf('locked-now') >= 0;
     if ((c.status === 'pending' || c.status === 'superseded') && !blocked) {
@@ -714,7 +719,7 @@
   // zid 定位：滚动至段落 + Custom Highlight 闪烁（与 zone-panel 同机制，瞬态不落盘、不给正文挂 class）
   function locateZid(zid) {
     var el = sheet.querySelector('[data-zid="' + zid + '"]');
-    if (!el) { note('⚠️ 未找到定位目标（内容可能已变化）'); return; }
+    if (!el) { note('未找到定位目标（内容可能已变化）', 'warn'); return; }
     var smooth = !(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
     el.scrollIntoView({ block: 'center', behavior: smooth ? 'smooth' : 'auto' });
     if (window.CSS && CSS.highlights) {
@@ -730,11 +735,11 @@
     if (noteText !== null) body.evidenceNote.note = noteText;
     if (confirmed !== null) body.evidenceNote.confirmed = confirmed;
     api('/job/changes?id=' + DOC_ID, body).then(function (d) {
-      if (!d.ok) { note('⚠️ ' + (d.error || '说明保存失败')); return; }
+      if (!d.ok) { note(d.error || '说明保存失败', 'warn'); return; }
       job = d.job;
       render();
-      note(confirmed === true ? '✅ 已确认为证据（计「素材有据·简历未表达」）' : (confirmed === false ? '已退回确认' : '✅ 说明已保存'));
-    }).catch(function (e2) { note('⚠️ ' + (e2.message || e2)); });
+      note(confirmed === true ? '已确认为证据（计「素材有据·简历未表达」）' : (confirmed === false ? '已退回确认' : '说明已保存'), confirmed === false ? '' : 'ok');
+    }).catch(function (e2) { note(e2.message || e2, 'warn'); });
   }
   function noteBox(e) {
     var box = document.createElement('div');
@@ -799,7 +804,7 @@
       act.textContent = '取消';
       act.addEventListener('click', function () {
         api('/job/gen-cancel?id=' + DOC_ID + '&kind=evidence&taskId=' + encodeURIComponent(gt.taskId || ''), {}).then(function (d) {
-          note(d.ok ? '已取消' : '⚠️ ' + (d.error || '取消失败'));
+          note(d.ok ? '已取消' : (d.error || '取消失败'), d.ok ? '' : 'warn');
           refresh();
         });
       });
@@ -807,7 +812,7 @@
       act.textContent = gt.status === 'done' || gt.status === 'cancelled' ? '重新分析' : (gt.status === 'error' ? '重试' : '生成证据');
       act.addEventListener('click', function () {
         api('/job/gen-start?id=' + DOC_ID + '&kind=evidence', {}).then(function (d) {
-          if (!d.ok) { note('⚠️ ' + (d.error || '启动失败')); return; }
+          if (!d.ok) { note(d.error || '启动失败', 'warn'); return; }
           job.genTasks = job.genTasks || {};
           job.genTasks.evidence = { taskId: d.taskId, status: 'running', startedAt: Date.now() };
           note('正在分析证据…');
@@ -867,7 +872,7 @@
           var loc = document.createElement('button');
           loc.type = 'button';
           loc.className = 'jp-refbtn';
-          loc.textContent = '📍定位';
+          loc.innerHTML = __icon('map-pin') + '定位';
           loc.addEventListener('click', function () { locateZid(r.zid); });
           line.appendChild(loc);
         }
@@ -925,11 +930,11 @@
     var start = function () {
       act.disabled = true;   // 防连点：下次 render() 重建按钮时自动恢复
       api('/job/gen-start?id=' + DOC_ID + '&kind=interview', {}).then(function (d) {
-        if (!d.ok) { act.disabled = false; note('⚠️ ' + (d.error || '启动失败')); return; }
+        if (!d.ok) { act.disabled = false; note(d.error || '启动失败', 'warn'); return; }
         schedulePoll();
       }, function (e) {
         act.disabled = false;   // 网络层 reject：api() 内部走 fetch，不接会成未捕获 rejection
-        note('⚠️ ' + (e.message || e));
+        note(e.message || e, 'warn');
       });
     };
 
@@ -945,7 +950,7 @@
       cancel.textContent = '取消';
       cancel.addEventListener('click', function () {
         api('/job/gen-cancel?id=' + DOC_ID + '&kind=interview&taskId=' + encodeURIComponent(gt.taskId || ''), {}).then(function (d) {
-          note(d.ok ? '已取消' : '⚠️ ' + (d.error || '取消失败'));
+          note(d.ok ? '已取消' : (d.error || '取消失败'), d.ok ? '' : 'warn');
           refresh();
         });
       });
@@ -954,7 +959,7 @@
       if (job.interviewStale) {
         var w = document.createElement('div');
         w.className = 'jp-reason';
-        w.textContent = '⚠️ 来源已变化，需重新核对。';
+        w.innerHTML = __icon('circle-alert') + ' 来源已变化，需重新核对。';
         det.appendChild(w);
       }
       if (Number(iv.dropped) > 0) {
@@ -981,7 +986,7 @@
             if (p.guard === 'conflict') {
               var gw = document.createElement('span');
               gw.className = 'jp-reason';
-              gw.textContent = ' ⚠️出现原文没有的数字';
+              gw.innerHTML = ' ' + __icon('circle-alert') + '出现原文没有的数字';
               li.appendChild(gw);
             }
             if (p.anchored && c.zid) {
@@ -1037,9 +1042,9 @@
     } else {
       var gate = document.createElement('div');
       gate.className = 'jp-meta';
-      gate.textContent = checks.blocking && checks.blocking.length
-        ? '⛔ 阻止导出：未解决事实冲突 ' + checks.blocking.length + ' 条（含稍后处理的冲突）。'
-        : '✅ 允许导出：无未解决事实冲突。';
+      gate.innerHTML = checks.blocking && checks.blocking.length
+        ? __icon('circle-slash') + ' 阻止导出：未解决事实冲突 ' + checks.blocking.length + ' 条（含稍后处理的冲突）。'
+        : __icon('circle-check') + ' 允许导出：无未解决事实冲突。';
       box.appendChild(gate);
       var v = checks.check || {};
       var nThin = (v.thin || []).length, nStale = (v.stale || []).length, nVerify = (v.toVerify || []).length;
@@ -1053,7 +1058,7 @@
       box.appendChild(suggest);
       var done = document.createElement('div');
       done.className = 'jp-meta';
-      done.textContent = checks.reviewComplete ? '✅ 整体审阅完成（跨全部批次：无待处理/稍后处理/待核对项）。' : '整体审阅未完成（仍有待处理/稍后处理/待核对项）。';
+      done.innerHTML = checks.reviewComplete ? __icon('circle-check') + ' 整体审阅完成（跨全部批次：无待处理/稍后处理/待核对项）。' : '整体审阅未完成（仍有待处理/稍后处理/待核对项）。';
       box.appendChild(done);
     }
     root.appendChild(box);
@@ -1082,9 +1087,9 @@
       note('生成中（约几十秒）…');
       api('/job/generate?id=' + DOC_ID, {}).then(function (d) {
         busy = false;
-        if (!d.ok) { note('⚠️ ' + (d.error || '生成失败')); gen.disabled = false; return; }
-        job = d.job; note('✅ 已生成 ' + d.generated + ' 条建议（旧候选标记为 superseded）'); render();
-      }).catch(function (e) { busy = false; note('⚠️ ' + e.message); gen.disabled = false; });
+        if (!d.ok) { note(d.error || '生成失败', 'warn'); gen.disabled = false; return; }
+        job = d.job; note('已生成 ' + d.generated + ' 条建议（旧候选标记为 superseded）', 'ok'); render();
+      }).catch(function (e) { busy = false; note(e.message, 'warn'); gen.disabled = false; });
     });
     head.appendChild(gen);
     var exp = document.createElement('a');
@@ -1146,7 +1151,7 @@
     if (conflicts.some(function (c) { return c.status === 'pending'; })) {
       var gate = document.createElement('div');
       gate.className = 'jp-group jp-conflict';
-      gate.innerHTML = '<b>⛔ 事实冲突未解决前不能导出</b><div class="jp-meta">逐条确认接受或撤销后解除。</div>';
+      gate.innerHTML = '<b>' + __icon('circle-slash') + ' 事实冲突未解决前不能导出</b><div class="jp-meta">逐条确认接受或撤销后解除。</div>';
       root.appendChild(gate);
     }
     [groupBox('稍后处理', deferred),

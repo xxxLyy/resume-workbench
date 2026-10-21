@@ -9,6 +9,11 @@
   // 首页「继续上次任务」数据源 = 最近访问（mtime ≠ 最近访问，故用本地键；不进 docs-meta）
   try { localStorage.setItem('resume-last-active-doc', DOC_ID); } catch (e) { /* 隐私模式下忽略 */ }
   if (!sheet) return;
+  // 图标：服务端把 SVG 随页面下发（vendors/icons.mjs 是唯一来源，客户端不自己拼 SVG）；
+  // 没有注入时（直接打开文档文件）降级为空串 —— 不炸，也不显示图标。
+  var __icon = window.__icon || function () { return ''; };
+  var __status = window.__status || function (el, kind, text) { if (el) el.textContent = text; };
+  var escHtml = function (s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
   // 幂等：清掉历史落盘/重复注入的外壳 DOM 与样式后重建（落盘残留无事件绑定，复用会是死 UI）
   ['ed-left', 'ed-right', 'ed-grip', 'ed-status', 'ed-canvas-tools', 'ed-seltb', 'ed-matpop', 'ed-matmask'].forEach(function (id) {
     var stale = document.getElementById(id);
@@ -272,9 +277,9 @@
   var verBadge = document.getElementById('verBadge');
   var docName = document.getElementById('docName');
   var saveState = document.getElementById('saveState');
-  if (pdfBtn) { pdfBtn.classList.remove('secondary'); pdfBtn.classList.add('ed-primary'); pdfBtn.textContent = '导出 PDF'; pdfBtn.title = '导出前检查并下载 PDF'; }
-  if (saveBtn) { saveBtn.classList.add('ed-ghost'); saveBtn.textContent = '保存'; saveBtn.title = '保存（⌘/Ctrl+S，打历史快照）'; }
-  if (histBtn) { histBtn.classList.remove('secondary'); histBtn.title = '版本历史'; }
+  if (pdfBtn) { pdfBtn.classList.remove('secondary'); pdfBtn.classList.add('ed-primary'); pdfBtn.innerHTML = __icon('file-text') + ' 导出 PDF'; pdfBtn.title = '导出前检查并下载 PDF'; }
+  if (saveBtn) { saveBtn.classList.add('ed-ghost'); saveBtn.innerHTML = __icon('save') + ' 保存'; saveBtn.title = '保存（⌘/Ctrl+S，打历史快照）'; }
+  if (histBtn) { histBtn.classList.remove('secondary'); histBtn.innerHTML = __icon('clock') + ' 历史'; histBtn.title = '版本历史'; }
   if (homeBtn) { homeBtn.textContent = '‹ 工作台'; homeBtn.title = '返回工作台'; homeBtn.classList.add('ed-ghost'); }
 
   // 预览按钮（幂等：class 标记；事件不落盘，serve 后由本脚本绑定）
@@ -299,7 +304,7 @@
     ltBtn.setAttribute('data-ed-inj', '1');
     ltBtn.setAttribute('aria-label', '章节与素材面板');
     ltBtn.title = '章节与素材';
-    ltBtn.textContent = '☰';
+    ltBtn.innerHTML = __icon('menu');
     toolbar.insertBefore(ltBtn, toolbar.firstChild);
   }
   if (toolbar && !rtBtn) {
@@ -309,7 +314,7 @@
     rtBtn.setAttribute('data-ed-inj', '1');
     rtBtn.setAttribute('aria-label', '辅助面板');
     rtBtn.title = '审阅 / 区域 / AI 助手 / 排版';
-    rtBtn.textContent = '⚙';
+    rtBtn.innerHTML = __icon('settings');
     toolbar.appendChild(rtBtn);
   }
   // 岗位草稿入口（不依赖模型：直接创建独立草稿，模型配置后可在审阅面板生成建议）
@@ -748,11 +753,12 @@
           menu.hidden = true;
           menu.setAttribute('role', 'menu');
           var closeMenu = function () { menu.hidden = true; more.setAttribute('aria-expanded', 'false'); };
-          var mkItem = function (icon, name, fn, dis) {
+          var mkItem = function (glyph, name, fn, dis) {
             var b = document.createElement('button');
             b.type = 'button';
             b.setAttribute('role', 'menuitem');
-            b.textContent = icon + ' ' + name;
+            // glyph 可以是文本符号（↑↓⧉），也可以是服务端下发的内联 SVG 图标 → 统一走 innerHTML
+            b.innerHTML = glyph + ' ' + escHtml(name);
             b.title = name;
             b.setAttribute('aria-label', name + '：' + en.title);   // 与旧内联按钮同契约（mk：title+'：'+条目名）
             if (dis) b.disabled = true;
@@ -763,7 +769,7 @@
           menu.appendChild(mkItem('↑', '上移条目', moveUp, idx === 0));
           menu.appendChild(mkItem('↓', '下移条目', moveDown, idx === entries.length - 1));
           menu.appendChild(mkItem('⧉', '复制条目', function () { dupEntry(en); }));   // mk 已内置压栈+通知（S2-T5 语义不变）
-          menu.appendChild(mkItem('🗑', '删除条目', function () { delEntry(en); }));
+          menu.appendChild(mkItem(__icon('trash-2'), '删除条目', function () { delEntry(en); }));
           more.addEventListener('click', function () {
             var opening = menu.hidden;
             menu.hidden = !opening;
@@ -856,9 +862,9 @@
   var fmtWrap = document.createElement('span');
   fmtWrap.setAttribute('data-ed-inj', '1');
   fmtWrap.className = 'ed-fmt';
-  [['B', 'bold', '加粗'], ['•', 'insertUnorderedList', '无序列表'], ['🔗', 'createLink', '插入链接（仅 http/https/mailto）'], ['⌫', 'removeFormat', '清除多余格式']].forEach(function (b) {
+  [['B', 'bold', '加粗'], ['•', 'insertUnorderedList', '无序列表'], [__icon('link'), 'createLink', '插入链接（仅 http/https/mailto）'], ['⌫', 'removeFormat', '清除多余格式']].forEach(function (b) {
     var btn = document.createElement('button');
-    btn.type = 'button'; btn.className = 'secondary'; btn.textContent = b[0]; btn.title = b[2];
+    btn.type = 'button'; btn.className = 'secondary'; btn.innerHTML = b[0]; btn.title = b[2];
     btn.setAttribute('data-fmt', b[1]);
     btn.addEventListener('mousedown', function (e) { e.preventDefault(); });   // 不抢焦点/选区：execCommand 作用于正文当前选区
     btn.addEventListener('click', function () { runFormat(b[1]); });
@@ -1022,7 +1028,7 @@
       + '<button type="button" id="ed-find-next" class="secondary" title="下一处">↓</button>'
       + '<button type="button" id="ed-find-one" title="替换当前一处">替换</button>'
       + '<button type="button" id="ed-find-all" title="全部替换（一次撤销）">全部替换</button>'
-      + '<button type="button" id="ed-find-close" class="secondary" title="关闭（Esc）">✕</button>'
+      + '<button type="button" id="ed-find-close" class="secondary" title="关闭（Esc）">' + __icon('x') + '</button>'
       + (HL_OK ? '' : '<span style="font-size:11px">此浏览器不支持高亮，仅计数与跳转</span>');
     mount(findPanel);
     document.getElementById('ed-find-q').addEventListener('input', function () {
@@ -1259,7 +1265,7 @@
       confBtn.style.cssText = 'min-height:30px;padding:0 12px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink)';
       confBtn.addEventListener('click', function () {
         fetch('/mat/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [m.id], confirmed: true }) })
-          .then(function () { m.confirmed = true; warn.textContent = '已确认 ✓ 可参与自动生成'; confBtn.remove(); renderMats(left.querySelector('#ed-matsearch').value.trim().toLowerCase()); });
+          .then(function () { m.confirmed = true; warn.innerHTML = '已确认 ' + __icon('check') + ' 可参与自动生成'; confBtn.remove(); renderMats(left.querySelector('#ed-matsearch').value.trim().toLowerCase()); });
       });
       warnWrap.append(warn, confBtn);
       tail.push(warnWrap);
@@ -1326,7 +1332,7 @@
     jobpopLastFocus = jobBtn;
     jobpop.innerHTML = '';
     var h = document.createElement('h3');
-    h.textContent = '🎯 针对岗位生成简历草稿';
+    h.innerHTML = __icon('target') + ' 针对岗位生成简历草稿';
     var note = document.createElement('div');
     note.className = 'ed-jp-note';
     note.textContent = '基于当前文档创建独立草稿（不修改母版）。未配置模型也可先创建；配置后可在右侧「审阅」面板生成并审阅建议。';
@@ -1370,9 +1376,9 @@
           ok.disabled = false;
           if (d && d.existing) { if (confirm('同岗位草稿已存在（' + d.existing + '），打开它？')) location.href = '/edit?id=' + d.existing; return; }
           if (d && d.ok && d.id) { location.href = '/edit?id=' + d.id; return; }
-          msg.textContent = '⚠️ ' + ((d && d.error) || '创建失败');
+          __status(msg, 'warn', (d && d.error) || '创建失败');
         })
-        .catch(function (e) { ok.disabled = false; msg.textContent = '⚠️ ' + e.message; });
+        .catch(function (e) { ok.disabled = false; __status(msg, 'warn', e.message); });
     });
     row.append(cancel, ok);
     jobpop.append(row, msg);
@@ -1890,7 +1896,7 @@
     stPage.textContent = '约 ' + totalPages() + ' 页 · A4（估算，以导出为准）';
     stZoom.textContent = '缩放 ' + Math.round(zoom * 100) + '%';
     var overflow = sheet.scrollWidth > sheet.clientWidth + 2;
-    stWords.textContent = '字数 ' + sheet.textContent.replace(/\s/g, '').length + (overflow ? ' · ⚠️ 内容横向溢出' : '');
+    stWords.innerHTML = '字数 ' + sheet.textContent.replace(/\s/g, '').length + (overflow ? ' · ' + __icon('circle-alert') + ' 内容横向溢出' : '');
     var pending = document.querySelectorAll('.ai-change').length
       - document.querySelectorAll('.ai-change[style*="opacity"]').length;
     stSug.textContent = pending > 0 ? '待处理建议 ' + pending : '';

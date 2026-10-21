@@ -1000,11 +1000,27 @@ const STATUS_SCRIPT = `window.__STATUS_ICONS__=${JSON.stringify(STATUS_ICONS).re
   + `.replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});`
   + `el.innerHTML=(window.__STATUS_ICONS__[kind]||'')+s;};`;
 
+// 客户端图标（批次D）：编辑器页的 4 个面板脚本是 classic script，拿不到服务端 icon()。
+// 服务端把 SVG 渲染好随页面下发 —— 唯一来源仍是 vendors/icons.mjs，客户端只按名字取，不自己拼 SVG。
+// 尺寸烘焙成 13px（对齐既有行内图标）；需要更大时用 CSS 覆盖 svg{width;height}（SVG 尺寸属性可被 CSS 覆盖）。
+const CLIENT_ICON_NAMES = ['menu', 'trash-2', 'link', 'x', 'target', 'map-pin', 'circle-slash',
+  'palette', 'square-pen', 'bot', 'message-square', 'stethoscope', 'sparkles', 'hand', 'check',
+  'circle-alert', 'circle-check', 'settings', 'save', 'file-text', 'clock'];
+const CLIENT_ICONS = Object.assign(Object.create(null), {});
+for (const n of CLIENT_ICON_NAMES) CLIENT_ICONS[n] = icon(n, 13);
+const ICON_SCRIPT = `window.__ICONS__=${JSON.stringify(CLIENT_ICONS).replace(/</g, '\\u003c')};`
+  + `window.__icon=function(n){return window.__ICONS__[n]||'';};`;
+
 // 注入块（serve 幂等注入；/save 按注释对剥离，文档永不落盘）
 const AI_MARK = '<!--AI-INJECT-->';
+const ICON_MARK = '<!--ICON-INJECT-->';
 const SHELL_MARK = '<!--SHELL-INJECT-->';
 const JOB_MARK = '<!--JOB-INJECT-->';
 const ZONE_MARK = '<!--ZONE-INJECT-->';
+// 客户端图标 + 状态图标（__status）：编辑器页没有 page() 的 STATUS_SCRIPT，这里单独下发一份。
+function iconBlock() {
+  return `\n${ICON_MARK}<script>${STATUS_SCRIPT}</script><script>${ICON_SCRIPT}</script><!--/ICON-INJECT-->\n`;
+}
 function aiBlock(id) {
   return `\n${AI_MARK}<script src="/ai-panel.js" data-doc="${id}" defer></script><!--/AI-INJECT-->\n`;
 }
@@ -1080,8 +1096,8 @@ function listPage(showArchived = false) {
   });
   // 状态摘要：一行、按优先级排序（告警 > 时限 > 进行中 > 同步口径 > 配置）；PDF 单 chip 三态（§7.2，零项段省略）
   const pdfChip = infos.length === 0 ? ''
-    : pdfFresh === infos.length ? '📑 PDF 全部同步'
-    : '📑 PDF ' + [
+    : pdfFresh === infos.length ? icon('file-text', 12) + ' PDF 全部同步'
+    : icon('file-text', 12) + ' PDF ' + [
       pdfFresh > 0 && `已同步 ${pdfFresh}`,
       pdfStale > 0 && `较旧 ${pdfStale}`,
       pdfNone > 0 && `未生成 ${pdfNone}`
@@ -1126,9 +1142,9 @@ function listPage(showArchived = false) {
       <a href="/snapshots?id=${id}">历史版本</a> ·
       <a href="/diff?base=${id}">对比</a> ·
       ${m.parent ? `<a href="/diff?base=${escHtml(m.parent)}&to=${id}">对比母版</a> · ` : ''}
-      ${info.degraded ? `<form method="post" action="/restructure?id=${id}" style="display:inline" onsubmit="return confirm('用 LLM 重新结构化这份文档？会先自动留快照')"><button class="secondary">🔁 结构化</button></form> · ` : ''}
+      ${info.degraded ? `<form method="post" action="/restructure?id=${id}" style="display:inline" onsubmit="return confirm('用 LLM 重新结构化这份文档？会先自动留快照')"><button class="secondary">${icon('refresh-cw', 13)} 结构化</button></form> · ` : ''}
       <form method="post" action="/archive?id=${id}" style="display:inline" onsubmit="event.preventDefault();fetch('/archive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'${id}'})}).then(()=>location.reload())"><button class="secondary">${m.archivedAt ? icon('archive', 13) + ' 取消归档' : icon('archive', 13) + ' 归档'}</button></form> ·
-      <form method="post" action="/tag" style="display:inline" onsubmit="event.preventDefault();const t=prompt('标签（≤20字，留空清除）','${tag}');if(t!==null){fetch('/tag',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'${id}',tag:t})}).then(()=>location.reload())}"><button class="secondary">🏷</button></form> ·
+      <form method="post" action="/tag" style="display:inline" onsubmit="event.preventDefault();const t=prompt('标签（≤20字，留空清除）','${tag}');if(t!==null){fetch('/tag',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'${id}',tag:t})}).then(()=>location.reload())}"><button class="secondary" aria-label="标签" title="标签">${icon('tag', 13)}</button></form> ·
       <form method="post" action="/duplicate?id=${id}" style="display:inline" onsubmit="event.preventDefault();const t=prompt('新文档 id（小写字母数字横线）');if(t){this.action='/duplicate?id=${id}&to='+t;this.submit()}"><button>复制</button></form> ·
       <form method="post" action="/delete?id=${id}" style="display:inline" onsubmit="return confirm('确认删除 ${id}？快照会保留')"><button class="danger">删除</button></form>
       </div></details>
@@ -1167,7 +1183,7 @@ function listPage(showArchived = false) {
           ${fallbackId
             ? `<a id="continueBtn" class="cta" href="/edit?id=${encodeURIComponent(fallbackId)}" data-fallback="${fallbackId}" data-doc-ids='${jsonAttr(docIds)}' data-doc-titles='${jsonAttr(docTitles)}'>▶ 继续上次任务</a>`
             : `<form method="post" action="/new" style="display:inline"><button class="cta" type="submit">＋ 新建第一份简历</button></form>`}
-          <button type="button" class="cta-alt" id="jobToggle" aria-expanded="false" aria-controls="jobCard">🎯 针对岗位生成</button>
+          <button type="button" class="cta-alt" id="jobToggle" aria-expanded="false" aria-controls="jobCard">${icon('target', 13)} 针对岗位生成</button>
         </div>
       </div>
       <div class="hero-art" aria-hidden="true">${HERO_SVG}</div>
@@ -1181,7 +1197,7 @@ function listPage(showArchived = false) {
     </div>
     ${corruptBanner()}
     <details class="card" id="jobCard">
-      <summary style="cursor:pointer;font-weight:700">🎯 针对岗位生成简历</summary>
+      <summary style="cursor:pointer;font-weight:700">${icon('target', 13)} 针对岗位生成简历</summary>
       <p style="font-size:13px;line-height:1.6;color:var(--mut);margin:6px 0">拿到 JD → 生成独立岗位草稿（不改母版）→ 审阅修改清单 → 导出两页 PDF。不配置模型也可手动生成草稿。</p>
       <form id="jobForm" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;align-items:end">
         <label style="font-size:12px">公司<input id="jobCompany" required style="width:100%"></label>
@@ -1208,8 +1224,8 @@ function listPage(showArchived = false) {
               <button type="button" class="secondary" data-pages="2" aria-pressed="true">2 页（默认）</button></span></label>
           </div>
         </details>
-        <div style="grid-column:1/-1"><button type="submit">生成岗位草稿</button><button type="button" class="secondary" id="evalBtn">🧭 先评估这个岗位</button><span id="jobMsg" style="font-size:12px;color:var(--mut)"></span><span id="evalMsg" style="font-size:12px;color:var(--mut)"></span></div>
-        <div style="grid-column:1/-1;font-size:12px;color:var(--mut)">💡 「先评估」先用大模型判断这个岗位值不值得投（max 思考，通常需要 1–5 分钟），评估通过后再一键转成岗位适配草稿。</div>
+        <div style="grid-column:1/-1"><button type="submit">生成岗位草稿</button><button type="button" class="secondary" id="evalBtn">${icon('compass', 13)} 先评估这个岗位</button><span id="jobMsg" style="font-size:12px;color:var(--mut)"></span><span id="evalMsg" style="font-size:12px;color:var(--mut)"></span></div>
+        <div style="grid-column:1/-1;font-size:12px;color:var(--mut)">${icon('lightbulb', 13)} 「先评估」先用大模型判断这个岗位值不值得投（max 思考，通常需要 1–5 分钟），评估通过后再一键转成岗位适配草稿。</div>
       </form>
       <div id="evalResult"></div>
     </details>
@@ -1219,7 +1235,7 @@ function listPage(showArchived = false) {
     </div>` : ''}
     <div class="card" style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <form method="post" action="/new"><button class="secondary">＋ 新建空白文档</button></form>
-      <details class="import-box" style="flex:1;min-width:220px"><summary style="cursor:pointer;font-weight:700">📄 导入 PDF</summary>
+      <details class="import-box" style="flex:1;min-width:220px"><summary style="cursor:pointer;font-weight:700">${icon('file-text', 13)} 导入 PDF</summary>
         <form id="up" style="margin-top:8px">
           <span style="color:var(--mut)">选择 PDF 文件导入为新文档</span><input type="file" id="upfile" accept="application/pdf">
           <button>导入</button><span id="upmsg"></span>
@@ -1331,6 +1347,7 @@ function listPage(showArchived = false) {
       // 报告渲染器必须能独立执行（测试会单独把本块抽出来跑）——图标在服务端内联进块内，
       // 不依赖页面级全局（vendors/icons.mjs 仍是唯一来源）。
       var EVAL_ICON = { ok: ${jsonScript(icon('circle-check', 12))}, warn: ${jsonScript(icon('circle-alert', 12))} };
+      var EVAL_BTN_ICON = ${jsonScript(icon('compass', 13))};
       function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
       function evalCardHtml(rec) {
         var b = (rec && rec.blocks) || {};
@@ -1392,7 +1409,7 @@ function listPage(showArchived = false) {
             ctx = { id: d.eval.id, from: from };
             box.innerHTML = evalCardHtml(d.eval);
           } catch (err) { __status(msg, 'err', err.message); }
-          finally { btn.disabled = false; btn.textContent = '🧭 先评估这个岗位'; }
+          finally { btn.disabled = false; btn.innerHTML = EVAL_BTN_ICON + ' 先评估这个岗位'; }
         };
         btn.addEventListener('click', run);
         // 事件委托：卡片会被重新渲染，监听器不能绑在会被替换的节点上
@@ -1482,7 +1499,7 @@ function readMetaSnapshotAt(f) {
 // 注入注释对的闭标记缺失时不做剥离（本来也剥不掉），且开标记出现多次时同样跳过：
 // 两者都是 [\s\S]*? 的回溯放大形状——每个开标记起点都要扫到文末找闭标记，O(开标记数 × 正文长度)。
 // 真实正文里每个注入对至多 1 个（server 幂等注入 + 保存即剥离），>2 个必是病态/攻击形状。
-const INJECT_KINDS = ['AI', 'SHELL', 'JOB', 'ZONE'];
+const INJECT_KINDS = ['AI', 'SHELL', 'JOB', 'ZONE', 'ICON'];
 function stripInjectCommentPair(s, kind) {
   const open = '<!--' + kind + '-INJECT-->';
   const close = '<!--/' + kind + '-INJECT-->';
@@ -1740,7 +1757,7 @@ async function handler(req, res) {
       `));
       html = html.replace(/var DOC_ID = '[^']*'/, `var DOC_ID = '${id}'`);
       if (!html.includes('id="homeBtn"')) {
-        html = html.replace('<button id="histBtn"', `<button id="homeBtn" class="secondary" onclick="location.href='/'">🏠 首页</button><button id="histBtn"`);
+        html = html.replace('<button id="histBtn"', `<button id="homeBtn" class="secondary" onclick="location.href='/'">${icon('house', 13)} 首页</button><button id="histBtn"`);
       }
       const vm = loadMeta()[id] || {};
       // 铁律一（编辑入口=渲染组装同款）+ S1 热修裁决：有效 typo = (meta.typo 定义且非空) ? meta.typo : 内联值。
@@ -1761,6 +1778,7 @@ async function handler(req, res) {
         html = html.replace('<button id="histBtn"', `<span id="verBadge" class="badge">${escHtml((vm.company || '') + '·' + (vm.role || ''))}</span><button id="histBtn"`);
       }
       const mtimeMs = fs.statSync(docPath(id)).mtimeMs;
+      if (!html.includes(ICON_MARK)) html = html.replace('</body>', iconBlock() + '</body>');
       if (!html.includes(SHELL_MARK)) html = html.replace('</body>', shellBlock(id, mtimeMs) + '</body>');
       if (!html.includes(AI_MARK)) html = html.replace('</body>', aiBlock(id) + '</body>');
       if (!html.includes(JOB_MARK)) html = html.replace('</body>', jobBlock(id) + '</body>');
@@ -1858,7 +1876,7 @@ async function handler(req, res) {
     // 超时/失败语义直接沿用 chat() 的 profile 级 timeoutMs（默认 120s）+ withRetry 的 POST 不重试，
     // 失败一律 502 回到调用方，不写半条记录。
     if (req.method === 'POST' && url.pathname === '/eval/create') {
-      if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型，请先到首页的"⚙️ 大模型设置"' });
+      if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型，请先到首页的"大模型设置"' });
       const body = await readBodyAuto(req);
       const from = String(body.from || '');
       if (!VALID_ID.test(from)) return sendJson(400, { ok: false, error: 'invalid from' });
@@ -2543,7 +2561,7 @@ async function handler(req, res) {
           ? `<button class="secondary" onclick="matStatus('${m.id}','pending')">取消确认</button>`
           : `<button onclick="matStatus('${m.id}','confirmed')">确认可用于生成</button>`}
           ${m.factStatus !== 'outdated' ? `<button class="secondary" onclick="matStatus('${m.id}','outdated')">标记过时</button>` : `<button class="secondary" onclick="matStatus('${m.id}','pending')">恢复待确认</button>`}
-          <button class="secondary" onclick="matEdit('${m.id}')">✏️ 编辑</button> <button class="danger" onclick="matDel('${m.id}')">🗑 删除</button></div>
+          <button class="secondary" onclick="matEdit('${m.id}')">${icon('pencil', 13)} 编辑</button> <button class="danger" onclick="matDel('${m.id}')">${icon('trash-2', 13)} 删除</button></div>
         <details open style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--mut)">事实层</summary>
           <form class="mat-facts" style="margin-top:6px;font-size:13px" onsubmit="return matFacts(event,'${m.id}')">
             ${FACT_KEYS.map((k) => `<p style="margin:2px 0">${FACT_LABELS[k]} <input name="f_${k}" value="${escAttr((m.facts || {})[k] || '')}" style="width:60%"></p>`).join('')}
@@ -2556,7 +2574,7 @@ async function handler(req, res) {
           </form>
         </details>
       </div>`;
-      return send(200, page('素材库', `<h1>🧱 素材库</h1>
+      return send(200, page('素材库', `<h1>${icon('box', 18)} 素材库</h1>
     ${corruptBanner()}
     <p style="font-size:13px;color:var(--mut)">事实层确认后才建议用于生成：只有「已确认」的素材会参与岗位草稿生成；旧素材默认待确认，需你预览后确认。${unconfirmed ? ` 当前 ${unconfirmed} 条未确认。` : ''}
     ${unconfirmed ? `<button class="secondary" onclick="matConfirmAll()">全部标记已确认（先预览再用）</button>` : ''}</p>
@@ -2733,7 +2751,7 @@ async function handler(req, res) {
       const snapFile = path.join(snapDir(id), ts + '.html');
       if (!fs.existsSync(snapFile)) return send(404, 'snapshot not found', 'text/plain');
       let html = fs.readFileSync(snapFile, 'utf8');
-      const banner = `<div style="position:sticky;top:0;z-index:1000;background:var(--warn-soft);color:var(--warn);padding:8px 16px;font-size:13px;text-align:center;border-bottom:2px solid var(--warn)">📜 历史快照只读预览（${ts}）</div><style>.edit-toolbar,.page-line{display:none!important}</style>`;
+      const banner = `<div style="position:sticky;top:0;z-index:1000;background:var(--warn-soft);color:var(--warn);padding:8px 16px;font-size:13px;text-align:center;border-bottom:2px solid var(--warn)">${icon('text-quote', 13)} 历史快照只读预览（${ts}）</div><style>.edit-toolbar,.page-line{display:none!important}</style>`;
       html = html.replace('contenteditable="true"', '').replace("sheet.contentEditable = 'true'", '');
       return send(200, html.replace('<body>', '<body>' + banner));
     }
@@ -2751,13 +2769,13 @@ async function handler(req, res) {
         const m = meta[ts] || {};
         return `<li class="card" style="margin:6px 0;padding:10px 12px">
           <div style="display:flex;justify-content:space-between;align-items:center">
-            <div><b>${ts}</b>${m.name ? ` <span class="badge">${escHtml(m.name)}</span>` : ''}${ts === baseline ? ' ' + badge('ok', '基准', 'pin') : ''}${referenced.has(ts) ? ' ' + badge('ai', '投递引用（不会被清理）', 'list-checks') : ''}${exportReferenced.has(ts) ? ' <span class="badge ai">📦 导出引用（不会被清理）</span>' : ''}
+            <div><b>${ts}</b>${m.name ? ` <span class="badge">${escHtml(m.name)}</span>` : ''}${ts === baseline ? ' ' + badge('ok', '基准', 'pin') : ''}${referenced.has(ts) ? ' ' + badge('ai', '投递引用（不会被清理）', 'list-checks') : ''}${exportReferenced.has(ts) ? ' ' + badge('ai', '导出引用（不会被清理）', 'package') : ''}
             ${m.note ? `<div style="font-size:12px;color:var(--mut);margin-top:2px">${escHtml(m.note)}</div>` : ''}</div>
             <div style="font-size:12px">
               <a href="/snapshot/view?id=${id}&ts=${ts}">预览</a> ·
               <a href="/snapshot/pdf?id=${id}&ts=${ts}" target="_blank">下载该版本 PDF</a> ·
               <a href="/diff?base=${id}@${ts}&to=${id}">对比当前</a> ·
-              <button class="secondary" style="padding:2px 8px" onclick="snapNote('${id}','${ts}')">✏️</button>
+              <button class="secondary" style="padding:2px 8px" onclick="snapNote('${id}','${ts}')">${icon('pencil', 13)}</button>
               <button class="secondary" style="padding:2px 8px" onclick="snapBaseline('${id}','${ts}')" aria-label="设为基准" title="设为基准">${icon('pin', 13)}</button>
               <form method="post" action="/rollback?id=${id}&ts=${ts}" style="display:inline" onsubmit="return confirm('回滚到 ${ts}？当前版本会先自动留一份快照')"><button class="secondary" style="padding:2px 8px">回滚</button></form>
             </div>
@@ -2902,8 +2920,8 @@ async function handler(req, res) {
             ${idx < APP_STATUSES.length - 1 && !APP_TERMINAL.includes(a.status) ? `<button class="secondary" style="padding:2px 8px" onclick="appPatch('${a.id}',{status:APP_STATUSES[${idx + 1}]})">▶</button>` : ''}
             <select style="font-size:12px;padding:2px" aria-label="状态" onchange="if(this.value)appPatch('${a.id}',{status:this.value})"><option value="">⇅</option>${APP_STATUSES.map((s) => `<option value="${s}"${s === a.status ? ' selected' : ''}>${s}</option>`).join('')}</select>
             <a href="/app?id=${escHtml(a.id)}">详情</a>
-            <button class="secondary" style="padding:2px 8px" aria-label="快速编辑" onclick="appEdit('${a.id}')">✏️</button>
-            <button class="danger" style="padding:2px 8px;min-height:28px" aria-label="删除投递" onclick="appDel('${a.id}')">🗑</button>
+            <button class="secondary" style="padding:2px 8px" aria-label="快速编辑" onclick="appEdit('${a.id}')">${icon('pencil', 13)}</button>
+            <button class="danger" style="padding:2px 8px;min-height:28px" aria-label="删除投递" onclick="appDel('${a.id}')">${icon('trash-2', 13)}</button>
           </div>
         </div>`;
       };
@@ -2988,7 +3006,7 @@ async function handler(req, res) {
       <b>面试记录</b> <button class="secondary" style="padding:2px 8px;font-size:12px" onclick="ivAdd()">＋</button>
       <div id="ivList">${interviews.map((iv, i) => `<div style="border-left:3px solid var(--accent);padding:8px;margin:8px 0;background:var(--bg)">
         <b>${escHtml(iv.round || '第' + (i + 1) + '轮')}</b> <span style="color:var(--mut);font-size:12px">${escHtml(iv.time || '')}</span>
-        <a href="/app/ics?id=${escHtml(app.id)}&i=${i}" target="_blank" style="font-size:12px;margin-left:8px">📅 ICS</a>
+        <a href="/app/ics?id=${escHtml(app.id)}&i=${i}" target="_blank" style="font-size:12px;margin-left:8px">${icon('calendar', 13)} ICS</a>
         ${iv.questions ? `<div style="font-size:13px;margin-top:4px"><b>问题：</b>${escHtml(iv.questions)}</div>` : ''}
         ${iv.answer ? `<div style="font-size:13px"><b>回答要点：</b>${escHtml(iv.answer)}</div>` : ''}
         ${iv.feedback ? `<div style="font-size:13px"><b>反馈：</b>${escHtml(iv.feedback)}</div>` : ''}
@@ -3121,9 +3139,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     ${corruptBanner()}
     <p>OpenAI 兼容格式，火山方舟可直接用（baseURL 填 <code>https://ark.cn-beijing.volces.com/api/v3</code>）。配置存本地 config.json，不进任何仓库、不进备份。</p>
     <div id="cards"></div>
-    <p><button type="button" id="addBtn">➕ 添加配置</button> <button type="button" id="saveBtn">保存</button> <a href="/">返回首页</a> <span id="msg"></span></p>
+    <p><button type="button" id="addBtn">${icon('plus', 13)} 添加配置</button> <button type="button" id="saveBtn">保存</button> <a href="/">返回首页</a> <span id="msg"></span></p>
     <div class="card" style="margin-top:20px">
-      <b style="font-family:var(--serif);font-size:14px">💾 备份与恢复</b>
+      <b style="font-family:var(--serif);font-size:14px">${icon('save', 13)} 备份与恢复</b>
       <p style="font-size:13px;color:var(--mut)">备份含 docs/snapshots/pdfs 与四个 JSON（docs-meta/applications/materials/evaluations），<b>不含 config.json（密钥不进备份）</b>。</p>
       <p><a href="/backup"><button>下载备份</button></a> <span style="font-size:12px;color:var(--mut)">恢复默认「合并」：本地独有记录保留，同 id 冲突以备份为准，预览里逐条列出</span></p>
       <form id="restoreForm"><input type="file" id="restoreFile" accept=".tar.gz,.tgz">
@@ -3336,7 +3354,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     }
     // ===== AI（统一正文提取；不再包含工具栏/占位符/隐藏内容）=====
     if (req.method === 'POST' && url.pathname === '/ai/rewrite') {
-      if (!hasLLM(root)) return send(409, '未配置大模型，请先到首页的"⚙️ 大模型设置"', 'text/plain');
+      if (!hasLLM(root)) return send(409, '未配置大模型，请先到首页的"大模型设置"', 'text/plain');
       const body = JSON.parse(await readBody(req));
       if (!body.text || !body.instruction) return send(400, 'text 和 instruction 必填', 'text/plain');
       const p = buildRewrite(body.text, body.instruction);
@@ -3344,7 +3362,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       return sendJson(200, { ok: true, revised });
     }
     if (req.method === 'POST' && url.pathname === '/ai/chat') {
-      if (!hasLLM(root)) return send(409, '未配置大模型，请先到首页的"⚙️ 大模型设置"', 'text/plain');
+      if (!hasLLM(root)) return send(409, '未配置大模型，请先到首页的"大模型设置"', 'text/plain');
       const body = JSON.parse(await readBody(req));
       if (!body.message) return send(400, 'message 必填', 'text/plain');
       if (body.id && !VALID_ID.test(body.id)) return send(400, 'invalid id', 'text/plain');
@@ -3363,7 +3381,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       return sendJson(200, { ok: true, ...(parsed || { reply: raw }) });
     }
     if (req.method === 'POST' && url.pathname === '/restructure') {
-      if (!hasLLM(root)) return send(409, '未配置大模型，请先到"⚙️ 大模型设置"', 'text/plain');
+      if (!hasLLM(root)) return send(409, '未配置大模型，请先到"大模型设置"', 'text/plain');
       if (!fs.existsSync(docPath(id))) return send(404, 'doc not found', 'text/plain');
       const html = fs.readFileSync(docPath(id), 'utf8');
       if (!html.includes('以下为 PDF 提取的原文')) return send(400, '该文档不是降级文档', 'text/plain');
@@ -3388,7 +3406,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       return redirect(`/edit?id=${id}`);
     }
     if (req.method === 'POST' && url.pathname === '/ai/review') {
-      if (!hasLLM(root)) return send(409, '未配置大模型，请先到首页的"⚙️ 大模型设置"', 'text/plain');
+      if (!hasLLM(root)) return send(409, '未配置大模型，请先到首页的"大模型设置"', 'text/plain');
       const body = JSON.parse(await readBody(req));
       if (body.id && !VALID_ID.test(body.id)) return send(400, 'invalid id', 'text/plain');
       if (body.mode !== 'full' && body.mode !== 'quant') return send(400, "mode 仅支持 'full'|'quant'", 'text/plain');
@@ -3403,7 +3421,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       return sendJson(200, parsed ? { ok: true, report: parsed } : { ok: true, reply: raw });
     }
     if (req.method === 'POST' && url.pathname === '/ai/match') {
-      if (!hasLLM(root)) return send(409, '未配置大模型，请先到首页的"⚙️ 大模型设置"', 'text/plain');
+      if (!hasLLM(root)) return send(409, '未配置大模型，请先到首页的"大模型设置"', 'text/plain');
       const body = JSON.parse(await readBody(req));
       if (body.id && !VALID_ID.test(body.id)) return send(400, 'invalid id', 'text/plain');
       if (typeof body.jd !== 'string' || !body.jd.trim()) return send(400, 'jd 必填', 'text/plain');
@@ -3506,7 +3524,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     // ===== 复盘 =====
     if (req.method === 'GET' && url.pathname === '/stats') {
       const apps = loadApps();
-      if (!apps.length) return send(200, page('复盘', `<h1>📊 复盘统计</h1><div class="card" style="text-align:center;padding:40px;color:var(--mut)">暂无投递记录<br><br><a href="/applications">先去投递看板添加记录</a></div>`, 'stats'));
+      if (!apps.length) return send(200, page('复盘', `<h1>${icon('chart-bar', 18)} 复盘统计</h1><div class="card" style="text-align:center;padding:40px;color:var(--mut)">暂无投递记录<br><br><a href="/applications">先去投递看板添加记录</a></div>`, 'stats'));
       const funnel = APP_STATUSES.map((s) => [s, apps.filter((a) => a.status === s).length]);
       const byCh = {}; apps.forEach((a) => { byCh[a.channel || '未填'] = (byCh[a.channel || '未填'] || 0) + 1; });
       const byDoc = {}; apps.forEach((a) => { byDoc[a.docId] = (byDoc[a.docId] || 0) + 1; });
@@ -3515,7 +3533,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const n = apps.length;
       const funnelBar = funnel.map(([s, c]) => `<div style="display:flex;align-items:center;margin:6px 0"><span style="width:70px;font-size:12px">${s}</span><div style="flex:1;background:var(--bg);border-radius:4px;height:20px"><div style="background:var(--accent);height:100%;border-radius:4px;width:${n ? (c / n * 100) : 0}%"></div></div><span style="width:30px;text-align:right;font-size:12px">${c}</span></div>`).join('');
       const warn = n < 10 ? `<div class="badge warn" style="margin-bottom:10px">${icon('circle-alert', 11)}样本量小（n=${n}），仅供参考</div>` : '';
-      return send(200, page('复盘', `<h1>📊 复盘统计 <span style="font-size:13px;font-weight:400;color:var(--mut)">n=${n}</span></h1>${warn}
+      return send(200, page('复盘', `<h1>${icon('chart-bar', 18)} 复盘统计 <span style="font-size:13px;font-weight:400;color:var(--mut)">n=${n}</span></h1>${warn}
     <div class="card"><b style="font-family:var(--serif);font-size:14px">状态分布</b><div style="font-size:11px;color:var(--mut);margin:4px 0">当前状态计数（非阶段漏斗；有面试记录即计入面试口径）</div>${funnelBar}</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px">
       <div class="card"><b style="font-family:var(--serif);font-size:14px">按渠道</b>${Object.entries(byCh).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
@@ -3895,7 +3913,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const pendingConflicts = pendingConflictsOf(meta);   // 复用已带 Array.isArray 兜底的实现：旧 meta 缺 changes 时原写法直接抛 TypeError 让整页 500
       const pendingImportant = (job && Array.isArray(job.changes) ? job.changes.filter((c) => c.level === 'important' && c.status === 'pending') : []);
       const gate = pendingConflicts.length
-        ? `<div class="card" style="border-color:var(--err-soft);background:var(--err-soft)"><b>⛔ 存在 ${pendingConflicts.length} 条事实冲突未处理，暂不能下载</b>
+        ? `<div class="card" style="border-color:var(--err-soft);background:var(--err-soft)"><b>${icon('circle-slash', 13)} 存在 ${pendingConflicts.length} 条事实冲突未处理，暂不能下载</b>
            <p style="font-size:13px">请到编辑器右侧「审阅」面板逐条处理（接受或撤销）后再导出：</p>
            <ul style="font-size:13px">${pendingConflicts.map((c) => `<li>${escHtml((c.section || '') + '：' + (c.reason || c.before || c.id))}</li>`).join('')}</ul>
            <p><a href="/edit?id=${id}">去处理 →</a></p></div>`
