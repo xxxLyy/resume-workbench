@@ -4064,7 +4064,7 @@ for (const [cls, ic] of [['ok', 'circle-check'], ['warn', 'circle-alert'], ['err
 // 徽章必须是小圆角胶囊 + 语义底色
 assert(/\.badge\{[^}]*border-radius:999px/.test(srv), '.badge 应为胶囊形');
 assert(/--success-bg/.test(srv) && /--warning-bg/.test(srv) && /--danger-bg/.test(srv), '徽章语义底色 token 缺失');
-// 状态标记不得再用裸 emoji：⚠️ ❌ ✅ ⚪ 🟡 🔴 在 HTML 模板中不得出现。
+// 状态标记不得再用裸 emoji：⚠️ ⚠ ❌ ✅ ⚪ 🟡 🔴 在代码/模板中不得出现（含数据侧模块）。
 // 【必须剥掉注释再查】——代码注释里大量用这些符号做安全审查标记
 //   （如「2026-10-19 审查 ⚪-6」「⚠️ 计数器必须在模块级」，实测 server.mjs 有 13 处）。
 //   不剥注释的断言会让执行者去删安全审查记录，把审计痕迹毁掉。
@@ -4076,9 +4076,16 @@ assert(/--success-bg/.test(srv) && /--warning-bg/.test(srv) && /--danger-bg/.tes
 const stripComments = (src) => src
   .split('\n').map((l) => l.replace(/^\s*\/\/.*$/, '').replace(/\s\/\/.*$/, '')).join('\n')
   .replace(/\/\*[\s\S]*?\*\//g, '');
-const code = stripComments(srv);
-const emojiHits = ['⚠️','❌','✅','⚪','🟡','🔴'].filter(e => code.includes(e));
-assert(emojiHits.length === 0, 'server.mjs 代码/模板中仍含状态 emoji: ' + emojiHits.join(' '));
+// 【扫描范围扩到数据侧模块】—— 第三方审查（ocr）独立发现漏网路径：UI-3 原先只扫 server.mjs，
+// 而 job.mjs / evidence.mjs 拼进 reason 的 '⚠️ ' 会经 pendingConflictsOf → 导出页
+// escHtml(c.reason) 原样透出（escHtml 按设计只处理 & < > " '，不处理 emoji）
+// → 断言全绿但用户仍看到 ⚠️ 状态标记。escHtml 拦不住 emoji，只能靠源头不产生，
+// 故 server.mjs + 两个数据侧模块同口径纳入。含裸形态 ⚠，避免「只换皮不换形」。
+for (const f of ['server.mjs', 'job.mjs', 'evidence.mjs']) {
+  const code = stripComments(readFileSync('./' + f, 'utf8'));
+  const emojiHits = ['⚠️','⚠','❌','✅','⚪','🟡','🔴'].filter(e => code.includes(e));
+  assert(emojiHits.length === 0, f + ' 代码/模板中仍含状态 emoji: ' + emojiHits.join(' '));
+}
 console.log('✅ UI-3 状态徽章图标化');
 EOF
 

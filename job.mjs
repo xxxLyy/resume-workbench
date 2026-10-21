@@ -159,7 +159,7 @@ export function factGuard(c, opts = {}) {
   }
   if (notes.length) {
     c.level = 'conflict';
-    c.reason = (c.reason ? c.reason + '；' : '') + '⚠️ ' + notes.join('；');
+    c.reason = (c.reason ? c.reason + '；' : '') + notes.join('；');
   }
   return c;
 }

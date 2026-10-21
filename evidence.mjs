@@ -322,7 +322,7 @@ export function guardOps(ops, ctx = {}) {
       const lostTok = tokens.filter((t) => g.before.includes(t) && !g.after.includes(t));
       if (lostDates.length || lostTok.length) {
         g.level = 'conflict';
-        g.reason = (g.reason ? g.reason + '；' : '') + '⚠️ 修改了受保护字段（必须原值保留）：' + [...lostDates, ...lostTok].join('、');
+        g.reason = (g.reason ? g.reason + '；' : '') + '修改了受保护字段（必须原值保留）：' + [...lostDates, ...lostTok].join('、');
       }
     }
     kept.push(g);
