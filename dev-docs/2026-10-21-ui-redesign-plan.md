@@ -329,9 +329,16 @@ for (const [cls, ic] of [['ok', 'circle-check'], ['warn', 'circle-alert'], ['err
 // 徽章必须是小圆角胶囊 + 语义底色
 assert(/\.badge\{[^}]*border-radius:999px/.test(srv), '.badge 应为胶囊形');
 assert(/--success-bg/.test(srv) && /--warning-bg/.test(srv) && /--danger-bg/.test(srv), '徽章语义底色 token 缺失');
-// 状态标记不得再用裸 emoji：⚠️ ❌ ✅ ⚪ 🟡 🔴 在 HTML 模板中不得出现
-const emojiHits = ['⚠️','❌','✅','⚪','🟡','🔴'].filter(e => srv.includes(e));
-assert(emojiHits.length === 0, 'server.mjs 仍含状态 emoji: ' + emojiHits.join(' '));
+// 状态标记不得再用裸 emoji：⚠️ ❌ ✅ ⚪ 🟡 🔴 在 HTML 模板中不得出现。
+// 【必须剥掉注释再查】——代码注释里大量用这些符号做安全审查标记
+//   （如「2026-10-19 审查 ⚪-6」「⚠️ 计数器必须在模块级」，实测 server.mjs 有 13 处）。
+//   不剥注释的断言会让执行者去删安全审查记录，把审计痕迹毁掉。
+const stripComments = (src) => src
+  .replace(/\/\*[\s\S]*?\*\//g, '')      // 块注释
+  .split('\n').map((l) => l.replace(/^\s*\/\/.*$/, '').replace(/\s\/\/.*$/, '')).join('\n');
+const code = stripComments(srv);
+const emojiHits = ['⚠️','❌','✅','⚪','🟡','🔴'].filter(e => code.includes(e));
+assert(emojiHits.length === 0, 'server.mjs 代码/模板中仍含状态 emoji: ' + emojiHits.join(' '));
 console.log('✅ UI-3 状态徽章图标化');
 EOF
 '''
@@ -384,7 +391,12 @@ Expected: `exit=1`，输出形如 `❌ UI-3 server.mjs 仍含状态 emoji: ⚠�
 
 **③ 清除状态 emoji**：把 server.mjs 模板里作为状态标记的 `⚠️` `❌` `✅` `⚪` `🟡` `🔴` 全部换成对应徽章或 `icon()` 调用。
 
-> ⚠️ 这一步是 257 处替换里最容易出错的部分。**只替换状态标记与功能图标，不要碰 `docToText`/`extract.mjs` 的文本处理路径**（那里的 emoji 是数据，不是 UI）。
+> ⚠️ 这一步是 257 处替换里最容易出错的部分。**只替换状态标记与功能图标**：
+> - **不要碰 `docs/*.html`** —— 那是用户的真实简历数据（实测两份简历正文里各有 3 个 emoji：💾📄🕘，
+>   属用户内容，不是 UI）。断言检查范围只有 5 个源码文件，天然不含 docs/，但手改时别越界。
+> - 不要碰 `docToText`/`extract.mjs` 的文本处理路径（那里的 emoji 是数据，不是 UI）
+> - **不要碰代码注释里的 emoji** —— `2026-10-19 审查 ⚪-6`、`⚠️ 计数器必须在模块级` 这类是**安全审计记录**，
+>   清理掉等于毁掉审查痕迹。断言已按「剥注释后检查」实现，不会误报它们。
 
 - [ ] **Step 3.4: 跑测试确认绿**
 
@@ -526,13 +538,16 @@ node --input-type=module << 'EOF'
 import { readFileSync } from 'node:fs';
 const assert = (c, m) => { if (!c) { console.error('❌ UI-5 ' + m); process.exit(1); } };
 const srv = readFileSync('./server.mjs', 'utf8');
-assert(/class="sidenav"/.test(srv), '首页应有侧栏 .sidenav');
-assert(/class="mainarea"/.test(srv), '首页应有内容区 .mainarea');
+assert(/class="sidenav"/.test(srv), '应有侧栏 .sidenav');
+assert(/class="mainarea"/.test(srv), '应有内容区 .mainarea');
 // 侧栏含五个导航入口
 const side = (srv.match(/<aside class="sidenav">[\s\S]*?<\/aside>/) || [''])[0];
 for (const t of ['文档', '素材库', '投递看板', '复盘', '设置']) {
   assert(side.includes(t), '侧栏应含入口: ' + t);
 }
+// 侧栏必须由 page() 渲染（第三参数 active 即当前页 key），而不是 listPage()——
+// listPage() 拿不到 active，无法做当前项高亮。断言侧栏模板与 page() 的 active 参数同处一个函数体。
+assert(/function page\([^)]*active/.test(srv), 'page() 应保留 active 参数（侧栏高亮依赖它）');
 // 统计块：原 statusline 横条拆成独立统计块
 assert(/class="stat-grid"/.test(srv), '首页应有统计块区 .stat-grid');
 assert((srv.match(/class="stat"/g) || []).length >= 3, '至少 3 个统计块');
@@ -557,8 +572,10 @@ Expected: `exit=1`，`❌ UI-5 首页应有侧栏 .sidenav`
 **① 加 CSS**（放在 `.topnav` 相关样式之后）：
 
 ```javascript
-/* 首页侧栏 + 内容区（批次B） */
-.home{display:grid;grid-template-columns:200px minmax(0,1fr);gap:24px;align-items:start;margin:16px 0 40px}
+/* 首页侧栏 + 内容区（批次B）
+   body 的 max-width:1100px 会把「侧栏+内容」压扁 → .home 自身定宽居中，
+   body 保持不限宽（下面 body 规则同步放宽）。 */
+.home{display:grid;grid-template-columns:200px minmax(0,1fr);gap:24px;align-items:start;margin:16px auto 40px;max-width:1400px}
 .sidenav{position:sticky;top:76px;border-right:1px solid var(--border);padding-right:16px;min-height:320px}
 .sidenav .side-brand{display:flex;align-items:center;gap:7px;font-weight:700;font-size:15px;margin-bottom:14px;color:var(--foreground)}
 .sidenav .side-brand svg{width:17px;height:17px}
@@ -576,20 +593,33 @@ Expected: `exit=1`，`❌ UI-5 首页应有侧栏 .sidenav`
 @media (max-width:860px){.home{grid-template-columns:1fr}.sidenav{position:static;border-right:0;border-bottom:1px solid var(--border);padding:0 0 10px;min-height:0}.sidenav a{display:inline-flex;margin-right:4px}}
 ```
 
-**② 改 `listPage()` 的返回结构**：把现有 hero + statusline + doclist 包进 `.mainarea`，并在前面插入 `.sidenav`：
+**② 侧栏渲染在 `page()` 里（不是 `listPage()`）** —— `page(title, inner, active='')` 的**第三参数 `active` 就是当前导航 key**（现有 `nav()` helper 已在用它做高亮）。放在 `page()` 里才能拿到 `active`；放在 `listPage()` 里拿不到，高亮无从谈起。
+
+**顺带的好处：全站统一侧栏**（不只首页）—— 这才是「统一设计语言」，也只需改一处。
+
+在 `page()` 的返回模板里，把 `${inner}` 换成：
 
 ```javascript
-  const sideNav = `<aside class="sidenav">
+  const side = `<aside class="sidenav">
     <div class="side-brand">${icon('file-text', 17)}简历工作台</div>
-    <a href="/" class="${activeNav === 'docs' ? 'on' : ''}">${icon('file-text', 15)}文档</a>
-    <a href="/materials" class="${activeNav === 'materials' ? 'on' : ''}">${icon('box', 15)}素材库</a>
-    <a href="/applications" class="${activeNav === 'apps' ? 'on' : ''}">${icon('columns-3', 15)}投递看板</a>
-    <a href="/stats" class="${activeNav === 'stats' ? 'on' : ''}">${icon('chart-bar', 15)}复盘</a>
-    <a href="/settings" class="${activeNav === 'settings' ? 'on' : ''}">${icon('settings', 15)}设置</a>
+    <a href="/" class="${active === 'docs' ? 'on' : ''}">${icon('file-text', 15)}文档</a>
+    <a href="/materials" class="${active === 'materials' ? 'on' : ''}">${icon('box', 15)}素材库</a>
+    <a href="/applications" class="${active === 'apps' ? 'on' : ''}">${icon('columns-3', 15)}投递看板</a>
+    <a href="/stats" class="${active === 'stats' ? 'on' : ''}">${icon('chart-bar', 15)}复盘</a>
+    <a href="/settings" class="${active === 'settings' ? 'on' : ''}">${icon('settings', 15)}设置</a>
   </aside>`;
 ```
 
-`listPage()` 内部需要 `activeNav` 变量（当前是 `'docs'`）。`listPage(showArchived)` 是首页专用，固定 `'docs'` 即可；若要通用，改为参数。
+模板结构（替换 901–902 行之间的 `${inner}`）：
+
+```javascript
+<nav class="topnav">…</nav>
+<div class="home">${side}<div class="mainarea">${inner}</div></div>
+```
+
+**注意**：`body{max-width:1100px}` 是页面总宽。加侧栏后总宽需放宽，否则侧栏+内容被压扁。CSS 里把 `body` 改为 `max-width:1440px`（`body.wide` 已是 `min(1440px,100%)`），或给 `.home` 设 `max-width:1400px;margin:0 auto` 并让 body 不限宽。**推荐后者**：body 保持不限宽，`.home` 自身定宽居中。
+
+**各页面内容宽度**：`body` 原 `max-width:1100px` 居中，改动后 `.mainarea` 内的内容（如投递看板的宽表格）会变宽 —— 属预期，但要**浏览器实测各页面无破版**。
 
 **③ 拆 statusline 为统计块**：原 `⚠️1份待结构化·⏰1份逾期·📋1份投递中·📑PDF已同步` 横条 → 4 个 `.stat`：
 
@@ -614,7 +644,14 @@ Expected: structure `exit=0` ✅=**100**；main `exit=0` ✅=**339**
 cd /Users/xxxly/resume && launchctl kickstart -k "gui/$(id -u)/com.lhx.resume-server" && sleep 3
 ```
 
-然后用 Playwright 打开 `http://localhost:7766/`，确认：① 侧栏五项可见且当前项高亮 ② 内容区有 H1 + 4 个统计块 ③ 文档列表正常 ④ 控制台零错误 ⑤ 窗口缩到 800px 宽时侧栏变顶部横条不破版。
+然后用 Playwright 逐页检查（侧栏是**全站**的，五个页面都要看）：
+
+`/`、`/materials`、`/applications`、`/stats`、`/settings` 各确认：
+① 侧栏五项可见、**当前页高亮**（这是 `page()` 第三参数 active 的落点）
+② 内容区正常、无破版、无横向滚动
+③ 控制台零错误
+④ 首页额外确认：H1 + 4 个统计块 + 文档列表
+⑤ 窗口缩到 800px 宽：侧栏变顶部横条，不破版
 
 - [ ] **Step 5.6: 提交**
 
@@ -653,10 +690,15 @@ import { readFileSync } from 'node:fs';
 const assert = (c, m) => { if (!c) { console.error('❌ UI-6 ' + m); process.exit(1); } };
 const srv = readFileSync('./server.mjs', 'utf8');
 const sh = readFileSync('./editor-shell.js', 'utf8');
-assert(/id="ed-grip"/.test(srv) || /ed-grip/.test(srv), '编辑器页应有拖柄 #ed-grip');
+// 拖柄 DOM 与 CSS 都必须由【注入层】创建 —— 编辑器页 HTML 就是 docs/*.html（用户数据），
+// server.mjs 不生成它。注入层可覆盖文档内联样式（test-editor.mjs:1879 已验证
+// 「.ed-on 特异性压过文档内联 chrome」），故覆盖方案成立。
+assert(/ed-grip/.test(sh), 'editor-shell.js 注入层应创建拖柄 #ed-grip（编辑器页 HTML 是数据文件，不能改）');
+assert(!/ed-grip/.test(srv), 'server.mjs 不该出现 ed-grip（编辑器页不由 server.mjs 生成）');
 assert(/pointerdown/.test(sh) && /pointermove/.test(sh), '拖拽须用 Pointer Events（非 HTML5 DnD）');
 assert(/--ed-right-w/.test(sh), '拖拽须写 --ed-right-w（该变量已存在但 CSS 从未消费）');
-assert(/ed-right-w/.test(srv), 'server.mjs 侧 CSS 须消费 --ed-right-w');
+assert(/ed-right-w/.test(sh), '注入层 CSS 须消费 --ed-right-w（覆盖式，body.ed-on 提高特异性）');
+assert(/ed-grip/.test(sh), '拖柄 DOM 须由注入层创建');
 assert(/localStorage/.test(sh), '宽度须持久化到 localStorage');
 // 键盘可达（WCAG dragging-alternative）
 assert(/keydown/.test(sh) && /ArrowLeft|ArrowRight/.test(sh), '拖柄须支持方向键调节');
@@ -676,26 +718,100 @@ Expected: `exit=1`，`❌ UI-6 编辑器页应有拖柄 #ed-grip`
 
 - [ ] **Step 6.3: 写实现**
 
-**① server.mjs：编辑器页加拖柄 + 消费 `--ed-right-w`**
+**① editor-shell.js：注入层创建拖柄 DOM + 覆盖式 CSS + 拖拽逻辑**
 
-编辑器页模板里在右栏 `<aside id="ed-right">` **之前**插入拖柄：
+**关键事实（2026-10-21 实测）**：编辑器页 HTML **就是 `docs/*.html`（用户数据文件）**，server.mjs 不生成它。页面上的 `data-ed-shell` style 是**注入层运行时动态创建**的（源码里搜不到字面量，因为 CSS 是压缩变量串）。
 
-```html
-<div id="ed-grip" role="separator" aria-orientation="vertical" tabindex="0" aria-label="调整右侧面板宽度" title="拖动调整宽度，双击复位"></div>
-```
+因此：
+- 拖柄 DOM **不能**加在 server.mjs 的模板里（那里没有编辑器页）
+- 必须由注入层 `createElement` + `insertAdjacentHTML` 挂进 DOM
+- CSS 覆盖走**更高特异性**（`body.ed-on #ed-grip` / `body.ed-on #ed-right`）——
+  `test-editor.mjs:1879` 已实测验证「`.ed-on` 特异性压过文档内联 chrome」
 
-加 CSS（编辑器相关样式区）：
+**注入层实现**（追加到 `editor-shell.js` 末尾的 IIFE 内，或作为独立 IIFE）：
 
 ```javascript
-#ed-grip{width:6px;flex:0 0 6px;cursor:col-resize;background:transparent;border-radius:3px;margin:0 1px;align-self:stretch;transition:background .12s}
-#ed-grip:hover,#ed-grip:focus-visible{background:var(--border)}
-#ed-grip:focus-visible{outline:2px solid var(--accent);outline-offset:-1px}
-/* 右栏宽度由 --ed-right-w 驱动（该变量早由 ai-panel.js 设置但 CSS 从未消费，本次接上） */
-#ed-right{width:var(--ed-right-w,300px);flex:0 0 var(--ed-right-w,300px);min-width:0}
-@media (max-width:767px){#ed-grip{display:none}#ed-right{position:absolute;right:0;top:0;bottom:0;width:min(88vw,360px);background:var(--background);border-left:1px solid var(--border);z-index:40}}
+// 可拖拽分栏（2026-10-21 批次C）：右栏宽度写 --ed-right-w。
+// 【为什么在注入层做】编辑器页 HTML 就是 docs/*.html（用户数据），server.mjs 不生成它；
+//   注入层可用更高特异性覆盖文档内联样式（test-editor.mjs:1879 已验证 .ed-on 压过文档 chrome）。
+// 用 Pointer Events 而非 HTML5 DnD：后者无法接管既有光标语义，Safari 上也不稳。
+(function () {
+  if (!document.body.classList.contains('ed-on')) return;   // 只在编辑器页启用
+  var right = document.getElementById('ed-right');
+  if (!right || document.getElementById('ed-grip')) return; // 已存在则不重复注入
+  var KEY = 'resume.ed.rightW', MIN = 260, MAX = 460, DEFAULT = 300;
+  var body = document.body;
+
+  // ① 拖柄 DOM：插在右栏之前
+  var grip = document.createElement('div');
+  grip.id = 'ed-grip';
+  grip.setAttribute('role', 'separator');
+  grip.setAttribute('aria-orientation', 'vertical');
+  grip.setAttribute('tabindex', '0');
+  grip.setAttribute('aria-label', '调整右侧面板宽度');
+  grip.title = '拖动调整宽度，双击复位';
+  right.parentNode.insertBefore(grip, right);
+
+  // ② 覆盖式 CSS（body.ed-on 提高特异性，压过文档内联 chrome）
+  var st = document.createElement('style');
+  st.setAttribute('data-ed-grip', '1');
+  st.textContent = 'body.ed-on #ed-grip{width:6px;flex:0 0 6px;align-self:stretch;cursor:col-resize;background:transparent;border-radius:3px;margin:0 1px;transition:background .12s}'
+    + 'body.ed-on #ed-grip:hover,body.ed-on #ed-grip:focus-visible{background:var(--ed-line,#DED3C0)}'
+    + 'body.ed-on #ed-grip:focus-visible{outline:2px solid var(--ed-accent,#C2410C);outline-offset:-1px}'
+    + 'body.ed-on #ed-right{width:var(--ed-right-w,300px);flex:0 0 var(--ed-right-w,300px);min-width:0}'
+    + '@media (max-width:767px){body.ed-on #ed-grip{display:none}body.ed-on #ed-right{position:absolute;right:0;top:0;bottom:0;width:min(88vw,360px);background:var(--ed-bg,#F0EBE2);border-left:1px solid var(--ed-line,#DED3C0);z-index:40}}';
+  document.head.appendChild(st);
+
+  // ③ 宽度应用与持久化
+  var apply = function (w) {
+    w = Math.max(MIN, Math.min(MAX, Math.round(w)));
+    body.style.setProperty('--ed-right-w', w + 'px');
+    return w;
+  };
+  var saved = Number(localStorage.getItem(KEY) || 0);
+  if (saved >= MIN && saved <= MAX) apply(saved);
+
+  // ④ 拖拽
+  var dragging = false, startX = 0, startW = 0;
+  grip.addEventListener('pointerdown', function (e) {
+    if (window.innerWidth < 768) return;         // 窄屏是抽屉，不拖
+    dragging = true; startX = e.clientX;
+    startW = right.getBoundingClientRect().width;
+    grip.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  grip.addEventListener('pointermove', function (e) {
+    if (!dragging) return;
+    apply(startW - (e.clientX - startX));        // 往左拖 → 面板变宽
+  });
+  var end = function (e) {
+    if (!dragging) return;
+    dragging = false;
+    try { grip.releasePointerCapture(e.pointerId); } catch {}
+    var w = Number((body.style.getPropertyValue('--ed-right-w') || '').replace('px', ''));
+    if (w) localStorage.setItem(KEY, String(w));
+  };
+  grip.addEventListener('pointerup', end);
+  grip.addEventListener('pointercancel', end);
+  grip.addEventListener('dblclick', function () { apply(DEFAULT); localStorage.setItem(KEY, String(DEFAULT)); });
+
+  // ⑤ 键盘可达（WCAG dragging-alternative）：←/→ 每次 16px，Home 复位
+  grip.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      var cur = Number((body.style.getPropertyValue('--ed-right-w') || DEFAULT).replace('px', '')) || DEFAULT;
+      apply(cur + (e.key === 'ArrowLeft' ? 16 : -16));
+      localStorage.setItem(KEY, String(Number((body.style.getPropertyValue('--ed-right-w') || '').replace('px', ''))));
+      e.preventDefault();
+    } else if (e.key === 'Home') {
+      apply(DEFAULT); localStorage.setItem(KEY, String(DEFAULT)); e.preventDefault();
+    }
+  });
+})();
 ```
 
-**② editor-shell.js：拖拽逻辑**（追加到文件末尾的 IIFE 内，或作为独立 IIFE）：
+**注意**：`--ed-right-w` 早由 `ai-panel.js:181` 设置（窄屏时置 `0px`），本实现与之共用同一变量——窄屏时 ai-panel 会置 0，本实现因 `window.innerWidth < 768` 直接 return 不抢，最终仍由 ai-panel 控制抽屉行为。**不新增变量。**
+
+**实测补充（2026-10-21）**：服务端返回的编辑器页 HTML 里**只有 1 个 style 块**（`data-style-origin="legacy-inline"`，即数据文件里的），**没有任何 `#ed-right` 宽度规则**。编辑器 chrome 的全部 CSS 都在注入层运行时动态创建（源码里 grep 不到字面量，因为 CSS 是压缩变量串）。所以覆盖点只能在注入层，且要用 `body.ed-on` 前缀提高特异性——`test-editor.mjs:1879` 已实测验证「`.ed-on` 特异性压过文档内联 chrome」这条路可行。
 
 ```javascript
 // 可拖拽分栏（2026-10-21 批次C）：右栏宽度写 --ed-right-w。
@@ -785,7 +901,9 @@ Expected: `exit=0`。**若因本次改动变红，先定位是否与拖拽相关
 cd /Users/xxxly/resume && git add server.mjs editor-shell.js test-structure.sh && git commit -m "feat(ui): 批次C — 编辑器可拖拽分栏
 
 现状：正文 794px(A4 纸宽，在数据文件里不动) + 右栏 300px 写死，中间空白浪费。
-改法：加 #ed-grip 拖柄，Pointer Events 拖动写 --ed-right-w（260–460px）。
+改法：注入层（editor-shell.js）创建 #ed-grip 拖柄 + 覆盖式 CSS（body.ed-on 提高特异性，
+压过文档内联 chrome，test-editor.mjs:1879 已验证），Pointer Events 拖动写 --ed-right-w（260–460px）。
+【关键】编辑器页 HTML 就是 docs/*.html（用户数据），server.mjs 不生成它 —— 拖柄不能加在 server.mjs 模板里。
   —— 该变量早由 ai-panel.js:181 设置但 CSS 从未消费，本次正好接上，不新增变量。
 持久化 localStorage；双击复位 300px；←/→ 每次 16px、Home 复位（WCAG dragging-alternative）。
 窄屏(<768px)右栏变抽屉、拖柄隐藏，沿用现有 ed-open/ed-hidden 机制。
@@ -816,10 +934,15 @@ import { readFileSync } from 'node:fs';
 const assert = (c, m) => { if (!c) { console.error('❌ UI-7 ' + m); process.exit(1); } };
 // UI 层的 emoji 必须清零（数据层的正文文本不在此列）
 const UI_EMOJI = ['📄','🧱','📋','📊','⚙️','🤖','💡','🎯','✨','👋','💬','🩺','📍','🎨','✏️','🗑','➕','💾','📌','🏷','🔗','☰','✕','📅','🔁','🏠','📜','📦','🗄','🧭','✎','⛔','🟡','🔴','⚪','✅','❌','⚠️'];
+// 剥掉注释再查：注释里的 emoji 是安全审查记录（⚪-6 / 🟡-1 / 🔴-1），
+// 属于审计痕迹，**不得清理**。只要求 UI 层（代码与模板字符串）零 emoji。
+const stripComments = (src) => src
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .split('\n').map((l) => l.replace(/^\s*\/\/.*$/, '').replace(/\s\/\/.*$/, '')).join('\n');
 for (const f of ['server.mjs','editor-shell.js','job-panel.js','zone-panel.js','ai-panel.js']) {
-  const src = readFileSync('./' + f, 'utf8');
-  const hits = UI_EMOJI.filter(e => src.includes(e));
-  assert(hits.length === 0, f + ' 仍含 emoji: ' + hits.join(' '));
+  const code = stripComments(readFileSync('./' + f, 'utf8'));
+  const hits = UI_EMOJI.filter(e => code.includes(e));
+  assert(hits.length === 0, f + ' 代码/模板中仍含 emoji: ' + hits.join(' '));
 }
 console.log('✅ UI-7 前端源码无 emoji 残留');
 EOF
