@@ -3912,3 +3912,33 @@ assert(!/^\s*let aiInFlight = 0/m.test(srv), '不得把计数器声明在请求�
 assert(/function gate\(req, res, pathname\)/.test(srv), 'gate 必须显式接收 req/res');
 console.log('✅ SEC-2 /ai/* 与渲染并发闸门（429 + 模块级计数器 + 显式参数）');
 EOF
+
+# —— UI-1：图标数据完整且可渲染（批次A 地基）——
+node --input-type=module << 'EOF'
+import { ICONS } from './vendors/icons.js';
+const assert = (c, m) => { if (!c) { console.error('❌ UI-1 ' + m); process.exit(1); } };
+const NAMES = ['file-text','box','columns-3','chart-bar','settings','house','archive','trash-2','pencil','plus','save','link','map-pin','bot','lightbulb','target','sparkles','hand','message-square','stethoscope','palette','refresh-cw','menu','calendar','type','x','check','circle-alert','circle-check','circle-x','circle-help','clock','list-checks','database','package','folder-open','layout-dashboard','square-pen','text-quote','compass','pin','tag','undo-2','circle-slash'];
+// lucide 的 circle/rect/line/polyline/ellipse 元素没有 d 属性，只有 path 才有 —— 按标签断言各自几何属性
+const REQUIRED = {
+  path: ['d'],
+  circle: ['cx', 'cy', 'r'],
+  rect: ['x', 'y', 'width', 'height'],
+  line: ['x1', 'y1', 'x2', 'y2'],
+  polyline: ['points'],
+  polygon: ['points'],
+  ellipse: ['cx', 'cy', 'rx', 'ry'],
+};
+assert(Object.keys(ICONS).length === 44, '图标总数 44，实际 ' + Object.keys(ICONS).length);
+for (const n of NAMES) {
+  assert(Array.isArray(ICONS[n]) && ICONS[n].length > 0, n + ' 存在且非空');
+  for (const [tag, attrs] of ICONS[n]) {
+    const req = REQUIRED[tag];
+    assert(!!req, n + ' 的标签类型非法: ' + tag);
+    for (const a of req) {
+      assert(typeof attrs[a] === 'string' && attrs[a].length > 0, n + ' 的 ' + tag + ' 缺少 ' + a);
+    }
+    assert(!('key' in attrs), n + ' 不应残留 key 属性');
+  }
+}
+console.log('✅ UI-1 图标数据完整（44 个）');
+EOF
