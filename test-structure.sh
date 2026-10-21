@@ -4076,3 +4076,49 @@ const emojiHits = ['⚠️','❌','✅','⚪','🟡','🔴'].filter(e => code.in
 assert(emojiHits.length === 0, 'server.mjs 代码/模板中仍含状态 emoji: ' + emojiHits.join(' '));
 console.log('✅ UI-3 状态徽章图标化');
 EOF
+
+# —— UI-4：导航图标化（emoji 导航条）——
+# 【与计划原文的差异·必读】计划原文第 3 条断言 `assert(/<svg/.test(navLine))`
+# 扫的是 **源码模板文本**，但计划给的实现（Step 4.3）写的是 `${icon(...)}` 调用 ——
+# 源码里永远不会有字面量 `<svg`，该断言对「正确实现」恒红（实测 exit=1
+# `❌ UI-4 导航应含内联 SVG`）。故改为：**把导航模板真跑一遍**，对渲染后的 HTML 断言。
+# 意图不变（验证导航项「图标 + 文字」同现，WCAG nav-label-icon），强度更高。
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+import { ICONS } from './vendors/icons.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ UI-4 ' + m); process.exit(1); } };
+const srv = readFileSync('./server.mjs', 'utf8');
+const navLine = (srv.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
+assert(navLine, '应能定位导航条模板');
+
+// 抠出 server.mjs 里实际发布的 icon() 与 nav()（同 UI-2 的做法）执行
+const iStart = srv.indexOf('const ICON_TAG_WHITELIST');
+const iEnd = srv.indexOf('function page(');
+assert(iStart > 0 && iEnd > iStart, '应能定位 icon() 源码区间');
+const icon = new Function('ICONS', srv.slice(iStart, iEnd) + '\nreturn icon;')(ICONS);
+const navSrc = (srv.match(/^[ \t]*const nav = .*$/m) || [''])[0];
+assert(navSrc, '应能定位 nav() helper 源码');
+assert(/const nav = \(key, href, label, ic\)/.test(navSrc), 'nav() 应加第 4 参数 ic');
+const navHtml = new Function('icon', 'active', navSrc + '\nreturn `' + navLine + '`;')(icon, 'docs');
+
+// 导航里不得再有 emoji（源码模板 + 渲染结果都查）
+const hits = ['\U0001F4C4','\U0001F9F1','\U0001F4CB','\U0001F4CA','⚙️'].filter(e => navLine.includes(e) || navHtml.includes(e));
+assert(hits.length === 0, '导航条仍含 emoji: ' + hits.join(' '));
+
+// 渲染结果必须含内联 SVG
+assert(/<svg/.test(navHtml), '导航应含内联 SVG');
+
+// brand + 5 个导航项：每项都必须「图标 + 文字」同现（WCAG nav-label-icon）
+const links = (navHtml.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []);
+assert(links.length === 6, '导航应有 6 个链接（brand + 5 项），实际 ' + links.length);
+assert(links[0].includes(icon('file-text', 17)) && links[0].includes('简历工作台'), 'brand 应为图标 + 文字');
+const NAV = [['file-text','文档'],['box','素材库'],['columns-3','投递看板'],['chart-bar','复盘'],['settings','设置']];
+NAV.forEach(([ic, label], idx) => {
+  const a = links[idx + 1] || '';
+  assert(a.includes('>' + label + '<'), '导航项应有文字: ' + label);
+  assert(a.includes(icon(ic, 15)), '导航项应使用图标 ' + ic + '（' + label + '）');
+});
+// 当前项高亮没被改坏
+assert(links[1].includes('class="on"'), '当前项（文档）应高亮 class="on"');
+console.log('✅ UI-4 导航图标化');
+EOF

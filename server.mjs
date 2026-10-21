@@ -858,7 +858,8 @@ function icon(name, size = 16, cls = '') {
 }
 
 function page(title, inner, active = '', wide = false) {
-  const nav = (key, href, label) => `<a href="${href}"${active === key ? ' class="on"' : ''}>${label}</a>`;
+  // 第 4 参 ic = Lucide 图标名（白名单外 icon() 返回空串 → 退化为纯文字，不炸）
+  const nav = (key, href, label, ic) => `<a href="${href}"${active === key ? ' class="on"' : ''}>${ic ? icon(ic, 15) : ''}${label}</a>`;
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
 <style>/*BENTO-V1*/
 /* 浅色克制设计系统（2026-10-21 UI 重设计，设计文档 dev-docs/2026-10-21-ui-redesign-design.md）：
@@ -875,8 +876,10 @@ a{color:var(--accent);text-decoration:none;font-weight:600}
    届时用媒体查询 / :has() 单独加一档，不改此默认值。 */
 html{scroll-padding-top:64px}
 .topnav{display:flex;justify-content:space-between;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-lg);box-shadow:var(--shadow);padding:10px 18px;margin:16px 0 20px;position:sticky;top:12px;z-index:50;flex-wrap:wrap;gap:8px}
-.topnav .brand{font-family:var(--serif);letter-spacing:.4px;font-weight:800;font-size:16px;color:var(--ink)}
-.topnav .links a{margin-left:16px;color:var(--mut);font-weight:600}
+.topnav .brand{display:inline-flex;align-items:center;gap:6px;font-family:var(--serif);letter-spacing:.4px;font-weight:800;font-size:16px;color:var(--ink)}
+.topnav .brand svg{width:17px;height:17px;flex:none}
+.topnav .links a{display:inline-flex;align-items:center;gap:5px;margin-left:16px;color:var(--mut);font-weight:600}
+.topnav .links a svg{width:15px;height:15px;flex:none}
 .topnav .links a.on{color:var(--accent)}
 .topnav .links a:hover{color:var(--ink)}
 h1{font-family:var(--serif);font-size:26px;font-weight:800;letter-spacing:.6px;margin:6px 0 12px}
@@ -946,7 +949,7 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 @media(prefers-reduced-motion:reduce){.doc-card{transition:none!important}.doc-card:hover{transform:none!important}}
 </style></head><body${wide ? ' class="wide"' : ''}>
 <script>${STATUS_SCRIPT}</script>
-<nav class="topnav"><a class="brand" href="/">📄 简历工作台</a><span class="links">${nav('docs', '/', '文档')}${nav('materials', '/materials', '🧱 素材库')}${nav('apps', '/applications', '📋 投递看板')}${nav('stats', '/stats', '📊 复盘')}${nav('settings', '/settings', '⚙️ 设置')}</span></nav>
+<nav class="topnav"><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><span class="links">${nav('docs', '/', '文档', 'file-text')}${nav('materials', '/materials', '素材库', 'box')}${nav('apps', '/applications', '投递看板', 'columns-3')}${nav('stats', '/stats', '复盘', 'chart-bar')}${nav('settings', '/settings', '设置', 'settings')}</span></nav>
 ${inner}
 <footer>简历平台 · 本地优先 · 数据在 ${path.basename(root) === 'resume' ? '~/resume' : 'RESUME_ROOT'}</footer>
 </body></html>`;
