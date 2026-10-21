@@ -4154,3 +4154,24 @@ assert(/@media\s*\(max-width:\s*\d+px\)\s*\{html\{[^}]*scroll-padding-top\s*:\s*
   '窄屏应有 scroll-padding-top 档位（媒体查询内单独覆盖）');
 console.log('✅ UI-5 首页侧栏 + 内容区');
 EOF
+
+# —— UI-6：编辑器可拖拽分栏（结构层，浏览器行为见 test-editor.mjs）——
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const assert = (c, m) => { if (!c) { console.error('❌ UI-6 ' + m); process.exit(1); } };
+const srv = readFileSync('./server.mjs', 'utf8');
+const sh = readFileSync('./editor-shell.js', 'utf8');
+// 拖柄 DOM 与 CSS 都必须由【注入层】创建 —— 编辑器页 HTML 就是 docs/*.html（用户数据），
+// server.mjs 不生成它。注入层可覆盖文档内联样式（test-editor.mjs:1879 已验证
+// 「.ed-on 特异性压过文档内联 chrome」），故覆盖方案成立。
+assert(/ed-grip/.test(sh), 'editor-shell.js 注入层应创建拖柄 #ed-grip（编辑器页 HTML 是数据文件，不能改）');
+assert(!/ed-grip/.test(srv), 'server.mjs 不该出现 ed-grip（编辑器页不由 server.mjs 生成）');
+assert(/pointerdown/.test(sh) && /pointermove/.test(sh), '拖拽须用 Pointer Events（非 HTML5 DnD）');
+assert(/--ed-right-w/.test(sh), '拖拽须写 --ed-right-w（该变量已存在但 CSS 从未消费）');
+assert(/ed-right-w/.test(sh), '注入层 CSS 须消费 --ed-right-w（覆盖式，body.ed-on 提高特异性）');
+assert(/ed-grip/.test(sh), '拖柄 DOM 须由注入层创建');
+assert(/localStorage/.test(sh), '宽度须持久化到 localStorage');
+// 键盘可达（WCAG dragging-alternative）
+assert(/keydown/.test(sh) && /ArrowLeft|ArrowRight/.test(sh), '拖柄须支持方向键调节');
+console.log('✅ UI-6 可拖拽分栏（结构层）');
+EOF

@@ -10,7 +10,7 @@
   try { localStorage.setItem('resume-last-active-doc', DOC_ID); } catch (e) { /* 隐私模式下忽略 */ }
   if (!sheet) return;
   // 幂等：清掉历史落盘/重复注入的外壳 DOM 与样式后重建（落盘残留无事件绑定，复用会是死 UI）
-  ['ed-left', 'ed-right', 'ed-status', 'ed-canvas-tools', 'ed-seltb', 'ed-matpop', 'ed-matmask'].forEach(function (id) {
+  ['ed-left', 'ed-right', 'ed-grip', 'ed-status', 'ed-canvas-tools', 'ed-seltb', 'ed-matpop', 'ed-matmask'].forEach(function (id) {
     var stale = document.getElementById(id);
     if (stale) stale.remove();
   });
@@ -115,6 +115,20 @@
     // 右栏
     + '#ed-right{grid-row:2/4;grid-column:3;background:var(--ed-panel);border-left:1px solid var(--ed-line);display:flex;flex-direction:column;min-width:0;overflow:hidden}'
     + '#ed-right.ed-hidden{display:none}'
+    // 批次C：右栏拖柄。grid item，与 #ed-right 同格（行 2/4、列 3）——
+    // justify-self:start + margin-left:-3px 让 6px 竖条骑在正文/右栏交界上；
+    // body.ed-on 提高特异性，压过文档内联 chrome（编辑器页 HTML 是 docs/*.html 用户数据，注入层才有最终解释权）。
+    + 'body.ed-on #ed-grip{grid-row:2/4;grid-column:3;justify-self:start;align-self:stretch;'
+    + 'width:min(6px,100%);margin-left:-3px;z-index:6;cursor:col-resize;background:transparent;'
+    + 'border-radius:3px;transition:background .12s}'
+    + 'body.ed-on #ed-grip:hover,body.ed-on #ed-grip:focus-visible{background:var(--ed-line)}'
+    + 'body.ed-on #ed-grip:focus-visible{outline:2px solid var(--ed-accent);outline-offset:-1px}'
+    // 拖拽/键盘调宽时禁掉列宽过渡（body.ed-on 有 grid-template-columns .2s 过渡，否则每一步都拖泥带水）
+    + 'body.ed-on.ed-nofx{transition:none}'
+    // 聚焦模式收起左右栏 → 拖柄无意义（且不能是隐形焦点陷阱）
+    + '.ed-on.ed-focus #ed-grip{display:none}'
+    // 窄屏右栏是抽屉（position:fixed），没有边界可拖 → 拖柄隐藏
+    + '@media(max-width:767px){body.ed-on #ed-grip{display:none}}'
     + '#ed-rtabs{display:flex;gap:2px;border-bottom:1px solid var(--ed-line);padding:8px 8px 0;flex:none;overflow-x:auto}'
     + '#ed-rtabs button{flex:1;min-height:32px;padding:0 4px;border:none;background:transparent;font-size:12px;font-weight:600;color:var(--ed-mut);cursor:pointer;border-radius:7px 7px 0 0;box-shadow:inset 0 0 0 transparent}'
     + '#ed-rtabs button[aria-selected="true"]{color:var(--ed-accent);box-shadow:inset 0 -2px 0 var(--ed-accent)}'
@@ -1481,6 +1495,106 @@
     + '<div id="ed-pane-typo" class="ed-pane" role="tabpanel" aria-label="排版设置"></div>';
   mount(right);
 
+  // ===== 批次C：右栏可拖拽分栏（拖柄 DOM 只能由注入层建）=====
+  // 【为什么在注入层做】编辑器页 HTML 就是 docs/*.html（用户真实数据文件），server.mjs 不生成它；
+  //   拖柄只能由注入层 createElement 挂进 body；CSS 走更高特异性（body.ed-on #ed-grip）压过文档内联 chrome。
+  // 宽度写 --ed-right-w：body.ed-on 的 grid 第三列就是它（grid-template-columns:var(--ed-right-w,320px)），
+  //   ai-panel.js / toggleRight 早就在写这个变量，本次接上，不新增变量。
+  // 拖柄是 grid item：与 #ed-right 同格（行 2/4、列 3），justify-self:start + margin-left:-3px 骑在交界线上。
+  var GRIP_KEY = 'resume.ed.rightW';
+  var GRIP_MIN = 260, GRIP_MAX = 460, GRIP_DEFAULT = 300;
+  function readGripW() {                       // 拖过才认；没拖过保持旧行为（320px）
+    var s = Number(localStorage.getItem(GRIP_KEY) || 0);
+    return (s >= GRIP_MIN && s <= GRIP_MAX) ? s : 0;
+  }
+  function rightW() {                          // 折叠/宽度档复位时用：拖过就沿用拖后的宽度
+    var s = readGripW();
+    return s ? s + 'px' : '320px';
+  }
+  var grip = document.createElement('div');
+  grip.id = 'ed-grip';
+  grip.setAttribute('role', 'separator');
+  grip.setAttribute('aria-orientation', 'vertical');
+  grip.setAttribute('tabindex', '0');
+  grip.setAttribute('aria-label', '调整右侧面板宽度');
+  grip.setAttribute('aria-valuemin', String(GRIP_MIN));
+  grip.setAttribute('aria-valuemax', String(GRIP_MAX));
+  grip.title = '拖动调整宽度，双击复位';
+  right.parentNode.insertBefore(grip, right.nextSibling);
+  var curW = 0;
+  function applyW(w) {
+    w = Math.max(GRIP_MIN, Math.min(GRIP_MAX, Math.round(w)));
+    curW = w;
+    document.body.style.setProperty('--ed-right-w', w + 'px');
+    grip.setAttribute('aria-valuenow', String(w));
+    return w;
+  }
+  function currentW() {                        // 当前生效宽度：内联值 → 实测宽 → 默认
+    var v = Number((document.body.style.getPropertyValue('--ed-right-w') || '').replace('px', ''));
+    if (v) return v;
+    return Math.round(right.getBoundingClientRect().width) || GRIP_DEFAULT;
+  }
+  function syncGrip() {                        // 右栏折叠时拖柄同步隐身（不可见也不该被键盘聚焦）
+    var off = right.classList.contains('ed-hidden');
+    grip.style.display = off ? 'none' : '';
+    grip.setAttribute('tabindex', off ? '-1' : '0');
+  }
+  var savedW = readGripW();
+  if (savedW && !right.classList.contains('ed-hidden')) applyW(savedW);
+  else grip.setAttribute('aria-valuenow', String(Math.round(right.getBoundingClientRect().width) || GRIP_DEFAULT));
+  syncGrip();
+
+  // 瞬时改宽：禁掉列宽过渡（body.ed-on 有 grid-template-columns .2s 过渡，否则键盘每一步都发木）
+  function noFx() { document.body.classList.add('ed-nofx'); }
+  function endFx() {
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () { document.body.classList.remove('ed-nofx'); });
+    });
+  }
+  // 拖拽：Pointer Events（非 HTML5 DnD——后者接不住既有光标语义，Safari 上也不稳）
+  var dragging = false, startX = 0, startW = 0;
+  grip.addEventListener('pointerdown', function (e) {
+    if (window.innerWidth < 768) return;       // 窄屏右栏是抽屉，没有边界可拖
+    dragging = true; startX = e.clientX;
+    startW = right.getBoundingClientRect().width;
+    noFx();
+    try { grip.setPointerCapture(e.pointerId); } catch (err) {}
+    e.preventDefault();
+  });
+  grip.addEventListener('pointermove', function (e) {
+    if (!dragging) return;
+    applyW(startW - (e.clientX - startX));     // 往左拖 → 面板变宽
+  });
+  function endDrag(e) {
+    if (!dragging) return;
+    dragging = false;
+    document.body.classList.remove('ed-nofx');
+    try { grip.releasePointerCapture(e.pointerId); } catch (err) {}
+    if (curW) localStorage.setItem(GRIP_KEY, String(curW));
+  }
+  grip.addEventListener('pointerup', endDrag);
+  grip.addEventListener('pointercancel', endDrag);
+  grip.addEventListener('dblclick', function () {                  // 双击复位 300px
+    applyW(GRIP_DEFAULT);
+    localStorage.setItem(GRIP_KEY, String(GRIP_DEFAULT));
+  });
+  // 键盘可达（WCAG dragging-alternative）：←/→ 每次 16px，Home 复位
+  grip.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      noFx();
+      applyW(currentW() + (e.key === 'ArrowLeft' ? 16 : -16));
+      endFx();
+      localStorage.setItem(GRIP_KEY, String(curW));
+      e.preventDefault();
+    } else if (e.key === 'Home') {
+      noFx();
+      applyW(GRIP_DEFAULT);
+      endFx();
+      localStorage.setItem(GRIP_KEY, String(GRIP_DEFAULT));
+      e.preventDefault();
+    }
+  });
+
   right.querySelector('#ed-rtabs').addEventListener('click', function (e) {
     var b = e.target.closest('button');
     if (b) selectTab(b.dataset.pane);
@@ -1524,12 +1638,13 @@
     if (window.innerWidth < 768) right.classList.toggle('ed-open');
     else {
       right.classList.toggle('ed-hidden');
-      document.body.style.setProperty('--ed-right-w', right.classList.contains('ed-hidden') ? '0px' : '320px');
+      document.body.style.setProperty('--ed-right-w', right.classList.contains('ed-hidden') ? '0px' : rightW());
+      syncGrip();
     }
     persistSoon();                       // S2-T6
   }
-  // S2-T6 薄封装（不改行为）：面板宽只有两值（左 208px|0px、右 320px|0px），无拖拽调节，
-  // 故测试直接驱动真实折叠函数，不靠文本匹配猜按钮（调用方仍是工具条那两颗 data-ed-inj 按钮）。
+  // S2-T6 薄封装（不改行为）：左栏仍是 208px|0px 两态；右栏批次C 起可拖拽（宽度存 resume.ed.rightW，
+  // 折叠仍存布尔），故测试直接驱动真实折叠函数，不靠文本匹配猜按钮（调用方仍是工具条那两颗 data-ed-inj 按钮）。
   window.__edToggleLeft = toggleLeft;
   window.__edToggleRight = toggleRight;
   window.__edToggleLeftNarrow = function () { left.classList.toggle('ed-open'); };
@@ -1563,17 +1678,20 @@
     var hidden = right.classList.contains('ed-hidden');
     if (reviewActive() && hidden) {
       right.classList.remove('ed-hidden');
-      document.body.style.setProperty('--ed-right-w', window.innerWidth >= 768 ? '320px' : '0px');
+      document.body.style.setProperty('--ed-right-w', window.innerWidth >= 768 ? rightW() : '0px');
+      syncGrip();
     } else if (!reviewActive() && !hidden) {
       right.classList.add('ed-hidden');
       document.body.style.setProperty('--ed-right-w', '0px');
+      syncGrip();
     }
   }
   window.__edApplyWidthTier = applyWidthTier;   // 供 Tab 切换后联动（selectTab 调用）与测试驱动
 
   // ===== S2-T6 会话状态（per-doc localStorage；滚动容器是 .sheet 自身；折叠存布尔而非 0 宽）=====
   // 只写 localStorage：不碰正文 DOM、不调 notifyEdit()、不进 docs-meta（块 13 有泄漏断言，块 6 冻结件不变性兜底）。
-  // 折叠不存宽度：实测无拖拽调节，左只有 208px|0px、右只有 320px|0px 两态，故 0 宽的 falsy 陷阱不存在，存布尔即可。
+  // 折叠不存宽度：左栏只有 208px|0px 两态；右栏宽度批次C 起单独存 resume.ed.rightW（拖柄持久化），
+  // 折叠态仍存布尔，故 0 宽的 falsy 陷阱不存在。
   // 定义点在此（左右面板 / 页签 / 折叠函数 / isNarrow 都已就绪）；restoreUi() 的调用点在初始化尾部——
   // 必须晚于「窄屏初始自适应宽度」那次 setZoom，否则手机上恢复出来的 zoom 会被自适应值覆盖。
   var UI_KEY = 'resume-ui:' + DOC_ID;
