@@ -1042,6 +1042,14 @@ function zoneBlock(id) {
 
 const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const escAttr = (s) => escHtml(s).replace(/"/g, '&quot;');   // 属性值转义（value="..." 防双引号截断）
+// 三种上下文必须用不同的转义，别混用（2026-10-22 XSS 审计）：
+//   ① HTML 文本节点 → escHtml（引号在文本节点里无害）
+//   ② HTML 属性值 → escAttr（不转义 " 就能闭合属性注入事件处理器；实测 '" onmouseover="x' 可打穿）
+//   ③ JS 字符串上下文（onclick/onsubmit 里的 '...'）→ escAttr 不够！单引号能闭合 JS 串，
+//      必须先 JSON.stringify 成 JS 字面量、再按 HTML 属性转义：escAttr(JSON.stringify(v))
+//   ④ 内联 <script> 里的 JSON → jsonScript（见下）
+// 不要把 escHtml 改成「顺手也转义双引号」：那会打穿 docInfo.title → jsonAttr → data-doc-titles
+// 的实体还原链（属性里的 &quot; 被浏览器解码回 " 后 JSON.parse 失败，标题全丢）。
 // 单引号属性内嵌 JSON：沿用本文件既有 JSON.stringify(...).replace(...) 写法（见 shellBlock 的 __MATS__/__JOB_INFO__、
 // 备份页 DATA），把唯一能截断单引号属性的 ' 换成 JSON 转义 \u0027 —— 属性里不再出现裸 '，JSON.parse 原样还原为 '。
 // 值（docInfo.title）已过 escHtml：& < > 以实体形式存在并由属性解析还原，故此处绝不能再转 &（会把 &amp; 变成 &amp;amp;）。
@@ -1141,10 +1149,12 @@ function listPage(showArchived = false) {
       <a href="/pdf?id=${id}" target="_blank">最新 PDF</a> ·
       <a href="/snapshots?id=${id}">历史版本</a> ·
       <a href="/diff?base=${id}">对比</a> ·
-      ${m.parent ? `<a href="/diff?base=${escHtml(m.parent)}&to=${id}">对比母版</a> · ` : ''}
+      ${m.parent ? `<a href="/diff?base=${escAttr(m.parent)}&to=${id}">对比母版</a> · ` : ''}
       ${info.degraded ? `<form method="post" action="/restructure?id=${id}" style="display:inline" onsubmit="return confirm('用 LLM 重新结构化这份文档？会先自动留快照')"><button class="secondary">${icon('refresh-cw', 13)} 结构化</button></form> · ` : ''}
       <form method="post" action="/archive?id=${id}" style="display:inline" onsubmit="event.preventDefault();fetch('/archive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'${id}'})}).then(()=>location.reload())"><button class="secondary">${m.archivedAt ? icon('archive', 13) + ' 取消归档' : icon('archive', 13) + ' 归档'}</button></form> ·
-      <form method="post" action="/tag" style="display:inline" onsubmit="event.preventDefault();const t=prompt('标签（≤20字，留空清除）','${tag}');if(t!==null){fetch('/tag',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'${id}',tag:t})}).then(()=>location.reload())}"><button class="secondary" aria-label="标签" title="标签">${icon('tag', 13)}</button></form> ·
+      <!-- tag 是 JS 字符串上下文（onsubmit 里的 prompt 默认值）：escAttr 不够，单引号能闭合 JS 串 →
+           必须 JSON.stringify 成 JS 字面量后再按 HTML 属性转义。tag 本身由 company·role 派生，不经 /tag 的 '" 清洗。 -->
+      <form method="post" action="/tag" style="display:inline" onsubmit="event.preventDefault();const t=prompt('标签（≤20字，留空清除）',${escAttr(JSON.stringify(tag))});if(t!==null){fetch('/tag',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'${id}',tag:t})}).then(()=>location.reload())}"><button class="secondary" aria-label="标签" title="标签">${icon('tag', 13)}</button></form> ·
       <form method="post" action="/duplicate?id=${id}" style="display:inline" onsubmit="event.preventDefault();const t=prompt('新文档 id（小写字母数字横线）');if(t){this.action='/duplicate?id=${id}&to='+t;this.submit()}"><button>复制</button></form> ·
       <form method="post" action="/delete?id=${id}" style="display:inline" onsubmit="return confirm('确认删除 ${id}？快照会保留')"><button class="danger">删除</button></form>
       </div></details>
@@ -2548,7 +2558,7 @@ async function handler(req, res) {
       const unconfirmed = mats.filter((m) => m.factStatus !== 'confirmed').length;
       const FACT_LABELS = { company: '公司', role: '职位', dates: '日期', education: '学历', metrics: '成果指标', contribution: '个人贡献', conditions: '条件', source: '来源' };
       const matBadge = (s) => s === 'confirmed' ? badge('ok', '已确认') : s === 'outdated' ? badge('warn', '已过时') : badge('warn', '待确认');
-      const matCard = (m) => `<div class="card mat-card" data-mat="${escHtml(m.id)}" style="margin:10px 0">
+      const matCard = (m) => `<div class="card mat-card" data-mat="${escAttr(m.id)}" style="margin:10px 0">
         <b>${escHtml(m.title)}</b>${(m.tags || []).map((t) => `<span class="badge">${escHtml(t)}</span>`).join('')}${matBadge(m.factStatus)}
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin-top:8px;font-size:13px">
           <div><b style="font-size:12px;color:var(--mut)">精简表达</b><div class="mat-brief">${escHtml(m.brief)}</div><button class="secondary" style="padding:2px 8px;font-size:12px" onclick="copyMat(this,'brief')">复制</button></div>
@@ -2856,7 +2866,7 @@ async function handler(req, res) {
         docToLines(fs.readFileSync(to.file, 'utf8'), { includeHidden })
       ).map((d) => `<div class="diff-line ${d.type}">${escHtml(d.text)}</div>`).join('\n');
       return send(200, page('对比', `<h1>对比：${escHtml(base.label)} ↔ ${escHtml(to.label)}</h1>
-    <p style="font-size:12px;color:var(--mut)">正文对比：${includeHidden ? '含隐藏内容' : '不含隐藏内容（隐藏章节/条目默认不参与）'}${includeHidden ? ` · <a href="/diff?base=${escHtml(base.label)}&to=${escHtml(toRaw)}">按默认口径看</a>` : ` · <a href="/diff?base=${escHtml(base.label)}&to=${escHtml(toRaw)}&hidden=1">含隐藏看</a>`}</p>
+    <p style="font-size:12px;color:var(--mut)">正文对比：${includeHidden ? '含隐藏内容' : '不含隐藏内容（隐藏章节/条目默认不参与）'}${includeHidden ? ` · <a href="/diff?base=${escAttr(base.label)}&to=${escAttr(toRaw)}">按默认口径看</a>` : ` · <a href="/diff?base=${escAttr(base.label)}&to=${escAttr(toRaw)}&hidden=1">含隐藏看</a>`}</p>
     <div class="diff">${rows}</div><p><a href="/">返回首页</a></p>`, 'docs'));
     }
     // ===== 投递看板 =====
@@ -2870,12 +2880,14 @@ async function handler(req, res) {
         const row = (a) => {
           const due = a.dueDate && (new Date(a.dueDate).getTime() - nowMs) < 48 * 3600 * 1000 && new Date(a.dueDate).getTime() >= nowMs - 24 * 3600 * 1000 ? '<span class="badge warn" role="img" aria-label="临近截止" title="临近截止">' + icon('circle-alert', 11) + '</span>' : '';
           const archiveBadge = a.archive && a.archive.status === 'failed' ? badge('err', '存档缺失') : '';
-          return `<tr data-ch="${escHtml(a.channel || '')}"><td><b>${escHtml(a.company)}</b></td><td>${escHtml(a.role)}</td><td>${escHtml(a.channel || '')}</td><td>${escHtml(a.status)}</td><td>${escHtml(a.appliedAt || '')}</td><td>${escHtml(a.nextStep || '')}</td><td>${escHtml(a.dueDate || '')}${due}</td><td>${archiveBadge}<a href="/app?id=${escHtml(a.id)}">详情</a></td></tr>`;
+          // data-ch 是属性上下文：channel 由 /app/add、/app/update 原样落库（用户可控）→ 必须 escAttr
+          return `<tr data-ch="${escAttr(a.channel || '')}"><td><b>${escHtml(a.company)}</b></td><td>${escHtml(a.role)}</td><td>${escHtml(a.channel || '')}</td><td>${escHtml(a.status)}</td><td>${escHtml(a.appliedAt || '')}</td><td>${escHtml(a.nextStep || '')}</td><td>${escHtml(a.dueDate || '')}${due}</td><td>${archiveBadge}<a href="/app?id=${escAttr(a.id)}">详情</a></td></tr>`;
         };
         return send(200, page('投递看板·表格', `<h1>投递看板 <a href="/applications" style="font-size:13px;font-weight:400">⇄ 看板视图</a></h1>
       ${corruptBanner()}
       <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">
-        <select id="chFilter" aria-label="渠道筛选"><option value="">全部渠道</option>${channels.map((c) => `<option value="${escHtml(c)}">${escHtml(c)}</option>`).join('')}</select>
+        <!-- option value 是属性上下文：渠道名用户可控 → escAttr；显示文本走 escHtml（文本节点） -->
+        <select id="chFilter" aria-label="渠道筛选"><option value="">全部渠道</option>${channels.map((c) => `<option value="${escAttr(c)}">${escHtml(c)}</option>`).join('')}</select>
         <input id="appSearch" placeholder="搜索（公司/岗位/渠道/下一步）" style="flex:1" aria-label="搜索投递">
       </div>
       <div class="tablewrap"><table id="appTable" style="width:100%;border-collapse:collapse;font-size:13px">
@@ -2909,17 +2921,17 @@ async function handler(req, res) {
         const idx = APP_STATUSES.indexOf(a.status);
         const due = a.dueDate && (new Date(a.dueDate).getTime() - nowMs) < 48 * 3600 * 1000 && new Date(a.dueDate).getTime() >= nowMs - 24 * 3600 * 1000 ? '<span class="badge warn" role="img" aria-label="临近截止" title="临近截止">' + icon('circle-alert', 11) + '</span>' : '';
         const arch = a.archive && a.archive.status === 'failed' ? '<span class="badge err" title="存档 PDF 生成失败">' + icon('circle-x', 11) + '存档缺失</span>' : '';
-        return `<div class="app-card card" data-status="${escHtml(a.status)}" data-app="${escHtml(a.id)}" style="margin:8px 0;padding:8px 10px;background:var(--panel);border:1px solid var(--line)">
+        return `<div class="app-card card" data-status="${escAttr(a.status)}" data-app="${escAttr(a.id)}" style="margin:8px 0;padding:8px 10px;background:var(--panel);border:1px solid var(--line)">
           <div style="font-family:var(--serif);font-size:14px;font-weight:800;color:var(--ink)">${escHtml(a.company)}${due}</div>
           <div style="color:var(--mut);font-size:12px">${escHtml(a.role)}</div>
-          <div style="font-size:12px;color:var(--mut);margin:2px 0"><a href="/edit?id=${escHtml(a.docId)}">${escHtml(a.docId)}</a> ${badge(a.jd ? 'ok' : 'warn', 'JD')}${arch}${a.channel ? `<span class="badge">${escHtml(a.channel)}</span>` : ''}</div>
+          <div style="font-size:12px;color:var(--mut);margin:2px 0"><a href="/edit?id=${escAttr(a.docId)}">${escHtml(a.docId)}</a> ${badge(a.jd ? 'ok' : 'warn', 'JD')}${arch}${a.channel ? `<span class="badge">${escHtml(a.channel)}</span>` : ''}</div>
           ${a.nextStep || a.dueDate ? `<div style="font-size:12px;color:var(--mut)">${a.nextStep ? '下一步：' + escHtml(a.nextStep) : ''}${a.dueDate ? ' 截止：' + escHtml(a.dueDate) : ''}</div>` : ''}
           ${a.note ? `<div style="font-size:12px;color:var(--mut)">${escHtml(a.note)}</div>` : ''}
           <div style="margin-top:4px;font-size:12px">
             ${idx > 0 ? `<button class="secondary" style="padding:2px 8px" onclick="appPatch('${a.id}',{status:APP_STATUSES[${idx - 1}]})">◀</button>` : ''}
             ${idx < APP_STATUSES.length - 1 && !APP_TERMINAL.includes(a.status) ? `<button class="secondary" style="padding:2px 8px" onclick="appPatch('${a.id}',{status:APP_STATUSES[${idx + 1}]})">▶</button>` : ''}
             <select style="font-size:12px;padding:2px" aria-label="状态" onchange="if(this.value)appPatch('${a.id}',{status:this.value})"><option value="">⇅</option>${APP_STATUSES.map((s) => `<option value="${s}"${s === a.status ? ' selected' : ''}>${s}</option>`).join('')}</select>
-            <a href="/app?id=${escHtml(a.id)}">详情</a>
+            <a href="/app?id=${escAttr(a.id)}">详情</a>
             <button class="secondary" style="padding:2px 8px" aria-label="快速编辑" onclick="appEdit('${a.id}')">${icon('pencil', 13)}</button>
             <button class="danger" style="padding:2px 8px;min-height:28px" aria-label="删除投递" onclick="appDel('${a.id}')">${icon('trash-2', 13)}</button>
           </div>
@@ -2992,11 +3004,11 @@ async function handler(req, res) {
         状态：<span class="badge">${escHtml(app.status)}</span>
         ${app.channel ? `渠道：<span class="badge">${escHtml(app.channel)}</span>` : ''}
         ${(() => { const u = safeUrl(app.link); return u ? `<a href="${escAttr(u)}" target="_blank" rel="noopener">岗位链接</a>` : (app.link ? '<span class="mut">岗位链接协议不安全，未渲染</span>' : ''); })()}
-        简历：<a href="/edit?id=${escHtml(app.docId)}">${escHtml(app.docId)}</a>
+        简历：<a href="/edit?id=${escAttr(app.docId)}">${escHtml(app.docId)}</a>
         ${app.appliedAt ? `投递日期：${escHtml(app.appliedAt)}` : ''}
         ${app.nextStep ? `下一步：${escHtml(app.nextStep)}` : ''}
         ${app.dueDate ? `截止：${escHtml(app.dueDate)}` : ''}
-        ${app.snapTs ? `当时快照：<a href="/snapshot/view?id=${escHtml(app.docId)}&ts=${escHtml(app.snapTs)}">${escHtml(app.snapTs)}</a>` : ''}
+        ${app.snapTs ? `当时快照：<a href="/snapshot/view?id=${escAttr(app.docId)}&ts=${escAttr(app.snapTs)}">${escHtml(app.snapTs)}</a>` : ''}
         ${archiveLine}
       </div>
       ${app.jd ? `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--mut)">JD 全文</summary><pre style="font-size:12px;white-space:pre-wrap">${escHtml(app.jd)}</pre></details>` : ''}
@@ -3006,7 +3018,7 @@ async function handler(req, res) {
       <b>面试记录</b> <button class="secondary" style="padding:2px 8px;font-size:12px" onclick="ivAdd()">＋</button>
       <div id="ivList">${interviews.map((iv, i) => `<div style="border-left:3px solid var(--accent);padding:8px;margin:8px 0;background:var(--bg)">
         <b>${escHtml(iv.round || '第' + (i + 1) + '轮')}</b> <span style="color:var(--mut);font-size:12px">${escHtml(iv.time || '')}</span>
-        <a href="/app/ics?id=${escHtml(app.id)}&i=${i}" target="_blank" style="font-size:12px;margin-left:8px">${icon('calendar', 13)} ICS</a>
+        <a href="/app/ics?id=${escAttr(app.id)}&i=${i}" target="_blank" style="font-size:12px;margin-left:8px">${icon('calendar', 13)} ICS</a>
         ${iv.questions ? `<div style="font-size:13px;margin-top:4px"><b>问题：</b>${escHtml(iv.questions)}</div>` : ''}
         ${iv.answer ? `<div style="font-size:13px"><b>回答要点：</b>${escHtml(iv.answer)}</div>` : ''}
         ${iv.feedback ? `<div style="font-size:13px"><b>反馈：</b>${escHtml(iv.feedback)}</div>` : ''}
@@ -3027,7 +3039,7 @@ async function handler(req, res) {
       <b>AI 面试准备建议</b> <button id="prepBtn">生成</button><span id="prepMsg"></span>
       <div id="prepOut" style="margin-top:8px;font-size:13px;white-space:pre-wrap"></div>
     </div>
-    <script>var APPID = '${escHtml(app.id)}';</script>
+    <script>var APPID = ${jsonScript(app.id)};</script>
     <script>
       function regenArchive() {
         document.getElementById('regenMsg').textContent = ' 生成中…';
@@ -3991,8 +4003,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       <b>记录已投递</b>
       <p style="font-size:12px;color:var(--mut)">只做记录，不会自动发送任何文件。记录时先创建不可变导出（同内容复用既有记录），存档 PDF 绑定该导出的冻结快照。${deliveredCnt ? `该文档已有 ${deliveredCnt} 条投递记录（关联按 exportId 派生）。` : ''}</p>
       <form id="trackForm">
-        <input id="tkCompany" placeholder="公司" value="${escHtml(meta.company || '')}" required>
-        <input id="tkRole" placeholder="岗位" value="${escHtml(meta.role || '')}" required>
+        <!-- value 是属性上下文：company/role 原样落库（用户可控）→ escAttr（不转义 " 就能闭合属性注入事件处理器） -->
+        <input id="tkCompany" placeholder="公司" value="${escAttr(meta.company || '')}" required>
+        <input id="tkRole" placeholder="岗位" value="${escAttr(meta.role || '')}" required>
         <input id="tkChannel" placeholder="渠道（可选）" size="12">
         <input id="tkDate" type="date" aria-label="投递日期">
         <button ${pdfCurrent && !pendingConflicts.length ? '' : 'disabled title="先解决上方问题"'}>记录已投递</button><span id="tkMsg" style="font-size:12px"></span>

@@ -4213,3 +4213,166 @@ for (const f of ['server.mjs','editor-shell.js','job-panel.js','zone-panel.js','
 }
 console.log('✅ UI-7 前端源码无 emoji 残留');
 EOF
+
+# —— XSS-1：属性 / JS 上下文转义回归（2026-10-22 审计，实弹打穿后加的守卫）——
+# 事实（隔离实例实测，非推断）：escHtml 只转义 & < >，**不转义 "**。
+#   放进 HTML 属性值 → 载荷 `" onmouseover="window.__XSS` 可闭合属性并注入事件处理器；
+#   放进 onsubmit 里的 JS 单引号串 → 载荷 `'` 可闭合 JS 串。
+#   2026-10-22 实测打穿三处：/applications?view=table 的 data-ch 与 <option value>、
+#   /export 的 tkCompany/tkRole、首页标签按钮的 onsubmit —— window.__PWN 全部被真实赋值。
+# 修法：属性上下文一律 escAttr；JS 字符串上下文一律 escAttr(JSON.stringify(v))。
+#
+# 本守卫用「隔离服务 + 真实 HTTP 请求」锁死行为，三条同时成立才算过：
+#   ① 载荷必须原样出现在**目标属性/JS 串**里（证明确实打到了 sink，测试不是空转）；
+#   ② 载荷绝不能变成可执行的事件处理器（按标签解析属性，不按裸子串匹配 ——
+#      文本节点里出现 `" onmouseover="x` 是无害的，裸子串匹配会误红）；
+#   ③ onsubmit 解码后，载荷只能待在字符串字面量内部（不能闭合 JS 串跑到代码区）。
+node --input-type=module << 'EOF'
+import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import http from 'node:http';
+import { spawn } from 'node:child_process';
+const fail = (m) => { console.error('❌ XSS-1 ' + m); process.exit(1); };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const MARK = '__XSS';
+
+// 浏览器拿到属性值前做的实体解码（escHtml/escAttr 只产出这四种）
+const decodeEntities = (s) => s.replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+  .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+
+// 取「所有标签」的原文。标签内属性值可能含 >（如 onsubmit 里的 =>），故不能用 [^>]* 切标签：
+// 用「带引号的属性值整体消费」的三分支正则，且三个分支首字符互斥（引号 vs 非引号）→ 线性匹配无回溯。
+// 引号在标签内必然成对（HTML 属性值总是带引号），故不会跨标签误吞。
+const TAGS = /<[a-zA-Z](?:"[^"]*"|'[^']*'|[^<>"'])*>/g;
+const tagsOf = (html, needle) => (html.match(TAGS) || []).filter((t) => t.includes(needle));
+// 标签内的事件处理器属性：on*= 赋值。转义后的载荷是 `onmouseover=&quot;`，不匹配 → 不误报。
+const handlerAttrs = (tag) => {
+  const out = [];
+  for (const a of tag.matchAll(/\s(on[a-z]+)\s*=\s*"([^"]*)"/g)) out.push({ name: a[1], value: a[2] });
+  for (const a of tag.matchAll(/\s(on[a-z]+)\s*=\s*'([^']*)'/g)) out.push({ name: a[1], value: a[2] });
+  return out;
+};
+const assertNoHandler = (tag, where) => {
+  for (const h of handlerAttrs(tag)) {
+    if (h.value.includes(MARK)) fail(where + ' 出现可执行事件处理器 ' + h.name + '=' + JSON.stringify(h.value).slice(0, 90));
+  }
+};
+
+const tmpB = fs.mkdtempSync(path.join(os.tmpdir(), 'xss-audit-'));
+const ROOT = path.join(tmpB, 'data');
+for (const d of ['docs', 'snapshots', 'pdfs']) fs.mkdirSync(path.join(ROOT, d), { recursive: true });
+fs.writeFileSync(path.join(ROOT, 'docs-meta.json'), '{}');
+fs.writeFileSync(path.join(ROOT, 'applications.json'), '[]');
+fs.writeFileSync(path.join(ROOT, 'materials.json'), '[]');
+const mkHtml = (body) => '<!doctype html><html><head><meta charset="utf-8"><style>.s{color:#111}</style></head><body><h1>夹具</h1><div class="sheet">' + body + '</div><script>var DOC_ID = \'x1\';</script></body></html>';
+fs.writeFileSync(path.join(ROOT, 'docs', 'x1.html'), mkHtml('XSS-FIXTURE'));
+const fr = path.join(tmpB, 'fake-render.sh');
+fs.writeFileSync(fr, '#!/bin/bash\nshift\nif [ "$1" = "--src" ]; then out="$4"; else out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\nprintf "%%PDF-1.4 fake\\n" > "$out"\n');
+fs.chmodSync(fr, 0o755);
+
+const freePort = () => new Promise((resolve, reject) => { const s = http.createServer(); s.once('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
+const port = await freePort();
+const srv = spawn(process.execPath, ['server.mjs'], {
+  cwd: process.cwd(),
+  env: { ...process.env, RESUME_ROOT: ROOT, PORT: String(port), RESUME_RENDER_BIN: fr },
+  stdio: ['ignore', 'ignore', 'pipe']
+});
+let serr = ''; srv.stderr.on('data', (d) => { serr += d; });
+const B = 'http://127.0.0.1:' + port;
+const post = async (p, body) => {
+  const r = await fetch(B + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const t = await r.text();
+  try { return { status: r.status, json: JSON.parse(t) }; } catch { return { status: r.status, text: t }; }
+};
+try {
+  let up = false;
+  const t0 = Date.now();
+  while (Date.now() - t0 < 12000) { if (srv.exitCode !== null) break; try { await fetch(B + '/'); up = true; break; } catch {} await sleep(80); }
+  if (!up) fail('测试服务启动失败: ' + serr.slice(0, 500));
+
+  // —— 载荷 1：company / role 落进 /export 的 input value 属性（闭合属性 + 注入焦点事件）——
+  const attrPayload = ' autofocus onfocus="window.' + MARK;
+  const jr = await post('/job/create', { from: 'x1', company: 'Co"' + attrPayload, role: 'Ro"' + attrPayload, jd: 'jd' });
+  if (!jr.json || !jr.json.ok) fail('/job/create 失败: ' + JSON.stringify(jr).slice(0, 200));
+  const attrJobId = jr.json.id;
+
+  // —— 载荷 2：company 派生 tag（company·role 截断 20 字）→ 首页 onsubmit 的 JS 单引号串 ——
+  //     company 以 ' 开头 → 闭合 prompt 的 JS 串；tag 长度须 ≤ 20 字才能完整落进 tag
+  const jr2 = await post('/job/create', { from: 'x1', company: "x');window." + MARK + '//', role: 'r', jd: 'jd' });
+  if (!jr2.json || !jr2.json.ok) fail('/job/create（tag 载荷）失败: ' + JSON.stringify(jr2).slice(0, 200));
+  const tagJobId = jr2.json.id;
+
+  // —— 载荷 3：channel 落进 /applications 表格视图的 data-ch 与 <option value> ——
+  const ar = await post('/app/add', { company: 'Co', role: 'Ro', docId: 'x1', channel: 'Ch" onmouseover="window.' + MARK });
+  if (!ar.json || !ar.json.ok) fail('/app/add 失败: ' + JSON.stringify(ar).slice(0, 200));
+
+  // —— 断言 1：/export 的 tkCompany / tkRole 属性不可被闭合 ——
+  const exp = await (await fetch(B + '/export?id=' + attrJobId)).text();
+  const tkCompanyTag = tagsOf(exp, 'id="tkCompany"').find((t) => t.includes(MARK)) || '';
+  const tkRoleTag = tagsOf(exp, 'id="tkRole"').find((t) => t.includes(MARK)) || '';
+  if (!tkCompanyTag) fail('/export 的 tkCompany value 未回显载荷（sink 没打中，测试空转）');
+  if (!tkRoleTag) fail('/export 的 tkRole value 未回显载荷（sink 没打中，测试空转）');
+  assertNoHandler(tkCompanyTag, '/export 的 tkCompany');
+  assertNoHandler(tkRoleTag, '/export 的 tkRole');
+
+  // —— 断言 2：/applications 表格视图的 data-ch / <option value> 不可被闭合 ——
+  const tbl = await (await fetch(B + '/applications?view=table')).text();
+  const trTag = tagsOf(tbl, 'data-ch="').find((t) => t.includes(MARK)) || '';
+  const optTag = tagsOf(tbl, 'value="Ch').find((t) => t.includes(MARK)) || '';
+  if (!trTag) fail('/applications 的 data-ch 未回显载荷（sink 没打中，测试空转）');
+  if (!optTag) fail('/applications 的 <option value> 未回显载荷（sink 没打中，测试空转）');
+  assertNoHandler(trTag, '/applications 的 data-ch');
+  assertNoHandler(optTag, '/applications 的 <option value>');
+
+  // —— 断言 3：首页标签按钮的 onsubmit 解码后，载荷只能待在字符串字面量内部 ——
+  const home = await (await fetch(B + '/')).text();
+  const onsubmitTag = tagsOf(home, 'action="/tag"').find((t) => t.includes(MARK)) || '';
+  if (!onsubmitTag) fail('首页标签按钮的 onsubmit 未回显载荷（sink 没打中，测试空转）');
+  const onsubmit = (onsubmitTag.match(/\sonsubmit="([^"]*)"/) || [])[1] || '';
+  if (!onsubmit) fail('首页标签按钮缺 onsubmit');
+  const dec = decodeEntities(onsubmit);
+  let jsOk = true; let jsErr = '';
+  try { new Function(dec); } catch (e) { jsOk = false; jsErr = String((e && e.message) || e); }
+  if (!jsOk) fail('首页 onsubmit 解码后不是合法 JS: ' + jsErr + ' | ' + dec.slice(0, 160));
+  // 把所有字符串字面量摘掉，载荷若还留在代码区 → 说明它闭合了 JS 串
+  const litRe = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g;
+  const parts = dec.split(litRe);
+  for (let i = 0; i < parts.length; i += 2) {
+    if (parts[i].includes(MARK)) fail('首页 onsubmit 的载荷落在 JS 串字面量之外（闭合了 JS 串）: ' + dec.slice(0, 160));
+  }
+  // 且 prompt 的默认值必须是字符串字面量（不是被闭合后的裸代码）
+  const pm = dec.match(/prompt\('[^']*',\s*("(?:[^"\\]|\\.)*")\)/);
+  if (!pm || !pm[1].includes(MARK)) fail('首页 onsubmit 的 prompt 默认值不是字符串字面量: ' + dec.slice(0, 160));
+
+  console.log('✅ XSS-1 属性/JS 上下文转义回归（属性闭合 + JS 串闭合，隔离实例真实请求）');
+} finally {
+  srv.kill('SIGKILL');
+  await sleep(50);
+  fs.rmSync(tmpB, { recursive: true, force: true });
+}
+EOF
+
+# —— XSS-2：源码级守卫——属性/字符串字面量上下文不得出现 escHtml(（不转义 "，可闭合属性）——
+# 覆盖 5 个前端文件：引号字面量里出现 escHtml( 即红。
+# 转义等级只按上下文选：escHtml 只能进 HTML 文本节点；属性用 escAttr；JS 串用 escAttr(JSON.stringify(v))。
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const fail = (m) => { console.error('❌ XSS-2 ' + m); process.exit(1); };
+// 剥注释（JS 行注释 / 块注释 / 模板里的 HTML 注释）——注释里的示例不该误红
+const strip = (src) => src
+  .split('\n').map((l) => l.replace(/^\s*\/\/.*$/, '').replace(/\s\/\/.*$/, '')).join('\n')
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/<!--[\s\S]*?-->/g, '');
+// 引号字面量赋值：name="值" / name='值'（HTML 属性与 JS 字符串字面量都命中）
+const LIT = /[a-zA-Z][-a-zA-Z0-9_:]*\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+for (const f of ['server.mjs', 'editor-shell.js', 'job-panel.js', 'zone-panel.js', 'ai-panel.js']) {
+  const code = strip(readFileSync('./' + f, 'utf8'));
+  const bad = [];
+  let m;
+  LIT.lastIndex = 0;
+  while ((m = LIT.exec(code))) {
+    const val = m[1] !== undefined ? m[1] : (m[2] || '');
+    if (/escHtml\s*\(/.test(val)) bad.push(m[0].slice(0, 100));
+  }
+  if (bad.length) fail(f + ' 属性/字符串字面量上下文出现 escHtml(（属性用 escAttr，JS 串用 escAttr(JSON.stringify(v))）: ' + bad.join(' | '));
+}
+console.log('✅ XSS-2 属性/字符串字面量上下文禁用 escHtml(（源码级守卫）');
+EOF
