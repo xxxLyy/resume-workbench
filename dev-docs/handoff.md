@@ -486,8 +486,20 @@ li 的属性区吃掉 `</h3>` → h3 找不到闭合 → 段落从 AI 上下文�
 **等价性复核**：良构语料 20000 份（`matchingClose` 逐开标签起点 / `sectionsOf` / `parasOf`）与旧实现 **0 差异**；
 真实文档 `docs/linghaoxiang.html`、`docs/old-resume.html` 全部一致。
 
-### 三、这轮的验收
+### 三、自查 diff 时又抓到的两处漏网（不靠 agent）
 
-- 四件套：structure **126 ✅** / main **345 ✅** / render ✅ / privacy ✅（全 exit 0）
-- launchd 服务已重启（16:07:03），8 个页面浏览器实测：0 控制台错误 / 0 可见 emoji / 0 横向溢出 / 0 注入
+人工过 `git show 62e792a -- server.mjs` 的 diff 时发现上一批**自己漏了两处**：
+素材 id 进内联 JS 串（`matFacts(event,'${m.id}')`）、快照 ts 进 `action` 属性。
+顺带把剩下三处「外部字段在属性里没套转义」的也补齐（`data-fallback` / `<option value>` / `href`），
+让属性上下文口径统一。
+
+**新增断言 XSS-4**（源码级启发式守卫）：扫 5 个前端文件里所有属性值中的 `${…}`，
+若表达式含外部可污染字段名且没套转义函数 → 红。
+> 守卫是**启发式**不是证明：它按字段名匹配，将来新增外部字段名时要一并加进名单。
+
+### 四、这轮的验收
+
+- 四件套：structure **127 ✅** / main **345 ✅** / render ✅ / privacy ✅（全 exit 0）
+- launchd 服务已重启，8 个页面浏览器实测：0 控制台错误 / 0 可见 emoji / 0 横向溢出 / 0 注入
+- 三个页面共 127 个内联事件属性逐个解码后语法全对（`new Function` 校验，不执行）
 - 真实备份往返（预览 + 合并恢复）正常；自产备份预览正常
