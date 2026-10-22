@@ -3243,6 +3243,65 @@ try {
     } else bad('T5 jobForm 提交未发出 /job/create（submit 处理器未绑定）');
     await ctx.close();
   }
+
+  // ===== UI-6：右栏可拖拽分栏（拖柄的浏览器行为；结构层断言在 test-structure.sh）=====
+  // 之前这一段只有结构层断言，拖拽/键盘/复位/持久化一条都没跑过 → 边界问题没人发现。
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } });
+    const page = await ctx.newPage();
+    await page.goto(base + '/edit?id=' + ED_DOC);
+    await page.waitForSelector('#ed-grip', { timeout: 15000 });
+    // 宽度：优先读 CSS 变量；没设过（未拖过）就读右栏实测宽 —— 否则 parseFloat('') = NaN，
+    // 「变宽了吗」那种比较会静默通过（NaN 比较恒 false）→ 断言空转。
+    const readW = async () => page.evaluate(() => {
+      const v = getComputedStyle(document.body).getPropertyValue('--ed-right-w').trim();
+      if (v) return parseFloat(v);
+      const r = document.getElementById('ed-right');
+      return r ? Math.round(r.getBoundingClientRect().width) : NaN;
+    });
+    const before = await readW();
+    // ① 拖柄左拖 → 右栏变宽
+    const box = await page.locator('#ed-grip').boundingBox();
+    const gy = box.y + box.height / 2;
+    const gx = box.x + box.width / 2;
+    await page.mouse.move(gx, gy);
+    await page.mouse.down();
+    await page.mouse.move(gx - 60, gy, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(250);
+    const afterDrag = await readW();
+    if (afterDrag - before < 40) bad('UI-6 拖柄左拖未使右栏变宽（' + before + ' → ' + afterDrag + '）');
+    else ok('UI-6 拖柄左拖使右栏变宽（' + before + ' → ' + afterDrag + '）');
+    // ② 宽度持久化到 localStorage
+    const stored = await page.evaluate(() => localStorage.getItem('resume.ed.rightW'));
+    if (!stored || Math.abs(Number(stored) - afterDrag) > 2) bad('UI-6 拖后宽度未持久化（localStorage=' + stored + '）');
+    else ok('UI-6 拖后宽度持久化到 localStorage');
+    // ③ 鼠标拖完直接按 ←/→ 也要生效（pointerdown 的 preventDefault 曾吃掉聚焦 → 键盘替代路径不可达）
+    const w0 = await readW();
+    await page.keyboard.press('ArrowLeft');
+    await page.waitForTimeout(200);
+    const w1 = await readW();
+    if (Math.abs((w1 - w0) - 16) > 1) bad('UI-6 鼠标拖完直接按 ← 未按 16px 步进（' + w0 + ' → ' + w1 + '）');
+    else ok('UI-6 鼠标拖完直接按 ← 按 16px 步进（拖柄已聚焦）');
+    // ④ 双击复位 → 320px（与首屏默认一致）
+    await page.dblclick('#ed-grip');
+    await page.waitForTimeout(250);
+    const afterDbl = await readW();
+    if (Math.abs(afterDbl - 320) > 1) bad('UI-6 双击复位应回 320px，实际 ' + afterDbl);
+    else ok('UI-6 双击复位回 320px');
+    // ⑤ 上限跟视口走：右栏不得宽到把 210mm（≈794px）的纸张盖住
+    const maxAllowed = 1450 - 208 - 794 - 24;
+    if (afterDbl > maxAllowed + 1) bad('UI-6 右栏宽度超视口允许上限（' + afterDbl + ' > ' + maxAllowed + '）');
+    else ok('UI-6 右栏宽度不超视口允许上限（' + afterDbl + ' ≤ ' + maxAllowed + '）');
+    // ⑥ 注入层的运行时图标不得随保存落进文档文件（注入层产物不落盘）
+    await page.evaluate(() => window.__edSaveManual && window.__edSaveManual());
+    await page.waitForTimeout(2500);
+    const diskGrip = fs.readFileSync(path.join(dataRoot, 'docs', ED_DOC + '.html'), 'utf8');
+    if (/<svg/i.test(diskGrip)) bad('UI-6 保存的文档文件里出现了运行时 SVG（注入层产物落盘）');
+    else ok('UI-6 保存的文档文件不含运行时 SVG（注入层产物不落盘）');
+    await ctx.close();
+  }
+
 } finally {
   await browser.close();
 }
