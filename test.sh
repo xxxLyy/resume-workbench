@@ -611,7 +611,8 @@ console.log('✅ 事实护栏（数字/日期）');
 # 自产备份往返（下载 → 预览 → 合并恢复）
 curl -s "$B/backup" -o "$TEST_DIR/self.tar.gz"
 tar tzf "$TEST_DIR/self.tar.gz" | grep -q 'materials.json' || fail '自产备份缺 materials.json'
-curl -s -X POST "$B/restore?apply=0" --data-binary "@$TEST_DIR/self.tar.gz" | grep -q '"ok":true' || fail '自产备份预览失败'
+SELF_PREV=$(curl -s -X POST "$B/restore?apply=0" --data-binary "@$TEST_DIR/self.tar.gz")
+echo "$SELF_PREV" | grep -q '"ok":true' || fail "自产备份预览失败: $(printf '%s' "$SELF_PREV" | head -c 300)"
 curl -s -X POST "$B/restore?apply=1&mode=merge" --data-binary "@$TEST_DIR/self.tar.gz" | grep -q '"ok":true' || fail '自产备份恢复失败'
 echo '✅ 自产备份可恢复（合并语义）'
 

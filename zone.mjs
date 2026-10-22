@@ -20,6 +20,7 @@ const ZID_ANY_ATTR = /\sdata-zid="[^"]*"/g;                  // 任意值的 dat
 function unitTags(s) {
   const out = [];
   const n = s.length;
+  const lastGt = s.lastIndexOf('>');      // 之后没有 '>' → 残片，O(1) 判定（否则每个候选点都扫到文末 → 平方级）
   let i = 0;
   while (i < n) {
     const lt = s.indexOf('<', i);
@@ -33,6 +34,7 @@ function unitTags(s) {
     }
     const tag = s.slice(ns, j);
     if (!UNIT_NAMES.has(tag.toLowerCase())) { i = lt + 1; continue; }
+    if (j > lastGt) { i = lt + 1; continue; }               // 后面再没有 '>' → 不是标签
     const gt = s.indexOf('>', j);
     if (gt < 0) { i = lt + 1; continue; }                    // 没有 '>' → 不是标签
     const attrs = s.slice(j, gt);

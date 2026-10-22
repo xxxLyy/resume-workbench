@@ -98,7 +98,9 @@ const docPath = (id) => path.join(root, 'docs', id + '.html');
 const docIdsOnDisk = () => fs.readdirSync(path.join(root, 'docs'))
   .filter((f) => f.endsWith('.html') && !f.startsWith('.'))
   .map((f) => f.replace('.html', ''))
-  .filter((id) => VALID_ID.test(id));
+  .filter((id) => VALID_ID.test(id))
+  // 必须是普通文件：同名目录会让 docInfo 的 readFileSync 抛 EISDIR → 首页整体 500
+  .filter((id) => { try { return fs.statSync(docPath(id)).isFile(); } catch { return false; } });
 const pdfPath = (id) => path.join(root, 'pdfs', id + '.pdf');
 const snapDir = (id) => path.join(root, 'snapshots', id);
 const archivePath = (aid) => path.join(root, 'pdfs', 'archive', aid + '.pdf');
@@ -2576,10 +2578,10 @@ async function handler(req, res) {
         ${(m.facts && Object.entries(m.facts).filter(([k, v]) => v).map(([k, v]) => `<div style="font-size:12px;color:var(--mut);margin-top:4px"><b style="color:var(--fg)">${escHtml(FACT_LABELS[k] || k)}</b>：${escHtml(v)}</div>`).join('')) || ''}
         ${m.attach ? `<div style="font-size:12px;color:var(--mut);margin-top:4px">附件：${escHtml(m.attach)}</div>` : ''}
         <div style="margin-top:6px;font-size:12px">${m.factStatus === 'confirmed'
-          ? `<button class="secondary" onclick="matStatus('${m.id}','pending')">取消确认</button>`
-          : `<button onclick="matStatus('${m.id}','confirmed')">确认可用于生成</button>`}
-          ${m.factStatus !== 'outdated' ? `<button class="secondary" onclick="matStatus('${m.id}','outdated')">标记过时</button>` : `<button class="secondary" onclick="matStatus('${m.id}','pending')">恢复待确认</button>`}
-          <button class="secondary" onclick="matEdit('${m.id}')">${icon('pencil', 13)} 编辑</button> <button class="danger" onclick="matDel('${m.id}')">${icon('trash-2', 13)} 删除</button></div>
+          ? `<button class="secondary" onclick="matStatus(${escAttr(JSON.stringify(m.id))},'pending')">取消确认</button>`
+          : `<button onclick="matStatus(${escAttr(JSON.stringify(m.id))},'confirmed')">确认可用于生成</button>`}
+          ${m.factStatus !== 'outdated' ? `<button class="secondary" onclick="matStatus(${escAttr(JSON.stringify(m.id))},'outdated')">标记过时</button>` : `<button class="secondary" onclick="matStatus(${escAttr(JSON.stringify(m.id))},'pending')">恢复待确认</button>`}
+          <button class="secondary" onclick="matEdit(${escAttr(JSON.stringify(m.id))})">${icon('pencil', 13)} 编辑</button> <button class="danger" onclick="matDel(${escAttr(JSON.stringify(m.id))})">${icon('trash-2', 13)} 删除</button></div>
         <details open style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--mut)">事实层</summary>
           <form class="mat-facts" style="margin-top:6px;font-size:13px" onsubmit="return matFacts(event,'${m.id}')">
             ${FACT_KEYS.map((k) => `<p style="margin:2px 0">${FACT_LABELS[k]} <input name="f_${k}" value="${escAttr((m.facts || {})[k] || '')}" style="width:60%"></p>`).join('')}
@@ -2787,15 +2789,15 @@ async function handler(req, res) {
         const m = meta[ts] || {};
         return `<li class="card" style="margin:6px 0;padding:10px 12px">
           <div style="display:flex;justify-content:space-between;align-items:center">
-            <div><b>${ts}</b>${m.name ? ` <span class="badge">${escHtml(m.name)}</span>` : ''}${ts === baseline ? ' ' + badge('ok', '基准', 'pin') : ''}${referenced.has(ts) ? ' ' + badge('ai', '投递引用（不会被清理）', 'list-checks') : ''}${exportReferenced.has(ts) ? ' ' + badge('ai', '导出引用（不会被清理）', 'package') : ''}
+            <div><b>${escHtml(ts)}</b>${m.name ? ` <span class="badge">${escHtml(m.name)}</span>` : ''}${ts === baseline ? ' ' + badge('ok', '基准', 'pin') : ''}${referenced.has(ts) ? ' ' + badge('ai', '投递引用（不会被清理）', 'list-checks') : ''}${exportReferenced.has(ts) ? ' ' + badge('ai', '导出引用（不会被清理）', 'package') : ''}
             ${m.note ? `<div style="font-size:12px;color:var(--mut);margin-top:2px">${escHtml(m.note)}</div>` : ''}</div>
             <div style="font-size:12px">
-              <a href="/snapshot/view?id=${id}&ts=${ts}">预览</a> ·
-              <a href="/snapshot/pdf?id=${id}&ts=${ts}" target="_blank">下载该版本 PDF</a> ·
-              <a href="/diff?base=${id}@${ts}&to=${id}">对比当前</a> ·
-              <button class="secondary" style="padding:2px 8px" onclick="snapNote('${id}','${ts}')">${icon('pencil', 13)}</button>
-              <button class="secondary" style="padding:2px 8px" onclick="snapBaseline('${id}','${ts}')" aria-label="设为基准" title="设为基准">${icon('pin', 13)}</button>
-              <form method="post" action="/rollback?id=${id}&ts=${ts}" style="display:inline" onsubmit="return confirm('回滚到 ${ts}？当前版本会先自动留一份快照')"><button class="secondary" style="padding:2px 8px">回滚</button></form>
+              <a href="/snapshot/view?id=${escAttr(id)}&ts=${escAttr(ts)}">预览</a> ·
+              <a href="/snapshot/pdf?id=${escAttr(id)}&ts=${escAttr(ts)}" target="_blank">下载该版本 PDF</a> ·
+              <a href="/diff?base=${escAttr(id)}@${escAttr(ts)}&to=${escAttr(id)}">对比当前</a> ·
+              <button class="secondary" style="padding:2px 8px" onclick="snapNote(${escAttr(JSON.stringify(id))},${escAttr(JSON.stringify(ts))})">${icon('pencil', 13)}</button>
+              <button class="secondary" style="padding:2px 8px" onclick="snapBaseline(${escAttr(JSON.stringify(id))},${escAttr(JSON.stringify(ts))})" aria-label="设为基准" title="设为基准">${icon('pin', 13)}</button>
+              <form method="post" action="/rollback?id=${id}&ts=${ts}" style="display:inline" onsubmit="return confirm('回滚到 ' + ${escAttr(JSON.stringify(ts))} + '？当前版本会先自动留一份快照')"><button class="secondary" style="padding:2px 8px">回滚</button></form>
             </div>
           </div>
         </li>`;
@@ -2861,7 +2863,7 @@ async function handler(req, res) {
       const toRaw = url.searchParams.get('to') || '';
       if (!toRaw) {
         const others = docIdsOnDisk().filter((id) => id !== base.id);
-        return send(200, page('对比', `<h1>选对比对象</h1><p>${escHtml(base.label)} 与谁对比？</p><ul class="doclist">${others.map((o) => `<li class="card"><a href="/diff?base=${base.label}&to=${o}">${escHtml(o)}</a></li>`).join('')}</ul><p><a href="/">返回首页</a></p>`, 'docs'));
+        return send(200, page('对比', `<h1>选对比对象</h1><p>${escHtml(base.label)} 与谁对比？</p><ul class="doclist">${others.map((o) => `<li class="card"><a href="/diff?base=${escAttr(base.label)}&to=${escAttr(o)}">${escHtml(o)}</a></li>`).join('')}</ul><p><a href="/">返回首页</a></p>`, 'docs'));
       }
       const to = parseRef(toRaw);
       if (!to) return send(404, 'doc not found', 'text/plain');
@@ -2933,12 +2935,12 @@ async function handler(req, res) {
           ${a.nextStep || a.dueDate ? `<div style="font-size:12px;color:var(--mut)">${a.nextStep ? '下一步：' + escHtml(a.nextStep) : ''}${a.dueDate ? ' 截止：' + escHtml(a.dueDate) : ''}</div>` : ''}
           ${a.note ? `<div style="font-size:12px;color:var(--mut)">${escHtml(a.note)}</div>` : ''}
           <div style="margin-top:4px;font-size:12px">
-            ${idx > 0 ? `<button class="secondary" style="padding:2px 8px" onclick="appPatch('${a.id}',{status:APP_STATUSES[${idx - 1}]})">◀</button>` : ''}
-            ${idx < APP_STATUSES.length - 1 && !APP_TERMINAL.includes(a.status) ? `<button class="secondary" style="padding:2px 8px" onclick="appPatch('${a.id}',{status:APP_STATUSES[${idx + 1}]})">▶</button>` : ''}
-            <select style="font-size:12px;padding:2px" aria-label="状态" onchange="if(this.value)appPatch('${a.id}',{status:this.value})"><option value="">⇅</option>${APP_STATUSES.map((s) => `<option value="${s}"${s === a.status ? ' selected' : ''}>${s}</option>`).join('')}</select>
+            ${idx > 0 ? `<button class="secondary" style="padding:2px 8px" onclick="appPatch(${escAttr(JSON.stringify(a.id))},{status:APP_STATUSES[${idx - 1}]})">◀</button>` : ''}
+            ${idx < APP_STATUSES.length - 1 && !APP_TERMINAL.includes(a.status) ? `<button class="secondary" style="padding:2px 8px" onclick="appPatch(${escAttr(JSON.stringify(a.id))},{status:APP_STATUSES[${idx + 1}]})">▶</button>` : ''}
+            <select style="font-size:12px;padding:2px" aria-label="状态" onchange="if(this.value)appPatch(${escAttr(JSON.stringify(a.id))},{status:this.value})"><option value="">⇅</option>${APP_STATUSES.map((s) => `<option value="${s}"${s === a.status ? ' selected' : ''}>${s}</option>`).join('')}</select>
             <a href="/app?id=${escAttr(a.id)}">详情</a>
-            <button class="secondary" style="padding:2px 8px" aria-label="快速编辑" onclick="appEdit('${a.id}')">${icon('pencil', 13)}</button>
-            <button class="danger" style="padding:2px 8px;min-height:28px" aria-label="删除投递" onclick="appDel('${a.id}')">${icon('trash-2', 13)}</button>
+            <button class="secondary" style="padding:2px 8px" aria-label="快速编辑" onclick="appEdit(${escAttr(JSON.stringify(a.id))})">${icon('pencil', 13)}</button>
+            <button class="danger" style="padding:2px 8px;min-height:28px" aria-label="删除投递" onclick="appDel(${escAttr(JSON.stringify(a.id))})">${icon('trash-2', 13)}</button>
           </div>
         </div>`;
       };
@@ -3645,13 +3647,49 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       // 写入侧一律用 VALID_ID 闸门（/new、/save 的全局闸门），恢复侧必须同一把尺。
       for (const e of entries) {
         const p = e.replace(/^\.\//, '');
-        const mDoc = /^docs\/([^/]+)\.html$/.exec(p);
-        const mSnap = /^snapshots\/([^/]+)\//.exec(p);
-        const mPdf = /^pdfs\/(?:archive\/)?([^/]+)\.pdf$/.exec(p);
-        const ident = mDoc ? mDoc[1] : mSnap ? mSnap[1] : mPdf ? mPdf[1] : null;
-        if (ident !== null && !VALID_ID.test(ident)) {
-          return fail('备份包含非法标识（只允许小写字母/数字/横线）：' + String(ident).slice(0, 40));
+        // ① 目录条目：每一段都要过 VALID_ID（docs/ snapshots/<id>/ pdfs/ pdfs/archive/ …）
+        if (p.endsWith('/')) {
+          for (const seg of p.split('/').filter(Boolean)) {
+            if (!VALID_ID.test(seg)) return fail('备份包含非法目录名：' + seg.slice(0, 40));
+          }
+          continue;
         }
+        // ② 文档：docs/<id>.html（必须是文件；同名目录会让首页 500 且删不掉）
+        const mDoc = /^docs\/([^/]+)\.html$/.exec(p);
+        if (mDoc) {
+          if (!VALID_ID.test(mDoc[1])) return fail('备份包含非法文档 id：' + mDoc[1].slice(0, 40));
+          continue;
+        }
+        // ③ 快照：snapshots/<id>/<ts>.html 与 <ts>.manifest.json
+        //    ts 会原样拼进 /snapshots 的 href 与内联 JS → 不能带引号
+        //    （口径同 /snapshot/view 的 /^[0-9-]+$/）
+        const mSnap = /^snapshots\/([^/]+)\/([^/]+?)(\.manifest\.json|\.html)$/.exec(p);
+        if (mSnap) {
+          if (!VALID_ID.test(mSnap[1])) return fail('备份包含非法快照目录 id：' + mSnap[1].slice(0, 40));
+          if (!/^[0-9-]+$/.test(mSnap[2])) return fail('备份包含非法快照时间戳：' + mSnap[2].slice(0, 40));
+          continue;
+        }
+        // ④ PDF：pdfs/<id>.pdf、pdfs/<id>.pdf.env.json（渲染旁车）、pdfs/archive/<ts>.pdf
+        const mPdf = /^pdfs\/([^/]+?)(\.pdf\.env\.json|\.pdf)$/.exec(p);
+        if (mPdf) {
+          if (!VALID_ID.test(mPdf[1])) return fail('备份包含非法 PDF 标识：' + mPdf[1].slice(0, 40));
+          continue;
+        }
+        const mArc = /^pdfs\/archive\/([^/]+?)\.pdf(\.env\.json)?$/.exec(p);
+        if (mArc) {
+          if (!/^[0-9-]+$/.test(mArc[1])) return fail('备份包含非法存档文件名：' + mArc[1].slice(0, 40));
+          continue;
+        }
+        // ④b 导出历史：pdfs/history/<docId>@<ts>.pdf（及 .pdf.env.json 旁车）
+        const mHist = /^pdfs\/history\/([^@/]+)@([0-9-]+)\.pdf(\.env\.json)?$/.exec(p);
+        if (mHist) {
+          if (!VALID_ID.test(mHist[1])) return fail('备份包含非法导出历史标识：' + mHist[1].slice(0, 40));
+          continue;
+        }
+        // ⑤ 四个 JSON（运行时产物，可能不存在）
+        if (/^(docs-meta|applications|materials|evaluations)\.json$/.test(p)) continue;
+        // ⑥ 其余形状一律拒（目录/文件混淆、pdfs 嵌套、任意路径形态）
+        return fail('备份包含不允许的条目形状：' + p.slice(0, 60));
       }
       try { execFileSync('tar', ['xzf', tmpTar, '-C', stage], { stdio: 'pipe' }); }
       catch { return fail('解包失败，备份包可能损坏'); }
@@ -3685,7 +3723,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         // 备份包里的 id 是外部输入 → 恶意 id 即存储型 XSS（同上，2026-10-22）。
         try {
           const a = JSON.parse(fs.readFileSync(f, 'utf8'));
-          if (!Array.isArray(a)) return [];
+          if (!Array.isArray(a)) return 'CORRUPT';   // 形状错 ≠ 空数组：否则 replace 模式会静默清空本地记录
           for (const x of a) {
             if (!x || typeof x.id !== 'string' || !VALID_ID.test(x.id)) return 'BAD_ID';
           }

@@ -185,9 +185,11 @@ export function sectionsOf(html) {
   // （实测 32KB → 16.6s；旧实现同样炸，不是本次引入，但本次就该一起修掉）。
   const re = /<section\b/gi;
   const dead = { 34: -1, 39: -1 };
+  const lastGt = body.lastIndexOf('>');   // 之后没有 '>' → 残片，O(1) 判定（免得每个候选点重扫到文末）
+  const lastLt = body.lastIndexOf('<');   // 最后一个 '<'：引号区间里有没有 '<' 靠它 O(1) 预判
   let m;
   while ((m = re.exec(body))) {
-    const gt = attrEnd(body, m.index + m[0].length, body.length, dead);
+    const gt = attrEnd(body, m.index + m[0].length, body.length, dead, lastGt, lastLt);
     if (gt < 0) { re.lastIndex = m.index + 1; continue; }   // 引号未闭合 → 不是标签（同旧正则口径）
     const attrs = body.slice(m.index, gt + 1);
     const cls = lastClassAttr(attrs);
@@ -210,8 +212,10 @@ export function sectionsOf(html) {
 
 // 标签文本里最后一个 class="..." 的值（旧的贪婪 [^>]*class=" 取的是最后一个），
 // 没有 class 属性返回 null。
+// 大小写不敏感：旧正则是 /gi（HTML 属性名按规范大小写不敏感），
+// 漏了 'i' 会让 <section CLASS="section"> 不再被认成章节（2026-10-22 审查回归）。
 function lastClassAttr(tagText) {
-  const re = /class="([^"]*)"/g;
+  const re = /class="([^"]*)"/gi;
   let last = null;
   let m;
   while ((m = re.exec(tagText))) last = m[1];
@@ -231,15 +235,34 @@ const isWord = (c) => (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 
  *     旧正则会一路扫到文末再失败，病态输入下每个标签 O(长度) → 平方级
  *   - dead[c]：记录「此引号类型在该位置之后不再出现」的结论，
  *     避免同一段文本被反复扫（未闭合引号后的每个引号都 O(1) 判定）
+ *     判据是「当前引号位置 ≥ 已知耗尽位置」——比已知耗尽位置更早的引号
+ *     仍可能闭合（它和耗尽位置之间可能还有配对的引号）
+ *   - lastGt：全文最后一个 '>' 的位置。之后没有 '>' → 残片，直接判非法（O(1)），
+ *     否则每个候选点都要重扫到文末（平方级）
+ *   - **引号区间里同时出现 '>' 与 '<' → 该标签非法**（-1）：
+ *     说明这个畸形标签（如 <section'><…>）的属性区跨过了后面的标签，把它们一起吞掉。
+ *     旧实现是两条不一致的正则（opens 用非引号感知的 [^>]*、matchingClose 用引号感知的），
+ *     歪打正着还能捞回里面的标签；这里改成「畸形标签不吞后面的标签」，
+ *     与旧实现的可观察结果一致（回归测试 EXTRACT-Q 逐例比对）。
  */
-function attrEnd(s, j, n, dead) {
+function attrEnd(s, j, n, dead, lastGt, lastLt) {
   while (j < n) {
+    if (j > lastGt) return -1;                              // 后面再没有 '>' → 不是标签
     const c = s.charCodeAt(j);
     if (c === 62) return j;                                  // '>'
     if (c === 34 || c === 39) {                              // 引号
-      if (dead[c] >= 0) return -1;                           // 已知后面没有同种引号 → 不可能闭合
+      if (dead[c] >= 0 && j >= dead[c]) return -1;            // 该引号类型已耗尽 → 不可能闭合
       const close = s.indexOf(c === 34 ? '"' : "'", j + 1);
       if (close < 0) { dead[c] = j; return -1; }             // 未闭合 → 不是标签
+      // 引号区间里同时出现 '>' 与 '<' → 这个畸形标签的属性区跨过了后面的标签（会把它们吞掉）。
+      // 旧实现靠「opens 用非引号感知的 [^>]*、matchingClose 用引号感知的」两条不一致的正则，
+      // 歪打正着没被吞；这里显式判非法，让可观察结果与旧实现一致。
+      // 只在「同时有 > 和 <」时判：属性值里单独的 '<'（如 title="a<b"）是合法 HTML，不该被误杀。
+      if (lastGt > j && lastLt > j) {
+        const gtIn = s.indexOf('>', j + 1);
+        const ltIn = s.indexOf('<', j + 1);
+        if (gtIn !== -1 && ltIn !== -1 && gtIn < close && ltIn < close) return -1;
+      }
       j = close + 1;                                         // 跳过引号区间
       continue;
     }
@@ -274,6 +297,8 @@ export function closeIndex(html, names) {
   for (const raw of names) {
     const want = String(raw).toLowerCase();
     const dead = { 34: -1, 39: -1 };   // 「此引号类型在该位置之后不再出现」
+    const lastGt = s.lastIndexOf('>'); // 之后没有 '>' → 残片，O(1) 判定
+    const lastLt = s.lastIndexOf('<'); // 最后一个 '<'：引号区间里有没有 '<' 靠它 O(1) 预判
     const stack = [];                  // 该名字未闭合的开标签起点栈
     let i = 0;
     while (i < n) {
@@ -286,7 +311,7 @@ export function closeIndex(html, names) {
       const ns = j;
       while (j < n && isWord(s.charCodeAt(j))) j++;           // 标签名（单词串）
       if (s.slice(ns, j).toLowerCase() !== want) { i = lt + 1; continue; }
-      const gt = attrEnd(s, j, n, dead);
+      const gt = attrEnd(s, j, n, dead, lastGt, lastLt);
       if (gt < 0) { i = lt + 1; continue; }                   // 残片 → 不是标签
       let k = gt - 1;
       while (k > lt && isWs(s.charCodeAt(k))) k--;

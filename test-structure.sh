@@ -4592,6 +4592,57 @@ try {
   if (j3.ok !== true) fail('正常备份被拒了: ' + JSON.stringify(j3).slice(0, 200));
   if (!fs.existsSync(path.join(ROOT, 'docs', 'restored.html'))) fail('正常备份恢复后文件没落地');
 
+  // —— 真实备份的全部条目形状都必须放行（备份/恢复是常用路径，别收死）——
+  const t4 = mkTar('shapes', (d) => {
+    fs.mkdirSync(path.join(d, 'docs'), { recursive: true });
+    fs.mkdirSync(path.join(d, 'snapshots', 'doc1'), { recursive: true });
+    fs.mkdirSync(path.join(d, 'pdfs', 'archive'), { recursive: true });
+    fs.writeFileSync(path.join(d, 'docs', 'doc1.html'), '<html><body>x</body></html>');
+    fs.writeFileSync(path.join(d, 'snapshots', 'doc1', '2026-10-05-121001-958.html'), '<html><body>s</body></html>');
+    fs.writeFileSync(path.join(d, 'snapshots', 'doc1', '2026-10-05-121001-958.manifest.json'), '{}');
+    fs.writeFileSync(path.join(d, 'pdfs', 'doc1.pdf'), '%PDF');
+    fs.writeFileSync(path.join(d, 'pdfs', 'doc1.pdf.env.json'), '{}');
+    fs.writeFileSync(path.join(d, 'pdfs', 'archive', '2026-10-22-135000-123.pdf'), '%PDF');
+    fs.writeFileSync(path.join(d, 'docs-meta.json'), '{}');
+  });
+  const j4 = await restore(t4);
+  if (j4.ok !== true) fail('真实形状的备份被拒了（备份/恢复是常用路径）: ' + JSON.stringify(j4).slice(0, 200));
+
+  // —— 恶意快照 ts（ts 会原样拼进 /snapshots 的 href 与内联 JS）——
+  const t5 = mkTar('evil-snap', (d) => {
+    fs.mkdirSync(path.join(d, 'snapshots', 'doc1'), { recursive: true });
+    fs.writeFileSync(path.join(d, 'snapshots', 'doc1', 'x" onmouseover="window.' + MARK + '" data-x=".html'), '<html></html>');
+  });
+  const j5 = await restore(t5);
+  if (j5.ok !== false) fail('含恶意快照时间戳的备份包被接受了: ' + JSON.stringify(j5).slice(0, 160));
+
+  // —— 目录/文件混淆：docs/abc.html/ 是目录 → 恢复后首页会 500 且删不掉 ——
+  const t6 = mkTar('evil-dir', (d) => { fs.mkdirSync(path.join(d, 'docs', 'abc.html'), { recursive: true }); });
+  const j6 = await restore(t6);
+  if (j6.ok !== false) fail('含目录形态文档条目的备份包被接受了: ' + JSON.stringify(j6).slice(0, 160));
+
+  // —— pdfs 更深嵌套：pdfs/sub/x.pdf 不该被放行 ——
+  const t7 = mkTar('evil-pdf', (d) => {
+    fs.mkdirSync(path.join(d, 'pdfs', 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(d, 'pdfs', 'sub', 'x.pdf'), '%PDF');
+  });
+  const j7 = await restore(t7);
+  if (j7.ok !== false) fail('含 pdfs 嵌套条目的备份包被接受了: ' + JSON.stringify(j7).slice(0, 160));
+
+  // —— 记录 id（applications/materials）恶意 → 渲染点必须转义，JS 串不得被闭合 ——
+  fs.writeFileSync(path.join(ROOT, 'applications.json'), JSON.stringify([
+    { id: MARK, company: 'C', role: 'R', docId: 'good', status: '已投递' }
+  ]));
+  const appsHtml = await (await fetch(B + '/applications')).text();
+  const m2 = appsHtml.match(/onclick="appPatch\([^>]{0,120}/);
+  if (!m2) fail('/applications 未渲染 appPatch（sink 没打中，测试空转）');
+  else {
+    const raw = m2[0];
+    // id 必须以「双引号 JS 串字面量」出现（&quot; 包裹）→ 单引号载荷闭合不了它
+    if (!raw.includes('appPatch(&quot;')) fail('投递记录 id 未按 JS 串上下文转义: ' + raw.slice(0, 120));
+    if (raw.includes("appPatch('")) fail('投递记录 id 仍是裸单引号串（可被闭合）: ' + raw.slice(0, 120));
+  }
+
   console.log('✅ XSS-3 恢复备份的标识校验（恶意 id 拒绝 + 读取侧兜底 + 正常包仍可恢复）');
 } finally {
   srv.kill('SIGKILL');
