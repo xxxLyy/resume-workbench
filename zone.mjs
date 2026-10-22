@@ -6,10 +6,42 @@ import { sectionsOf, matchingClose, closeIndex } from './extract.mjs';
 import { factGuard } from './job.mjs';
 
 export const ZONE_KEYS = ['personal', 'education', 'work', 'project', 'skill', 'award', 'summary', 'other'];
-const UNIT_RE = /<(p|li|h[1-4]|div)((?:\s[^>]*)?)>/gi;
+const UNIT_NAMES = new Set(['p', 'li', 'h1', 'h2', 'h3', 'h4', 'div']);
 const ZID_SRC = 'z[0-9a-f]{8}';
 const ZID_ATTR = new RegExp(`\\sdata-zid="(${ZID_SRC})"`);   // 属性区内的合法 zid
 const ZID_ANY_ATTR = /\sdata-zid="[^"]*"/g;                  // 任意值的 data-zid 属性（坏值摘除用）
+
+// 段落单位扫描（线性）。
+// 旧写法是正则 /<(p|li|h[1-4]|div)((?:\s[^>]*)?)>/gi —— `[^>]*` 后接必有的 '>'，
+// 全文没有 '>' 时每个候选点回溯 O(长度) → 整体平方级
+// （实测 8000 个未闭合引号的标签 = 250ms；/save 走 normalizeZids → 每次保存都卡）。
+// 语义与旧正则一致：标签名 = p/li/h1-4/div；属性区 = 标签名与 '>' 之间，
+// 要么为空，要么以空白开头（所以 <p/> 这种不算单位）。
+function unitTags(s) {
+  const out = [];
+  const n = s.length;
+  let i = 0;
+  while (i < n) {
+    const lt = s.indexOf('<', i);
+    if (lt < 0) break;
+    let j = lt + 1;
+    const ns = j;
+    while (j < n) {
+      const c = s.charCodeAt(j);
+      if ((c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57)) j++;
+      else break;
+    }
+    const tag = s.slice(ns, j);
+    if (!UNIT_NAMES.has(tag.toLowerCase())) { i = lt + 1; continue; }
+    const gt = s.indexOf('>', j);
+    if (gt < 0) { i = lt + 1; continue; }                    // 没有 '>' → 不是标签
+    const attrs = s.slice(j, gt);
+    if (attrs && !/^\s/.test(attrs)) { i = lt + 1; continue; }
+    out.push({ raw: s.slice(lt, gt + 1), tag, attrs, index: lt });
+    i = gt + 1;
+  }
+  return out;
+}
 
 export function newZid() {
   return 'z' + Array.from({ length: 8 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
@@ -23,26 +55,30 @@ function isUnit(tag, attrs) {
 // 打点归一：缺失补、坏值/重复重打（保首）。幂等：已规范的输入原样返回。
 export function normalizeZids(html, gen = newZid) {
   const seen = new Set();
-  return String(html).replace(UNIT_RE, (raw, tag, attrs = '') => {
-    if (!isUnit(tag, attrs)) return raw;
-    const m = ZID_ATTR.exec(attrs);
-    if (m && !seen.has(m[1])) { seen.add(m[1]); return raw; }
+  const s = String(html);
+  const units = unitTags(s);
+  if (!units.length) return s;
+  let out = '', last = 0;
+  for (const u of units) {
+    if (!isUnit(u.tag, u.attrs)) continue;
+    const m = ZID_ATTR.exec(u.attrs);
+    if (m && !seen.has(m[1])) { seen.add(m[1]); continue; }
     const zid = gen();
     seen.add(zid);
     // 坏值（有 data-zid 属性但不合法）当作缺失：摘旧打新，不产生双 data-zid
-    return `<${tag}${attrs.replace(ZID_ANY_ATTR, '')} data-zid="${zid}">`;
-  });
+    const rep = `<${u.tag}${u.attrs.replace(ZID_ANY_ATTR, '')} data-zid="${zid}">`;
+    out += s.slice(last, u.index) + rep;
+    last = u.index + u.raw.length;
+  }
+  return out + s.slice(last);
 }
 
 // 全部合法 zid（文档序去重）。只认段落单位上的：section-title 等非单位开标签手改的 data-zid 不计。
 export function zidsOf(html) {
-  const s = String(html);
   const out = [];
-  let m;
-  UNIT_RE.lastIndex = 0;
-  while ((m = UNIT_RE.exec(s))) {
-    if (!isUnit(m[1], m[2] || '')) continue;
-    const zid = ZID_ATTR.exec(m[2] || '');
+  for (const u of unitTags(String(html))) {
+    if (!isUnit(u.tag, u.attrs)) continue;
+    const zid = ZID_ATTR.exec(u.attrs);
     if (zid && !out.includes(zid[1])) out.push(zid[1]);
   }
   return out;
@@ -53,18 +89,29 @@ export function zidsOf(html) {
 export function parasOf(html) {
   const s = String(html);
   const out = [];
-  const idx = closeIndex(s, ['p', 'li', 'h1', 'h2', 'h3', 'h4', 'div']);   // 一次扫完，别每个匹配点重扫到文末
-  let m;
-  UNIT_RE.lastIndex = 0;
-  while ((m = UNIT_RE.exec(s))) {
-    if (!isUnit(m[1], m[2] || '')) continue;
-    const zidM = ZID_ATTR.exec(m[2] || '');
+  const units = unitTags(s);
+  if (!units.length) return out;
+  // 只为「实际用到的标签名」建索引——closeIndex 每个名字独立扫一遍，
+  // 只扫用到的名字，别为 7 个名字白扫 7 遍（文档里通常只有 p/div）。
+  const names = new Set();
+  for (const u of units) {
+    if (!isUnit(u.tag, u.attrs)) continue;
+    if (!ZID_ATTR.test(u.attrs)) continue;
+    names.add(u.tag.toLowerCase());
+  }
+  if (!names.size) return out;
+  const idx = closeIndex(s, [...names]);
+  let skipUntil = 0;          // 已接受的外层单位 → 其内部的单位不再单独成条
+  for (const u of units) {
+    if (u.index < skipUntil) continue;
+    if (!isUnit(u.tag, u.attrs)) continue;
+    const zidM = ZID_ATTR.exec(u.attrs);
     if (!zidM) continue;
-    const close = matchingClose(s, m.index, m[1], idx);
+    const close = matchingClose(s, u.index, u.tag, idx);
     if (close < 0) continue;
-    const text = s.slice(m.index, close).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+    const text = s.slice(u.index, close).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
     out.push({ zid: zidM[1], text });
-    UNIT_RE.lastIndex = close;
+    skipUntil = close;
   }
   return out;
 }

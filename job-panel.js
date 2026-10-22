@@ -43,7 +43,9 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     + '.jp-st.conflict{background:var(--ed-err-soft);color:var(--ed-err)}'
     + '.jp-todo{border-left:3px solid var(--ed-warn);background:var(--ed-warn-soft);border-radius:6px;padding:6px 8px;margin:4px 0}'
     + '.jp-empty{color:var(--ed-mut);text-align:center;padding:16px 8px}'
-    + '.jp-msg{font-size:11px;color:var(--ed-warn)}'
+    + '.jp-msg{font-size:11px;color:var(--ed-mut)}'
+    + '.jp-msg.is-warn{color:var(--ed-warn)}'
+    + '.jp-msg.is-ok{color:var(--ed-ok)}'
     // S4a-T6 三段骨架（要求与证据｜修改清单｜导出检查）+ 证据表最小渲染
     + '.jp-secs{display:flex;gap:2px;border-bottom:1px solid var(--ed-line);padding-bottom:8px}'
     + '.jp-secs button{flex:1;min-height:26px;padding:0 8px;border:none;background:transparent;font-size:12px;font-weight:600;color:var(--ed-mut);cursor:pointer;border-radius:7px}'
@@ -101,7 +103,18 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     });
   }
   // kind 省略 → 纯文本；给了（ok/warn/err）→ 状态图标 + 转义文本（替代原来的裸 emoji 前缀）
-  function note(msg, kind) { var m = root.querySelector('.jp-msg'); if (!m) return; if (kind) __status(m, kind, msg); else m.textContent = msg; }
+  // 提示必须跨 render 存活：render() 会重建 .jp-msg（root.innerHTML=''），
+  // 原来「先 note() 再 render()」的写法会把刚写的提示立刻清空 —— 保存失败/生成成功
+  // 全都 0 毫秒可见（2026-10-22 审查）。提示存一份，render() 后重贴。
+  var lastNote = null;
+  function applyNote() {
+    var m = root.querySelector('.jp-msg');
+    if (!m || !lastNote) return;
+    m.className = 'jp-msg' + (lastNote.kind === 'warn' ? ' is-warn' : lastNote.kind === 'ok' ? ' is-ok' : '');
+    if (lastNote.kind) __status(m, lastNote.kind, lastNote.msg);
+    else m.textContent = lastNote.msg;
+  }
+  function note(msg, kind) { lastNote = { msg: String(msg), kind: kind || '' }; applyNote(); }
 
   // ===== DOM 定位（章节/条目锚点）=====
   function sections() { return Array.prototype.slice.call(sheet.querySelectorAll('.section')); }
@@ -306,7 +319,13 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     var csheet = clone.querySelector('.sheet');
     if (csheet) { csheet.style.zoom = ''; csheet.style.transform = ''; csheet.setAttribute('contenteditable', 'true'); }
     var cstate = clone.querySelector('#saveState');
-    if (cstate) { cstate.dataset.state = 'saved'; cstate.innerHTML = '已保存 ' + __icon('check'); }
+    // 与模板 doSave 同口径：写回**字面量**「已保存 ✓」，不是 SVG。
+    // 两条保存路径（模板 doSave / 本函数 buildPageHtml）必须产出同一份字节，
+    // 否则同一份文档两条路径存出不同 HTML → bodyHash/renderInputId 不同 → PDF 被误判「较旧」。
+    // emoji 用 \u 转义写（UI-7 断言：前端源码零 emoji 字面量）；运行时由注入层的
+    // MutationObserver 把 #saveState 的 emoji 换成 SVG（与 toast 同一套机制）→ 文件留字面量、UI 不见 emoji。
+    // （✓ 写成转义：UI-7 断言要求前端源码零 emoji 字面量）
+    if (cstate) { cstate.dataset.state = 'saved'; cstate.textContent = '已保存 \u2713'; }
     var csave = clone.querySelector('#saveBtn');
     if (csave) csave.removeAttribute('disabled');
     return '<!doctype html>\n' + clone.outerHTML;
@@ -696,6 +715,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     var msg = document.createElement('div');
     msg.className = 'jp-msg';
     root.appendChild(msg);
+    applyNote();          // 提示跨渲染存活（见 note() 注释）
   }
 
   // ===== 段一「要求与证据」完整 UI（S4a-T7，照原型 02b：五态徽章/事实依据可读化/zid 定位/note 两级流程）=====
@@ -872,7 +892,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
           var loc = document.createElement('button');
           loc.type = 'button';
           loc.className = 'jp-refbtn';
-          loc.innerHTML = __icon('map-pin') + '定位';
+          loc.innerHTML = __icon('map-pin') + ' 定位';
           loc.addEventListener('click', function () { locateZid(r.zid); });
           line.appendChild(loc);
         }

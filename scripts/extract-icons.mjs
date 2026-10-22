@@ -7,7 +7,7 @@
 //    源文件里的图标数据是 JS 字面量（key 未加引号），这里只做「给未加引号的 key
 //    补上双引号」的**纯文本规范化**，再用 JSON.parse 求值 —— 任何解析失败都 exit 1。
 //    失败路径绝不写文件，已有产物保持不变。
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -136,11 +136,12 @@ for (const n of NAMES) {
     continue;
   }
   const norm = [];
+  let bad = false;
   for (const el of arr) {
     if (!Array.isArray(el) || el.length !== 2 || typeof el[0] !== 'string'
         || !el[1] || typeof el[1] !== 'object' || Array.isArray(el[1])) {
       missing.push(n + '(元素形状非法)');
-      norm.length = -1;
+      bad = true;                                    // 别用 norm.length = -1（抛 RangeError，把友好报错路径打断）
       break;
     }
     const a = {};
@@ -150,7 +151,7 @@ for (const n of NAMES) {
     }
     norm.push([el[0], a]);
   }
-  if (norm.length < 0) continue;
+  if (bad) continue;
   out[n] = norm;
 }
 if (missing.length) {
@@ -173,5 +174,14 @@ ${body}
 });
 `;
 mkdirSync(dirname(OUT_FILE), { recursive: true });
-writeFileSync(OUT_FILE, js);
+// 原子写：先写临时文件再 rename。直接 writeFileSync 在写途中被打断（进程被杀/磁盘满）
+// 会留下半截 vendors/icons.mjs —— server.mjs 顶层 import 它 → 服务直接起不来。
+const tmpFile = OUT_FILE + '.tmp';
+try {
+  writeFileSync(tmpFile, js);
+  renameSync(tmpFile, OUT_FILE);
+} catch (e) {
+  rmSync(tmpFile, { force: true });
+  throw e;
+}
 console.log('提取图标数:', NAMES.length, '| 来源版本: v' + version, '| 输出:', OUT_FILE);

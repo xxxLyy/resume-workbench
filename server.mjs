@@ -90,6 +90,15 @@ const EDITOR_ONLY_BODY_CLASS = new Set(['ed-on', 'ed-preview', 'ed-focus']);
 const APP_STATUSES = ['已投递', '笔试', '面试中', 'offer', '已拒', '搁置'];
 const APP_TERMINAL = ['offer', '已拒', '搁置'];
 const docPath = (id) => path.join(root, 'docs', id + '.html');
+// 磁盘上的文档 id 清单：只取通过 VALID_ID 的。
+// 文件名是外部输入（备份恢复 / 手工放置）→ 非法 id 绝不能进任何渲染点：
+// 首页、投递页、对比页都把 id 原样拼进 HTML 属性与内联 JS（value="${id}"、onclick="…('{id}')"），
+// 带引号的 id 即存储型 XSS（2026-10-22 实测：点「删除」真的执行 alert(1)）。
+// 写入侧一律用 VALID_ID 闸门，读取侧同一把尺。
+const docIdsOnDisk = () => fs.readdirSync(path.join(root, 'docs'))
+  .filter((f) => f.endsWith('.html') && !f.startsWith('.'))
+  .map((f) => f.replace('.html', ''))
+  .filter((id) => VALID_ID.test(id));
 const pdfPath = (id) => path.join(root, 'pdfs', id + '.pdf');
 const snapDir = (id) => path.join(root, 'snapshots', id);
 const archivePath = (aid) => path.join(root, 'pdfs', 'archive', aid + '.pdf');
@@ -1076,10 +1085,9 @@ function docInfo(id, m) {
 
 function listPage(showArchived = false) {
   const meta = loadMeta();
-  const docs = fs.readdirSync(path.join(root, 'docs'))
-    .filter((f) => f.endsWith('.html') && !f.startsWith('.'));
+  const docs = docIdsOnDisk();
   const docInfoMap = new Map();
-  for (const f of docs) { const did = f.replace('.html', ''); docInfoMap.set(did, docInfo(did, meta[did])); }
+  for (const did of docs) docInfoMap.set(did, docInfo(did, meta[did]));
   // archived 独立标记（不混入 flow）：home 默认隐藏，?archived=1 切换显示（S1-T8）
   const isArchived = (did) => !!((meta[did] || {}).archivedAt);
   const infos = [...docInfoMap.values()].filter(Boolean).filter((d) => showArchived || !isArchived(d.id));
@@ -1855,7 +1863,7 @@ async function handler(req, res) {
     }
     if (req.method === 'POST' && url.pathname === '/delete') {
       if (!url.searchParams.get('id')) return send(400, 'id required', 'text/plain');
-      const docs = fs.readdirSync(path.join(root, 'docs')).filter((f) => f.endsWith('.html') && !f.startsWith('.'));
+      const docs = docIdsOnDisk();
       if (docs.length <= 1) return send(400, '至少保留一份文档', 'text/plain');
       if (!fs.existsSync(docPath(id))) return send(404, 'doc not found', 'text/plain');
       fs.unlinkSync(docPath(id));
@@ -2852,9 +2860,7 @@ async function handler(req, res) {
       if (!base) return send(400, 'invalid base', 'text/plain');
       const toRaw = url.searchParams.get('to') || '';
       if (!toRaw) {
-        const others = fs.readdirSync(path.join(root, 'docs'))
-          .filter((f) => f.endsWith('.html') && !f.startsWith('.') && f.replace('.html', '') !== base.id)
-          .map((f) => f.replace('.html', ''));
+        const others = docIdsOnDisk().filter((id) => id !== base.id);
         return send(200, page('对比', `<h1>选对比对象</h1><p>${escHtml(base.label)} 与谁对比？</p><ul class="doclist">${others.map((o) => `<li class="card"><a href="/diff?base=${base.label}&to=${o}">${escHtml(o)}</a></li>`).join('')}</ul><p><a href="/">返回首页</a></p>`, 'docs'));
       }
       const to = parseRef(toRaw);
@@ -2872,8 +2878,7 @@ async function handler(req, res) {
     // ===== 投递看板 =====
     if (req.method === 'GET' && url.pathname === '/applications') {
       const apps = loadApps();
-      const docIds = fs.readdirSync(path.join(root, 'docs'))
-        .filter((f) => f.endsWith('.html') && !f.startsWith('.')).map((f) => f.replace('.html', ''));
+      const docIds = docIdsOnDisk();
       const nowMs = Date.now();
       if (url.searchParams.get('view') === 'table') {
         const channels = [...new Set(apps.map((a) => a.channel).filter(Boolean))];
@@ -3633,6 +3638,21 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       for (const e of entries) {
         if (e.startsWith('/') || e.includes('..') || !ALLOWED.test(e.replace(/^\.\//, ''))) return fail('备份包含不允许的条目：' + e.slice(0, 80));
       }
+      // 条目里的「标识」也必须合法（2026-10-22 安全审查 · 存储型 XSS）：
+      // 文档 id 会原样拼进首页的内联 JS（onclick="…('{id}')"），投递/素材记录的 id 同理。
+      // 备份包是外部输入 → 恶意 id 即存储型 XSS
+      // （实测：文档文件名 id="a'+alert(1)+'b" → 首页点「删除」真的弹出 alert(1)）。
+      // 写入侧一律用 VALID_ID 闸门（/new、/save 的全局闸门），恢复侧必须同一把尺。
+      for (const e of entries) {
+        const p = e.replace(/^\.\//, '');
+        const mDoc = /^docs\/([^/]+)\.html$/.exec(p);
+        const mSnap = /^snapshots\/([^/]+)\//.exec(p);
+        const mPdf = /^pdfs\/(?:archive\/)?([^/]+)\.pdf$/.exec(p);
+        const ident = mDoc ? mDoc[1] : mSnap ? mSnap[1] : mPdf ? mPdf[1] : null;
+        if (ident !== null && !VALID_ID.test(ident)) {
+          return fail('备份包含非法标识（只允许小写字母/数字/横线）：' + String(ident).slice(0, 40));
+        }
+      }
       try { execFileSync('tar', ['xzf', tmpTar, '-C', stage], { stdio: 'pipe' }); }
       catch { return fail('解包失败，备份包可能损坏'); }
       // 防 symlink：条目路径校验只查字符串，查不出「合法路径 + 符号链接指向别处」。
@@ -3661,12 +3681,21 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const jsonIds = (file, key = 'id') => {
         const f = path.join(stage, file);
         if (!fs.existsSync(f)) return null;
-        try { const a = JSON.parse(fs.readFileSync(f, 'utf8')); return Array.isArray(a) ? a : []; }
-        catch { return 'CORRUPT'; }
+        // id 也要过 VALID_ID：记录 id 会原样拼进内联 JS（appPatch('{id}')/matStatus('{id}')），
+        // 备份包里的 id 是外部输入 → 恶意 id 即存储型 XSS（同上，2026-10-22）。
+        try {
+          const a = JSON.parse(fs.readFileSync(f, 'utf8'));
+          if (!Array.isArray(a)) return [];
+          for (const x of a) {
+            if (!x || typeof x.id !== 'string' || !VALID_ID.test(x.id)) return 'BAD_ID';
+          }
+          return a;
+        } catch { return 'CORRUPT'; }
       };
       const compareJson = (file) => {
         const bak = jsonIds(file);
         if (bak === 'CORRUPT') return { corrupt: true, add: [], conflict: [], keep: [] };
+        if (bak === 'BAD_ID') return { badId: true, add: [], conflict: [], keep: [] };
         if (bak === null) return { add: [], conflict: [], keep: [] };
         const local = file === 'materials.json' ? loadMats() : file === 'evaluations.json' ? loadEvals() : loadApps();
         const localIds = new Set(local.map((x) => x.id));
@@ -3704,6 +3733,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       // 损坏的备份 meta 必须在任何删除/覆盖动作之前拒绝：否则 replace 会先清空本地 docs 再把 meta 当成 {} 全删
       if (preview.meta.corrupt) return fail('备份中的 docs-meta.json 损坏，拒绝恢复（不覆盖本地 meta）', 500);
       if (preview.apps.corrupt || preview.mats.corrupt) return fail('备份中的 JSON 损坏，拒绝恢复');
+      if (preview.apps.badId || preview.mats.badId || preview.evals.badId) {
+        return fail('备份中的记录 id 非法（只允许小写字母/数字/横线），拒绝恢复：防存储型 XSS');
+      }
       const mode = url.searchParams.get('mode') === 'replace' ? 'replace' : 'merge';
       // 回退点（可操作）：数据根 backups/restore-<ts>/
       const safety = path.join(root, 'backups', 'restore-' + ts);
@@ -3748,7 +3780,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
           }
           const mergeById = (file, loadFn, saveFn) => {
             const bak = jsonIds(file);
-            if (!bak) return;
+            if (!bak || bak === 'CORRUPT' || bak === 'BAD_ID') return;
             const local = loadFn();
             const map = new Map(local.map((x) => [x.id, x]));
             for (const b of bak) map.set(b.id, b);   // 同 id：以备份为准（预览中已列出冲突）

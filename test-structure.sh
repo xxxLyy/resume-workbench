@@ -4383,7 +4383,7 @@ EOF
 # 现在整份文档一次扫完（closeIndex），同一份文档的所有调用点共用。
 node --input-type=module << 'EOF'
 import { matchingClose, sectionsOf } from './extract.mjs';
-import { parasOf } from './zone.mjs';
+import { parasOf, normalizeZids } from './zone.mjs';
 const fail = (m) => { console.error('❌ EXTRACT-Q ' + m); process.exit(1); };
 
 // 旧实现原样保留作对照（重构前逐点重扫到文末的那版）
@@ -4469,6 +4469,36 @@ const dt = Date.now() - t0;
 if (secs.length !== 0) fail(`未闭合 section 应全部跳过，却出了 ${secs.length} 个`);
 if (dt > 500) fail(`sectionsOf 在 8000 个未闭合 section 上耗时 ${dt}ms（疑似平方级；旧实现 4000 个即 334ms）`);
 
+// 灾难性回溯回归：旧正则 /<section\b[^>]*class="([^"]*)"[^>]*>/ 在「有 <section 但全文无 '>'」
+// 的输入上是 O(长度³)——实测 32KB → 16.6s。这里必须线性。
+const back = '<section class="'.repeat(2000);
+const t1 = Date.now();
+sectionsOf(back);
+const dt1 = Date.now() - t1;
+if (dt1 > 500) fail(`sectionsOf 在 2000 个 <section class=" 上耗时 ${dt1}ms（灾难性回溯；旧实现同一输入 16.6s）`);
+
+// 畸形标签不得吞掉别的标签名的闭合（2026-10-22 审查回归）：
+// li 的属性区引号未闭合时，旧实现里 h3 的匹配是独立的 → h3 仍要能配到 </h3>。
+const malformed = '<body><h3 data-zid="z0000aa01"><li title=\'q\'</h3></body>';
+const paras = parasOf(malformed);
+if (paras.length !== 1 || paras[0].zid !== 'z0000aa01') {
+  fail('畸形标签的属性区吞掉了别的标签名的闭合：' + JSON.stringify(paras) + '（旧实现应得 [{zid:z0000aa01,text:""}]）');
+}
+
+// 自闭合开标签：旧实现会返回「后面某个 section 的闭合」（错配到别的章节），
+// 新实现返回 -1（自闭合本就无内容）——这是有意的行为变更，钉住它。
+if (matchingClose('<section class="section"/><section class="section">x</section>', 0, 'section') !== -1) {
+  fail('自闭合开标签应无闭合（-1）');
+}
+
+// zone.mjs 的段落单位扫描也必须是线性：旧正则 /<(p|li|h[1-4]|div)((?:\s[^>]*)?)>/gi
+// 在「有 <p 但全文无 '>'」的输入上平方级回溯（实测 8000 个 = 250ms；/save 每次保存都卡）。
+const zbad = '<p title="'.repeat(8000);
+const t2 = Date.now();
+normalizeZids(zbad);
+const dt2 = Date.now() - t2;
+if (dt2 > 200) fail(`normalizeZids 在 8000 个未闭合引号的标签上耗时 ${dt2}ms（疑似平方级；旧实现同一输入 250ms）`);
+
 // 正常文档解析不变
 const ok = sectionsOf('<body><section class="section"><div class="section-title">标题</div><p>正文</p></section></body>');
 if (ok.length !== 1 || ok[0].title !== '标题' || !ok[0].html.includes('正文')) fail('sectionsOf 正常解析被改坏');
@@ -4478,4 +4508,94 @@ const ps = parasOf('<body><p data-zid="z11111111">甲</p><p data-zid="z22222222"
 if (ps.length !== 2 || ps[0].text !== '甲' || ps[1].text !== '乙') fail('parasOf 解析被改坏');
 
 console.log('✅ EXTRACT-Q 标签闭合配对单遍扫描（等价旧实现 ' + checked + ' 例 + 随机 ' + fuzzChecked + ' 例 + 平方级回归）');
+EOF
+
+# —— XSS-3：恢复备份不得植入恶意标识（存储型 XSS，2026-10-22）——
+# 文档 id 会原样拼进首页的内联 JS（onclick="…('{id}')"）与属性（value="{id}"），
+# 投递/素材记录的 id 同理。备份包是外部输入 → 恶意 id 即存储型 XSS
+# （实测：id="a'+alert(1)+'b" → 首页点「删除」真的执行 alert(1)）。
+# 写入侧一律 VALID_ID 闸门 → 恢复侧必须同一把尺；读取侧再兜一层。
+node --input-type=module << 'EOF'
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import { spawn, execFileSync } from 'node:child_process';
+
+const fail = (m) => { console.error('❌ XSS-3 ' + m); process.exit(1); };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const MARK = "a'+alert(1)+'b";   // 能闭合 JS 单引号串的 id
+
+const tmpB = fs.mkdtempSync(path.join(os.tmpdir(), 'xss-restore-'));
+const ROOT = path.join(tmpB, 'data');
+for (const d of ['docs', 'snapshots', 'pdfs']) fs.mkdirSync(path.join(ROOT, d), { recursive: true });
+fs.writeFileSync(path.join(ROOT, 'docs-meta.json'), '{}');
+fs.writeFileSync(path.join(ROOT, 'applications.json'), '[]');
+fs.writeFileSync(path.join(ROOT, 'materials.json'), '[]');
+fs.writeFileSync(path.join(ROOT, 'docs', 'good.html'), '<!doctype html><html><body><h1>ok</h1></body></html>');
+
+const freePort = () => new Promise((resolve, reject) => { const s = http.createServer(); s.once('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
+const port = await freePort();
+const srv = spawn(process.execPath, ['server.mjs'], {
+  cwd: process.cwd(),
+  env: { ...process.env, RESUME_ROOT: ROOT, PORT: String(port) },
+  stdio: ['ignore', 'ignore', 'pipe']
+});
+let serr = ''; srv.stderr.on('data', (d) => { serr += d; });
+const B = 'http://127.0.0.1:' + port;
+const mkTar = (name, build) => {
+  const dir = path.join(tmpB, name);
+  fs.mkdirSync(dir, { recursive: true });
+  build(dir);
+  const tar = path.join(tmpB, name + '.tar.gz');
+  execFileSync('tar', ['czf', tar, '-C', dir, ...fs.readdirSync(dir)]);
+  return tar;
+};
+const restore = async (tar) => {
+  const r = await fetch(B + '/restore?apply=1&mode=merge', { method: 'POST', body: fs.readFileSync(tar) });
+  return r.json().catch(() => ({}));
+};
+try {
+  let up = false;
+  const t0 = Date.now();
+  while (Date.now() - t0 < 12000) { if (srv.exitCode !== null) break; try { await fetch(B + '/'); up = true; break; } catch {} await sleep(80); }
+  if (!up) fail('测试服务启动失败: ' + serr.slice(0, 500));
+
+  // —— 恶意包 1：文档文件名带引号 ——
+  const t1 = mkTar('evil1', (d) => {
+    fs.mkdirSync(path.join(d, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(d, 'docs', MARK + '.html'), '<html><body><h1>x</h1></body></html>');
+  });
+  const j1 = await restore(t1);
+  if (j1.ok !== false) fail('含恶意文档名的备份包被接受了: ' + JSON.stringify(j1).slice(0, 200));
+
+  // —— 恶意包 2：applications.json 的 id 带引号 ——
+  const t2 = mkTar('evil2', (d) => {
+    fs.mkdirSync(path.join(d, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(d, 'docs', 'ok.html'), '<html><body><h1>ok</h1></body></html>');
+    fs.writeFileSync(path.join(d, 'applications.json'), JSON.stringify([{ id: MARK, company: 'C', role: 'R', docId: 'ok' }]));
+  });
+  const j2 = await restore(t2);
+  if (j2.ok !== false) fail('含恶意记录 id 的备份包被接受了: ' + JSON.stringify(j2).slice(0, 200));
+
+  // —— 读取侧兜底：非法 id 的文件即使落到磁盘上，首页也不得原样渲染 ——
+  fs.writeFileSync(path.join(ROOT, 'docs', MARK + '.html'), '<html><body><h1>x</h1></body></html>');
+  const home = await (await fetch(B + '/')).text();
+  if (home.includes(MARK)) fail('首页把非法文档 id 原样渲染了（可闭合属性/JS 串）');
+
+  // —— 正常备份必须仍能恢复（别把闸门收得过死）——
+  const t3 = mkTar('good', (d) => {
+    fs.mkdirSync(path.join(d, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(d, 'docs', 'restored.html'), '<html><body><h1>r</h1></body></html>');
+  });
+  const j3 = await restore(t3);
+  if (j3.ok !== true) fail('正常备份被拒了: ' + JSON.stringify(j3).slice(0, 200));
+  if (!fs.existsSync(path.join(ROOT, 'docs', 'restored.html'))) fail('正常备份恢复后文件没落地');
+
+  console.log('✅ XSS-3 恢复备份的标识校验（恶意 id 拒绝 + 读取侧兜底 + 正常包仍可恢复）');
+} finally {
+  srv.kill('SIGKILL');
+  await sleep(50);
+  fs.rmSync(tmpB, { recursive: true, force: true });
+}
 EOF

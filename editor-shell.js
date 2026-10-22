@@ -277,10 +277,40 @@
   var verBadge = document.getElementById('verBadge');
   var docName = document.getElementById('docName');
   var saveState = document.getElementById('saveState');
+  // 冻结件工具条按钮：先存原样（注入前），保存时还原 —— 见下方 cloneNode 钩子。
+  var FROZEN_BTN = ['pdfBtn', 'saveBtn', 'histBtn'];
+  var frozenOrig = {};
+  for (var bi = 0; bi < FROZEN_BTN.length; bi++) {
+    var bel = document.getElementById(FROZEN_BTN[bi]);
+    if (bel) frozenOrig[FROZEN_BTN[bi]] = bel.outerHTML;
+  }
   if (pdfBtn) { pdfBtn.classList.remove('secondary'); pdfBtn.classList.add('ed-primary'); pdfBtn.innerHTML = __icon('file-text') + ' 导出 PDF'; pdfBtn.title = '导出前检查并下载 PDF'; }
   if (saveBtn) { saveBtn.classList.add('ed-ghost'); saveBtn.innerHTML = __icon('save') + ' 保存'; saveBtn.title = '保存（⌘/Ctrl+S，打历史快照）'; }
   if (histBtn) { histBtn.classList.remove('secondary'); histBtn.innerHTML = __icon('clock') + ' 历史'; histBtn.title = '版本历史'; }
   if (homeBtn) { homeBtn.textContent = '‹ 工作台'; homeBtn.title = '返回工作台'; homeBtn.classList.add('ed-ghost'); }
+
+  // ===== 注入层产物不落盘：工具条按钮的运行时覆盖必须不进用户文档文件 =====
+  // 模板的 doSave 克隆整棵 DOM 再上传（它自己只还原了 #saveState，工具条按钮没人还原）→
+  // 注入的 SVG 会跟着进 docs/<id>.html，文件与冻结模板不再一致，bodyHash 也跟着变。
+  // 钩住 documentElement.cloneNode：克隆后立刻把三个按钮还原成模板原样
+  // （emoji 字面量留在文件里，UI 里由注入层换成 SVG —— 与 #saveState/toast 同一套机制）。
+  // 克隆是同步的，钩子在其后立即执行 → doSave / buildPageHtml 拿到的克隆已是原样。
+  (function () {
+    var rootEl = document.documentElement;
+    if (!rootEl || !Object.keys(frozenOrig).length) return;
+    var origClone = rootEl.cloneNode.bind(rootEl);
+    rootEl.cloneNode = function (deep) {
+      var c = origClone(deep);
+      for (var k in frozenOrig) {
+        var t = c.querySelector('#' + k);
+        if (!t) continue;
+        var box = document.createElement('div');
+        box.innerHTML = frozenOrig[k];
+        if (box.firstElementChild) t.replaceWith(box.firstElementChild);
+      }
+      return c;
+    };
+  })();
 
   // ===== 冻结件 template.html 的 emoji → 运行时覆盖成 SVG（模板是冻结件，不改）=====
   // template.html 的 setState()/toast() 在它自己的 IIFE 私有作用域里，注入层拿不到这两个函数，
@@ -350,7 +380,7 @@
     ltBtn.setAttribute('data-ed-inj', '1');
     ltBtn.setAttribute('aria-label', '章节与素材面板');
     ltBtn.title = '章节与素材';
-    ltBtn.innerHTML = __icon('menu');
+    ltBtn.innerHTML = __icon('menu') || '章';   // __icon 缺失时给文字兜底，否则是空按钮
     toolbar.insertBefore(ltBtn, toolbar.firstChild);
   }
   if (toolbar && !rtBtn) {
@@ -360,7 +390,7 @@
     rtBtn.setAttribute('data-ed-inj', '1');
     rtBtn.setAttribute('aria-label', '辅助面板');
     rtBtn.title = '审阅 / 区域 / AI 助手 / 排版';
-    rtBtn.innerHTML = __icon('settings');
+    rtBtn.innerHTML = __icon('settings') || '审';   // 同上
     toolbar.appendChild(rtBtn);
   }
   // 岗位草稿入口（不依赖模型：直接创建独立草稿，模型配置后可在审阅面板生成建议）
@@ -1074,7 +1104,7 @@
       + '<button type="button" id="ed-find-next" class="secondary" title="下一处">↓</button>'
       + '<button type="button" id="ed-find-one" title="替换当前一处">替换</button>'
       + '<button type="button" id="ed-find-all" title="全部替换（一次撤销）">全部替换</button>'
-      + '<button type="button" id="ed-find-close" class="secondary" title="关闭（Esc）">' + __icon('x') + '</button>'
+      + '<button type="button" id="ed-find-close" class="secondary" title="关闭（Esc）">' + (__icon('x') || '×') + '</button>'
       + (HL_OK ? '' : '<span style="font-size:11px">此浏览器不支持高亮，仅计数与跳转</span>');
     mount(findPanel);
     document.getElementById('ed-find-q').addEventListener('input', function () {
@@ -1554,9 +1584,19 @@
   //   ai-panel.js / toggleRight 早就在写这个变量，本次接上，不新增变量。
   // 拖柄是 grid item：与 #ed-right 同格（行 2/4、列 3），justify-self:start + margin-left:-3px 骑在交界线上。
   var GRIP_KEY = 'resume.ed.rightW';
-  var GRIP_MIN = 260, GRIP_MAX = 460, GRIP_DEFAULT = 300;
+  var GRIP_MIN = 260, GRIP_MAX = 460, GRIP_DEFAULT = 320;
+  // localStorage 访问必须兜底：浏览器禁用站点存储时（Chrome「阻止 Cookie」/
+  // Firefox dom.storage.enabled=false）属性访问就抛 SecurityError ——
+  // 无兜底会让整个 editor-shell 初始化中断（页签/拖柄/工具条全没建，点了没反应）。
+  // 本文件其它 localStorage 访问都有 try/catch，这一处原来漏了。
+  function gripGet() {
+    try { return localStorage.getItem(GRIP_KEY); } catch (e) { return null; }
+  }
+  function gripSet(v) {
+    try { localStorage.setItem(GRIP_KEY, String(v)); } catch (e) { /* 存不了就只是不持久化 */ }
+  }
   function readGripW() {                       // 拖过才认；没拖过保持旧行为（320px）
-    var s = Number(localStorage.getItem(GRIP_KEY) || 0);
+    var s = Number(gripGet() || 0);
     return (s >= GRIP_MIN && s <= GRIP_MAX) ? s : 0;
   }
   function rightW() {                          // 折叠/宽度档复位时用：拖过就沿用拖后的宽度
@@ -1574,11 +1614,20 @@
   grip.title = '拖动调整宽度，双击复位';
   right.parentNode.insertBefore(grip, right.nextSibling);
   var curW = 0;
+  // 上限跟视口走：右栏太宽会把 210mm（≈794px）的纸张压住 ——
+  // 纸张在中列居中，中列不够宽时向两侧各溢出，被右栏（后绘制）盖住，
+  // 而状态栏查的是纸张自身 scrollWidth，查不出「被盖」。
+  // 视口 - 左栏 208 - 纸张 794 - 余量 24 = 右栏可用上限。
+  function gripMax() {
+    var byViewport = window.innerWidth - 208 - 794 - 24;
+    return Math.max(GRIP_MIN, Math.min(GRIP_MAX, byViewport));
+  }
   function applyW(w) {
-    w = Math.max(GRIP_MIN, Math.min(GRIP_MAX, Math.round(w)));
+    w = Math.max(GRIP_MIN, Math.min(gripMax(), Math.round(w)));
     curW = w;
     document.body.style.setProperty('--ed-right-w', w + 'px');
     grip.setAttribute('aria-valuenow', String(w));
+    grip.setAttribute('aria-valuemax', String(gripMax()));   // 上限跟视口走，同上
     return w;
   }
   function currentW() {                        // 当前生效宽度：内联值 → 实测宽 → 默认
@@ -1612,6 +1661,9 @@
     noFx();
     try { grip.setPointerCapture(e.pointerId); } catch (err) {}
     e.preventDefault();
+    // preventDefault 会吃掉「聚焦」这个默认动作 → 鼠标拖完直接按 ←/→ 没反应
+    // （键盘替代路径 WCAG 要求可达）→ 显式聚焦。
+    try { grip.focus({ preventScroll: true }); } catch (err) { try { grip.focus(); } catch (e2) {} }
   });
   grip.addEventListener('pointermove', function (e) {
     if (!dragging) return;
@@ -1622,13 +1674,18 @@
     dragging = false;
     document.body.classList.remove('ed-nofx');
     try { grip.releasePointerCapture(e.pointerId); } catch (err) {}
-    if (curW) localStorage.setItem(GRIP_KEY, String(curW));
+    if (curW) gripSet(curW);
   }
   grip.addEventListener('pointerup', endDrag);
   grip.addEventListener('pointercancel', endDrag);
+  // 指针在窗口外松开时 pointerup 可能不送达 → dragging 永远为 true、
+  // body.ed-nofx 不摘（列宽过渡被永久禁用），之后每次划过拖柄都用陈旧 startX 改宽度。
+  // 失焦/页面隐藏兜底收尾。
+  window.addEventListener('blur', endDrag);
+  document.addEventListener('visibilitychange', function () { if (document.hidden) endDrag(); });
   grip.addEventListener('dblclick', function () {                  // 双击复位 300px
     applyW(GRIP_DEFAULT);
-    localStorage.setItem(GRIP_KEY, String(GRIP_DEFAULT));
+    gripSet(GRIP_DEFAULT);
   });
   // 键盘可达（WCAG dragging-alternative）：←/→ 每次 16px，Home 复位
   grip.addEventListener('keydown', function (e) {
@@ -1636,13 +1693,13 @@
       noFx();
       applyW(currentW() + (e.key === 'ArrowLeft' ? 16 : -16));
       endFx();
-      localStorage.setItem(GRIP_KEY, String(curW));
+      gripSet(curW);
       e.preventDefault();
     } else if (e.key === 'Home') {
       noFx();
       applyW(GRIP_DEFAULT);
       endFx();
-      localStorage.setItem(GRIP_KEY, String(GRIP_DEFAULT));
+      gripSet(GRIP_DEFAULT);
       e.preventDefault();
     }
   });

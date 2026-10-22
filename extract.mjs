@@ -139,7 +139,6 @@ function stripTagsLinear(src) {
       j++;
     }
     if (j >= n) return out + src.slice(lt);      // 未闭合 → 保留原文
-    out = out;                                    // 标签整体丢弃
     i = j + 1;
     lt = src.indexOf('<', i);
   }
@@ -180,11 +179,19 @@ export function sectionsOf(html) {
   const body = bodyOf(String(html ?? ''));
   const out = [];
   const idx = closeIndex(body, ['section']);   // 一次扫完全部 section 配对，别每个匹配点重扫到文末
-  const re = /<section\b[^>]*class="([^"]*)"[^>]*>/gi;
+  // 找 <section ...> 开标签：先按字面量定位起点，再取标签文本里的 class。
+  // 旧写法 /<section\b[^>]*class="([^"]*)"[^>]*>/ 是灾难性回溯：
+  // 「有 <section 但全文没有 '>'」的输入下每个候选点回溯 O(长度)，整体 O(长度³)
+  // （实测 32KB → 16.6s；旧实现同样炸，不是本次引入，但本次就该一起修掉）。
+  const re = /<section\b/gi;
+  const dead = { 34: -1, 39: -1 };
   let m;
   while ((m = re.exec(body))) {
-    const attrs = m[0];
-    if (!/\bsection\b/.test(m[1])) continue;
+    const gt = attrEnd(body, m.index + m[0].length, body.length, dead);
+    if (gt < 0) { re.lastIndex = m.index + 1; continue; }   // 引号未闭合 → 不是标签（同旧正则口径）
+    const attrs = body.slice(m.index, gt + 1);
+    const cls = lastClassAttr(attrs);
+    if (cls === null || !/\bsection\b/.test(cls)) continue;
     const close = matchingClose(body, m.index, 'section', idx);
     if (close < 0) continue;
     const inner = body.slice(m.index, close);
@@ -201,6 +208,16 @@ export function sectionsOf(html) {
   return out;
 }
 
+// 标签文本里最后一个 class="..." 的值（旧的贪婪 [^>]*class=" 取的是最后一个），
+// 没有 class 属性返回 null。
+function lastClassAttr(tagText) {
+  const re = /class="([^"]*)"/g;
+  let last = null;
+  let m;
+  while ((m = re.exec(tagText))) last = m[1];
+  return last;
+}
+
 // JS \s / \w 的字符集（正则 \b 按 [A-Za-z0-9_] 判定）
 const isWs = (c) => c === 32 || c === 9 || c === 10 || c === 13 || c === 12 || c === 11
   || c === 0xa0 || c === 0x1680 || (c >= 0x2000 && c <= 0x200a)
@@ -208,58 +225,79 @@ const isWs = (c) => c === 32 || c === 9 || c === 10 || c === 13 || c === 12 || c
 const isWord = (c) => (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 95;
 
 /**
- * 单遍扫描：一次算出多个标签名的「开标签 → 闭合终点」映射。
+ * 属性区扫描：从 j 开始找标签结束的 '>'，返回它的下标；找不到返回 -1。
+ *   - 引号内的 '>' 不结束标签（属性值可以含 '>'）
+ *   - **引号未闭合 → 立即判「不是标签」**（-1），不等扫到文末：
+ *     旧正则会一路扫到文末再失败，病态输入下每个标签 O(长度) → 平方级
+ *   - dead[c]：记录「此引号类型在该位置之后不再出现」的结论，
+ *     避免同一段文本被反复扫（未闭合引号后的每个引号都 O(1) 判定）
+ */
+function attrEnd(s, j, n, dead) {
+  while (j < n) {
+    const c = s.charCodeAt(j);
+    if (c === 62) return j;                                  // '>'
+    if (c === 34 || c === 39) {                              // 引号
+      if (dead[c] >= 0) return -1;                           // 已知后面没有同种引号 → 不可能闭合
+      const close = s.indexOf(c === 34 ? '"' : "'", j + 1);
+      if (close < 0) { dead[c] = j; return -1; }             // 未闭合 → 不是标签
+      j = close + 1;                                         // 跳过引号区间
+      continue;
+    }
+    j++;
+  }
+  return -1;
+}
+
+/**
+ * 一次算出多个标签名的「开标签 → 闭合终点」映射。
  * 返回 Map<开标签起点下标, 闭合标签结束下标>（结束下标 = '>' 之后一位）。
  *
  * 为什么不用旧的逐点重扫：旧 matchingClose 每次调用都从起点扫到文末，
  * N 个未闭合标签 = O(N×长度)（实测 4000 个未闭合 section = 334ms，每翻倍耗时翻四倍）。
- * 现在整份文档一次扫完 = O(长度)。
+ * 现在整份文档每个标签名扫一遍 = O(长度)。
+ *
+ * **每个标签名独立扫**：与旧实现「每个名字一条正则」同口径 —— 畸形标签
+ * （如属性区引号未闭合）不会吞掉别的名字的闭合标签。共享一次扫描会：
+ *   <h3 data-zid="x"><li title='q'</h3>  →  li 的属性区吃掉 </h3> → h3 找不到闭合
+ * 旧实现里 h3 的正则独立存在，</h3> 照常匹配（回归测试 EXTRACT-Q 有钉）。
  *
  * 语义与旧实现等价（回归测试逐样本比对，见 test-structure.sh 的 EXTRACT-Q）：
  *   - 同名标签按 LIFO 配对 = 旧实现的「按名深度计数」
  *   - 标签名 = '<' 后紧邻的单词串（等价旧正则的「字面名 + \b」）
- *   - 属性区引号内的 '>' 不结束标签；无 '>' 的残片不算标签
+ *   - 属性区引号内的 '>' 不结束标签；引号未闭合/无 '>' 的残片不算标签
  *   - 自闭合（'/' + 可选空白 + '>'）既不算开也不算闭
  */
 export function closeIndex(html, names) {
-  const want = new Set(names.map((n) => String(n).toLowerCase()));
   const s = String(html);
   const n = s.length;
   const map = new Map();
-  const stacks = new Map();          // 标签名 → 未闭合开标签起点栈
-  let i = 0;
-  while (i < n) {
-    const lt = s.indexOf('<', i);
-    if (lt === -1) break;
-    let j = lt + 1;
-    while (j < n && isWs(s.charCodeAt(j))) j++;            // '<' 后空白
-    let closing = false;
-    if (s.charCodeAt(j) === 47) { closing = true; j++; }    // '/' 后不跳空白（与旧正则 <\s*(/?)tag 同口径）
-    const ns = j;
-    while (j < n && isWord(s.charCodeAt(j))) j++;           // 标签名（单词串）
-    const name = s.slice(ns, j).toLowerCase();
-    if (!name || !want.has(name)) { i = lt + 1; continue; }
-    let quote = 0;                                          // 属性区：引号内的 '>' 不结束标签
-    while (j < n) {
-      const c = s.charCodeAt(j);
-      if (quote) { if (c === quote) quote = 0; }
-      else if (c === 34 || c === 39) quote = c;
-      else if (c === 62) break;
-      j++;
+  for (const raw of names) {
+    const want = String(raw).toLowerCase();
+    const dead = { 34: -1, 39: -1 };   // 「此引号类型在该位置之后不再出现」
+    const stack = [];                  // 该名字未闭合的开标签起点栈
+    let i = 0;
+    while (i < n) {
+      const lt = s.indexOf('<', i);
+      if (lt === -1) break;
+      let j = lt + 1;
+      while (j < n && isWs(s.charCodeAt(j))) j++;            // '<' 后空白
+      let closing = false;
+      if (s.charCodeAt(j) === 47) { closing = true; j++; }    // '/' 后不跳空白（与旧正则 <\s*(/?)tag 同口径）
+      const ns = j;
+      while (j < n && isWord(s.charCodeAt(j))) j++;           // 标签名（单词串）
+      if (s.slice(ns, j).toLowerCase() !== want) { i = lt + 1; continue; }
+      const gt = attrEnd(s, j, n, dead);
+      if (gt < 0) { i = lt + 1; continue; }                   // 残片 → 不是标签
+      let k = gt - 1;
+      while (k > lt && isWs(s.charCodeAt(k))) k--;
+      if (closing) {
+        // 闭合一律计数（旧实现同口径：闭标签分支不看自闭合）
+        if (stack.length) map.set(stack.pop(), gt + 1);
+      } else if (s.charCodeAt(k) !== 47) {                    // 自闭合开标签既不算开也不算闭
+        stack.push(lt);
+      }
+      i = gt + 1;
     }
-    if (j >= n) { i = lt + 1; continue; }                   // 没有 '>' → 残片，不是标签
-    let k = j - 1;
-    while (k > lt && isWs(s.charCodeAt(k))) k--;
-    if (closing) {
-      // 闭合一律计数（旧实现同口径：闭标签分支不看自闭合）
-      const st = stacks.get(name);
-      if (st && st.length) map.set(st.pop(), j + 1);
-    } else if (s.charCodeAt(k) !== 47) {                    // 自闭合开标签既不算开也不算闭
-      let st = stacks.get(name);
-      if (!st) { st = []; stacks.set(name, st); }
-      st.push(lt);
-    }
-    i = j + 1;
   }
   return map;
 }
