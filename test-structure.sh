@@ -4650,3 +4650,34 @@ try {
   fs.rmSync(tmpB, { recursive: true, force: true });
 }
 EOF
+
+# —— XSS-4：属性上下文的外部字段必须转义（防「快照 ts / 记录 id 进属性」这类漏网）——
+# 启发式守卫（不是证明）：扫 5 个前端文件里所有属性值中的 ${…}，
+# 若表达式里出现「外部可污染的字段名」且没套 escAttr/escHtml/JSON.stringify+escAttr/
+# encodeURIComponent/safeUrl，即红。纯服务端常量与已验证的文档 id 不在名单内。
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const fail = (m) => { console.error('❌ XSS-4 ' + m); process.exit(1); };
+const EXTERNAL = /\b(m\.id|a\.id|d\.id|ts|channel|snapTs|docId|link|note|company|role|status|exportId|base\.label|toRaw|fallbackId)\b/;
+const SAFE_FN = /(escAttr|escHtml|jsonScript|jsonAttr|encodeURIComponent|safeUrl|sanitizeFileName)\s*\(/;
+const ATTR = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*("([^"]*)"|'([^']*)')/g;
+for (const f of ['server.mjs', 'editor-shell.js', 'job-panel.js', 'zone-panel.js', 'ai-panel.js']) {
+  const src = readFileSync('./' + f, 'utf8');
+  const bad = [];
+  let m;
+  ATTR.lastIndex = 0;
+  while ((m = ATTR.exec(src))) {
+    const val = m[3] !== undefined ? m[3] : (m[4] || '');
+    if (!val.includes('${')) continue;
+    const line = src.slice(0, m.index).split('\n').length;
+    for (const part of val.matchAll(/\$\{([^{}]*)\}/g)) {
+      const expr = part[1].trim();
+      if (!EXTERNAL.test(expr)) continue;          // 不是外部字段 → 不管
+      if (SAFE_FN.test(expr)) continue;            // 已套转义 → 放行
+      bad.push(line + ':' + m[1] + '=${' + expr.slice(0, 50) + '}');
+    }
+  }
+  if (bad.length) fail(f + ' 属性上下文里的外部字段未转义: ' + bad.join(' | '));
+}
+console.log('✅ XSS-4 属性上下文的外部字段全部转义');
+EOF

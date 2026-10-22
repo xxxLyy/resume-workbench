@@ -1201,7 +1201,7 @@ function listPage(showArchived = false) {
         <p class="hero-sub">一份母版，针对每个岗位生成可投递的两页 PDF。数据全在本地。</p>
         <div class="hero-acts">
           ${fallbackId
-            ? `<a id="continueBtn" class="cta" href="/edit?id=${encodeURIComponent(fallbackId)}" data-fallback="${fallbackId}" data-doc-ids='${jsonAttr(docIds)}' data-doc-titles='${jsonAttr(docTitles)}'>▶ 继续上次任务</a>`
+            ? `<a id="continueBtn" class="cta" href="/edit?id=${encodeURIComponent(fallbackId)}" data-fallback="${escAttr(fallbackId)}" data-doc-ids='${jsonAttr(docIds)}' data-doc-titles='${jsonAttr(docTitles)}'>▶ 继续上次任务</a>`
             : `<form method="post" action="/new" style="display:inline"><button class="cta" type="submit">＋ 新建第一份简历</button></form>`}
           <button type="button" class="cta-alt" id="jobToggle" aria-expanded="false" aria-controls="jobCard">${icon('target', 13)} 针对岗位生成</button>
         </div>
@@ -1222,7 +1222,7 @@ function listPage(showArchived = false) {
       <form id="jobForm" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;align-items:end">
         <label style="font-size:12px">公司<input id="jobCompany" required style="width:100%"></label>
         <label style="font-size:12px">岗位<input id="jobRole" required style="width:100%"></label>
-        <label style="font-size:12px">母版简历<select id="jobFrom" style="width:100%">${infos.map((d) => `<option value="${d.id}">${d.title}（${d.id}）</option>`).join('')}</select></label>
+        <label style="font-size:12px">母版简历<select id="jobFrom" style="width:100%">${infos.map((d) => `<option value="${escAttr(d.id)}">${d.title}（${d.id}）</option>`).join('')}</select></label>
         <label style="font-size:12px">JD 链接（可留空）<input id="jobLink" placeholder="https://…读取失败可改贴文本" style="width:100%"></label>
         <label style="font-size:12px;grid-column:1/-1">JD 文本（可留空，稍后补）<textarea id="jobJd" rows="3" style="width:100%"></textarea></label>
         <details style="grid-column:1/-1;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel)">
@@ -1251,7 +1251,7 @@ function listPage(showArchived = false) {
     </details>
     ${drafts.length ? `<div class="card" style="margin-top:12px"><b>继续处理岗位草稿</b>
       ${drafts.map((d) => { const dl = deliverableNow(d.id, meta[d.id] || {}, d);   // 每草稿只算一次：原写法在同一模板串里调两次，2N 次同步解析卡首屏
-        return `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><span><b>${d.title}</b> ${badge(dl ? 'ok' : 'warn', dl ? '可投递' : '草稿')}<span style="color:var(--mut);font-size:12px">${escHtml(((meta[d.id] || {}).company || '') + '·' + ((meta[d.id] || {}).role || ''))} · ${d.mtime}</span></span><a href="/edit?id=${d.id}"><button>继续处理</button></a></div>`; }).join('')}
+        return `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><span><b>${d.title}</b> ${badge(dl ? 'ok' : 'warn', dl ? '可投递' : '草稿')}<span style="color:var(--mut);font-size:12px">${escHtml(((meta[d.id] || {}).company || '') + '·' + ((meta[d.id] || {}).role || ''))} · ${d.mtime}</span></span><a href="/edit?id=${escAttr(d.id)}"><button>继续处理</button></a></div>`; }).join('')}
     </div>` : ''}
     <div class="card" style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <form method="post" action="/new"><button class="secondary">＋ 新建空白文档</button></form>
@@ -2583,7 +2583,7 @@ async function handler(req, res) {
           ${m.factStatus !== 'outdated' ? `<button class="secondary" onclick="matStatus(${escAttr(JSON.stringify(m.id))},'outdated')">标记过时</button>` : `<button class="secondary" onclick="matStatus(${escAttr(JSON.stringify(m.id))},'pending')">恢复待确认</button>`}
           <button class="secondary" onclick="matEdit(${escAttr(JSON.stringify(m.id))})">${icon('pencil', 13)} 编辑</button> <button class="danger" onclick="matDel(${escAttr(JSON.stringify(m.id))})">${icon('trash-2', 13)} 删除</button></div>
         <details open style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--mut)">事实层</summary>
-          <form class="mat-facts" style="margin-top:6px;font-size:13px" onsubmit="return matFacts(event,'${m.id}')">
+          <form class="mat-facts" style="margin-top:6px;font-size:13px" onsubmit="return matFacts(event,${escAttr(JSON.stringify(m.id))})">
             ${FACT_KEYS.map((k) => `<p style="margin:2px 0">${FACT_LABELS[k]} <input name="f_${k}" value="${escAttr((m.facts || {})[k] || '')}" style="width:60%"></p>`).join('')}
             <p style="margin:2px 0">状态 <select name="f_factStatus">
               <option value="pending"${m.factStatus === 'pending' ? ' selected' : ''}>待确认</option>
@@ -2797,7 +2797,7 @@ async function handler(req, res) {
               <a href="/diff?base=${escAttr(id)}@${escAttr(ts)}&to=${escAttr(id)}">对比当前</a> ·
               <button class="secondary" style="padding:2px 8px" onclick="snapNote(${escAttr(JSON.stringify(id))},${escAttr(JSON.stringify(ts))})">${icon('pencil', 13)}</button>
               <button class="secondary" style="padding:2px 8px" onclick="snapBaseline(${escAttr(JSON.stringify(id))},${escAttr(JSON.stringify(ts))})" aria-label="设为基准" title="设为基准">${icon('pin', 13)}</button>
-              <form method="post" action="/rollback?id=${id}&ts=${ts}" style="display:inline" onsubmit="return confirm('回滚到 ' + ${escAttr(JSON.stringify(ts))} + '？当前版本会先自动留一份快照')"><button class="secondary" style="padding:2px 8px">回滚</button></form>
+              <form method="post" action="/rollback?id=${escAttr(id)}&ts=${escAttr(ts)}" style="display:inline" onsubmit="return confirm('回滚到 ' + ${escAttr(JSON.stringify(ts))} + '？当前版本会先自动留一份快照')"><button class="secondary" style="padding:2px 8px">回滚</button></form>
             </div>
           </div>
         </li>`;
