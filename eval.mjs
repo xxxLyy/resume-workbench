@@ -29,8 +29,8 @@ export function buildEvalPrompt({ docText, jd, company, role }) {
    over = 简历**强于**岗位要求（超配，可能岗位给不了对应级别）。
    levelReason 必须写明方向，例如「简历年限略低于岗位要求的 5 年」/「技术栈深度超出岗位要求」——
    不要只写「不匹配」这种无方向的话。
-6. status 取值：covered=母版有完整对应证据；sourced=JD 要求但母版无对应，仅作岗位事实列出；partial=有相关经历但不满足要求；missing=完全没有。
-7. JD 是岗位要求来源，不得作为简历经历的事实来源：不得据 JD 补造母版里没有的经历或技能。`;
+7. status 取值：covered=母版有完整对应证据；sourced=JD 要求但母版无对应，仅作岗位事实列出；partial=有相关经历但不满足要求；missing=完全没有。
+8. JD 是岗位要求来源，不得作为简历经历的事实来源：不得据 JD 补造母版里没有的经历或技能。`;
 
   const user = `【目标公司】${company || ''}\n【目标岗位】${role || ''}\n【JD】\n${jd || '（未提供 JD）'}\n\n【母版简历正文】\n${docText || ''}`;
   return { sys, user };
@@ -98,7 +98,15 @@ export function parseEvalReport(raw, { docText = '' } = {}) {
       roleName: str(data.roleName),
       level: LEVELS.has(data.level) ? data.level : 'right',          // 非法档位回落中性档，不丢报告
       levelReason: str(data.levelReason),
-      salary: { text: str(sal.text), source: SALARY_SOURCE.includes(str(sal.source)) ? str(sal.source) : 'JD 未提供' },
+      // 矛盾组合也要回落（与 verdict 同款判断）：模型可能给
+      // {text:'年薪 100 万', source:'JD 未提供'} 或 {text:'', source:'JD 自带'}
+      // → 用户照 source 判断岗位值不值得投，自相矛盾会误导（2026-10-22 审查实测）
+      salary: (() => {
+        const t = str(sal.text);
+        const src = SALARY_SOURCE.includes(str(sal.source)) ? str(sal.source) : 'JD 未提供';
+        if (!t) return { text: '', source: 'JD 未提供' };
+        return { text: t, source: src };
+      })(),
       angle: str(data.angle),
       matches,
       score,

@@ -41,7 +41,10 @@ export function assembleTemplate(name) {
   if (!tpl.includes(THEME_MARKER)) throw new Error(`template.html 缺少 ${THEME_MARKER} 标记`);
   const css = themeCss(name);   // 未知主题在替换前抛错
   // 函数替换：防止 CSS 里的 $& 等模式被 replace 特殊解释；内联块与 themes 文件逐字节一致
-  return tpl.replace(THEME_MARKER, () => `<style data-theme="${name}">${css}</style>`);
+  // 主题名进 data-theme 属性 → 按属性上下文转义（" 会截断属性；当前调用点都写死 'classic'，
+  // 但别留这个雷：themes/ 下多一个带引号的文件名就能注入 HTML）
+  const attr = String(name).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return tpl.replace(THEME_MARKER, () => `<style data-theme="${attr}">${css}</style>`);
 }
 
 // 新建文档的 meta 登记载荷（唯一源 classic 主题）：theme/styleHash/typo/schemaVersion

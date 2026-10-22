@@ -4724,3 +4724,60 @@ for (const f of ['server.mjs', 'editor-shell.js', 'job-panel.js', 'zone-panel.js
 }
 console.log('✅ XSS-4 属性上下文的外部字段全部转义');
 EOF
+
+# —— TX-GUARD：事务层的 4 个护栏（2026-10-22 审查修的缺陷类别守卫）——
+# ① 恢复时 docId 必须过 VALID_ID 闸门（否则伪造的 .tx 记录能写到数据根之外）
+# ② 启动清理：没有标记的孤儿载荷（.html/.meta.json）与 atomicWrite 残留的 .tmp 都要回收
+# ③ 提交后标记删不掉时改名成 .json.stuck（恢复流程只扫 .json 结尾 → 不会把已确认的保存回滚）
+node --input-type=module << 'EOF'
+import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
+import { recoverPending, commitTx } from './tx.mjs';
+const fail = (m) => { console.error('❌ TX-GUARD ' + m); process.exit(1); };
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'txguard-'));
+for (const d of ['docs', 'snapshots', 'pdfs', '.tx']) fs.mkdirSync(path.join(root, d), { recursive: true });
+fs.writeFileSync(path.join(root, 'docs-meta.json'), '{}');
+
+// ① 伪造 docId（路径穿越）→ 恢复必须拒绝，且不得在数据根外写出文件
+{
+  const txId = 'evil1';
+  fs.writeFileSync(path.join(root, '.tx', txId + '.json'), JSON.stringify({ txId, docId: '../../pwned', phase: 'save', startedAt: Date.now() }));
+  fs.writeFileSync(path.join(root, '.tx', txId + '.meta.json'), JSON.stringify({ t: 1 }));
+  fs.writeFileSync(path.join(root, '.tx', txId + '.html'), 'PWNED-CONTENT');
+  const outside = path.join(path.dirname(root), 'pwned.html');
+  try { fs.unlinkSync(outside); } catch {}
+  const rec = recoverPending(root);
+  if (fs.existsSync(outside)) fail('非法 docId 的事务记录把文件写到了数据根之外: ' + outside);
+  if (!rec.some(r => r.ok === false)) fail('非法 docId 的事务记录应被拒绝（ok:false）');
+}
+
+// ② 孤儿载荷（无标记）与 .tmp 残留 → 启动清理要回收
+{
+  fs.writeFileSync(path.join(root, '.tx', 'orphan1.html'), 'ORPHAN');
+  fs.writeFileSync(path.join(root, '.tx', 'orphan1.meta.json'), '{}');
+  fs.writeFileSync(path.join(root, 'docs', '.d.html.123.456.tmp'), 'TMP');
+  recoverPending(root);
+  if (fs.existsSync(path.join(root, '.tx', 'orphan1.html'))) fail('无标记的孤儿载荷未被回收');
+  if (fs.existsSync(path.join(root, 'docs', '.d.html.123.456.tmp'))) fail('atomicWrite 残留的 .tmp 未被回收');
+}
+
+// ③ 提交后标记删不掉 → 必须上报（静默吞掉会让下次启动把已确认的保存回滚，且无人知晓）
+{
+  const txId = 'stuck1';
+  fs.writeFileSync(path.join(root, '.tx', txId + '.json'), JSON.stringify({ txId, docId: 'd1', phase: 'save', startedAt: Date.now() }));
+  fs.writeFileSync(path.join(root, '.tx', txId + '.meta.json'), JSON.stringify({ d1: { rev: 1 } }));
+  fs.writeFileSync(path.join(root, '.tx', txId + '.html'), 'OLD');
+  const dir = path.join(root, '.tx');
+  fs.chmodSync(dir, 0o500);            // 让 unlink/rename 都失败（目录不可写）
+  const logged = [];
+  const origErr = console.error;
+  console.error = (...a) => logged.push(a.map(String).join(' '));
+  try { commitTx(root, txId); } finally { console.error = origErr; fs.chmodSync(dir, 0o700); }
+  if (!logged.some((l) => l.includes(txId))) fail('提交后标记删不掉必须上报（静默吞掉 → 下次启动把已确认的保存回滚且无人知晓）');
+  // 残余风险（已知并记录）：.tx 目录整体不可写时，标记既删不掉也改不了名
+  // → 记录仍在 → 下次启动的恢复流程会把它当待恢复事务（回滚该次保存）。
+  // 新内容仍在快照里（保存会留快照）→ 可找回；这里断言的是「必须有人知道」：日志已上报。
+}
+
+fs.rmSync(root, { recursive: true, force: true });
+console.log('✅ TX-GUARD 事务层护栏（docId 闸门 / 孤儿与 .tmp 回收 / 提交标记 stuck）');
+EOF

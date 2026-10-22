@@ -9,7 +9,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assembleTemplate } from './template.mjs';
 
-const root = path.dirname(fileURLToPath(import.meta.url));
+// 数据根 = RESUME_ROOT（缺省脚本目录）——与 migrate-meta.mjs 同口径：
+// 不认 RESUME_ROOT 的话，隔离实例里跑迁移会改真实数据目录（2026-10-22 审查实测）
+const root = process.env.RESUME_ROOT || path.dirname(fileURLToPath(import.meta.url));
 const tpl = assembleTemplate('classic');   // 装配唯一入口：marker-only 模板 + themes 内联（编辑器块提取不受影响）
 const TARGET_VERSION = 'v5';
 
@@ -41,7 +43,9 @@ for (const f of docs) {
   const bdir = path.join(root, 'backups', 'pre-editor-' + timestamp(), id);
   fs.mkdirSync(bdir, { recursive: true });
   fs.copyFileSync(p, path.join(bdir, path.basename(p)));
-  const newScript = script[0].replaceAll('{{DOC_ID}}', () => id);
+  // docId 来自文件名（外部可污染）→ 进 JS 单引号串必须转义（' 与 \）
+  const jsId = id.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const newScript = script[0].replaceAll('{{DOC_ID}}', () => jsId);
   const out = html
     .replace(/<div class="edit-toolbar"[^>]*>[\s\S]*?<\/div>/, toolbar[0])
     .replace(/<script>\s*\(function \(\) \{[\s\S]*?<\/script>/, newScript);

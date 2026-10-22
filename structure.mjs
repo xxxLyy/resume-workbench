@@ -25,7 +25,7 @@ const skillLines = (arr) => (arr || []).map((line) => {
 
 // 注意：模板中的 {{DOC_ID}} 由 server /edit 在 serve 时注入，本函数不替换
 // replaceAll + 函数替换：防止 LLM 输出含 $& 等模式时被 replace 特殊解释
-export function buildDoc(root, data) {
+function buildDoc(root, data) {
   const tpl = assembleTemplate('classic');   // 主题唯一源装配（与数据根无关，永远来自 APP_ROOT）
   return tpl
     .replaceAll('{{NAME}}', () => esc(data.name))

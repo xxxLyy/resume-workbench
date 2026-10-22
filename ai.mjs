@@ -24,7 +24,9 @@ export function parseReport(raw) {
     const data = JSON.parse(cleaned);
     if (!data || typeof data.summary !== 'string' || !data.summary) return null;
     return {
-      score: typeof data.score === 'number' ? data.score : null,
+      // score 只判 typeof 不够：模型（或正文里的提示注入）能给出 999 / -5
+      // → 越界值一律当缺省（null = 不评分），不拿它当可信信号透出
+      score: typeof data.score === 'number' && Number.isFinite(data.score) && data.score >= 0 && data.score <= 100 ? data.score : null,
       summary: data.summary,
       scoreBasis: typeof data.scoreBasis === 'string' ? data.scoreBasis : '',  // W2：评分口径透传
       items: Array.isArray(data.items) ? data.items.filter((s) => typeof s === 'string') : [],

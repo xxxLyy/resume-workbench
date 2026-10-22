@@ -3645,6 +3645,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       for (const e of entries) {
         const ep = e.replace(/^\.\//, '');
         if (ep === '' || ep === '.') continue;         // tar czf -C dir . 的根条目
+        // 隐藏文件（atomicWrite 崩溃残留的 .tmp 等）不是备份内容：跳过，
+        // 否则用户会因自己机器上的一次崩溃而再也恢复不了自己的备份（2026-10-22 审查实测）
+        if (path.basename(ep).startsWith('.')) continue;
         if (e.startsWith('/') || e.includes('..') || !ALLOWED.test(ep)) return fail('备份包含不允许的条目：' + e.slice(0, 80));
       }
       // 条目里的「标识」也必须合法（2026-10-22 安全审查 · 存储型 XSS）：

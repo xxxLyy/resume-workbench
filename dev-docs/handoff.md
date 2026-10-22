@@ -560,3 +560,29 @@ template/freeze/render/doctor/chromium/job/evidence）与**测试体系本身**�
 - 四件套：structure **128 ✅** / main **345 ✅** / render ✅ / privacy ✅（全 exit 0）
 - launchd 服务已重启，8 个页面浏览器实测 0 控制台错误 / 0 可见 emoji / 0 横向溢出 / 0 注入
 - 三条新守卫（XSS-4 / JOB-NOTE / UI-6 浏览器用例）均已反向验证会红
+
+## 深度审查轮四（2026-10-22 续）：最后一批未审模块（tx/structure/template/ai/eval/migrate）
+
+第四个 agent 审了剩余未审模块（ai.mjs / structure.mjs / tx.mjs / migrate-*.mjs / restore-guard.mjs /
+safe-url.mjs / eval.mjs / template.mjs），报 15 条（0 高 / 4 中 / 11 低），修掉 12 条。
+
+| 问题 | 修法 |
+|---|---|
+| **[中] safe-url.mjs：协议相对 `//evil.com` 的拦截可被 `/\`、`/\t/`、`/\n/` 绕过** —— 浏览器把 authority 位的 `\t \n \r \` 都当 `/` → `/\evil.com` 实测跳到 http://evil.com/ | 判定前先把控制字符与反斜杠剥掉再判协议相对（实测 4 种绕过全部被拒，合法 URL 仍放行） |
+| **[中] tx.mjs：陈旧锁破除有 TOCTOU** —— 判定陈旧与 unlink 之间，别的进程可能已换上��锁 → 我们把它删了 → 两个进程同进临界区 → docs-meta.json 静默丢条目（实测 40 轮丢 8 条） | 破除改成「原子抢走 + 核对」：rename 到唯一临时名 → 核对抢到的仍是刚判定为陈旧的那把 → 是则删掉继续，否则原样放回 |
+| **[中] tx.mjs：atomicWrite 崩溃残留的 `.tmp` 会让用户自己的备份包再也恢复不了**（恢复侧按条目形状校验 → 整包被拒） | ① 恢复侧跳过隐藏条目（`.tmp` 之类不是备份内容）② 启动清理回收数据根与 `.tx/` 里的 `.tmp` 残留 |
+| **[中] tx.mjs：commitTx 静默吞掉 unlink 失败** → 标记残留 → 下次启动把「已确认成功的保存」回滚成旧版本 | 标记删不掉时改名成 `.json.stuck`（恢复流程只扫 `.json` 结尾 → 不会误判为待恢复）并明确上报日志。**残余风险已记录**：`.tx/` 目录整体不可写时改名也会失败 → 记录仍在 → 仍会回滚（新内容在快照里可找回；已加断言要求「必须有人知道」） |
+| **[低] tx.mjs：defaultRestoreDoc 不校验 docId** → 伪造的事务记录能写到数据根之外（实测写到 /tmp） | 加 VALID_DOC_ID 闸门（与 server.mjs 同口径） |
+| **[低] tx.mjs：没有标记的孤儿载荷永不清理**（含整篇简历正文副本，随每次保存堆积） | 启动清理回收 |
+| **[低] tx.mjs：atomicWrite 的注释与代码不符**（说「已有文件权限不变」，实际 rename 换 inode → 变成 0600） | 注释改正 |
+| **[低] ai.mjs：体检报告的 score 不校验取值范围**（999 / -5 原样透出） | 越界值当缺省（null = 不评分） |
+| **[低] eval.mjs：salary 的 text/source 不做一致性校验**（矛盾组合原样落库 → 用户照 source 判断值不值得投） | 矛盾组合回落（与 verdict 同款判断） |
+| **[低] eval.mjs：prompt 硬约束编号重复（1…6,6,7）** → 第 6 条指向不明 | 编号改成 1…6,7,8 |
+| **[低] migrate-editor.mjs：不认 RESUME_ROOT** → 隔离实例里跑迁移会改真实数据目录 | 认 RESUME_ROOT（与 migrate-meta.mjs 同口径） |
+| **[低] migrate-editor.mjs：文档 id 不按 JS 串口径转义就写进 `<script>`** | 按 JS 单引号串转义 |
+| **[低] template.mjs：主题名未转义就拼进 data-theme 属性** | 按属性上下文转义 |
+| **[低] structure.mjs：buildDoc 是死导出** | 去掉 export（函数本身仍在本文件内用） |
+
+**误报一条**：`template.mjs` 的 `listThemes` 被报成死导出 → 实际 `test-structure.sh` 在 import 它 ✓ → 保留导出 ✓。
+
+**新增断言 TX-GUARD**（+1 ✅）：伪造 docId 的事务记录必须被拒且不得写到数据根外；无标记的孤儿载荷与 `.tmp` 残留必须被回收；提交后标记删不掉必须上报。

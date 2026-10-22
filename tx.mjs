@@ -46,10 +46,15 @@ export function atomicWrite(file, data) {
   // mode 0o600：数据目录里的内容（简历正文 / 投递记录 / 素材 / 快照 / PDF）同机其他用户不该可读。
   // 实测历史文件全是 0644（2026-10-19 安全审查 ⚪-6 扩展）。
   // 这里加 mode 后，rename 保留源文件权限 → 落盘即 0600，一处覆盖全部写入路径。
-  // 已有文件的权限不会被这条改变（需一次性 chmod，见 dev-docs/handoff.md 记录）。
+  // 注意：rename 替换的是 inode → **已有文件的权限也会变成 0600**（不是「不变」）。
+  // 但 /new 走的是 fs.writeFileSync（不经过这里）→ 新文档落盘即 0644，
+  // 要到下次启动 hardenDataPerms 才收紧（见 dev-docs/handoff.md 记录）。
   fs.writeFileSync(tmp, data, { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
+
+// 文档 id 闸门（与 server.mjs 的 VALID_ID 同口径：写入侧一律过这道）
+const VALID_DOC_ID = /^[a-z0-9][a-z0-9-]*$/;
 
 function pidAlive(pid) {
   if (typeof pid !== 'number' || pid <= 0) return false;
@@ -106,8 +111,21 @@ function acquireLockSync(lockPath, { staleMs = 30000, timeoutMs = 8000, retryMs 
       // ⚠️ 不能把 deadline 检查简单提到循环顶部：rootLock 用 timeoutMs=0，第一次就会抛，
       //    那样就丧失了破除陈旧锁的能力。
       if (lockIsStale(lockPath, readLock(lockPath), staleMs)) {
+        // 破除陈旧锁必须「原子抢走 + 核对」：unlink 与判定之间有 TOCTOU 窗口
+        // → 另一进程可能已换上��锁，我们却把它删了（两个进程同进临界区 → meta 静默丢条目，2026-10-22 审查实测）。
+        // 改成：rename 到唯一临时名（原子）→ 核对抢到的仍是刚判定为陈旧的那把
+        //      → 是：删掉它继续（下一轮用 O_EXCL 正常建锁）；否：原样放回去重试。
         let broke = false;
-        try { fs.unlinkSync(lockPath); broke = true; } catch {}
+        const stolen = lockPath + '.stale.' + process.pid + '.' + Date.now() + '.' + Math.floor(Math.random() * 1e6);
+        try {
+          fs.renameSync(lockPath, stolen);
+          if (lockIsStale(stolen, readLock(stolen), staleMs)) {
+            try { fs.unlinkSync(stolen); } catch {}
+            broke = true;
+          } else {
+            try { fs.renameSync(stolen, lockPath); } catch {}   // 抢到的是别人的新锁 → 放回去
+          }
+        } catch {}
         if (broke) continue;
         if (Date.now() >= deadline) throw new LockHeld('锁被占用且无法破除（等待超时）：' + path.basename(lockPath), { lock: readLock(lockPath) });
         sleepSync(retryMs);
@@ -238,7 +256,15 @@ export function beginTx(root, docId, phase, oldSnapTs) {
 
 export function commitTx(root, txId) {
   const dir = txDir(root);
-  for (const ext of ['.json', '.meta.json', '.html']) { try { fs.unlinkSync(path.join(dir, txId + ext)); } catch {} }
+  // 标记（.json）先删：它删掉就等于「本事务已提交」，残留的载荷只是垃圾（由启动清理回收）。
+  // 标记删不掉时不能静默：残留标记会让下次启动把「已确认成功的保存」回滚成旧版本（2026-10-22 审查）。
+  // → 改名为 <txId>.json.stuck（恢复流程只扫 .json 结尾 → 不会误判为待恢复），并明确记一条。
+  try { fs.unlinkSync(path.join(dir, txId + '.json')); }
+  catch (e) {
+    try { fs.renameSync(path.join(dir, txId + '.json'), path.join(dir, txId + '.json.stuck')); }
+    catch (e2) { console.error('[tx] 提交后标记残留（下次启动可能回滚该次保存）: ' + txId + ' ' + (e2 && e2.message || e2)); }
+  }
+  for (const ext of ['.meta.json', '.html']) { try { fs.unlinkSync(path.join(dir, txId + ext)); } catch {} }
 }
 
 // 同一文档更早的未完成记录被"本次成功保存"取代：成功保存意味着正文与 meta 已自洽落盘，
@@ -264,9 +290,43 @@ export function dropSupersededTx(root, docId) {
 // 启动/重跑恢复：扫描 .tx/ 未完成事务，对每条调 restoreDoc(rec) 恢复"仅目标文档"，成功后清理该事务记录。
 // rec = { txId, docId, phase, oldSnapTs, startedAt, oldMeta, oldHtml, root }（oldHtml 来自 .tx/<txId>.html，可能 undefined）。
 // restoreDoc 缺省时用内置默认恢复（写回旧正文 + updateMeta 回滚目标文档 meta）。返回 recovered[]（含 ok/error 标记）。
+/**
+ * 启动清理：回收两类「没有标记的孤儿」——
+ *   ① .tx/ 里写了载荷（.html/.meta.json）但没有 .json 标记的事务残片：
+ *      beginTx 是「标记最后写」，中途被杀就只剩载荷 → 永远不会被恢复流程扫到，
+ *      里面是整篇简历正文的副本，会随每次保存继续堆积。
+ *   ② atomicWrite 崩溃残留的 .tmp 文件：备份打包会把它们收进 tar，
+ *      恢复侧按条目形状校验会整包拒掉（用户的备份从此不可用，2026-10-22 审查实测）。
+ */
+function cleanupOrphanArtifacts(root, txDirPath) {
+  const removed = { txPayloads: 0, tmpFiles: 0 };
+  try {
+    const files = fs.readdirSync(txDirPath);
+    const marked = new Set(files.filter((f) => f.endsWith('.json') && !f.endsWith('.meta.json'))
+      .map((f) => f.slice(0, -'.json'.length)));
+    for (const f of files) {
+      const m = /^(.*)\.(?:html|meta\.json)$/.exec(f);
+      if (!m) continue;
+      if (marked.has(m[1])) continue;          // 有标记 → 交给恢复流程
+      try { fs.unlinkSync(path.join(txDirPath, f)); removed.txPayloads++; } catch {}
+    }
+  } catch {}
+  for (const sub of ['docs', 'pdfs', 'snapshots', '.']) {
+    const d = path.join(root, sub);
+    let files = [];
+    try { files = fs.readdirSync(d); } catch { continue; }
+    for (const f of files) {
+      if (!f.endsWith('.tmp')) continue;
+      try { fs.unlinkSync(path.join(d, f)); removed.tmpFiles++; } catch {}
+    }
+  }
+  return removed;
+}
+
 export function recoverPending(root, { restoreDoc } = {}) {
   const dir = txDir(root);
   const recovered = [];
+  cleanupOrphanArtifacts(root, dir);
   let files;
   try { files = fs.readdirSync(dir); } catch { return recovered; }   // 无 .tx 目录 → 无待恢复
   const txIds = files
@@ -315,6 +375,13 @@ export function recoverPending(root, { restoreDoc } = {}) {
 // 口径与 freeze.mjs:178、server.mjs:568 完全一致（"定义且非空"），空串绝不当作已迁移。
 function defaultRestoreDoc(rec) {
   const { docId, oldSnapTs, oldMeta, oldHtml, root } = rec;
+  // docId 来自 .tx/ 里的记录文件（可被伪造）→ 必须过 VALID_ID 闸门，
+  // 否则 path.join(root,'docs',docId+'.html') 能写到数据根之外（2026-10-22 审查实测：写到 /tmp）。
+  if (!VALID_DOC_ID.test(String(docId || ''))) {
+    const e = new Error('事务记录的 docId 非法，拒绝恢复：' + String(docId).slice(0, 40));
+    e.code = 'TX_BAD_DOC_ID';
+    throw e;
+  }
   const docFile = path.join(root, 'docs', docId + '.html');
   if (typeof oldHtml === 'string') {
     atomicWrite(docFile, oldHtml);

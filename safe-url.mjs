@@ -19,7 +19,10 @@
 export function safeUrl(s) {
   const v = String(s ?? '').trim();
   if (!v) return '';
-  // 单斜杠开头但排除 `//`（协议相对）；`/`、`#`、`./`、`../` 都是站内导航
-  if (/^\/(?!\/)/.test(v)) return v;
-  return /^(?:https?:\/\/|mailto:|\.{1,2}\/|#)/i.test(v) ? v : '';
+  // 单斜杠开头但排除「协议相对」：`//` 以及浏览器会当成 `/` 的等价写法
+  // （authority 位的 \t \n \r \ 都按 / 处理 → "/\evil.com" 实测会跳到 http://evil.com/）。
+  // 判定前先把控制字符与反斜杠剥掉再判，避免绕过。
+  const norm = v.replace(/[\t\n\r]/g, '').replace(/\\/g, '/');
+  if (/^\/(?!\/)/.test(norm)) return v;
+  return /^(?:https?:\/\/|mailto:|\.{1,2}\/|#)/i.test(norm) ? v : '';
 }
