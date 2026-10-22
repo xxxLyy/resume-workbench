@@ -80,11 +80,18 @@ const CN_NUM = '-?[零一二三四五六七八九十百千万亿两]*[百千万�
 //      否则「1万2」会被拆成 1 / 万 / 2 三个 token，与「10002」判为不等（实测误报）
 //   ② 阿拉伯数字 + 可选科学计数 + 可选中文小单位 + 可选百分号（1000 / 1e3 / 30%）
 //   ③ 纯中文数词（十二万 / 三十 / 两百）
+// 中文数词必须是**多字**（「两百」「三十万」），单字（百/千/万/亿）不算数字：
+// 「负责百度搜索」里的百是词的一部分（不是数量），按数字算会判成
+// 「原文数字未原值保留：100」→ 护栏天天误报，用户会关掉它；
+// 而「管理两百人的团队」仍要拦得住（百是单位）。漏报优于误报，但这条主路径不能漏。
 const NUM_RE = new RegExp(
   '-?\\d+(?:\\.\\d+)?[十百千万亿两]+(?:\\d+(?:\\.\\d+)?)?(?:e[+-]?\\d+)?' +
   '|-?\\d+(?:\\.\\d+)?(?:e[+-]?\\d+)?\\s*[千万亿]?\\s*%?' +
-  '|' + CN_NUM, 'gi');
-export const DATE_TOKEN_RE = /(?:19|20)\d{2}(?:\s*[.\-/年]\s*\d{1,2}(?:\s*月)?)?/g;
+  '|-?(?:[零一二三四五六七八九十百千万亿两]+[百千万亿][零一二三四五六七八九十百千万亿两]*' +
+  '|[百千万亿][零一二三四五六七八九十百千万亿两]+)', 'gi');
+// 日期 token 必须有数字边界：否则 '120000' 里的 '2000' 会被当成日期 → 摘日期时把数字撕碎
+// （实测 '12万 → 120000' 被判「引入新数字 1、0 + 丢失 120000」）
+export const DATE_TOKEN_RE = /(?<![\d.])(?:19|20)\d{2}(?:\s*[.\-/年]\s*\d{1,2}(?:\s*月)?)?(?![\d])/g;
 
 const CN_DIGIT = { 零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
 const CN_UNIT = { 十: 10, 百: 100, 千: 1000 };
@@ -137,20 +144,40 @@ export function normNum(n) {
 
 // checkLoss（默认 true）：是否检查「丢失方向」。答法要点等提炼场景传 false——
 //   要点天然不逐字复述原文，漏数字是精简不是编造；只有「新增原文没有的数字」才是编造。
+// 数字 token（日期已剔除）：比较前把日期摘掉，避免同一日期的两种写法被当成不同数字集。
+function numbersOf(text) {
+  const stripped = String(text).replace(DATE_TOKEN_RE, ' ');
+  return (stripped.match(NUM_RE) || []).map(normNum);
+}
+
+// 日期 token → 「年-月-日」归一（月份/日缺省为 0）：2019.06 / 2019年6月 / 2019年06月 同值。
+function dateParts(s) {
+  const m = /^(19|20)\d{2}(?:[.\-/年]\s*(\d{1,2})(?:[.\-/月]\s*(\d{1,2}))?)?/.exec(String(s).trim());
+  if (!m) return null;
+  return [Number(m[0].slice(0, 4)), m[1] ? Number(m[1]) : 0, m[2] ? Number(m[2]) : 0].join('-');
+}
+
 export function factGuard(c, opts = {}) {
   const notes = [];
   const checkLoss = opts.checkLoss !== false;
   if (c.kind === 'replace') {
-    const beforeNums = new Set((c.before.match(NUM_RE) || []).map(normNum));
-    const added = [...new Set((c.after.match(NUM_RE) || []).map(normNum))].filter((n) => !beforeNums.has(n));
+    // 日期先摘掉再扫数字：否则 '2019.06' 是一个数字 token、'2019年6月' 是两个（2019 + 6），
+    // 同一个日期的两种写法会被判成「引入新数字 + 丢失原数字」→ 直接卡住导出（实测误报）。
+    const beforeNums = new Set(numbersOf(c.before));
+    const added = [...new Set(numbersOf(c.after))].filter((n) => !beforeNums.has(n));
     if (added.length) notes.push('改写引入原文没有的数字：' + added.join('、') + '（请核对来源）');
     if (checkLoss) {
-      const norm = (s) => String(s).replace(/\s+/g, '');
-      const lostDates = [...new Set(c.before.match(DATE_TOKEN_RE) || [])].filter((d) => !norm(c.after).includes(norm(d)));
+      // 日期按「年-月-日」比，不按字面：2019.06 / 2019年6月 / 2019年06月 是同一个日期，
+      // 只换格式不该判「日期丢失」；真改了（2022.03 → 2023.05）仍然拦得住。
+      const afterDates = new Set((c.after.match(DATE_TOKEN_RE) || []).map(dateParts).filter(Boolean));
+      const lostDates = [...new Set(c.before.match(DATE_TOKEN_RE) || [])].filter((d) => {
+        const p = dateParts(d);
+        return p ? !afterDates.has(p) : !String(c.after).includes(d);
+      });
       if (lostDates.length) notes.push('原文日期未原值保留：' + lostDates.join('、'));
       // S4B-1：原文数字未在改写后原值保留（经 normNum 归一化，避免 12万/120000 误报）
-      const afterSet = new Set((c.after.match(NUM_RE) || []).map(normNum));
-      const lostNums = [...new Set((c.before.match(NUM_RE) || []).map(normNum))].filter((n) => !afterSet.has(n));
+      const afterSet = new Set(numbersOf(c.after));
+      const lostNums = [...new Set(numbersOf(c.before))].filter((n) => !afterSet.has(n));
       if (lostNums.length) notes.push('原文数字未原值保留：' + lostNums.join('、'));
     }
   }

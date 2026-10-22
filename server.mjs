@@ -3615,7 +3615,12 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       res.on('finish', releaseRestoreLock);
       res.on('close', releaseRestoreLock);
       const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-restore-'));
-      const fail = (msg, code = 400) => { fs.rmSync(stage, { recursive: true, force: true }); fs.rmSync(tmpTar, { force: true }); return sendJson(code, { ok: false, error: msg }); };
+      // 清理不能自己抛：权限异常/非空目录时 rmSync 会抛 → 覆盖已发出的响应 + 泄漏 stage/tar
+      const fail = (msg, code = 400) => {
+        try { fs.rmSync(stage, { recursive: true, force: true }); } catch {}
+        try { fs.rmSync(tmpTar, { force: true }); } catch {}
+        return sendJson(code, { ok: false, error: msg });
+      };
       // 条目校验：类型/路径/大小，防路径穿越
       // 路径列表：tzf 输出纯路径（路径白名单校验依赖这个形状，勿改成 tzvf——
       //   tzvf 每行带 权限/用户/组/大小/日期，整行当路径校验会把所有备份包全拒，2026-10-18 实测踩过）。
@@ -3638,7 +3643,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       } catch (e) { return fail(e.code === 'ENOENT' ? '备份包信息读取失败' : e.message); }
       const ALLOWED = /^(docs\/|snapshots\/|pdfs\/|docs-meta\.json$|applications\.json$|materials\.json$|evaluations\.json$)/;
       for (const e of entries) {
-        if (e.startsWith('/') || e.includes('..') || !ALLOWED.test(e.replace(/^\.\//, ''))) return fail('备份包含不允许的条目：' + e.slice(0, 80));
+        const ep = e.replace(/^\.\//, '');
+        if (ep === '' || ep === '.') continue;         // tar czf -C dir . 的根条目
+        if (e.startsWith('/') || e.includes('..') || !ALLOWED.test(ep)) return fail('备份包含不允许的条目：' + e.slice(0, 80));
       }
       // 条目里的「标识」也必须合法（2026-10-22 安全审查 · 存储型 XSS）：
       // 文档 id 会原样拼进首页的内联 JS（onclick="…('{id}')"），投递/素材记录的 id 同理。
@@ -3663,6 +3670,12 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         // ③ 快照：snapshots/<id>/<ts>.html 与 <ts>.manifest.json
         //    ts 会原样拼进 /snapshots 的 href 与内联 JS → 不能带引号
         //    （口径同 /snapshot/view 的 /^[0-9-]+$/）
+        // 快照元数据（saveSnapMeta 写的 meta.json：设基准等操作产生）
+        const mSnapMeta = /^snapshots\/([^/]+)\/meta\.json$/.exec(p);
+        if (mSnapMeta) {
+          if (!VALID_ID.test(mSnapMeta[1])) return fail('备份包含非法快照目录 id：' + mSnapMeta[1].slice(0, 40));
+          continue;
+        }
         const mSnap = /^snapshots\/([^/]+)\/([^/]+?)(\.manifest\.json|\.html)$/.exec(p);
         if (mSnap) {
           if (!VALID_ID.test(mSnap[1])) return fail('备份包含非法快照目录 id：' + mSnap[1].slice(0, 40));
@@ -3681,7 +3694,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
           continue;
         }
         // ④b 导出历史：pdfs/history/<docId>@<ts>.pdf（及 .pdf.env.json 旁车）
-        const mHist = /^pdfs\/history\/([^@/]+)@([0-9-]+)\.pdf(\.env\.json)?$/.exec(p);
+        const mHist = /^pdfs\/history\/([^@/]+)@([0-9a-f]{40}|[0-9-]+)\.pdf(\.env\.json)?$/.exec(p);
         if (mHist) {
           if (!VALID_ID.test(mHist[1])) return fail('备份包含非法导出历史标识：' + mHist[1].slice(0, 40));
           continue;
@@ -3695,7 +3708,10 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       catch { return fail('解包失败，备份包可能损坏'); }
       // 防 symlink：条目路径校验只查字符串，查不出「合法路径 + 符号链接指向别处」。
       // 实测 pdfs/leak.pdf -> /任意本地文件 经 copyMissing 的 copyFile 会把目标内容读进 root/pdfs/。
-      for (const ent of fs.readdirSync(stage, { withFileTypes: true, recursive: true })) {
+      let stageEntries = [];
+      try { stageEntries = fs.readdirSync(stage, { withFileTypes: true, recursive: true }); }
+      catch (e) { return fail('备份解包后无法读取（权限异常）：' + String(e.code || e.message).slice(0, 60)); }
+      for (const ent of stageEntries) {
         if (ent.isSymbolicLink()) return fail('备份包含符号链接，已拒绝：' + ent.name.slice(0, 80));
       }
       const hasContent = ['docs', 'snapshots', 'pdfs', 'docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json'].some((x) => fs.existsSync(path.join(stage, x)));
@@ -3770,7 +3786,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       }
       // 损坏的备份 meta 必须在任何删除/覆盖动作之前拒绝：否则 replace 会先清空本地 docs 再把 meta 当成 {} 全删
       if (preview.meta.corrupt) return fail('备份中的 docs-meta.json 损坏，拒绝恢复（不覆盖本地 meta）', 500);
-      if (preview.apps.corrupt || preview.mats.corrupt) return fail('备份中的 JSON 损坏，拒绝恢复');
+      if (preview.apps.corrupt || preview.mats.corrupt || preview.evals.corrupt) return fail('备份中的 JSON 损坏，拒绝恢复');
       if (preview.apps.badId || preview.mats.badId || preview.evals.badId) {
         return fail('备份中的记录 id 非法（只允许小写字母/数字/横线），拒绝恢复：防存储型 XSS');
       }
@@ -3837,8 +3853,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       } catch (e) {
         return sendJson(500, { ok: false, error: '恢复过程中失败：' + (e.message || e) + '（回退点：' + safety + '）', safety });
       } finally {
-        fs.rmSync(stage, { recursive: true, force: true });
-        fs.rmSync(tmpTar, { force: true });
+        try { fs.rmSync(stage, { recursive: true, force: true }); } catch {}
+        try { fs.rmSync(tmpTar, { force: true }); } catch {}
       }
       return sendJson(200, { ok: true, safety: path.basename(safety), mode, applied: preview });
     }

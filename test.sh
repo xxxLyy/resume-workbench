@@ -9,6 +9,9 @@ cd "$(dirname "$0")"
 REAL_ROOT=$(pwd)
 command -v pdftotext >/dev/null || { echo '需要 poppler: brew install poppler'; exit 1; }
 command -v ffmpeg >/dev/null || { echo '需要 ffmpeg（视觉门禁不降级）: brew install ffmpeg'; exit 1; }
+# playwright-core 是唯一 npm 依赖：缺了就直接说「先 npm install」，
+# 不要让它在后面某个 node 调用里炸成「server 启动失败（端口 17899？）」这种误导信息
+[ -d node_modules/playwright-core ] || { echo '缺少依赖 playwright-core：先跑 npm install'; exit 1; }
 
 TEST_DIR=$(mktemp -d /tmp/resume-isolated-test.XXXXXX)
 export RESUME_ROOT="$TEST_DIR/data"
@@ -38,7 +41,7 @@ fail() { echo "❌ $1"; exit 1; }
 real_fp() {
   (cd "$REAL_ROOT" && {
     md5 -q docs/*.html 2>/dev/null || true
-    cat applications.json materials.json docs-meta.json 2>/dev/null || true
+    cat applications.json materials.json docs-meta.json evaluations.json 2>/dev/null || true
     find snapshots pdfs -type f 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do printf '%s %s\n' "$f" "$(md5 -q "$f" 2>/dev/null)"; done
     find backups logs 2>/dev/null | LC_ALL=C sort
     for f in config.json .chromium-choice.json; do
@@ -597,7 +600,7 @@ curl -s "$B/job/changes?id=$JOBLOC" | grep -q '"status":"deliverable"' && fail '
 echo '✅ 改稿使「可投递」失效（不影响已有投递存档）'
 # 事实护栏：新增数字/丢失日期 → 强制 conflict
 node --input-type=module -e "
-import { parseJobOps } from '/Users/xxxly/resume/job.mjs';
+import { parseJobOps } from './job.mjs';
 const ops = parseJobOps(JSON.stringify({ summary: 'x', changes: [
   { section: 's', kind: 'replace', before: '提升明显', after: '提升40%', reason: 'r' },
   { section: 's', kind: 'replace', before: '2024-2025 任职', after: '任职两年', reason: 'r' },
@@ -1931,7 +1934,7 @@ FIXSAVE=$(curl -s -X POST "$B/save?id=$FIXDOC" --data-binary "$(curl -s "$B/edit
 echo "$FIXSAVE" | grep -q '"ok":true' || fail "S4a 修复3 夹具保存失败: $(echo "$FIXSAVE" | head -c 200)"
 read FIXZ0 FIXZ1 << FIXZEOF
 $(node --input-type=module -e '
-import { parasOf } from "/Users/xxxly/resume/zone.mjs";
+import { parasOf } from "./zone.mjs";
 import { readFileSync } from "node:fs";
 const ps = parasOf(readFileSync(process.argv[1], "utf8")).filter((p) => p.text);
 console.log(ps[0].zid, ps[1].zid);

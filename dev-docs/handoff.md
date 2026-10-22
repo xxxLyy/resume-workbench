@@ -503,3 +503,53 @@ li 的属性区吃掉 `</h3>` → h3 找不到闭合 → 段落从 AI 上下文�
 - launchd 服务已重启，8 个页面浏览器实测：0 控制台错误 / 0 可见 emoji / 0 横向溢出 / 0 注入
 - 三个页面共 127 个内联事件属性逐个解码后语法全对（`new Function` 校验，不执行）
 - 真实备份往返（预览 + 合并恢复）正常；自产备份预览正常
+
+## 深度审查轮三（2026-10-22 续）：未审模块 + 测试体系，15 + 15 条
+
+前两轮只审了「改动过的文件」。这一轮补上剩下两块：**没被审过的服务端模块**（llm/importer/migrate-meta/
+template/freeze/render/doctor/chromium/job/evidence）与**测试体系本身**。两个 agent 报 15 + 15 条，
+逐条复核后修掉下列这些。
+
+### 一、服务端模块（15 条里修 9 条）
+
+| 问题 | 修法 |
+|---|---|
+| **[高] llm.mjs：POST 超时被重试** —— 注释写着「网络错误/超时不重试」，代码却是 `netErr = e.status === undefined`（超时也没有 status）→ 超时重试 = 同一请求发 3 次 = 3 倍计费。实测：本地慢服务器 + timeoutMs=1000 → 收到 3 次 POST | 区分「超时」与「没送达」：超时的错误名是 `TimeoutError`（实测），连接失败是 `TypeError`/'fetch failed'。POST 只重试后者（超时不重试），注释与代码对齐 |
+| **[高] freeze.mjs：bodyHash 把打印时不可见的编辑态算进渲染身份** —— `.edit-toolbar`/`.page-line` 在 `@media print` 下 `display:none`，但工具栏状态文案（已保存 ✓ / 未保存 ●）与 `data-editor` 版本都进了 hash → 同一份 PDF 像素不变却判「较旧」。实测 5 个不同 renderInputId | **未修**（改 bodyHash 口径 = 改渲染身份语义，会让既有 PDF 全变陈旧、导出历史键失效）。已登记待拍板 |
+| **[中] job.mjs：「百度」被当成数字 100** —— 中文数词正则允许单字「百」→ 「负责百度搜索」被判「原文数字未原值保留：100」→ 护栏天天误报 | 中文数词必须**多字**（「两百」「三十万」✓；单字 百/千/万/亿 视为词的一部分 → 放过）。实测：百度放过、两百→三百仍拦、十二万→十五万仍拦 |
+| **[中] job.mjs：日期只换格式被判三重 conflict** —— 「2019.06 - 2022.03」→「2019年6月 - 2022年3月」→ 引入新数字 + 丢日期 + 丢数字，**直接卡住导出** | 日期按「年-月-日」归一比较；数字扫描前先摘掉日期（否则 `2019.06` 是一个数字 token、`2019年6月` 是两个）。顺带修掉 `120000` 里的 `2000` 被当日期的老问题（日期 token 加数字边界） |
+| **[中] chromium.mjs：缓存里的 revision 写的是 expectedRevision()** —— 与实际二进制无关，记录值与目录里的版本号对不上 | **判定为误报**：该字段的语义是「playwright 期望的浏览器版本」（缓存随 playwright 升级失效 ✓），不是二进制自身版本。加注释说明，不改行为 |
+| **[中] job.mjs/evidence.mjs：受保护字段（公司/职位）只对 replace 生效**，add 候选可以编造公司与职位 | **未修**（要给 add 定「哪些公司名算编造」的判据，语义比数字复杂）。已登记 |
+| **[中] render.mjs 与 freeze.mjs 契约冲突**：相对路径资源在 PDF 里根本不加载（about:blank 无基准），freeze 却判「可复现」 | **未修**（要改渲染身份口径，同上）。已登记 |
+| **[低] freeze.mjs：相对路径可越出数据根**（`../../../../tmp/x` 被读走并哈希） | 加边界校验：解析后必须仍在数据根内，否则按 missing 处理 |
+| **[低] doctor.mjs：用 `new URL(...).pathname` 取根目录**（百分号编码没解码，路径含空格/中文时读不到真实目录） | 改用 `fileURLToPath`（与 freeze.mjs/template.mjs 口径一致） |
+| **[低] importer.mjs：导入的文档没替换 `{{DOC_ID}}`** —— 快照/导出/直读磁盘的字节里留着占位符 | buildRawDoc 接收 docId 并替换 |
+| **[低] logrotate.mjs：轮转副本先按 0644 落盘再 chmod 0600** —— 两步之间被杀就留下同机可读的副本 | 直接以 `{mode: 0o600}` 落盘 |
+| **[低] llm.mjs：chatMsgs 的 baseURL 不过 assertSafeBaseURL**（listModels 过了） | chatMsgs 也过（内网段本来就放行 ✓，只挡云元数据端点） |
+| **[低] diff.mjs：diffHtml 是死代码**（全仓零引用） | 删掉 |
+
+### 二、测试体系（15 条里修 8 条，其中 5 条是**假绿**）
+
+**假绿（断言恒真 / 测的不是结果）**：
+
+1. **「注入层产物不落盘」断言恒真** —— 注入块的 SVG 在文件里是转义后的 `<svg`，用 `/<svg/i` 匹配永远匹配不到；**这条是我自己写的**（本轮 UI-6 浏览器用例）→ 改查注入块自己的载荷（`__ICONS__` / `window.__MATS__` / 注入注释对）。反向验证：去掉 server.mjs 的 ICON 剥离 → 落盘文件确实含 `__ICONS__` → 断言会红 ✓
+2. **UI-6 拖拽断言量的是 CSS 变量而不是右栏实测宽** —— 变量被写死时右栏根本没变宽，断言照样绿 → 改为量 `#ed-right` 的实测宽
+3. **「note 提示跨渲染存活」这个已修缺陷没有任何回归守卫** —— 回退修复后两套件全绿 → 新增 `JOB-NOTE` 守卫（note 必须有 lastNote 存档 + render 后必须调 applyNote）✓ 反向验证过会红
+4. **UI-6 结构层三条断言恒真/重复** —— `/ed-right-w/` 匹配 `--ed-right-w` ✓ 重复；`/localStorage/` 命中任意一处即真 → 改成能红的判据（`setProperty('--ed-right-w'`、`grid-template-columns[^;]*var(--ed-right-w`、`setItem(GRIP_KEY`）
+5. **test-editor.mjs 节点段失败就 exit(1)** —— 浏览器段整段不跑，UI 层结果被单点遮蔽（本轮实测：节点段一红就看不到任何 UI-6 输出）→ 改成记录失败后继续跑浏览器段
+
+**可移植性（干净机器跑不动）**：
+
+6. `test.sh` 硬编码绝对路径 `/Users/xxxly/resume/job.mjs`（另有两处 zone.mjs）→ 改相对路径
+7. `test-structure.sh` 依赖用户真实简历 `./docs/linghaoxiang.html`（干净 clone 上 ENOENT 崩溃、前面 60+ 段白跑）→ 缺文件就跳过
+8. `test-structure.sh` 用写死的历史 commit `5208e44` 比对冻结件（浅克隆上该 revision 不存在 → 误报「themes/ 被改」）→ 容忍缺失
+9. `test.sh` 缺 `node_modules/playwright-core` 时报「server 启动失败（端口 17899？）」这种误导信息 → 开头直接检查并说「先 npm install」
+10. `npm test` 只跑 test.sh，**最大的结构层套件（574 条 assert）不在默认入口** → 加 `npm run test:all`（四套件聚合）与 `test:structure`
+11. 真实数据指纹没覆盖 `evaluations.json` → 补上
+12. `privacy-check.sh` 的排除名单漏了 test-structure.sh / test-editor.mjs → 补上
+
+### 三、这轮的验收
+
+- 四件套：structure **128 ✅** / main **345 ✅** / render ✅ / privacy ✅（全 exit 0）
+- launchd 服务已重启，8 个页面浏览器实测 0 控制台错误 / 0 可见 emoji / 0 横向溢出 / 0 注入
+- 三条新守卫（XSS-4 / JOB-NOTE / UI-6 浏览器用例）均已反向验证会红

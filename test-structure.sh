@@ -2001,7 +2001,12 @@ EOF
 # —— S2-A：注入层纪律（编辑器外壳注入 CSS 的边界护栏；S2 全程生效）——
 echo "── S2-A: 注入层纪律（仅屏幕 / 不声明正文文字属性 / !important 不增）+ print 仍在 + themes 零改动 ──"
 S2_BASE=5208e44
-git diff --quiet "$S2_BASE" -- themes/ || { echo "❌ themes/ 被改动（S2 全程禁止）"; git diff --stat "$S2_BASE" -- themes/; exit 1; }
+# 浅克隆（--depth 1）里没有这个 revision → 跳过比对（不能误报「themes/ 被改动」）
+if git cat-file -e "$S2_BASE^{commit}" 2>/dev/null; then
+  git diff --quiet "$S2_BASE" -- themes/ || { echo "❌ themes/ 被改动（S2 全程禁止）"; git diff --stat "$S2_BASE" -- themes/; exit 1; }
+else
+  echo "⏭  S2 冻结件比对（跳过：本地没有 $S2_BASE 这个 revision，浅克隆）"
+fi
 grep -qF '@media print { .edit-toolbar, .page-line, .toast, .recovery-bar { display: none !important; } }' themes/resume-classic.css \
   || { echo '❌ 主题的 print 隐藏行被删改（冻结件必须自带打印隐藏规则）'; exit 1; }
 node --input-type=module << 'EOF'
@@ -2218,7 +2223,7 @@ EOF
 # —— S3-C：区域注入纪律（ZONE-INJECT 对称剥离 / data-zone-panel 双防线 / 着色不落盘）——
 echo "── S3-C: 区域注入纪律 ──"
 node --input-type=module << 'EOF'
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 const srv = readFileSync('./server.mjs', 'utf8');
 const ext = readFileSync('./extract.mjs', 'utf8');
 const zp = readFileSync('./zone-panel.js', 'utf8');
@@ -3175,7 +3180,7 @@ EOF
 # —— S4B-11：extract.mjs 标签剥离二次方回溯 → 单遍扫描（S4B-11 性能回归网）——
 node --input-type=module << 'EOF'
 import { docToLines, docToText } from './extract.mjs';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 const assert = (c, m) => { if (!c) { console.error('❌ S4B-11 ' + m); process.exit(1); } };
 // ① 语义等价（单遍扫描不得改变任何提取结果——AI 上下文靠它，改错就毁核心功能）
 const SYN = [
@@ -3213,11 +3218,15 @@ const ms2 = Number(process.hrtime.bigint() - t1) / 1e6;
 assert(ms2 < 500, `正常 8000 段须 <500ms（实测 ${ms2.toFixed(1)}ms）`);
 console.log(`✅ S4B-11b 线性化（病态 ${ms.toFixed(1)}ms / 正常 ${ms2.toFixed(1)}ms）`);
 
-// ④ 真实简历文档不受影响
-const real = readFileSync('./docs/linghaoxiang.html', 'utf8');
-const lines = docToLines(real);
-assert(lines.length > 10 && lines.join('').length > 50, '真实简历仍能正常提取（' + lines.length + ' 行）');
-console.log('✅ S4B-11c 真实简历提取正常（' + lines.length + ' 行）');
+// ④ 真实简历文档不受影响（干净 clone 没有 docs/ → 跳过，不崩）
+if (existsSync('./docs/linghaoxiang.html')) {
+  const real = readFileSync('./docs/linghaoxiang.html', 'utf8');
+  const lines = docToLines(real);
+  assert(lines.length > 10 && lines.join('').length > 50, '真实简历仍能正常提取（' + lines.length + ' 行）');
+  console.log('✅ S4B-11c 真实简历提取正常（' + lines.length + ' 行）');
+} else {
+  console.log('⏭  S4B-11c 真实简历提取（跳过：干净 clone 无 docs/linghaoxiang.html）');
+}
 EOF
 
 # —— S4B-12：/job/create 粘贴 JD 长度上限（二轮审查实测 2MB → meta 12.59MB）——
@@ -4179,10 +4188,10 @@ const sh = readFileSync('./editor-shell.js', 'utf8');
 assert(/ed-grip/.test(sh), 'editor-shell.js 注入层应创建拖柄 #ed-grip（编辑器页 HTML 是数据文件，不能改）');
 assert(!/ed-grip/.test(srv), 'server.mjs 不该出现 ed-grip（编辑器页不由 server.mjs 生成）');
 assert(/pointerdown/.test(sh) && /pointermove/.test(sh), '拖拽须用 Pointer Events（非 HTML5 DnD）');
-assert(/--ed-right-w/.test(sh), '拖拽须写 --ed-right-w（该变量已存在但 CSS 从未消费）');
-assert(/ed-right-w/.test(sh), '注入层 CSS 须消费 --ed-right-w（覆盖式，body.ed-on 提高特异性）');
-assert(/ed-grip/.test(sh), '拖柄 DOM 须由注入层创建');
-assert(/localStorage/.test(sh), '宽度须持久化到 localStorage');
+// 判据要能红：只查「出现过 --ed-right-w」是恒真的（写变量与消费变量是两回事）
+assert(/setProperty\(\s*['"]--ed-right-w['"]/.test(sh), '拖拽须写 --ed-right-w（setProperty 写 CSS 变量）');
+assert(/grid-template-columns[^;]*var\(--ed-right-w/.test(sh), '注入层 CSS 须真的消费 --ed-right-w（grid 第三列用该变量）');
+assert(/setItem\(\s*GRIP_KEY/.test(sh), '宽度须持久化到 localStorage（setItem(GRIP_KEY, …)）');
 // 键盘可达（WCAG dragging-alternative）
 assert(/keydown/.test(sh) && /ArrowLeft|ArrowRight/.test(sh), '拖柄须支持方向键调节');
 console.log('✅ UI-6 可拖拽分栏（结构层）');
@@ -4597,12 +4606,18 @@ try {
     fs.mkdirSync(path.join(d, 'docs'), { recursive: true });
     fs.mkdirSync(path.join(d, 'snapshots', 'doc1'), { recursive: true });
     fs.mkdirSync(path.join(d, 'pdfs', 'archive'), { recursive: true });
+    fs.mkdirSync(path.join(d, 'pdfs', 'history'), { recursive: true });
     fs.writeFileSync(path.join(d, 'docs', 'doc1.html'), '<html><body>x</body></html>');
     fs.writeFileSync(path.join(d, 'snapshots', 'doc1', '2026-10-05-121001-958.html'), '<html><body>s</body></html>');
     fs.writeFileSync(path.join(d, 'snapshots', 'doc1', '2026-10-05-121001-958.manifest.json'), '{}');
     fs.writeFileSync(path.join(d, 'pdfs', 'doc1.pdf'), '%PDF');
     fs.writeFileSync(path.join(d, 'pdfs', 'doc1.pdf.env.json'), '{}');
     fs.writeFileSync(path.join(d, 'pdfs', 'archive', '2026-10-22-135000-123.pdf'), '%PDF');
+    fs.writeFileSync(path.join(d, 'pdfs', 'archive', '2026-10-22-135000-123.pdf.env.json'), '{}');
+    // 快照元数据（设基准后由 saveSnapMeta 写）与导出历史（<docId>@<renderInputId=40位sha1>）
+    fs.writeFileSync(path.join(d, 'snapshots', 'doc1', 'meta.json'), JSON.stringify({ __baseline: '2026-10-05-121001-958' }));
+    fs.writeFileSync(path.join(d, 'pdfs', 'history', 'doc1@237e8fd7c44ea39a6f3234f74244d01f0829ad87.pdf'), '%PDF');
+    fs.writeFileSync(path.join(d, 'pdfs', 'history', 'doc1@237e8fd7c44ea39a6f3234f74244d01f0829ad87.pdf.env.json'), '{}');
     fs.writeFileSync(path.join(d, 'docs-meta.json'), '{}');
   });
   const j4 = await restore(t4);
@@ -4649,6 +4664,24 @@ try {
   await sleep(50);
   fs.rmSync(tmpB, { recursive: true, force: true });
 }
+EOF
+
+# —— JOB-NOTE：提示必须跨 render 存活（2026-10-22 审查发现的缺陷类别守卫）——
+# 缺陷：note() 把提示写进 .jp-msg，随后 render() 重建面板（root.innerHTML=''）→ 提示被清空
+#       → 「保存失败」「已生成 N 条建议」全都 0 毫秒可见。
+# 修法：note() 把提示存进 lastNote，render() 之后用 applyNote() 重贴。
+# 守卫：note() 必须有 lastNote 存档 + render() 必须调 applyNote()。
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const fail = (m) => { console.error('❌ JOB-NOTE ' + m); process.exit(1); };
+const src = readFileSync('./job-panel.js', 'utf8');
+if (!/var lastNote = null/.test(src)) fail('note() 未把提示存进 lastNote（渲染后提示会被清空）');
+if (!/function applyNote\(\)/.test(src)) fail('缺 applyNote()（提示没有重贴机制）');
+// render() 重建 .jp-msg 之后必须重贴（取 render() 之后的 4KB 窗口，避免正则跨文件误配）
+const ri = src.indexOf('function render() {');
+const renderBody = ri >= 0 ? src.slice(ri, ri + 4000) : '';
+if (!renderBody.includes('applyNote(')) fail('render() 重建面板后没有调 applyNote() 重贴提示');
+console.log('✅ JOB-NOTE 提示跨渲染存活（lastNote 存档 + render 后 applyNote 重贴）');
 EOF
 
 # —— XSS-4：属性上下文的外部字段必须转义（防「快照 ts / 记录 id 进属性」这类漏网）——

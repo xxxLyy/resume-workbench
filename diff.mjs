@@ -1,8 +1,6 @@
 // diff.mjs — 行级差异（纯函数，零依赖）
 // 正文提取统一走 extract.mjs（单一出口），本模块只保留差异算法。
 export { docToLines } from './extract.mjs';
-import { docToLines } from './extract.mjs';
-
 // 标准 LCS DP：[{type:'same'|'del'|'ins', text}]（简历百行级，O(mn) 无压力）
 export function diffLines(a, b) {
   const n = a.length, m = b.length;
@@ -20,9 +18,4 @@ export function diffLines(a, b) {
   while (i < n) out.push({ type: 'del', text: a[i++] });
   while (j < m) out.push({ type: 'ins', text: b[j++] });
   return out;
-}
-
-// 便捷：直接从两份 HTML 出 diff（供版本对比页复用统一提取）
-export function diffHtml(aHtml, bHtml, opts) {
-  return diffLines(docToLines(aHtml, opts), docToLines(bHtml, opts));
 }

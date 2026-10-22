@@ -53,14 +53,19 @@ export async function withRetry(fn, { retries = 2, delayMs = 1500, idempotent = 
     catch (e) {
       // 可重试判定分两档：
       //  幂等请求（GET）：网络错误（status undefined，含 fetch failed / 超时）与 5xx 都重试。
-      //  非幂等请求（POST）：**只重试网络错误**。5xx 不重试——服务端可能已计费，
+      //  非幂等请求（POST）：**只重试「请求没送达」的网络错误**（fetch failed / 连接被拒）。
+      //    5xx 不重试——服务端可能已计费；**超时也不重试**——请求可能已到达并被计费，
       //    重发就是重复扣费（POST 重复计费比失败更糟）。
       //  修正（2026-10-19 实测）：原实现 POST 判 `e.status >= 500`，而网络层失败根本没有
       //    status，undefined >= 500 为 false → 最该重试的「请求没送达」反而不重试。
       //    MiniMax 长请求（max 思考 + 27K token prompt 实测 160–265 秒）偶发断连，
       //    表现为一次 fetch failed 就整个岗位适配失败。
       const netErr = e.status === undefined;
-      const retryable = idempotent ? (netErr || e.status >= 500) : netErr;
+      // 超时 ≠ 没送达：请求可能已到达并被计费（POST 尤其如此）→ 不重试。
+      // 连接层失败（fetch failed / ECONNREFUSED，name=TypeError）才是「没送达」→ 可重试。
+      // 区分依据：AbortSignal.timeout 超时抛的是 name='TimeoutError'（2026-10-22 实测）。
+      const timedOut = e.name === 'TimeoutError' || e.name === 'AbortError';
+      const retryable = idempotent ? (netErr || e.status >= 500) : (netErr && !timedOut);
       if (i >= retries || !retryable) throw e;
       console.warn(`[retry] 第${i + 1}次失败，${delayMs}ms 后重试：${e.message || e}`);
       await sleep(delayMs);
@@ -92,7 +97,10 @@ export async function listModels(baseURL, apiKey) {
 export async function chatMsgs(root, messages) {
   const c = loadConfig(root);
   if (!c) throw new Error('LLM 未配置');
-  const r = await withRetry(() => fetch(`${c.baseURL.replace(/\/$/, '')}/chat/completions`, {
+  // baseURL 来自本地 config（设置页可改）→ 同样过 assertSafeBaseURL：否则把 Bearer 发到
+  // 云元数据端点（169.254.169.254）这类地址。listModels 已经这么做了（口径一致）。
+  const base = assertSafeBaseURL(c.baseURL).toString().replace(/\/$/, '');
+  const r = await withRetry(() => fetch(`${base}/chat/completions`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${c.apiKey}`, 'Content-Type': 'application/json' },
     // reasoning_effort：profile 级可选（设置页「思考程度」）。MiniMax 官方支持
@@ -103,7 +111,7 @@ export async function chatMsgs(root, messages) {
     // 不带 temperature：Kimi coding 等端点只允许默认值，硬编码会被 400
     // 请求级超时（S4a 设计 §6）：默认 120s，profile 的 timeoutMs 可覆盖
     signal: AbortSignal.timeout(Number(c.timeoutMs) > 0 ? Number(c.timeoutMs) : 120000)
-  }).then(okOrThrow('LLM 请求失败')), { idempotent: false });   // POST 非幂等：网络错误/超时不重试，避免重复计费
+  }).then(okOrThrow('LLM 请求失败')), { idempotent: false });   // POST 非幂等：连接失败可重试；超时不重试（可能已计费）
   // r.json() 与结构校验刻意放在 withRetry 外：body 解析/格式错误天然不重试
   const data = await r.json();
   if (!data.choices?.[0]?.message?.content) throw new Error('LLM 返回格式异常');

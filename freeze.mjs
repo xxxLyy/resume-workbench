@@ -171,6 +171,14 @@ export function resourceFingerprint(html, root) {
     p = p.split(/[?#]/)[0];                                   // 去 query/fragment
     try { p = decodeURIComponent(p); } catch { /* 非法转义按原文 */ }
     const abs = path.isAbsolute(p) ? p : path.join(base, p);
+    // 解析后必须仍在数据根内：否则文档里一个 ../../../../etc/passwd 就能被读走并哈希
+    const rootAbs = path.resolve(base);
+    const absResolved = path.resolve(abs);
+    if (absResolved !== rootAbs && !absResolved.startsWith(rootAbs + path.sep)) {
+      if (!missing.includes(ref)) missing.push(ref);
+      entries.push('missing:' + ref);
+      continue;
+    }
     try {
       entries.push('local:' + sha1(fs.readFileSync(abs)));    // 哈希文件内容而非路径
     } catch {

@@ -3,8 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { readCache, cacheValid, expectedRevision, playwrightVersion } from './chromium.mjs';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = process.env.RESUME_ROOT || path.dirname(new URL(import.meta.url).pathname);
+// 用 fileURLToPath 而不是 new URL(...).pathname：后者是百分号编码（路径含空格/中文时读不到真实目录）
+const ROOT = process.env.RESUME_ROOT || path.dirname(fileURLToPath(import.meta.url));
 const checks = [];
 const add = (name, ok, detail, fix) => checks.push({ name, ok: ok === undefined ? true : ok, detail: detail || '', fix: fix || '' });
 

@@ -1093,7 +1093,8 @@ async function runS1T9Tests() {
   }
 }
 await runS1T9Tests();
-if (failures) { console.error('❌ 事务/锁/冻结点验证失败 ' + failures + ' 项'); process.exit(1); }
+// 节点段失败也要把浏览器段跑完：早退会让浏览器层结果整段消失（2026-10-22 审查）
+if (failures) console.error('❌ 事务/锁/冻结点验证失败 ' + failures + ' 项（继续跑浏览器段）');
 
 let bin;
 try { bin = await resolveChromium(); }
@@ -3253,11 +3254,13 @@ try {
     await page.waitForSelector('#ed-grip', { timeout: 15000 });
     // 宽度：优先读 CSS 变量；没设过（未拖过）就读右栏实测宽 —— 否则 parseFloat('') = NaN，
     // 「变宽了吗」那种比较会静默通过（NaN 比较恒 false）→ 断言空转。
+    // 量「右栏实测宽」而不是 CSS 变量：变量只是意图，实际宽度才是结果
+    // （变量被写死时右栏根本没变宽，量变量会假绿 —— 2026-10-22 审查实测）
     const readW = async () => page.evaluate(() => {
-      const v = getComputedStyle(document.body).getPropertyValue('--ed-right-w').trim();
-      if (v) return parseFloat(v);
       const r = document.getElementById('ed-right');
-      return r ? Math.round(r.getBoundingClientRect().width) : NaN;
+      if (!r) return NaN;
+      const w = Math.round(r.getBoundingClientRect().width);
+      return w > 0 ? w : NaN;
     });
     const before = await readW();
     // ① 拖柄左拖 → 右栏变宽
@@ -3297,8 +3300,14 @@ try {
     await page.evaluate(() => window.__edSaveManual && window.__edSaveManual());
     await page.waitForTimeout(2500);
     const diskGrip = fs.readFileSync(path.join(dataRoot, 'docs', ED_DOC + '.html'), 'utf8');
-    if (/<svg/i.test(diskGrip)) bad('UI-6 保存的文档文件里出现了运行时 SVG（注入层产物落盘）');
-    else ok('UI-6 保存的文档文件不含运行时 SVG（注入层产物不落盘）');
+    // 注入块在文件里是转义形态（\u003csvg），用 /<svg/ 匹配永远匹配不到 → 恒真。
+    // 真正能红的判据：注入块自己的载荷/标记。
+    // 注意别用 'data-ed-inj' —— 模板自己的脚本里就写着这个属性名（会恒真）。
+    const leaks = ['__ICONS__', 'window.__MATS__', 'window.__JOB_INFO__',
+      'ICON-INJECT', 'SHELL-INJECT', 'AI-INJECT', 'JOB-INJECT', 'ZONE-INJECT']
+      .filter((k) => diskGrip.includes(k));
+    if (leaks.length) bad('UI-6 保存的文档文件里残留注入层产物：' + leaks.join('、'));
+    else ok('UI-6 保存的文档文件不含注入层产物（__ICONS__/__MATS__/注入注释对）');
     await ctx.close();
   }
 

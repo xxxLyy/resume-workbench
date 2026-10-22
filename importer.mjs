@@ -23,7 +23,7 @@ function uniqueId(root, name) {
 }
 
 // 降级文档：纯文本进"导入原文"区，模板结构完整可编辑；degradeReason 说明降级原因
-function buildRawDoc(root, text, name, degradeReason) {
+function buildRawDoc(root, text, name, degradeReason, docId) {
   const note = degradeReason === 'failed' ? 'LLM 结构化失败，已降级为原文导入'
     : degradeReason === 'partial' ? 'LLM 配置不完整，已降级为原文导入'
     : '待整理';
@@ -36,7 +36,9 @@ function buildRawDoc(root, text, name, degradeReason) {
     .replaceAll('{{SKILLS}}', () => '')
     .replaceAll('{{WORK}}', () => '')
     .replaceAll('{{PROJECTS}}', () => `<div class="plain-lines"><p style="white-space:pre-wrap">${esc(text)}</p></div>`)
-    .replaceAll('{{EDU}}', () => '');
+    .replaceAll('{{EDU}}', () => '')
+    // DOC_ID 占位符也要替换：/edit 服务端会替换，但快照/导出/直读磁盘拿到的字节里留着占位符
+    .replaceAll('{{DOC_ID}}', () => esc(String(docId || '')));
 }
 
 export async function importPdfText(root, pdfPath, name) {
@@ -46,9 +48,9 @@ export async function importPdfText(root, pdfPath, name) {
   let html;
   if (hasLLM(root)) {
     html = await structureText(root, text);   // 失败返回 null 则降级
-    if (!html) html = buildRawDoc(root, text, name, 'failed');
+    if (!html) html = buildRawDoc(root, text, name, 'failed', id);
   } else {
-    html = buildRawDoc(root, text, name, loadConfig(root) ? 'partial' : null);
+    html = buildRawDoc(root, text, name, loadConfig(root) ? 'partial' : null, id);
   }
   fs.writeFileSync(path.join(root, 'docs', id + '.html'), html, { mode: 0o600 });   // 导入的简历正文同样收紧（2026-10-19 审查 ⚪-6 扩展）
   // 新建即登记样式来源（meta 唯一写入者 updateMeta）：theme/styleHash/typo/schemaVersion
