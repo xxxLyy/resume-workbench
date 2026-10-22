@@ -359,3 +359,91 @@ launchctl kickstart -k gui/$(id -u)/com.lhx.resume-server   # 重启常驻服务
 - 四件套：structure **125 ✅** / main **339 ✅** / render ✅ / privacy ✅（全 exit 0）
 - launchd 服务已 `kickstart -k` 重启（PID 98076，13:44:56），`/edit?id=linghaoxiang` 浏览器实测：5 个 section 标题全对、0 控制台错误；首页 0 控制台错误
 - 上一轮遗留的临时实例（17995 / 17996 / 17997）与 `/tmp/vrf*` 已清理
+
+## 深度审查轮（2026-10-22 续）：4 路并行审查 + 自测，发现并修掉 1 个存储型 XSS + 3 处平方级回溯
+
+上一节记录的是「XSS 转义修复 + 闭合配对单遍化」。本节是接手本会话后继续的深度审查轮：
+用 `ocr delegate`（不出 LLM，只出审查清单与规则）+ 4 个并行 subagent 分文件审 + 自测复核。
+
+**审查工具的教训**：`ocr review`（走 LLM）跑了 27 分钟零输出（MiniMax max 思考 + 15 文件 2900 行 diff 太慢），
+被迫杀掉。改用 `ocr delegate`（本地出规则与文件清单）+ 并行 subagent，20 分钟拿到 3 份报告。
+**下次直接走 delegate + subagent**，别等 LLM 那条路。
+
+### 一、存储型 XSS：恢复备份可植入恶意标识（自测坐实，非纸面推断）
+
+文档 id 会**原样**拼进首页的内联 JS（`onclick="…('{id}')"`）与属性（`value="{id}"`），
+投递/素材记录的 id 同理。备份包是外部输入 → 恶意 id 即存储型 XSS。
+
+**实测链**（隔离实例 `RESUME_ROOT=/tmp/...`、`PORT=17994`）：
+
+1. 造包 `docs/a'+alert(1)+'b.html` → `POST /restore?apply=1&mode=merge` → **200 接受**
+2. 首页渲染出 `onsubmit="return confirm('确认删除 a'+alert(1)+'b？快照会保留')"`
+3. 浏览器实测触发该 onsubmit → **真的弹出 alert(1)**（不是"看起来像"，是浏览器对话框真的出现）
+4. 另一条更省事的链：`applications.json` 里 `id` 带引号 → 投递页 `onclick="appPatch('{id}')"` 同理
+
+**根因**：写入侧（/new、/save）有 `VALID_ID` 全局闸门，但**恢复侧与读取侧没有同一把尺**。
+备份能落地带引号的文件名/记录 id。
+
+**修法**：
+
+- `/restore` 校验条目里的标识：`docs/<id>.html`、`snapshots/<id>/`、`pdfs/<id>.pdf` 全部要过 `VALID_ID`
+- `/restore` 校验 `applications/materials/evaluations` 的记录 `id`（`BAD_ID` → 拒绝恢复）
+- 读取侧兜底：新增 `docIdsOnDisk()`，只收 `VALID_ID` 通过的文档 id（首页/投递页/对比页 4 处共用）
+
+**新增断言 XSS-3**（`test-structure.sh`，+1 ✅）：恶意包被拒 + 读取侧兜底（非法 id 的文件落到磁盘上，首页也不得原样渲染）+ 正常包仍能恢复。已反向验证（回退到修复前 → 红）。
+
+### 二、抽取管线：三处平方级/灾难性回溯
+
+| 位置 | 病态输入 | 旧耗时 | 新耗时 |
+|---|---|---|---|
+| `sectionsOf` 的 `/<section\b[^>]*class="([^"]*)"[^>]*>/` | `<section class="`×2000（32KB） | **16.6s**（O(长度³)） | 1ms |
+| `zone.mjs` 的 `UNIT_RE` | `<p title="`×8000 | 250ms | 6ms |
+| `closeIndex` 的引号未闭合处理 | 同上 | 每标签 O(长度) | 记住「该引号类型之后不再出现」→ 不重扫 |
+
+**还有一处我自己引入的回归**（subagent 发现、自测复核）：`closeIndex` 共享一次扫描时，
+畸形标签的属性区会吞掉**别的标签名**的闭合 —— `<h3 data-zid="x"><li title='q'</h3>` 里
+li 的属性区吃掉 `</h3>` → h3 找不到闭合 → 段落从 AI 上下文里消失。
+旧实现每个标签名一条正则，互不影响。**改为每个标签名独立扫一遍**（与旧口径一致）。
+
+**新增断言 EXTRACT-Q**（+1 ✅）钉住四件事：等价性（语料 23 例 + 随机 5583 例 + 真实文档 92 例，与旧实现 **0 差异**）、
+三处平方级回归、畸形标签不吞并、自闭合开标签的新语义（返回 -1，不再错配到别的章节）。
+三条性能哨兵与等价性哨兵**均已反向验证会红**。
+
+> ⚠️ **上一节那个性能哨兵给出的是假信心**：它用的输入（8000 个完整 `<section class="section">`）
+> 恰好绕开了真正炸的正则路径。**哨兵必须打在会炸的那条路径上**（无 `>` 的病态输入）。
+
+### 三、外壳健壮性（editor-shell.js）
+
+| 问题 | 后果 | 修法 |
+|---|---|---|
+| `readGripW()` 的 localStorage 无兜底 | 浏览器禁用站点存储时抛 SecurityError → **整个 editor-shell 初始化中断**（页签/拖柄/工具条全没建，点了没反应） | 补 try/catch（同文件其它 3 处 localStorage 访问都有） |
+| 注入层把内联 SVG 写进冻结模板的工具条按钮 | 随保存落进用户文档文件（3 个按钮约 1KB），文件不再与冻结模板一致 | 钩住 `cloneNode`，克隆后把三个按钮还原成模板原样（实测落盘文件 `<svg>` 计数 0，仍是「📄 导出 PDF」） |
+| `pointerdown` 的 `preventDefault()` 吃掉聚焦 | 鼠标拖完直接按 ←/→ 没反应（键盘替代路径 WCAG 不可达） | 显式 `grip.focus()` |
+| 指针在窗口外松开 → `pointerup` 不送达 | `dragging` 永远为 true、`body.ed-nofx` 不摘（列宽过渡永久禁用） | 补 `blur` / `visibilitychange` 收尾 |
+| 拖拽上限与视口无关 | 右栏拖到 460px 会盖住 210mm 的纸张（纸张自身 scrollWidth 查不出来） | 上限跟视口走：`视口 - 左栏208 - 纸张794 - 余量24` |
+| 双击复位回到 300px，但首屏默认是 320px | 复位后与"从未拖过"不一致 | `GRIP_DEFAULT` 统一为 320 |
+| `__icon` 缺失时图标独占按钮变空盒/0×0 | 按钮点不到 | 补文字兜底 |
+
+### 四、job-panel.js
+
+- `buildPageHtml` 写回「已保存 `<svg>`」而模板写回「已保存 ✓」→ **两条保存路径字节不一致**
+  → 同一份文档两条路径存出不同 HTML → `bodyHash` 不同 → PDF 被误判「较旧」。
+  改为写回**字面量**（`✓` 写成 `✓`，UI-7 仍为零 emoji），运行时由注入层的 MutationObserver 换 SVG
+  （与 toast/#saveState 同一套机制：文件留字面量、UI 不见 emoji）。
+- `note()` 的提示被随后的 `render()` 清空（`render()` 重建 `.jp-msg`）→ **保存失败/生成成功全都 0 毫秒可见**。
+  提示存一份，`render()` 后重贴。
+- `.jp-msg` 硬编码 warn 色 → 成功提示显示成警告色；改为按 kind 分色。
+- 「📍定位」缺空格。
+
+### 五、scripts/extract-icons.mjs
+
+- 元素形状非法时 `norm.length = -1` 抛 RangeError，把「收集 missing → 友好报错 → exit 1」打断 → 改布尔标记。
+- 产物改**原子写**（tmp + rename）：写途中被打断不再留下半截 `vendors/icons.mjs`
+  （`server.mjs` 顶层 import 它 → 半截文件直接让服务起不来）。
+- 产物重跑仍逐字节一致（`git diff` 为空）。
+
+### 本轮验收
+
+- 四件套：structure **126 ✅** / main **339 ✅** / render ✅ / privacy ✅（全 exit 0）
+- launchd 服务已重启（15:13:33），8 个页面浏览器实测：0 控制台错误 / 0 可见 emoji / 0 横向溢出 / 0 注入
+- 隔离实例实测：恶意备份包被拒（两种）、正常备份仍能恢复、落盘文件不含运行时 SVG、localStorage 被禁时外壳完整
