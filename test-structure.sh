@@ -427,6 +427,16 @@ process.env.RESUME_ROOT = tmpRoot;   // 本地相对路径按文档根（RESUME_
 const fontDoc = (extraCss = '') => mkDoc({ css: '@font-face{src:url(fonts/f.woff2)}' + extraCss });
 const lf1 = resourceFingerprint(fontDoc());
 if (!lf1.reproducible) fail('可读本地字体应 reproducible=true: ' + JSON.stringify(lf1));
+
+// 渲染身份只度量视觉输入（handoff §6 的既定口径）：#saveState 的状态读数
+// （已保存 / 未保存 / 保存失败）随 dirty 状态变化，打印时也不出现 → 不该进 renderInputId。
+// 不摘它的话：同样的内容存两次会得到两个 bodyHash → PDF 被误判「较旧」（2026-10-22 审查实测）。
+{
+  const doc = '<html><body><div class="edit-toolbar"><span id="saveState" data-state="saved">已保存</span></div><div class="sheet">正文</div></body></html>';
+  const f1 = freezeHtml(doc, {});
+  const f2 = freezeHtml(doc.replace('>已保存<', '>未保存 ●<'), {});
+  if (f1.renderInputId !== f2.renderInputId) fail('保存状态文案变化不应改变 renderInputId（渲染身份只度量视觉输入）');
+}
 fs.writeFileSync(fontFile, 'FONT-CONTENT-V2');   // 改 1 字节
 const lf2 = resourceFingerprint(fontDoc());
 if (lf2.resourcesHash === lf1.resourcesHash) fail('本地字体文件内容改 1 字节应改变 resourcesHash');

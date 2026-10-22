@@ -548,7 +548,14 @@ template/freeze/render/doctor/chromium/job/evidence）与**测试体系本身**�
 11. 真实数据指纹没覆盖 `evaluations.json` → 补上
 12. `privacy-check.sh` 的排除名单漏了 test-structure.sh / test-editor.mjs → 补上
 
-### 三、这轮的验收
+### 三、渲染身份（freeze.mjs）两处取舍
+
+| 项 | 决定 | 理由 |
+|---|---|---|
+| `#saveState` 的状态读数进了 bodyHash | **修**（摘掉） | 状态读数随 dirty 状态变化、打印时也不出现 → 不是渲染输入。handoff §6 的既定口径就是「渲染身份只度量视觉输入」。不摘的后果：同样的内容存两次（一次带改动一次不带）会得到两个 renderInputId → PDF 被误判「较旧」。新增断言钉住 ✓ |
+| 相对路径资源在 PDF 里加载不了（render 用 setContent，基准 about:blank），freeze 却判「可复现」 | **不修，已记录** | 改 freeze 侧（相对路径按缺失处理）会与 S1-A 的既定口径冲突（那条断言明确要求「可读本地字体 reproducible=true」）；改渲染侧要动**冻结件** render.mjs + 渲染输入（注入 `<base href="文档根">`）→ 代价大且动冻结件等于重设基线。**修法二选一**：① 渲染输入注入 `<base>`；② 文档层约定资源一律用 data: URI。本机两份真实简历没有图片/字体，暂无实际影响 |
+
+### 四、这轮的验收
 
 - 四件套：structure **128 ✅** / main **345 ✅** / render ✅ / privacy ✅（全 exit 0）
 - launchd 服务已重启，8 个页面浏览器实测 0 控制台错误 / 0 可见 emoji / 0 横向溢出 / 0 注入

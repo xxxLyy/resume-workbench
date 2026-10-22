@@ -78,6 +78,14 @@ function bodyInner(html) {
   return m ? m[1] : html;                                    // 无 body 标签的片段：整体视为正文
 }
 
+// #saveState 是状态读数（已保存 / 未保存 / 保存失败），随保存时的 dirty 状态变化，
+// 打印时也不出现（@media print 隐藏 .edit-toolbar）→ 不属于渲染输入。
+// 不摘它的话：同样的内容存两次（一次带改动、一次没带）会得到两个 bodyHash
+// → PDF 被误判「较旧」（2026-10-22 审查实测）。
+function stripSaveState(html) {
+  return String(html).replace(/(<[^>]*id="saveState"[^>]*>)[\s\S]*?(<\/[^>]+>)/gi, '$1$2');
+}
+
 // S3：data-zid 是非视觉属性（区域绑定的 bookkeeping），不属于渲染输入。
 // bodyHash 前先摘除，避免首存打点把「PDF 同步」误判为「较旧」（renderInputId 只度量视觉）。
 // zid 格式与 zone.mjs 的 ZID_SRC 同源约定（z[0-9a-f]{8}），格式变更须两处同步——freeze.mjs 刻意零本地依赖故不共享常量。
@@ -170,6 +178,12 @@ export function resourceFingerprint(html, root) {
     let p = ref.replace(/^file:\/\/(?:localhost)?/i, '');
     p = p.split(/[?#]/)[0];                                   // 去 query/fragment
     try { p = decodeURIComponent(p); } catch { /* 非法转义按原文 */ }
+    // 相对路径按文档根（RESUME_ROOT）解析：可读到就算「本地可复现资源」（S1-A 既定口径）。
+    // ⚠️ 与渲染器存在契约冲突（2026-10-22 审查实测）：render.mjs 用 setContent 渲染
+    //    （页面基准 about:blank）→ 相对 URL 没有基准，字体/图片在 PDF 里加载不出来
+    //    （pdfimages -list 无该图）。改这一侧要动冻结件 render.mjs + 渲染输入（<base>），
+    //    代价大；先记录，暂不改。修法二选一：① 渲染输入注入 <base href="文档根">；
+    //    ② 文档层约定资源一律用 data: URI。
     const abs = path.isAbsolute(p) ? p : path.join(base, p);
     // 解析后必须仍在数据根内：否则文档里一个 ../../../../etc/passwd 就能被读走并哈希
     const rootAbs = path.resolve(base);
@@ -215,7 +229,7 @@ export function freezeHtml(html, meta) {
       : block + out;                                          // 无 head 的片段：前置兜底
   }
   const styles = mainStyles(out);
-  const bodyHash = sha1(stripZid(bodyInner(out)).trim());
+  const bodyHash = sha1(stripSaveState(stripZid(bodyInner(out))).trim());
   const cssHash = styles.length ? sha1(styles.map((s) => s.css).join('\n')) : sha1('');
   const typoHash = sha1(typo);
   const fp = resourceFingerprint(out);
