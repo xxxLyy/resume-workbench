@@ -2,7 +2,7 @@
 // 纪律：zid 只落在段落单位上（p/li/h1-4/.entry-head/.contact），section 与 section-title 不打；
 // 区域归属只存 docs-meta.json 的 zones map，正文只带非视觉属性 data-zid。
 // 假设：属性值含 > 时开标签匹配退化（与 extract.mjs 同假设）——读取层只降级，写回层同样不处理该形状。
-import { sectionsOf, matchingClose } from './extract.mjs';
+import { sectionsOf, matchingClose, closeIndex } from './extract.mjs';
 import { factGuard } from './job.mjs';
 
 export const ZONE_KEYS = ['personal', 'education', 'work', 'project', 'skill', 'award', 'summary', 'other'];
@@ -53,13 +53,14 @@ export function zidsOf(html) {
 export function parasOf(html) {
   const s = String(html);
   const out = [];
+  const idx = closeIndex(s, ['p', 'li', 'h1', 'h2', 'h3', 'h4', 'div']);   // 一次扫完，别每个匹配点重扫到文末
   let m;
   UNIT_RE.lastIndex = 0;
   while ((m = UNIT_RE.exec(s))) {
     if (!isUnit(m[1], m[2] || '')) continue;
     const zidM = ZID_ATTR.exec(m[2] || '');
     if (!zidM) continue;
-    const close = matchingClose(s, m.index, m[1]);
+    const close = matchingClose(s, m.index, m[1], idx);
     if (close < 0) continue;
     const text = s.slice(m.index, close).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
     out.push({ zid: zidM[1], text });

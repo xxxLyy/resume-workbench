@@ -179,12 +179,13 @@ export function contentHash(input) {
 export function sectionsOf(html) {
   const body = bodyOf(String(html ?? ''));
   const out = [];
+  const idx = closeIndex(body, ['section']);   // 一次扫完全部 section 配对，别每个匹配点重扫到文末
   const re = /<section\b[^>]*class="([^"]*)"[^>]*>/gi;
   let m;
   while ((m = re.exec(body))) {
     const attrs = m[0];
     if (!/\bsection\b/.test(m[1])) continue;
-    const close = matchingClose(body, m.index, 'section');
+    const close = matchingClose(body, m.index, 'section', idx);
     if (close < 0) continue;
     const inner = body.slice(m.index, close);
     const tm = /<div[^>]*class="[^"]*\bsection-title\b[^"]*"[^>]*>([\s\S]*?)<\/div>/i.exec(inner);
@@ -200,18 +201,73 @@ export function sectionsOf(html) {
   return out;
 }
 
-export function matchingClose(html, openStart, tag) {
-  let depth = 0;
-  let i = openStart;
-  const n = html.length;
-  // 属性分支须排除引号区间内的 '>'：与 tagEnd 同口径，否则属性值含 '>' 时两处判定打架
-  const re = new RegExp(`<\\s*(\\/?)${tag}\\b(?:[^>"']|"[^"]*"|'[^']*')*>`, 'gi');
-  re.lastIndex = openStart;
-  let m;
-  while ((m = re.exec(html)) && i < n) {
-    if (m[1] === '/') { depth--; if (depth === 0) return m.index + m[0].length; }
-    else if (!/\/\s*>$/.test(m[0])) depth++;
-    i = m.index;
+// JS \s / \w 的字符集（正则 \b 按 [A-Za-z0-9_] 判定）
+const isWs = (c) => c === 32 || c === 9 || c === 10 || c === 13 || c === 12 || c === 11
+  || c === 0xa0 || c === 0x1680 || (c >= 0x2000 && c <= 0x200a)
+  || c === 0x2028 || c === 0x2029 || c === 0x202f || c === 0x205f || c === 0x3000 || c === 0xfeff;
+const isWord = (c) => (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 95;
+
+/**
+ * 单遍扫描：一次算出多个标签名的「开标签 → 闭合终点」映射。
+ * 返回 Map<开标签起点下标, 闭合标签结束下标>（结束下标 = '>' 之后一位）。
+ *
+ * 为什么不用旧的逐点重扫：旧 matchingClose 每次调用都从起点扫到文末，
+ * N 个未闭合标签 = O(N×长度)（实测 4000 个未闭合 section = 334ms，每翻倍耗时翻四倍）。
+ * 现在整份文档一次扫完 = O(长度)。
+ *
+ * 语义与旧实现等价（回归测试逐样本比对，见 test-structure.sh 的 EXTRACT-Q）：
+ *   - 同名标签按 LIFO 配对 = 旧实现的「按名深度计数」
+ *   - 标签名 = '<' 后紧邻的单词串（等价旧正则的「字面名 + \b」）
+ *   - 属性区引号内的 '>' 不结束标签；无 '>' 的残片不算标签
+ *   - 自闭合（'/' + 可选空白 + '>'）既不算开也不算闭
+ */
+export function closeIndex(html, names) {
+  const want = new Set(names.map((n) => String(n).toLowerCase()));
+  const s = String(html);
+  const n = s.length;
+  const map = new Map();
+  const stacks = new Map();          // 标签名 → 未闭合开标签起点栈
+  let i = 0;
+  while (i < n) {
+    const lt = s.indexOf('<', i);
+    if (lt === -1) break;
+    let j = lt + 1;
+    while (j < n && isWs(s.charCodeAt(j))) j++;            // '<' 后空白
+    let closing = false;
+    if (s.charCodeAt(j) === 47) { closing = true; j++; }    // '/' 后不跳空白（与旧正则 <\s*(/?)tag 同口径）
+    const ns = j;
+    while (j < n && isWord(s.charCodeAt(j))) j++;           // 标签名（单词串）
+    const name = s.slice(ns, j).toLowerCase();
+    if (!name || !want.has(name)) { i = lt + 1; continue; }
+    let quote = 0;                                          // 属性区：引号内的 '>' 不结束标签
+    while (j < n) {
+      const c = s.charCodeAt(j);
+      if (quote) { if (c === quote) quote = 0; }
+      else if (c === 34 || c === 39) quote = c;
+      else if (c === 62) break;
+      j++;
+    }
+    if (j >= n) { i = lt + 1; continue; }                   // 没有 '>' → 残片，不是标签
+    let k = j - 1;
+    while (k > lt && isWs(s.charCodeAt(k))) k--;
+    if (closing) {
+      // 闭合一律计数（旧实现同口径：闭标签分支不看自闭合）
+      const st = stacks.get(name);
+      if (st && st.length) map.set(st.pop(), j + 1);
+    } else if (s.charCodeAt(k) !== 47) {                    // 自闭合开标签既不算开也不算闭
+      let st = stacks.get(name);
+      if (!st) { st = []; stacks.set(name, st); }
+      st.push(lt);
+    }
+    i = j + 1;
   }
-  return -1;
+  return map;
+}
+
+// 找到 openStart 处那个开标签的闭合终点（返回 '>' 之后一位）；没有闭合返回 -1。
+// idx 可传入 closeIndex 的结果，避免同一份文档重复扫描。
+export function matchingClose(html, openStart, tag, idx) {
+  const map = idx || closeIndex(html, [tag]);
+  const v = map.get(openStart);
+  return v === undefined ? -1 : v;
 }

@@ -254,6 +254,8 @@ launchctl kickstart -k gui/$(id -u)/com.lhx.resume-server   # 重启常驻服务
 
 **未修（按优先级，等拍板）**：
 
+> ⚠️ **本表是 2026-10-19 的快照，已过时。** 表内第 1/3/4 项在同一天的「本轮（第三轮）已修」里就修掉了（`restore-guard.mjs` / `safe-url.mjs` / `JD_MAX_CHARS` 均已落地，见源码）；第 2 项在 **2026-10-22 收尾轮**修掉（见文末章节）。**本表不再代表当前未修状态**，留此仅为历史留痕，勿据此重复讨论。
+
 | # | 问题 | 位置 | 为什么没修 |
 |---|---|---|---|
 | 🟡 | `/restore` 无解压尺寸上限（0.32MB 炸弹 → 314.9MB，放大 98 万倍） | `server.mjs` 备份/恢复 | 这是唯一能整体覆盖用户真实简历的路径，是数据安全网；改它必须跑满全量场景。修法已验证可行：`tar tzvf` 求第 5 列之和，超阈值拒绝，**任一行解析不出 size 就 fail closed** |
@@ -302,3 +304,58 @@ launchctl kickstart -k gui/$(id -u)/com.lhx.resume-server   # 重启常驻服务
   编辑器侧栏/拖柄/下拉正常（拖柄实测 `--ed-right-w` → 380px）；设置页「思考程度」下拉可见
   （(空)/low/medium/high/xhigh/max）。保存链路用 `route.fulfill` 拦截，**未落盘、未产生快照**。
 - 设计文档 `dev-docs/2026-10-21-ui-redesign-design.md`，实施计划 `dev-docs/2026-10-21-ui-redesign-plan.md`。
+
+## 收尾轮（2026-10-22）：属性/JS 上下文转义 + 标签闭合配对单遍化
+
+**背景**：上一轮 `/pua` + `open-code-review` 的深度审查（反复审查整个项目）在本会话中途被打断，停在「XSS 修复已提交、待最终验收」。本轮接手后：验收并部署 XSS 修复 → 修掉 handoff 里唯一还开着的 🟡（`extract.mjs` 二次方重扫）→ 更新本文件。
+
+### 1. XSS：属性/JS 上下文转义（提交 a808ded）
+
+`escHtml` 只转义 `& < >`，**不转义 `"`**。放进 HTML 属性值 → 载荷可闭合属性并注入事件处理器；放进 `onsubmit` 的 JS 单引号串 → 载荷可闭合 JS 串。两种都是可利用的存储型 XSS。
+
+隔离实例（`RESUME_ROOT=/tmp/...`、`PORT=17995`）实弹打穿 3 处：
+
+- `/export` 的 `tkCompany`/`tkRole` value 属性（company/role 原样落库，用户可控）
+- `/applications?view=table` 的 `data-ch` 与 `<option value>`（channel 原样落库）
+- 首页标签按钮的 `onsubmit`（tag 由 company·role 派生，未经 `"` 清洗）
+
+浏览器侧 `window.__PWN` 均被**真实赋值**（tkRole 载荷用 `autofocus`+`onfocus` 实现零点击触发）。
+
+修法：
+
+- 属性上下文一律 `escAttr`（含 13 处当前靠上游校验挡住的隐患点：`m.parent` / `m.id` / `base.label` / `toRaw` / `a.id` / `a.status` / `a.docId` / `app.docId` / `app.snapTs` / `c` / `meta.company` / `meta.role`）
+- JS 字符串上下文用 `escAttr(JSON.stringify(v))`（单引号能闭合 JS 串，`escAttr` 不够）
+- 内联 `<script>` 的 JS 字面量用 `jsonScript`（沿用本文件既有约定）
+- **不改 `escHtml` 本身**：实测会打穿 `docInfo.title` → `jsonAttr` → `data-doc-titles` 的实体还原链（浏览器解码 `&quot;` 回 `"` 后 `JSON.parse` 失败，标题全丢）
+
+新增断言（`test-structure.sh`，+2 ✅）：
+
+- **XSS-1**：隔离服务 + 真实 HTTP 请求，载荷必须回显（证明打到 sink），且不得成为可执行事件处理器、不得闭合 JS 串
+- **XSS-2**：源码级守卫，5 个前端文件的引号字面量上下文不得出现 `escHtml(`
+
+两条均已反向验证过会红。
+
+> ⚠️ **一个方法论教训（值得记）**：第一轮反向验证我用了 `git stash push server.mjs`，但修复已在 a808ded 提交 → stash 恢复的是 HEAD（**已修复版**）→ "攻击被挡住"是必然的，等于验证了修复后的代码，白跑一轮。**真正回退**必须用 `git checkout <修复前 commit> -- server.mjs`。**验证方法本身要被验证。**
+
+### 2. `extract.mjs` 标签闭合配对：逐点重扫 → 单遍扫描（本轮修）
+
+遗留项（2026-10-19 登记，当时唯一还开着的 🟡）：`matchingClose` 每次调用都从起点重扫到文末 → N 个未闭合标签 = O(N×长度)。实测 4000 个未闭合 section = **334ms**、8000 个 = **1357ms**（每翻倍耗时翻四倍，平方级）。`/edit`、`/save`、`/api/extract`、`/diff` 都走这条路。
+
+修法：`extract.mjs` 新增 `closeIndex(html, names)` —— 整份文档**一次扫完**，产出 `Map<开标签起点, 闭合终点>`；同名标签按 LIFO 配对（等价旧实现的「按名深度计数」）。`sectionsOf` 与 `zone.mjs` 的 `parasOf` 各自建一次索引后复用。
+
+实测：8000 个未闭合 section 从 **1357ms → 1ms**。
+
+**行为等价性**（不是"看着对"，是逐样本比对）：
+
+- 语料 19 组 + 随机拼装 3000 轮（定种子可重现）：在「真实开标签起点」上与旧实现**逐例比对**，**5606 例 0 差异**
+- 真实文档（`docs/linghaoxiang.html`、`docs/old-resume.html`）：**92 例 0 差异**
+- 回归断言 `EXTRACT-Q`（`test-structure.sh`，+1 ✅）钉住三件事：等价性、平方级回归（8000 个 > 500ms 即红）、正常解析不变
+- 已反向验证：把 `extract.mjs`/`zone.mjs` 回退到 HEAD（旧实现）→ 新断言红（1499ms）→ 还原后绿
+
+**唯一有意变更**：自闭合开标签（`<section class="section"/>`）旧实现会返回「后面某个 section 的闭合」（错配到别的章节），新实现返回 -1（自闭合本就无内容）。两个调用点都传真实开标签起点，不受影响。
+
+### 本轮验收
+
+- 四件套：structure **125 ✅** / main **339 ✅** / render ✅ / privacy ✅（全 exit 0）
+- launchd 服务已 `kickstart -k` 重启（PID 98076，13:44:56），`/edit?id=linghaoxiang` 浏览器实测：5 个 section 标题全对、0 控制台错误；首页 0 控制台错误
+- 上一轮遗留的临时实例（17995 / 17996 / 17997）与 `/tmp/vrf*` 已清理

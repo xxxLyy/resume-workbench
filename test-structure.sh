@@ -4376,3 +4376,106 @@ for (const f of ['server.mjs', 'editor-shell.js', 'job-panel.js', 'zone-panel.js
 }
 console.log('✅ XSS-2 属性/字符串字面量上下文禁用 escHtml(（源码级守卫）');
 EOF
+
+# —— EXTRACT-Q：标签闭合配对改单遍扫描（等价旧实现 + 去掉平方级重扫）——
+# 旧 matchingClose 每次调用都从起点重扫到文末 → N 个未闭合标签 = O(N×长度)。
+# 实测 4000 个未闭合 section = 334ms，每翻倍耗时翻四倍（平方级）。
+# 现在整份文档一次扫完（closeIndex），同一份文档的所有调用点共用。
+node --input-type=module << 'EOF'
+import { matchingClose, sectionsOf } from './extract.mjs';
+import { parasOf } from './zone.mjs';
+const fail = (m) => { console.error('❌ EXTRACT-Q ' + m); process.exit(1); };
+
+// 旧实现原样保留作对照（重构前逐点重扫到文末的那版）
+const legacy = (html, openStart, tag) => {
+  let depth = 0; let i = openStart; const n = html.length;
+  const re = new RegExp(`<\\s*(\\/?)${tag}\\b(?:[^>"']|"[^"]*"|'[^']*')*>`, 'gi');
+  re.lastIndex = openStart; let m;
+  while ((m = re.exec(html)) && i < n) {
+    if (m[1] === '/') { depth--; if (depth === 0) return m.index + m[0].length; }
+    else if (!/\/\s*>$/.test(m[0])) depth++;
+    i = m.index;
+  }
+  return -1;
+};
+
+// 语料：正常 / 嵌套 / 自闭合 / 大小写 / 属性含 '>' / 单双引号 / 未闭合 / 畸形拼接
+const CORPUS = [
+  '<section class="section">a</section>',
+  '<section class="section">a<section class="section">b</section>c</section>',
+  '<section class="section">a<section class="section">b</section>',
+  '<section class="section"/><section class="section">x</section>',
+  '</section><section class="section">x</section>',
+  '<section class="section" data-x="a>b">x</section>',
+  "<section class='section'>x</section>",
+  '<SECTION CLASS="section">x</SECTION>',
+  '< section class="section">x</ section>',
+  '<section class="section">x</section >',
+  '<sectionfoo class="section">x</sectionfoo>',
+  '<section class="section">a</section></section>',
+  '<section class="section"><p>x</p>',
+  '<section class="section">',
+  '<div title="<section class=\'section\'>">x</div>',
+  '<section class="section">a</section><section class="section">b</section>',
+  '<section class="section"><section class="section">x</section>',
+  '<section class="section">中文</section>',
+  '<section class="section">a</section><section class="section">b',
+];
+
+// 只在「真实开标签」起点上比对（旧实现的调用契约：start 必须落在开标签上）
+let checked = 0;
+for (const html of CORPUS) {
+  const re = /<\s*(\/?)section\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    if (m[1] === '/' || /\/\s*>$/.test(m[0])) continue;   // 闭标签 / 自闭合不是开标签
+    const a = legacy(html, m.index, 'section');
+    const b = matchingClose(html, m.index, 'section');
+    checked++;
+    if (a !== b) fail(`matchingClose 与旧实现不等价：html=${JSON.stringify(html)} start=${m.index} 旧=${a} 新=${b}`);
+  }
+}
+if (checked < 15) fail('语料覆盖不足（开标签起点 ' + checked + ' < 15）');
+
+// 随机拼装语料（定种子，可重现）：畸形组合下也必须与旧实现等价
+let seed = 20261022;
+const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+const PIECES = ['<section class="section">', '</section>', '<section>', '</section >', '<section/>',
+  '<section />', 'text', '<p>', '</p>', '<div class="a>b">', '</div>', '<SECTION>', '</SECTION>',
+  '<section x="y">', '</section', '< sections>', '</ sections>', '<sectionx>', '<section-1>',
+  '<!--c-->', '&amp;', '</section/>', '<p title="a>b">', '<SECTION />'];
+let fuzzChecked = 0;
+for (let iter = 0; iter < 3000; iter++) {
+  const k = 2 + Math.floor(rnd() * 16);
+  let html = '';
+  for (let j = 0; j < k; j++) html += PIECES[Math.floor(rnd() * PIECES.length)];
+  const re = /<\s*(\/?)section\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    if (m[1] === '/' || /\/\s*>$/.test(m[0])) continue;
+    const a = legacy(html, m.index, 'section');
+    const b = matchingClose(html, m.index, 'section');
+    fuzzChecked++;
+    if (a !== b) fail('随机语料下与旧实现不等价：html=' + JSON.stringify(html) + ' start=' + m.index + ' 旧=' + a + ' 新=' + b);
+  }
+}
+if (fuzzChecked < 3000) fail('随机语料覆盖不足（' + fuzzChecked + ' < 3000）');
+
+// 平方级回归：8000 个未闭合 section 必须线性（旧实现这档要 1.3s 以上）
+const big = '<body>' + '<section class="section">'.repeat(8000) + 'x</body>';
+const t0 = Date.now();
+const secs = sectionsOf(big);
+const dt = Date.now() - t0;
+if (secs.length !== 0) fail(`未闭合 section 应全部跳过，却出了 ${secs.length} 个`);
+if (dt > 500) fail(`sectionsOf 在 8000 个未闭合 section 上耗时 ${dt}ms（疑似平方级；旧实现 4000 个即 334ms）`);
+
+// 正常文档解析不变
+const ok = sectionsOf('<body><section class="section"><div class="section-title">标题</div><p>正文</p></section></body>');
+if (ok.length !== 1 || ok[0].title !== '标题' || !ok[0].html.includes('正文')) fail('sectionsOf 正常解析被改坏');
+
+// parasOf 同步（zone.mjs 同一条路径）
+const ps = parasOf('<body><p data-zid="z11111111">甲</p><p data-zid="z22222222">乙</p></body>');
+if (ps.length !== 2 || ps[0].text !== '甲' || ps[1].text !== '乙') fail('parasOf 解析被改坏');
+
+console.log('✅ EXTRACT-Q 标签闭合配对单遍扫描（等价旧实现 ' + checked + ' 例 + 随机 ' + fuzzChecked + ' 例 + 平方级回归）');
+EOF
