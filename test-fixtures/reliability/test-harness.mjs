@@ -119,7 +119,10 @@ function runBash(code, { env = {}, timeoutMs = 25000, onStart } = {}) {
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      try { child.kill('SIGKILL'); } catch {}
+      // 先 TERM：让脚本自己的 EXIT trap 有机会回收它的子进程；不响应才升级 KILL。
+      try { child.kill('SIGTERM'); } catch {}
+      const hard = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 3000);
+      hard.unref();
     }, timeoutMs);
     if (onStart) onStart(child);
     child.on('close', (code, signal) => {
@@ -334,13 +337,27 @@ printf '%s\\n%s\\n' "$TEST_DIR" "$SPID" > "$WR_MANIFEST"
 wait_ready "$SPID" "http://127.0.0.1:$STUB_PORT/" "$TEST_DIR/stub.log" 'READY STUB'
 echo WAIT_READY_OK`;
 
-  const run = (mode, delayMs, extra = {}) => runBash(script, {
-    env: {
-      WR_STUB: stubPath, WR_MODE: mode, WR_DELAY: String(delayMs),
-      WR_MANIFEST: path.join(observer, 'wr-' + mode + '-' + delayMs + '.txt'), ...extra
-    },
-    timeoutMs: extra.timeoutMs || 30000
-  });
+  const run = async (mode, delayMs, extra = {}) => {
+    const manifest = path.join(observer, 'wr-' + mode + '-' + delayMs + '.txt');
+    const r = await runBash(script, {
+      env: {
+        WR_STUB: stubPath, WR_MODE: mode, WR_DELAY: String(delayMs),
+        WR_MANIFEST: manifest, ...extra
+      },
+      timeoutMs: extra.timeoutMs || 30000
+    });
+    // 本轮的桩进程必须随脚本一起被回收。脚本被外层硬杀时它会变成孤儿，
+    // 这里先判定是否泄漏，再兜底清掉，保证 harness 自己不留垃圾。
+    let stubPid = null;
+    if (fs.existsSync(manifest)) {
+      const lines = fs.readFileSync(manifest, 'utf8').trim().split('\n');
+      stubPid = Number(lines[1]);
+    }
+    r.stubPid = stubPid;
+    r.stubLeaked = !!(stubPid && alive(stubPid));
+    if (r.stubLeaked) { try { process.kill(stubPid, 'SIGKILL'); } catch {} }
+    return r;
+  };
 
   // 正常启动：立即就绪。
   let r = await run('ok', 0);
@@ -349,6 +366,7 @@ echo WAIT_READY_OK`;
   assert.equal(r.code, 0, '正常启动应成功\n' + r.out);
   assert.match(r.out, /WAIT_READY_OK/, '正常启动应返回就绪');
   assert(r.ms < 5000, '正常启动应很快完成（实测 ' + r.ms + 'ms）');
+  assert(!r.stubLeaked, '正常启动后本轮桩进程未回收');
 
   // 延迟启动：必须等到服务真的起来。
   r = await run('ok', 2000);
@@ -358,6 +376,7 @@ echo WAIT_READY_OK`;
   assert.match(r.out, /WAIT_READY_OK/, '延迟启动应返回就绪');
   assert(r.ms >= 1800, '延迟启动必须真的等待（实测 ' + r.ms + 'ms）');
   assert(r.ms < 12000, '延迟启动应在预算内完成（实测 ' + r.ms + 'ms）');
+  assert(!r.stubLeaked, '延迟启动后本轮桩进程未回收');
 
   // 进程提前退出：立刻明确失败，不是一直等到预算耗尽。
   r = await run('exit', 0);
@@ -366,6 +385,7 @@ echo WAIT_READY_OK`;
   assert.equal(r.code, 1, '提前退出应失败\n' + r.out);
   assert.match(r.out, /启动失败/, '提前退出应报启动失败\n' + r.out);
   assert(r.ms < 5000, '提前退出应快速失败（实测 ' + r.ms + 'ms）');
+  assert(!r.stubLeaked, '提前退出后本轮桩进程未回收');
 
   // 接受连接却不返回：必须按总预算超时失败，绝不能无限挂住。
   r = await run('hang', 0);
@@ -375,6 +395,7 @@ echo WAIT_READY_OK`;
   assert.match(r.out, /未在时限内就绪/, '挂起服务应报未在时限内就绪\n' + r.out);
   assert(r.ms >= 8000, '挂起服务应等到总预算（实测 ' + r.ms + 'ms）');
   assert(r.ms <= 20000, '挂起服务必须在预算上界内结束（实测 ' + r.ms + 'ms）');
+  assert(!r.stubLeaked, '挂起超时后本轮桩进程未回收');
 
   // 等待期间被中断：信号必须被及时处理，子进程与临时目录都要回收。
   const manifest = path.join(observer, 'wr-interrupt.txt');
@@ -393,6 +414,7 @@ echo WAIT_READY_OK`;
   assert(!res2.timedOut, '中断用例不应靠外层超时收场');
   assert(res2.code === 143 || res2.signal === 'SIGTERM',
     '等待期间被中断应以 143/SIGTERM 结束（实测 code=' + res2.code + ' signal=' + res2.signal + '）');
+  if (alive(childPid)) { try { process.kill(childPid, 'SIGKILL'); } catch {} }
   assert(!alive(childPid), '中断后本轮子进程残留');
   assert(!fs.existsSync(dir), '中断后本轮临时目录残留');
   console.log('  ✅ wait_ready 行为矩阵 正常=' + msNormal + 'ms 延迟=' + msLate + 'ms 提前退出=' +
