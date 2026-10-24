@@ -39,6 +39,8 @@ async function doCleanup() {
     pending.push(new Promise((resolve) => {
       const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} resolve(); }, 5000);
       child.once('close', () => { clearTimeout(timer); resolve(); });
+      // 挂监听与退出之间可能撞车：这时 close 已发过，直接结算，不等满 5s。
+      if (child.exitCode !== null || child.signalCode !== null) { clearTimeout(timer); resolve(); }
     }));
   }
   await Promise.all(pending);
