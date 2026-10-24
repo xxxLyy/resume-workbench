@@ -2016,6 +2016,11 @@ S2_BASE=5208e44
 if git cat-file -e "$S2_BASE^{commit}" 2>/dev/null; then
   git diff --quiet "$S2_BASE" -- themes/ || { echo "❌ themes/ 被改动（S2 全程禁止）"; git diff --stat "$S2_BASE" -- themes/; exit 1; }
 else
+  # 严格验收下冻结基线是必需项：缺基线必须失败，不能用一个更近的提交让差异消失，也不能跳过比对。
+  if [ "${RESUME_TEST_STRICT:-0}" = 1 ]; then
+    echo "❌ 严格验收缺冻结基线 $S2_BASE；先取得该提交，不能跳过比对"
+    exit 1
+  fi
   echo "⏭  S2 冻结件比对（跳过：本地没有 $S2_BASE 这个 revision，浅克隆）"
 fi
 # RELIABILITY_BASELINE_END
@@ -4805,3 +4810,9 @@ fs.writeFileSync(path.join(root, 'docs-meta.json'), '{}');
 fs.rmSync(root, { recursive: true, force: true });
 console.log('✅ TX-GUARD 事务层护栏（docId 闸门 / 孤儿与 .tmp 回收 / 提交失败上报）');
 EOF
+
+# ===== V1/V2：可靠性加固「验证基础包」的本轮回归（无真实模型 / 无真实服务 / 无私有数据）=====
+# 明确接入现有测试入口：这些用例随 test:all 一起跑，不再靠人工单独执行。
+node test-fixtures/reliability/test-harness.mjs exit
+node test-fixtures/reliability/test-harness.mjs strict
+

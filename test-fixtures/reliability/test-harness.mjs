@@ -57,6 +57,35 @@ if (mode === 'exit') {
   assert.equal(usage.status, 1, '参数错误不得被解释为环境跳过');
   assert.match(usage.stderr, /用法:/, '必须实际到达参数检查，不能用依赖缺失冒充');
   console.log('✅ V1 editor 退出码优先级');
+} else if (mode === 'strict') {
+  // 严格验收：浏览器段与冻结基线都是必需项，缺失必须阻断交付（设计 §7.1）。
+  const result = block('test.sh',
+    '# RELIABILITY_BROWSER_RESULT_BEGIN', '# RELIABILITY_BROWSER_RESULT_END');
+  const shell = `set -e
+    node(){ return "$FAKE_EDITOR_RC"; }
+    fail(){ echo "EXPECTED_FAILURE: $1" >&2; exit 1; }
+    B=fixture; DOCID=fixture; RESUME_ROOT=fixture
+    ${result}`;
+  for (const [strict, rc, expected] of [
+    ['0', '0', 0], ['0', '2', 0], ['1', '0', 0],
+    ['1', '2', 1], ['0', '1', 1], ['1', '1', 1]
+  ]) shellCase(shell, { RESUME_TEST_STRICT: strict, FAKE_EDITOR_RC: rc },
+    expected, 'browser gate strict=' + strict + ' rc=' + rc);
+
+  const baseline = block('test-structure.sh',
+    '# RELIABILITY_BASELINE_BEGIN', '# RELIABILITY_BASELINE_END');
+  const absent = 'set -e\ngit(){ return 1; }\n' + baseline;
+  shellCase(absent, { RESUME_TEST_STRICT: '0' }, 0, '普通模式缺基线可跳过');
+  shellCase(absent, { RESUME_TEST_STRICT: '1' }, 1, '严格模式缺基线必须失败');
+
+  // 可选私有 smoke：严格模式也不得依赖真实个人简历。
+  const smoke = block('test-structure.sh',
+    '// RELIABILITY_PRIVATE_SMOKE_BEGIN', '// RELIABILITY_PRIVATE_SMOKE_END');
+  nodeCase(`process.env.RESUME_TEST_STRICT='1';
+    const existsSync=()=>false;
+    const readFileSync=()=>{throw new Error('不应读私有文档')};
+    ${smoke}`, 0, '严格模式仍不依赖私有文档');
+  console.log('✅ V1 strict browser/baseline gate 与可选私有 smoke');
 } else {
   console.error('未知模式: ' + mode + '（可用: exit|strict|lifecycle）');
   process.exit(2);

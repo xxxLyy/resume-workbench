@@ -1988,11 +1988,19 @@ echo '✅ 修复3 可投递契约统一（pending/skipped/待核对/全部完成
 
 # ===== 16. 浏览器级保存语义（可选，需要本机 Chromium）=====
 # RELIABILITY_BROWSER_RESULT_BEGIN
+# 退出码契约（设计 §7.1）：0=全部通过；1=任一断言失败；2=仅浏览器环境不可用且此前无失败。
+# 严格验收（RESUME_TEST_STRICT=1）下，浏览器段是必需项，缺失必须阻断交付，不得当成通过。
+BROWSER_CHECK_SKIPPED=0
 if node test-editor.mjs "$B" "$DOCID" "$RESUME_ROOT"; then
   echo '✅ 浏览器级保存/恢复/冲突/审阅验证'
 else
   RC=$?
-  if [ "$RC" -eq 2 ]; then echo '⚠️ 跳过浏览器级验证（Chromium 不可用）'; else fail "浏览器级验证失败 (exit $RC)"; fi
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 浏览器级验证未执行：Chromium 不可用'
+  else
+    fail "浏览器级验证未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
 fi
 # RELIABILITY_BROWSER_RESULT_END
 
@@ -2001,4 +2009,8 @@ REAL_AFTER=$(real_fp)
 [ "$REAL_BEFORE" = "$REAL_AFTER" ] || fail '真实数据被测试改动（指纹不一致）'
 echo '✅ 真实数据零接触（前后指纹一致）'
 echo ''
-echo '全部通过（隔离数据根：本测试未触碰真实数据与真实模型）'
+if [ "${BROWSER_CHECK_SKIPPED:-0}" -eq 1 ]; then
+  echo '可执行检查通过；浏览器验证未执行，本次不构成完整交付验收'
+else
+  echo '全部通过（隔离数据根：本测试未触碰真实数据与真实模型）'
+fi
