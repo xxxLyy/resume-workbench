@@ -1056,11 +1056,24 @@ const EDITOR_SCRIPT_HASHES = new Set([
 // 脚本归一化：DOC_ID 的值随文档变 → 比对前先还原成占位符
 const normEditorScript = (code) => String(code).replace(/var DOC_ID = '[^']*';/, "var DOC_ID = '{{DOC_ID}}';");
 const sha256b64 = (s) => createHash('sha256').update(String(s), 'utf8').digest('base64');
+// 已知指纹 = 运行期算出的【当前模板版】+ 历史版本表。
+// 当前版每次运行现算 → 模板换版时不会忘记加（否则所有文档的编辑器都被 CSP 挡掉 ✗）；
+// 历史版本表只影响「恢复旧备份后的编辑器能不能跑」。
+const knownEditorScriptHashes = () => {
+  const set = new Set(EDITOR_SCRIPT_HASHES);
+  try {
+    const tpl = assembleTemplate('classic');   // 主题只换 CSS，编辑器主脚本各主题一致
+    const m = /<script>([\s\S]*?)<\/script>/.exec(tpl);
+    if (m) set.add(sha256b64(normEditorScript(m[1])));
+  } catch { /* 模板读不到就只用历史表 */ }
+  return set;
+};
 // 返回该 html 里「可以放行」的编辑器主脚本的 CSP hash（原始字节的 hash，供浏览器比对）
 function allowedEditorScriptHashes(html) {
+  const known = knownEditorScriptHashes();
   const out = [];
   for (const m of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
-    if (EDITOR_SCRIPT_HASHES.has(sha256b64(normEditorScript(m[1])))) out.push("'sha256-" + sha256b64(m[1]) + "'");
+    if (known.has(sha256b64(normEditorScript(m[1])))) out.push("'sha256-" + sha256b64(m[1]) + "'");
   }
   return out;
 }
