@@ -21,13 +21,28 @@ const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { retu
 // 只有登记在本表里的进程和目录属于本轮；清理只碰它们，绝不按端口/进程名全局清理。
 const ownedChildren = new Set();
 const ownedDirs = new Set();
-function trackChild(child) { ownedChildren.add(child); }
-function trackDir(dir) { ownedDirs.add(dir); }
+// 清理一旦开始，本轮就进入收尾状态：不再登记新资源，已登记的立即释放。
+let cleanupStarted = false;
+// 收到信号时记下的退出码；清理完成后由它决定进程退出码。
+let signalExitCode = null;
+
+function trackChild(child) {
+  // 清理已开始却还要登记：说明有资源在收尾过程中新生出来。立即释放，绝不留下未回收的进程。
+  if (cleanupStarted) { try { child.kill('SIGKILL'); } catch {} return; }
+  ownedChildren.add(child);
+}
+function trackDir(dir) {
+  if (cleanupStarted) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} return; }
+  ownedDirs.add(dir);
+}
 
 // 实际只执行一次，但可以重复调用（信号处理器与正常收尾会同时调用它）。
 let cleanupPromise = null;
 function cleanupOnce() {
-  if (!cleanupPromise) cleanupPromise = doCleanup();
+  if (!cleanupPromise) {
+    cleanupStarted = true;
+    cleanupPromise = doCleanup();
+  }
   return cleanupPromise;
 }
 async function doCleanup() {
@@ -56,15 +71,21 @@ const SIGNAL_EXIT = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
 function installSignalHandlers() {
   for (const [sig, code] of Object.entries(SIGNAL_EXIT)) {
     process.on(sig, () => {
-      cleanupOnce().catch(() => {}).then(() => { process.exit(code); });
+      if (signalExitCode === null) signalExitCode = code;
+      cleanupOnce().catch(() => {}).then(() => { process.exit(signalExitCode); });
     });
   }
 }
+
+// 清理开始后主流程必须立刻让路，不能再等屏障、不能再起下一轮夹具。
+class Aborted extends Error {}
+function abortIfCleaning() { if (cleanupStarted) throw new Aborted('清理已开始'); }
 
 // 就绪屏障：等文件真正写完（可解析），不用固定 sleep 当同步。
 async function waitForJson(file, timeoutMs, label) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
+    abortIfCleaning();
     if (fs.existsSync(file)) {
       try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
     }
@@ -77,11 +98,13 @@ async function waitForJson(file, timeoutMs, label) {
 async function waitForFile(file, timeoutMs, label) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
+    abortIfCleaning();
     if (fs.existsSync(file) && fs.statSync(file).size > 0) return;
     if (Date.now() >= deadline) throw new Error('等待就绪屏障超时: ' + label);
     await sleep(30);
   }
 }
+
 
 // 从被测文件里原样截取一段分支。标记只用来定位，行为断言一律看真实退出码。
 function block(file, start, end) {
@@ -107,27 +130,39 @@ function shellCase(code, env, expected, label, cwd = ROOT) {
 
 // 异步跑一段 bash：自带硬超时（SIGKILL 兜底，脚本卡死也能收场）。
 // onStart 在子进程刚建立时回调，用于中途定向发信号。
+// 关键：spawn 之后立刻 trackChild —— 否则这条路径不在本轮所有权表里，
+// 父进程被信号打断时它会连同子孙进程与临时目录一起变成孤儿。
 function runBash(code, { env = {}, timeoutMs = 25000, onStart } = {}) {
   return new Promise((resolve) => {
+    // 清理已经开始：不得再启动新的夹具，也不抛未处理错误（由调用方按 aborted 分支收场）。
+    if (cleanupStarted) {
+      resolve({ code: null, signal: null, out: '', timedOut: false, child: null, ms: 0, aborted: true });
+      return;
+    }
     const t0 = Date.now();
     const child = spawn('bash', ['-c', code], {
       cwd: ROOT, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe']
     });
+    trackChild(child);   // 立即登记统一所有权
     let out = '';
     child.stdout.on('data', (d) => out += d);
     child.stderr.on('data', (d) => out += d);
     let timedOut = false;
+    let hardTimer = null;
     const timer = setTimeout(() => {
       timedOut = true;
       // 先 TERM：让脚本自己的 EXIT trap 有机会回收它的子进程；不响应才升级 KILL。
       try { child.kill('SIGTERM'); } catch {}
-      const hard = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 3000);
-      hard.unref();
+      hardTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 3000);
+      hardTimer.unref();
     }, timeoutMs);
     if (onStart) onStart(child);
     child.on('close', (code, signal) => {
+      // 关闭事件：清掉两个计时器，并把这个子进程移出所有权表（已退出，不再 kill）。
       clearTimeout(timer);
-      resolve({ code, signal, out, timedOut, child, ms: Date.now() - t0 });
+      if (hardTimer) clearTimeout(hardTimer);
+      ownedChildren.delete(child);
+      resolve({ code, signal, out, timedOut, child, ms: Date.now() - t0, aborted: false });
     });
   });
 }
@@ -259,9 +294,32 @@ if (mode === 'exit') {
 
     await waitReadyMatrix(helper, observer);
     await signalMatrix(observer);
+    await lifecycleInterruptMatrix();
     console.log('✅ V2 并发实例、日志和 PID 清理隔离');
+  } catch (err) {
+    // 被信号打断时由信号处理器决定退出码；此时断言失败属于预期，不当作真失败。
+    if (signalExitCode === null && !(err instanceof Aborted)) throw err;
   } finally {
     await cleanupOnce();
+  }
+} else if (mode === 'lifecycle-target') {
+  // 内部夹具（由 lifecycle 模式驱动并定向发信号）：跑真实 runBash 路径的「挂起服务」用例，
+  // 进入就绪等待阶段后等上层只向本进程发信号。不是公开入口，不单独跑。
+  const helper = block('test.sh', '# RELIABILITY_LIFECYCLE_BEGIN', '# RELIABILITY_LIFECYCLE_END');
+  const observer = process.env.RELIABILITY_LIFECYCLE_OBSERVER;
+  if (!observer) { console.error('缺少 RELIABILITY_LIFECYCLE_OBSERVER'); process.exit(2); }
+  trackDir(observer);
+  try {
+    await waitReadyMatrix(helper, observer);
+  } catch (err) {
+    // 被信号打断时由信号处理器决定退出码；此时断言失败属于预期，不当作真失败。
+    if (signalExitCode === null && !(err instanceof Aborted)) throw err;
+  } finally {
+    await cleanupOnce();
+  }
+  if (signalExitCode === null) {
+    console.error('❌ lifecycle-target 未被打断（上层没发信号）');
+    process.exit(3);
   }
 } else if (mode === 'signal-child') {
   // 内部夹具（由 lifecycle 模式驱动）：建立本轮子进程后挂起，等上层只向本进程发信号。
@@ -303,9 +361,12 @@ if (mode === 'exit') {
   }));
   await new Promise(() => {});   // 挂起：只有收到信号才走统一清理并退出
 } else {
-  console.error('未知模式: ' + mode + '（可用: exit|strict|lifecycle）');
+  console.error('未知模式: ' + mode + '（可用: exit|strict|lifecycle|lifecycle-target）');
   process.exit(2);
 }
+
+// 被信号打断时，进程退出码必须是信号码（130/143/129），不得被后续断言失败覆盖。
+if (signalExitCode !== null) process.exit(signalExitCode);
 
 // ===== wait_ready 行为矩阵 =====
 // 覆盖：正常启动、延迟启动、进程提前退出、接受连接却不返回（必须按预算超时失败）、等待期间被中断。
@@ -333,92 +394,135 @@ read -r STUB_PORT _p2 _p3 _p4 _p5 <<< "$(choose_test_ports)"
 export STUB_PORT
 node "$WR_STUB" "$WR_MODE" "$WR_DELAY" > "$TEST_DIR/stub.log" 2>&1 &
 SPID=$!; track_child "$SPID"
-printf '%s\\n%s\\n' "$TEST_DIR" "$SPID" > "$WR_MANIFEST"
+printf '%s\\n%s\\n%s\\n' "$TEST_DIR" "$SPID" "$$" > "$WR_MANIFEST"
 wait_ready "$SPID" "http://127.0.0.1:$STUB_PORT/" "$TEST_DIR/stub.log" 'READY STUB'
 echo WAIT_READY_OK`;
 
-  const run = async (mode, delayMs, extra = {}) => {
+  // 追踪目录由上层拥有：目标只往里写「进入了哪个用例」与闸门探针结果，不登记为本轮资源。
+  // 用于事后核对：信号打在了哪条路径上，以及清理开始后闸门是否仍然拦住新夹具。
+  const traceDir = process.env.RELIABILITY_LIFECYCLE_TRACE || '';
+  const traceEnter = (key) => {
+    if (!traceDir) return;
+    try { fs.writeFileSync(path.join(traceDir, 'case-' + key + '.enter'), String(Date.now())); } catch {}
+  };
+
+  const run = async (mode, delayMs) => {
     const manifest = path.join(observer, 'wr-' + mode + '-' + delayMs + '.txt');
     const r = await runBash(script, {
       env: {
         WR_STUB: stubPath, WR_MODE: mode, WR_DELAY: String(delayMs),
-        WR_MANIFEST: manifest, ...extra
+        WR_MANIFEST: manifest
       },
-      timeoutMs: extra.timeoutMs || 30000
+      timeoutMs: 30000
     });
     // 本轮的桩进程必须随脚本一起被回收。脚本被外层硬杀时它会变成孤儿，
     // 这里先判定是否泄漏，再兜底清掉，保证 harness 自己不留垃圾。
-    let stubPid = null;
+    let stubPid = null, bashPid = null, caseDir = null;
     if (fs.existsSync(manifest)) {
       const lines = fs.readFileSync(manifest, 'utf8').trim().split('\n');
-      stubPid = Number(lines[1]);
+      caseDir = lines[0]; stubPid = Number(lines[1]); bashPid = Number(lines[2]);
     }
-    r.stubPid = stubPid;
+    r.stubPid = stubPid; r.bashPid = bashPid; r.caseDir = caseDir;
     r.stubLeaked = !!(stubPid && alive(stubPid));
-    if (r.stubLeaked) { try { process.kill(stubPid, 'SIGKILL'); } catch {} }
+    if (r.stubLeaked) {
+      try { process.kill(stubPid, 'SIGKILL'); } catch {}
+      if (caseDir) { try { fs.rmSync(caseDir, { recursive: true, force: true }); } catch {} }
+    }
     return r;
   };
 
-  // 正常启动：立即就绪。
-  let r = await run('ok', 0);
-  const msNormal = r.ms;
-  assert(!r.timedOut, '正常启动不得超时');
-  assert.equal(r.code, 0, '正常启动应成功\n' + r.out);
-  assert.match(r.out, /WAIT_READY_OK/, '正常启动应返回就绪');
-  assert(r.ms < 5000, '正常启动应很快完成（实测 ' + r.ms + 'ms）');
-  assert(!r.stubLeaked, '正常启动后本轮桩进程未回收');
+  const timings = {};
+  const CASES = [
+    { key: 'normal', mode: 'ok', delayMs: 0 },
+    { key: 'late', mode: 'ok', delayMs: 2000 },
+    { key: 'exit', mode: 'exit', delayMs: 0 },
+    { key: 'hang', mode: 'hang', delayMs: 0 },
+    { key: 'interrupt', mode: 'hang', delayMs: 0 }
+  ];
 
-  // 延迟启动：必须等到服务真的起来。
-  r = await run('ok', 2000);
-  const msLate = r.ms;
-  assert(!r.timedOut, '延迟启动不得超时');
-  assert.equal(r.code, 0, '延迟启动应成功\n' + r.out);
-  assert.match(r.out, /WAIT_READY_OK/, '延迟启动应返回就绪');
-  assert(r.ms >= 1800, '延迟启动必须真的等待（实测 ' + r.ms + 'ms）');
-  assert(r.ms < 12000, '延迟启动应在预算内完成（实测 ' + r.ms + 'ms）');
-  assert(!r.stubLeaked, '延迟启动后本轮桩进程未回收');
+  for (const c of CASES) {
+    traceEnter(c.key);
 
-  // 进程提前退出：立刻明确失败，不是一直等到预算耗尽。
-  r = await run('exit', 0);
-  const msExit = r.ms;
-  assert(!r.timedOut, '提前退出不得等到外层超时');
-  assert.equal(r.code, 1, '提前退出应失败\n' + r.out);
-  assert.match(r.out, /启动失败/, '提前退出应报启动失败\n' + r.out);
-  assert(r.ms < 5000, '提前退出应快速失败（实测 ' + r.ms + 'ms）');
-  assert(!r.stubLeaked, '提前退出后本轮桩进程未回收');
+    if (c.key === 'interrupt') {
+      // 等待期间被中断：信号必须被及时处理，子进程与临时目录都要回收。
+      const manifest = path.join(observer, 'wr-interrupt.txt');
+      let bashChild = null;
+      const pending = runBash(script, {
+        env: {
+          WR_STUB: stubPath, WR_MODE: 'hang', WR_DELAY: '0',
+          WR_MANIFEST: manifest
+        },
+        timeoutMs: 30000,
+        onStart: (ch) => { bashChild = ch; }
+      });
+      await waitForFile(manifest, 10000, '中断用例就绪屏障');
+      const [dir, pidText] = fs.readFileSync(manifest, 'utf8').trim().split('\n');
+      const childPid = Number(pidText);
+      // 等桩服务真的起来，确保中断落在「就绪等待」阶段而不是启动阶段。
+      await waitForFile(path.join(dir, 'stub.log'), 10000, '中断用例服务就绪屏障');
+      await sleep(300);
+      bashChild.kill('SIGTERM');
+      const res2 = await pending;
+      timings['期间中断'] = res2.ms;
+      abortIfCleaning();
+      assert(!res2.timedOut, '中断用例不应靠外层超时收场');
+      assert(res2.code === 143 || res2.signal === 'SIGTERM',
+        '等待期间被中断应以 143/SIGTERM 结束（实测 code=' + res2.code + ' signal=' + res2.signal + '）');
+      if (alive(childPid)) { try { process.kill(childPid, 'SIGKILL'); } catch {} }
+      assert(!alive(childPid), '中断后本轮子进程残留');
+      assert(!fs.existsSync(dir), '中断后本轮临时目录残留');
+      continue;
+    }
 
-  // 接受连接却不返回：必须按总预算超时失败，绝不能无限挂住。
-  r = await run('hang', 0);
-  const msHang = r.ms;
-  assert(!r.timedOut, '挂起服务必须由 wait_ready 自己的预算兜住，不能靠外层超时');
-  assert.equal(r.code, 1, '挂起服务应失败\n' + r.out);
-  assert.match(r.out, /未在时限内就绪/, '挂起服务应报未在时限内就绪\n' + r.out);
-  assert(r.ms >= 8000, '挂起服务应等到总预算（实测 ' + r.ms + 'ms）');
-  assert(r.ms <= 20000, '挂起服务必须在预算上界内结束（实测 ' + r.ms + 'ms）');
-  assert(!r.stubLeaked, '挂起超时后本轮桩进程未回收');
+    const r = await run(c.mode, c.delayMs);
+    timings[c.key] = r.ms;
+    if (r.aborted) break;                      // 清理已开始：不再启动下一轮夹具
+    if (signalExitCode !== null) {
+      // 被信号打断：本用例的退出码断言不再适用（进程退出码由信号决定）。
+      // 同步探一次闸门：清理开始后 runBash 不得再创建任何子进程。
+      // onStart 在 spawn 之后同步调用，所以这里能同步判定「到底有没有创建」。
+      let created = null;
+      runBash('echo gate-probe', { onStart: (ch) => { created = ch; }, timeoutMs: 1000 });
+      const gateOk = (created === null);
+      if (traceDir) {
+        try {
+          fs.writeFileSync(path.join(traceDir, 'gate-' + c.key + (gateOk ? '.ok' : '.bad')), '1');
+        } catch {}
+      }
+      assert(gateOk, '清理开始后 runBash 仍创建了子进程');
+      timings[c.key + '(被打断)'] = r.ms;
+      continue;
+    }
 
-  // 等待期间被中断：信号必须被及时处理，子进程与临时目录都要回收。
-  const manifest = path.join(observer, 'wr-interrupt.txt');
-  let bashChild = null;
-  const pending = runBash(script, {
-    env: { WR_STUB: stubPath, WR_MODE: 'hang', WR_DELAY: '0', WR_MANIFEST: manifest },
-    timeoutMs: 30000,
-    onStart: (c) => { bashChild = c; }
-  });
-  await waitForFile(manifest, 10000, '中断用例就绪屏障');
-  const [dir, pidText] = fs.readFileSync(manifest, 'utf8').trim().split('\n');
-  const childPid = Number(pidText);
-  await sleep(300);
-  bashChild.kill('SIGTERM');
-  const res2 = await pending;
-  assert(!res2.timedOut, '中断用例不应靠外层超时收场');
-  assert(res2.code === 143 || res2.signal === 'SIGTERM',
-    '等待期间被中断应以 143/SIGTERM 结束（实测 code=' + res2.code + ' signal=' + res2.signal + '）');
-  if (alive(childPid)) { try { process.kill(childPid, 'SIGKILL'); } catch {} }
-  assert(!alive(childPid), '中断后本轮子进程残留');
-  assert(!fs.existsSync(dir), '中断后本轮临时目录残留');
-  console.log('  ✅ wait_ready 行为矩阵 正常=' + msNormal + 'ms 延迟=' + msLate + 'ms 提前退出=' +
-    msExit + 'ms 挂起超时=' + msHang + 'ms 期间中断=' + res2.ms + 'ms');
+    if (c.key === 'normal') {
+      assert(!r.timedOut, '正常启动不得超时');
+      assert.equal(r.code, 0, '正常启动应成功\n' + r.out);
+      assert.match(r.out, /WAIT_READY_OK/, '正常启动应返回就绪');
+      assert(r.ms < 5000, '正常启动应很快完成（实测 ' + r.ms + 'ms）');
+    } else if (c.key === 'late') {
+      assert(!r.timedOut, '延迟启动不得超时');
+      assert.equal(r.code, 0, '延迟启动应成功\n' + r.out);
+      assert.match(r.out, /WAIT_READY_OK/, '延迟启动应返回就绪');
+      assert(r.ms >= 1800, '延迟启动必须真的等待（实测 ' + r.ms + 'ms）');
+      assert(r.ms < 12000, '延迟启动应在预算内完成（实测 ' + r.ms + 'ms）');
+    } else if (c.key === 'exit') {
+      assert(!r.timedOut, '提前退出不得等到外层超时');
+      assert.equal(r.code, 1, '提前退出应失败\n' + r.out);
+      assert.match(r.out, /启动失败/, '提前退出应报启动失败\n' + r.out);
+      assert(r.ms < 5000, '提前退出应快速失败（实测 ' + r.ms + 'ms）');
+    } else if (c.key === 'hang') {
+      assert(!r.timedOut, '挂起服务必须由 wait_ready 自己的预算兜住，不能靠外层超时');
+      assert.equal(r.code, 1, '挂起服务应失败\n' + r.out);
+      assert.match(r.out, /未在时限内就绪/, '挂起服务应报未在时限内就绪\n' + r.out);
+      assert(r.ms >= 8000, '挂起服务应等到总预算（实测 ' + r.ms + 'ms）');
+      assert(r.ms <= 20000, '挂起服务必须在预算上界内结束（实测 ' + r.ms + 'ms）');
+    }
+    assert(!r.stubLeaked, c.key + ' 用例后本轮桩进程未回收');
+  }
+
+  const LABEL = { normal: '正常', late: '延迟', exit: '提前退出', hang: '挂起超时', interrupt: '期间中断' };
+  console.log('  ✅ wait_ready 行为矩阵 ' +
+    Object.entries(timings).map(([k, v]) => (LABEL[k] || k) + '=' + v + 'ms').join(' '));
 }
 
 // ===== harness 父进程信号回收矩阵 =====
@@ -454,4 +558,56 @@ async function signalMatrix(observer) {
     sentinel.kill('SIGTERM');
   }
   console.log('  ✅ harness 父进程信号回收矩阵（SIGINT/SIGTERM/SIGHUP）');
+}
+
+// ===== 真实 lifecycle 父进程中断矩阵 =====
+// 上层只向真实 lifecycle 父进程发信号：它的 runBash 挂起夹具、桩进程与临时目录必须全部回收。
+// 这里跑的是真实 runBash 路径（lifecycle-target 内部夹具），不是简化替身。
+async function lifecycleInterruptMatrix() {
+  for (const [sig, code] of Object.entries(SIGNAL_EXIT)) {
+    // 上层哨兵：属于上层进程，lifecycle 的清理不得碰它。
+    const sentinel = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+    trackChild(sentinel);
+    // 观察目录归目标所有：目标被打断后必须由目标自己回收。
+    const targetObserver = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-lifecycle-target-'));
+    // 追踪目录归上层所有：目标只往里写用例启动标记，便于事后核对「有没有继续起下一轮」。
+    const traceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-lifecycle-trace-'));
+    const target = spawn(process.execPath, [HARNESS, 'lifecycle-target'], {
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        RELIABILITY_LIFECYCLE_OBSERVER: targetObserver,
+        RELIABILITY_LIFECYCLE_TRACE: traceDir
+      },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    trackChild(target);
+    let out = '';
+    target.stdout.on('data', (d) => out += d);
+    target.stderr.on('data', (d) => out += d);
+    // 就绪屏障：目标的挂起用例清单出现 = 它已进入「接受连接不返回」的就绪等待阶段。
+    const barrier = path.join(targetObserver, 'wr-hang-0.txt');
+    await waitForFile(barrier, 30000, sig + ' lifecycle 就绪屏障');
+    const [dir, stubPid, bashPid] = fs.readFileSync(barrier, 'utf8').trim().split('\n');
+    // 只向 lifecycle 父进程发信号（不发进程组）。
+    target.kill(sig);
+    if (sig === 'SIGTERM') target.kill(sig);   // 重复信号必须被安全处理（清理幂等）
+    const closed = await new Promise((resolve) =>
+      target.once('close', (c, s) => resolve({ code: c, signal: s })));
+    assert.equal(closed.code, code,
+      sig + ' 后 lifecycle 应以 ' + code + ' 退出（实际 ' + closed.code + '/' + closed.signal + '）\n' + out);
+    assert(!alive(Number(bashPid)), sig + ' 后 lifecycle 的 runBash bash 子进程残留');
+    assert(!alive(Number(stubPid)), sig + ' 后 lifecycle 的桩进程残留');
+    assert(!fs.existsSync(dir), sig + ' 后 lifecycle 的临时目录残留');
+    assert(!fs.existsSync(targetObserver), sig + ' 后 lifecycle 的观察目录残留');
+    assert(alive(sentinel.pid), sig + ' 误杀了上层哨兵');
+    // 信号清理开始后不得再创建夹具子进程（目标内部同步探针的结果）。
+    assert(fs.existsSync(path.join(traceDir, 'gate-hang.ok')),
+      sig + ' 信号后仍创建了夹具子进程');
+    // 挂起用例确实跑过（证明信号打在了真实路径上）。
+    assert(fs.existsSync(path.join(traceDir, 'case-hang.enter')), sig + ' 未记录到挂起用例启动');
+    sentinel.kill('SIGTERM');
+    fs.rmSync(traceDir, { recursive: true, force: true });
+  }
+  console.log('  ✅ 真实 lifecycle 父进程中断矩阵（SIGINT/SIGTERM/SIGHUP）');
 }
