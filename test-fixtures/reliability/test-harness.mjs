@@ -126,14 +126,15 @@ if (mode === 'exit') {
     for (const r of runs) {
       assert(fs.existsSync(r.manifest), '夹具未就绪 ' + r.token);
       const [dir, pid, ports] = fs.readFileSync(r.manifest, 'utf8').trim().split('\n');
-      r.dir = dir; r.pid = Number(pid);
+      r.dir = dir; r.pid = Number(pid); r.ports = ports.split(' ');
       assert.equal(fs.readFileSync(path.join(dir, 'request.log'), 'utf8').trim(), r.token);
-      assert.equal(new Set(ports.split(' ')).size, 5);
+      assert.equal(new Set(r.ports).size, 5);
     }
     assert.notEqual(runs[0].dir, runs[1].dir, '目录必须隔离');
-    // 两轮端口也必须互不相同（否则并行时互相抢占）
-    const portSets = runs.map((r) => fs.readFileSync(r.manifest, 'utf8').trim().split('\n')[2]);
-    assert.notEqual(portSets[0], portSets[1], '两轮端口必须互不相同');
+    // 两轮端口零重叠：任一端口重合都会在并行时互相抢占。
+    for (const p of runs[0].ports) {
+      assert(!runs[1].ports.includes(p), '两轮端口必须零重叠（重合 ' + p + '）');
+    }
     runs[0].child.kill('SIGTERM');
     await runs[0].closed;
     assert(!exists(runs[0].pid), '中断后的自有进程残留');
