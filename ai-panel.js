@@ -185,7 +185,6 @@
     if (window.__edFlushSave) await window.__edFlushSave();
     return Number(window.__edDocMtime || 0);
   }
-  function isStale(r) { return r.status === 409; }
 
   function aiError(e) {
     addStatus(e.message || e, 'warn');

@@ -487,7 +487,6 @@
 
   // ===== S3：zid 生命周期（唯一生成点 = 本注入层；服务端 /save 归一是兜底）=====
   var ZID_SEL = '.sheet p, .sheet li, .sheet h1, .sheet h2, .sheet h3, .sheet h4, .sheet .entry-head, .sheet .contact';
-  function edNewZid() { return 'z' + ('00000000' + (Math.random() * 0xffffffff >>> 0).toString(16)).slice(-8); }
   // 确定性 zid：内容哈希派生（全局约束 21）。未保存阶段两次加载生成相同 zid，
   // meta 已落的初绑 zones 不失配；落盘后 zid 固化在正文属性，textContent 再变也不重算。
   function edHashZid(text) {
@@ -692,7 +691,6 @@
   });
 
   var navlist = left.querySelector('#ed-navlist');
-  function entryPair(entry) { return entry.ul ? [entry.head, entry.ul] : [entry.head]; }
   function setEntryHidden(entry, hidden) {
     entry.head.classList.toggle(ENTRY_HIDE_CLS, hidden);
     if (entry.ul) entry.ul.classList.toggle(ENTRY_HIDE_CLS, hidden);
