@@ -4669,6 +4669,25 @@ try {
     if (raw.includes("appPatch('")) fail('投递记录 id 仍是裸单引号串（可被闭合）: ' + raw.slice(0, 120));
   }
 
+  // —— CSP：文档正文是外部输入（恢复的备份可带 <script>）→ 不得在应用同源执行 ——
+  {
+    // 造一个能打开的文档（/edit 要求有 var DOC_ID，否则走「文档已损坏」页）
+    fs.writeFileSync(path.join(ROOT, 'docs', 'good.html'),
+      "<html><body><div class=\"sheet\">x</div><script>var DOC_ID = 'good';</script></body></html>");
+    const r = await fetch(B + '/edit?id=good');
+    const csp = r.headers.get('content-security-policy') || '';
+    if (!/script-src/.test(csp)) fail('/edit 必须带 CSP（script-src）——文档正文原样同源返回 = 存储型 XSS');
+    if (!/nonce-/.test(csp)) fail('/edit 的 CSP 必须用 nonce 放行服务端注入块');
+    // 恢复侧**不**拦含脚本的文档（会误伤旧版本文档）→ 防护全靠 CSP（浏览器层断言见 test-editor.mjs）
+    const evilDir = path.join(ROOT, 'evilpkg');
+    fs.mkdirSync(path.join(evilDir, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(evilDir, 'docs', 'evil.html'), '<html><body><script>window.__PWNED=1;</script></body></html>');
+    execFileSync('tar', ['czf', path.join(ROOT, 'evilpkg.tar.gz'), '-C', evilDir, 'docs']);
+    const rr = await fetch(B + '/restore?apply=1&mode=merge', { method: 'POST', body: fs.readFileSync(path.join(ROOT, 'evilpkg.tar.gz')) });
+    const jj = await rr.json().catch(() => ({}));
+    if (jj.ok !== true) fail('含脚本的备份包不该在恢复入口被拒（防护靠 CSP，拦在入口会误伤旧文档）: ' + JSON.stringify(jj).slice(0, 120));
+  }
+
   console.log('✅ XSS-3 恢复备份的标识校验（恶意 id 拒绝 + 读取侧兜底 + 正常包仍可恢复）');
 } finally {
   srv.kill('SIGKILL');

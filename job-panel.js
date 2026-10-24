@@ -161,40 +161,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     if (pair.ul) pair.ul.classList.toggle('ed-entry-hidden', on);
   }
 
-  // ===== 正文替换（跨节点 + 重复消歧；与 ai-panel 同算法，模块独立）=====
-  function replaceText(before, after, opts) {
-    opts = opts || {};
-    // opts.root：只在指定节点内找（zid 锚点）。不给就在整页找。
-    var walker = document.createTreeWalker(opts.root || sheet, NodeFilter.SHOW_TEXT);
-    var nodes = [], stream = '', n;
-    while ((n = walker.nextNode())) { nodes.push({ node: n, start: stream.length }); stream += n.data; }
-    var matches = [], idx = stream.indexOf(before);
-    while (idx >= 0) { matches.push(idx); idx = stream.indexOf(before, idx + (before.length || 1)); }
-    if (!matches.length) return false;
-    var chosen = 0;
-    if (typeof opts.occurrence === 'number' && opts.occurrence >= 0 && opts.occurrence < matches.length) chosen = opts.occurrence;
-    else if (opts.context) {
-      var ci = matches.findIndex(function (m) {
-        var s = Math.max(0, m - 60), e = Math.min(stream.length, m + before.length + 60);
-        return stream.slice(s, e).indexOf(opts.context) >= 0;
-      });
-      if (ci >= 0) chosen = ci;
-    }
-    var start = matches[chosen], end = start + before.length, first = -1;
-    for (var i = 0; i < nodes.length; i++) {
-      var s0 = nodes[i].start, e0 = s0 + nodes[i].node.data.length;
-      if (e0 > start && s0 < end) { first = i; break; }
-    }
-    if (first < 0) return false;
-    for (var j = 0; j < nodes.length; j++) {
-      var nd = nodes[j].node, ns = nodes[j].start, ne = ns + nd.data.length;
-      if (ne <= start || ns >= end) continue;
-      var from = Math.max(start, ns) - ns, to = Math.min(end, ne) - ns;
-      nd.data = nd.data.slice(0, from) + (j === first ? after : '') + nd.data.slice(to);
-    }
-    touch();
-    return true;
-  }
+  // 正文替换：统一走外壳的 window.__edReplaceText（2026-10-24：两个面板原本各抄一份 → 改一处要改两处）
   // 正文里该原文出现几次：>1 就无法确定改哪一处 → 盲改会改错段落（2026-10-22 审查 [高] 实测：
   // 简历里两段相同文字 → 接受锚在第二段的那条建议 → 改的是第一段，锚点段原封不动，面板还显示「已接受」）
   function textMatchCount(before) {
@@ -215,14 +182,14 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       // 有 zid 锚点（局部重生成回传）→ 只在锚点节点里找，绝不按全文首个匹配盲改
       var anchor = c.zid ? anchorElOf(c) : null;
       if (anchor) {
-        if (replaceText(c.before, c.after, { root: anchor })) return { ok: true, meta: {} };
+        if (window.__edReplaceText(c.before, c.after, { root: anchor })) return { ok: true, meta: {} };
         return { ok: false, error: '原文未找到（内容可能已被手工修改）' };
       }
       // 无锚点但原文多处出现 → 改哪一处说不清 → 拒绝，别赌第一处
       if (textMatchCount(c.before) > 1) {
         return { ok: false, error: '原文在正文里出现多处，无法确定改哪一处，已拒绝（请手动修改）' };
       }
-      if (replaceText(c.before, c.after, { occurrence: c.meta && c.meta.occurrence, context: c.context })) return { ok: true, meta: {} };
+      if (window.__edReplaceText(c.before, c.after, { occurrence: c.meta && c.meta.occurrence, context: c.context })) return { ok: true, meta: {} };
       return { ok: false, error: '原文未找到（内容可能已被手工修改）' };
     }
     if (c.kind === 'hide') {
@@ -273,7 +240,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     return { ok: false, error: '未知修改类型：' + c.kind };
   }
   function revertChange(c) {
-    if (c.kind === 'replace') return replaceText(c.after, c.before, { context: c.context }) ? { ok: true } : { ok: false, error: '撤销失败：改后文本已变化' };
+    if (c.kind === 'replace') return window.__edReplaceText(c.after, c.before, { context: c.context }) ? { ok: true } : { ok: false, error: '撤销失败：改后文本已变化' };
     if (c.kind === 'hide') {
       var found = findEntry(c);
       if (found) { hidePair(found.pair, false); touch(); return { ok: true }; }
@@ -390,7 +357,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       // 确认门通过：整段替换为候选 after（锚点=当前整段文本，与服务端 origText 校验一致）
       // anchorEl 可能已失效（zid 被移除）：解引用会抛 TypeError，且抛点在本函数 busy 复位之后 → 面板永久锁死
       // root=anchorEl：只在锚点节点里替换（正文里可能有同文段落 → 全文首个匹配会改错那段）
-      r = (anchorEl && replaceText(anchorEl.textContent, c.after, { root: anchorEl })) ? { ok: true, meta: {} } : { ok: false, error: '原文锚点已不存在（正文可能已被修改），请重新载入' };
+      r = (anchorEl && window.__edReplaceText(anchorEl.textContent, c.after, { root: anchorEl })) ? { ok: true, meta: {} } : { ok: false, error: '原文锚点已不存在（正文可能已被修改），请重新载入' };
     } else {
       r = applyChange(c);
     }
@@ -417,7 +384,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     var op = { operationId: 'op-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10), changeId: c.id, action: 'revert', origText: anchorEl ? normWs(anchorEl.textContent) : '' };
     var r = revertChange(c);
     if (!r.ok && c.kind === 'replace' && c.origText && anchorEl) {
-      r = replaceText(anchorEl.textContent, c.origText) ? { ok: true } : r;   // 确认门整段接受过的：整段恢复接受时快照
+      r = window.__edReplaceText(anchorEl.textContent, c.origText) ? { ok: true } : r;   // 确认门整段接受过的：整段恢复接受时快照
     }
     busy = false;
     if (!r.ok) { note(r.error, 'warn'); return; }

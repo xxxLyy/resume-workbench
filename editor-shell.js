@@ -135,6 +135,10 @@
     // 窄屏右栏是抽屉（position:fixed），没有边界可拖 → 拖柄隐藏
     + '@media(max-width:767px){body.ed-on #ed-grip{display:none}}'
     + '#ed-rtabs{display:flex;gap:2px;border-bottom:1px solid var(--ed-line);padding:8px 8px 0;flex:none;overflow-x:auto}'
+    // 1280-1439 档的非活跃态：折叠成竖标签条（设计 v1.3）——页签条留着才切得动页签
+    + 'body.ed-on.ed-tier-strip #ed-rtabs{flex-direction:column;gap:0;border-bottom:0;padding:6px 0;overflow-x:hidden;overflow-y:auto}'
+    + 'body.ed-on.ed-tier-strip #ed-rtabs button{writing-mode:vertical-rl;min-height:72px;padding:6px 3px;flex:none;letter-spacing:1px}'
+    + 'body.ed-on.ed-tier-strip .ed-pane{display:none}'
     + '#ed-rtabs button{flex:1;min-height:32px;padding:0 4px;border:none;background:transparent;font-size:12px;font-weight:600;color:var(--ed-mut);cursor:pointer;border-radius:7px 7px 0 0;box-shadow:inset 0 0 0 transparent}'
     + '#ed-rtabs button[aria-selected="true"]{color:var(--ed-accent);box-shadow:inset 0 -2px 0 var(--ed-accent)}'
     + '#ed-rtabs button:hover{background:var(--ed-bg)}'
@@ -287,7 +291,11 @@
   if (pdfBtn) { pdfBtn.classList.remove('secondary'); pdfBtn.classList.add('ed-primary'); pdfBtn.innerHTML = __icon('file-text') + ' 导出 PDF'; pdfBtn.title = '导出前检查并下载 PDF'; }
   if (saveBtn) { saveBtn.classList.add('ed-ghost'); saveBtn.innerHTML = __icon('save') + ' 保存'; saveBtn.title = '保存（⌘/Ctrl+S，打历史快照）'; }
   if (histBtn) { histBtn.classList.remove('secondary'); histBtn.innerHTML = __icon('clock') + ' 历史'; histBtn.title = '版本历史'; }
-  if (homeBtn) { homeBtn.textContent = '‹ 工作台'; homeBtn.title = '返回工作台'; homeBtn.classList.add('ed-ghost'); }
+  if (homeBtn) {
+    homeBtn.textContent = '‹ 工作台'; homeBtn.title = '返回工作台'; homeBtn.classList.add('ed-ghost');
+    // 跳转在这里绑（不是内联 onclick）：/edit 的 CSP 挡内联事件属性
+    homeBtn.addEventListener('click', function () { location.href = '/'; });
+  }
 
   // ===== 注入层产物不落盘：工具条按钮的运行时覆盖必须不进用户文档文件 =====
   // 模板的 doSave 克隆整棵 DOM 再上传（它自己只还原了 #saveState，工具条按钮没人还原）→
@@ -447,6 +455,47 @@
     pollGening();
     setInterval(pollGening, 2500);
   }
+  // ===== 正文查找替换（job-panel / ai-panel 共用这一份）=====
+  // 之前两个面板各抄了一份（2026-10-24 审查 [低]：三份实现，改一处要改三处；
+  // 上一轮的「接受建议改错段落」缺陷就是两份副本都漏了锚点定位）。
+  // opts.root：只在指定节点内找（zid 锚点）；opts.occurrence / opts.context：多处命中时消歧。
+  window.__edReplaceText = function (before, after, opts) {
+    opts = opts || {};
+    var sheet = opts.sheet || document.querySelector('.sheet');
+    if (!sheet) return false;
+    var walker = document.createTreeWalker(opts.root || sheet, NodeFilter.SHOW_TEXT);
+    var nodes = [], stream = '', n;
+    while ((n = walker.nextNode())) { nodes.push({ node: n, start: stream.length }); stream += n.data; }
+    var matches = [], idx = stream.indexOf(before);
+    while (idx >= 0) { matches.push(idx); idx = stream.indexOf(before, idx + (before.length || 1)); }
+    if (!matches.length) return false;
+    var chosen = 0;
+    if (typeof opts.occurrence === 'number' && opts.occurrence >= 0 && opts.occurrence < matches.length) chosen = opts.occurrence;
+    else if (opts.context) {
+      var ci = matches.findIndex(function (m) {
+        var s = Math.max(0, m - 60), e = Math.min(stream.length, m + before.length + 60);
+        return stream.slice(s, e).indexOf(opts.context) >= 0;
+      });
+      if (ci >= 0) chosen = ci;
+    }
+    var start = matches[chosen], end = start + before.length, first = -1;
+    for (var i = 0; i < nodes.length; i++) {
+      var s0 = nodes[i].start, e0 = s0 + nodes[i].node.data.length;
+      if (e0 > start && s0 < end) { first = i; break; }
+    }
+    if (first < 0) return false;
+    for (var j = 0; j < nodes.length; j++) {
+      var nd = nodes[j].node, ns = nodes[j].start, ne = ns + nd.data.length;
+      if (ne <= start || ns >= end) continue;
+      var from = Math.max(start, ns) - ns, to = Math.min(end, ne) - ns;
+      nd.data = nd.data.slice(0, from) + (j === first ? after : '') + nd.data.slice(to);
+    }
+    // 程序化变更统一出口：走外壳的 __edMarkProgrammatic（撤销栈才能收这次改动）
+    if (window.__edMarkProgrammatic) window.__edMarkProgrammatic();
+    else sheet.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  };
+
   // 目标顺序（appendChild 移动已有节点，幂等）
   if (toolbar) {
     [ltBtn, homeBtn, docName, verBadge].forEach(function (el) { if (el) toolbar.appendChild(el); });
@@ -1786,14 +1835,25 @@
   function applyWidthTier() {
     var w = window.innerWidth;
     if (w < 1280 || w >= 1440) return;
-    var hidden = right.classList.contains('ed-hidden');
-    if (reviewActive() && hidden) {
+    var hidden = right.classList.contains('ed-hidden');       // 用户手动折叠
+    var strip = document.body.classList.contains('ed-tier-strip');   // 宽度档自己折的竖标签条
+    if (reviewActive()) {
+      // 审阅正在用 → 撤掉竖标签条，展开右栏。
+      // 只撤「自己折的」：用户手动折叠的不动 —— 宽度档不该跟用户的手动操作打架
+      // （原实现无条件展开 → 用户手动收起后拖一下窗口就弹回来，2026-10-22 审查 [中]）。
+      if (strip) {
+        right.classList.remove('ed-hidden');
+        document.body.classList.remove('ed-tier-strip');
+        document.body.style.setProperty('--ed-right-w', window.innerWidth >= 768 ? rightW() : '0px');
+        syncGrip();
+      }
+    } else if (!hidden && !strip) {
+      // 非活跃 → 折叠为竖标签条（设计 v1.3：「自动折叠为竖标签条」）
+      // 原实现是整条藏起来（--ed-right-w:0px）→ 区域/AI/排版三个页签彻底点不到，
+      // 而且用户连「怎么切回审阅」都不知道（2026-10-22 审查 [高]）。
       right.classList.remove('ed-hidden');
-      document.body.style.setProperty('--ed-right-w', window.innerWidth >= 768 ? rightW() : '0px');
-      syncGrip();
-    } else if (!reviewActive() && !hidden) {
-      right.classList.add('ed-hidden');
-      document.body.style.setProperty('--ed-right-w', '0px');
+      document.body.classList.add('ed-tier-strip');
+      document.body.style.setProperty('--ed-right-w', '48px');
       syncGrip();
     }
   }

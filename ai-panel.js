@@ -134,49 +134,6 @@
 
   // 共享应用通道：在文档里找 before 文本并替换（支持跨加粗等 DOM 节点、定位第 N 个重复位置）
   // opts: { occurrence?: number, context?: string }
-  function findAndReplace(before, after, opts) {
-    opts = opts || {};
-    var walker = document.createTreeWalker(sheet, NodeFilter.SHOW_TEXT);
-    var nodes = [], stream = '', node;
-    while ((node = walker.nextNode())) {
-      nodes.push({ node: node, start: stream.length });
-      stream += node.data;
-    }
-    var matches = [], idx = stream.indexOf(before);
-    while (idx >= 0) {
-      matches.push(idx);
-      idx = stream.indexOf(before, idx + (before.length || 1));
-    }
-    if (!matches.length) return false;
-    var chosen = 0;
-    if (typeof opts.occurrence === 'number' && opts.occurrence >= 0 && opts.occurrence < matches.length) {
-      chosen = opts.occurrence;
-    } else if (opts.context) {
-      var ci = matches.findIndex(function (m) {
-        var s = Math.max(0, m - 60), e = Math.min(stream.length, m + before.length + 60);
-        return stream.slice(s, e).indexOf(opts.context) >= 0;
-      });
-      if (ci >= 0) chosen = ci;
-    }
-    var start = matches[chosen], end = start + before.length;
-    // 找到首个受影响文本节点：after 整体写进它，其余命中节点删除对应片段（跨节点也能正确替换）
-    var firstIdx = -1;
-    for (var i = 0; i < nodes.length; i++) {
-      var s0 = nodes[i].start, e0 = s0 + nodes[i].node.data.length;
-      if (e0 > start && s0 < end) { firstIdx = i; break; }
-    }
-    if (firstIdx < 0) return false;
-    for (var j = 0; j < nodes.length; j++) {
-      var nd = nodes[j].node, ns = nodes[j].start, ne = ns + nd.data.length;
-      if (ne <= start || ns >= end) continue;
-      var from = Math.max(start, ns) - ns, to = Math.min(end, ne) - ns;
-      nd.data = nd.data.slice(0, from) + (j === firstIdx ? after : '') + nd.data.slice(to);
-    }
-    // 程序化变更统一出口（S2-T5）：与外壳撤销栈共用；无外壳时退回裸派发（行为等价）
-    if (window.__edMarkProgrammatic) window.__edMarkProgrammatic();
-    else sheet.dispatchEvent(new Event('input', { bubbles: true }));  // 触发本地自动保存兜底
-    return true;
-  }
 
   // AI 请求前确保当前内容已落盘，并带上内容版本（服务端据此拒绝落后内容）
   // 保存失败必须上抛：吞掉异常会带着旧 mtime 继续请求，服务端基于过期内容做体检/对话，
@@ -282,13 +239,13 @@
         return;
       }
       if (window.__edPushUndo) window.__edPushUndo('AI：' + (c.note || '修改'));
-      if (findAndReplace(c.before, c.after, { occurrence: c.occurrence, context: c.context })) {
+      if (window.__edReplaceText(c.before, c.after, { occurrence: c.occurrence, context: c.context })) {
         box.style.opacity = '0.6';
         apply.style.display = skip.style.display = loc.style.display = 'none';
         var undo = document.createElement('button');
         undo.textContent = '↩ 撤销';
         undo.onclick = function () {
-          if (findAndReplace(c.after, c.before)) {
+          if (window.__edReplaceText(c.after, c.before)) {
             box.style.opacity = '1';
             undo.remove();
             apply.style.display = skip.style.display = loc.style.display = '';
@@ -467,7 +424,7 @@
   $('ai-apply').onclick = function () {
     if (pendingAfter) {
       if (window.__edPushUndo) window.__edPushUndo('AI 改写');
-      if (findAndReplace(pendingBefore, pendingAfter)) $('ai-pop').style.display = 'none';
+      if (window.__edReplaceText(pendingBefore, pendingAfter)) $('ai-pop').style.display = 'none';
       else __status($('ai-preview'), 'warn', '原文未找到（可能已被修改），未应用');
     }
   };

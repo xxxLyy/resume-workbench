@@ -1110,6 +1110,9 @@ const JOB_DOC = 'ed-fixture-v2';
     .replaceAll('{{INTENT}}', () => '测试').replaceAll('{{SUMMARY}}', () => '摘要文本').replaceAll('{{SKILLS}}', () => '<p>技能一：内容</p>')
     .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => projects).replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => ED_DOC);
   fs.writeFileSync(path.join(dataRoot, 'docs', ED_DOC + '.html'), tpl);
+  // 外来内联脚本的文档：/edit 的 CSP 必须挡住它（文档正文是外部输入 → 恢复的备份可带 <script>）
+  fs.writeFileSync(path.join(dataRoot, 'docs', 'ed-evil.html'),
+    tpl.replace('</body>', '<script>window.__PWNED = 1;</script></body>'));
   fs.copyFileSync(path.join(dataRoot, 'docs', ED_DOC + '.html'), path.join(dataRoot, 'docs', JOB_DOC + '.html'));
   const metaPath = path.join(dataRoot, 'docs-meta.json');
   const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
@@ -1716,15 +1719,39 @@ try {
     else ok('[S4a-T9] 1280-1439 审阅活跃保右栏');
     await page2.evaluate(() => window.__edSelectTab('ai'));
     await page2.waitForTimeout(200);
-    const inactiveHidden = await page2.evaluate(() => document.getElementById('ed-right').classList.contains('ed-hidden'));
-    if (!inactiveHidden) bad('[S4a-T9] 1280 档非活跃应自动折叠右栏');
-    else ok('[S4a-T9] 1280-1439 非活跃自动折叠（竖标签条）');
+    const strip = await page2.evaluate(() => {
+      const btn = document.querySelector('#ed-rtabs button[data-pane="zone"]');
+      const r = btn ? btn.getBoundingClientRect() : { width: 0, height: 0 };
+      return {
+        hidden: document.getElementById('ed-right').classList.contains('ed-hidden'),
+        strip: document.body.classList.contains('ed-tier-strip'),
+        tabVisible: r.width > 0 && r.height > 0,
+        w: getComputedStyle(document.body).getPropertyValue('--ed-right-w').trim()
+      };
+    });
+    // 折成竖标签条，不是整条藏起来：藏起来的话区域/AI/排版三个页签彻底点不到（2026-10-22 审查 [高]）
+    if (!strip.strip || strip.hidden) bad('[S4a-T9] 1280 档非活跃应折叠为竖标签条: ' + JSON.stringify(strip));
+    else if (!strip.tabVisible) bad('[S4a-T9] 竖标签条的页签不可见（区域/AI/排版切不到）: ' + JSON.stringify(strip));
+    else ok('[S4a-T9] 1280-1439 非活跃折叠为竖标签条（页签仍可点）');
     await page2.evaluate(() => window.__edSelectTab('review'));
     await page2.waitForTimeout(200);
     const reOpen = await page2.evaluate(() => !document.getElementById('ed-right').classList.contains('ed-hidden'));
     if (!reOpen) bad('[S4a-T9] 切回审阅应恢复右栏');
     else ok('[S4a-T9] 切回审阅恢复右栏');
     await ctx2.close();
+  }
+
+  // ===== 4g /edit 的 CSP：文档正文里的外来内联脚本不得在应用同源执行 =====
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } });
+    const page = await ctx.newPage();
+    await page.goto(base + '/edit?id=ed-evil');
+    await page.waitForTimeout(1500);
+    const r = await page.evaluate(() => ({ pwned: window.__PWNED === 1, sheet: !!document.querySelector('.sheet') }));
+    if (r.pwned) bad('[CSP] 文档正文里的外来内联脚本被执行了（应用同源 XSS）');
+    else if (!r.sheet) bad('[CSP] CSP 误伤了编辑器（正文都没了）');
+    else ok('[CSP] 外来内联脚本被 CSP 挡住，编辑器仍可用');
+    await ctx.close();
   }
 
   // ===== 4h [S4a-T11] 组件与布局：⋯ 菜单键盘化 / favicon / 素材保存失败保留输入 / 事实层默认展开 =====

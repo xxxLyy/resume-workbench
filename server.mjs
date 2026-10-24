@@ -650,7 +650,10 @@ function jobViewLive(id, m) {
   return out;
 }
 const exportsOf = (m) => (Array.isArray(m && m.exports) ? m.exports : []);
-const deliveredRefs = (docId) => loadApps().filter((a) => a && a.docId === docId);                     // 该文档全部投递引用（每条 = 一次投递）
+// 该文档全部投递引用（每条 = 一次投递）。apps 可传入已读好的表：
+// 首页会对每张文档卡调一次，不传就每次重读 applications.json → O(文档数 × 投递数)
+// （2026-10-22 审查 [低] 实测：1200 条投递时首页 182ms → 37ms）
+const deliveredRefs = (docId, apps) => (apps || loadApps()).filter((a) => a && a.docId === docId);
 const usedByExport = (exportId) => loadApps().filter((a) => a && a.exportId && a.exportId === exportId); // 使用某导出的投递
 const pendingConflictsOf = (m) => {
   const j = m && m.job;
@@ -1038,20 +1041,43 @@ const SHELL_MARK = '<!--SHELL-INJECT-->';
 const JOB_MARK = '<!--JOB-INJECT-->';
 const ZONE_MARK = '<!--ZONE-INJECT-->';
 // 客户端图标 + 状态图标（__status）：编辑器页没有 page() 的 STATUS_SCRIPT，这里单独下发一份。
-function iconBlock() {
-  return `\n${ICON_MARK}<script>${STATUS_SCRIPT}</script><script>${ICON_SCRIPT}</script><!--/ICON-INJECT-->\n`;
+// ===== /edit 的 CSP：文档正文是外部输入，恢复的备份可带 <script> =====
+// /edit 把文档原样同源返回 → 恢复一份带脚本的备份后，打开该文档即在应用同源执行
+// （能读设置页的 LLM Key 与全部简历）。2026-10-22 审查 [高]。
+// 处置：/edit 加严格 CSP —— 内联脚本只放行两类：
+//   ① 编辑器主脚本：内容与已知版本逐字节相同（DOC_ID 值归一化后比对指纹）→ 用 sha256 放行
+//   ② 服务端自己注入的块（__MATS__ / __ICONS__ 等数据）→ 用 nonce 放行
+// 其余内联脚本一律被 CSP 挡掉。模板与注入层都不用内联事件属性（已核）→ 不误伤交互。
+// 已知指纹（含历史版本）：换模板版本时要把它加进来，否则旧文档的编辑器会被挡掉。
+const EDITOR_SCRIPT_HASHES = new Set([
+  '7dwc1dIu5F63H9JhH0TVbYzH9xrpWfPtT5OLVxbPFAY=',   // 0c3fed0（S3-T4 修复轮，当前）
+  'n0YyHsUh6KVazqH4o/zf7MI0FX8u8DIS67soPeUsp20='    // 72cd098（S3-T4 区域 Tab，历史版本）
+]);
+// 脚本归一化：DOC_ID 的值随文档变 → 比对前先还原成占位符
+const normEditorScript = (code) => String(code).replace(/var DOC_ID = '[^']*';/, "var DOC_ID = '{{DOC_ID}}';");
+const sha256b64 = (s) => createHash('sha256').update(String(s), 'utf8').digest('base64');
+// 返回该 html 里「可以放行」的编辑器主脚本的 CSP hash（原始字节的 hash，供浏览器比对）
+function allowedEditorScriptHashes(html) {
+  const out = [];
+  for (const m of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+    if (EDITOR_SCRIPT_HASHES.has(sha256b64(normEditorScript(m[1])))) out.push("'sha256-" + sha256b64(m[1]) + "'");
+  }
+  return out;
+}
+function iconBlock(nonce) {
+  return `\n${ICON_MARK}<script nonce="${nonce}">${STATUS_SCRIPT}</script><script nonce="${nonce}">${ICON_SCRIPT}</script><!--/ICON-INJECT-->\n`;
 }
 function aiBlock(id) {
   return `\n${AI_MARK}<script src="/ai-panel.js" data-doc="${id}" defer></script><!--/AI-INJECT-->\n`;
 }
-function shellBlock(id, mtimeMs) {
+function shellBlock(id, mtimeMs, nonce) {
   const mats = loadMats().map((m) => ({ id: m.id, title: m.title, tags: m.tags || [],
     brief: m.brief, technical: m.technical || '', interview: m.interview || '', confirmed: m.factStatus === 'confirmed', facts: m.facts || {} }));   // S4a-T7：facts 随 __MATS__ 供给证据表「事实依据」可读化
   const meta = loadMeta()[id] || {};
   const job = meta.job
     ? { hasJob: true, status: flowOf(meta), company: meta.company || '', role: meta.role || '', materials: meta.job.materials || [] }
     : { hasJob: false };
-  return `\n${SHELL_MARK}<script>window.__MATS__=${JSON.stringify(mats).replace(/</g, '\\u003c')};window.__JOB_INFO__=${JSON.stringify(job).replace(/</g, '\\u003c')};</script><script src="/editor-shell.js" data-doc="${id}" data-mtime="${Number(mtimeMs) || 0}" defer></script><!--/SHELL-INJECT-->\n`;
+  return `\n${SHELL_MARK}<script nonce="${nonce}">window.__MATS__=${JSON.stringify(mats).replace(/</g, '\\u003c')};window.__JOB_INFO__=${JSON.stringify(job).replace(/</g, '\\u003c')};</script><script src="/editor-shell.js" data-doc="${id}" data-mtime="${Number(mtimeMs) || 0}" defer></script><!--/SHELL-INJECT-->\n`;
 }
 function jobBlock(id) {
   return `\n${JOB_MARK}<script src="/job-panel.js" data-doc="${id}" defer></script><!--/JOB-INJECT-->\n`;
@@ -1141,9 +1167,10 @@ function listPage(showArchived = false) {
     { p: 5, t: cfg ? icon('bot', 12) + ` AI：${escHtml(cfg.name || '')}` : icon('bot', 12) + ' AI 未配置（岗位草稿仍可手动生成）' }
   ].filter((b) => b.t).sort((a, b) => a.p - b.p).map((b) => b.t);
   // 岗位状态徽章 = 全部派生（S1-T8）：已投递 ← applications.json（权威）；可投递 ← flow+冲突+stale 三条件；其余按 flow
+  const allApps = loadApps();   // 投递表读一次（首页每张卡都要用）
   const jobStatusBadge = (id) => {
     const m = meta[id] || {};
-    if (deliveredRefs(id).length) return badge('ai', '已记录投递', 'circle-check');
+    if (deliveredRefs(id, allApps).length) return badge('ai', '已记录投递', 'circle-check');
     const f = flowOf(m);
     if (f === 'reviewed') return deliverableNow(id, m, docInfoMap.get(id))
       ? badge('ok', '可投递')
@@ -1184,7 +1211,7 @@ function listPage(showArchived = false) {
     </li>`;
   };
   const drafts = jobDocs
-    .filter((d) => !deliveredRefs(d.id).length)   // 已投递 = 派生自 applications.json（权威来源），不再读存储状态
+    .filter((d) => !deliveredRefs(d.id, allApps).length)   // 已投递 = 派生自 applications.json（权威来源），不再读存储状态
     .sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 4);
   const byTag = new Map();
   for (const d of docInfoMap.keys()) {
@@ -1702,14 +1729,14 @@ async function saveJsonProtocol(req, id, url) {
 async function handler(req, res) {
   const url = new URL(req.url, 'http://localhost');
   const id = url.searchParams.get('id') || 'linghaoxiang';
-  const send = (code, body, type = 'text/html; charset=utf-8') => {
+  const send = (code, body, type = 'text/html; charset=utf-8', extraHeaders = null) => {
     if (res.destroyed || res.writableEnded) return;
     // 页面 HTML 里内联了服务端运行时 JS（server.mjs 模板 + job-panel.js / editor-shell.js 注入）：
     // 不加 no-store 时浏览器会缓存旧 HTML —— 症状是「服务端代码已改，页面行为没变」
     // （2026-10-18：删除模型配置不落盘，根因即用户标签页跑着重启前的旧 JS）。
     // 只对 HTML 加；PDF / 附件 / 静态资源各自 res.writeHead，不经过这里，不受影响。
     const extra = /^text\/html/.test(type) ? { 'Cache-Control': 'no-store' } : {};
-    res.writeHead(code, { 'Content-Type': type, ...extra });
+    res.writeHead(code, { 'Content-Type': type, ...extra, ...(extraHeaders || {}) });
     res.end(body);
   };
   const sendJson = (code, obj) => send(code, JSON.stringify(obj), 'application/json; charset=utf-8');
@@ -1790,7 +1817,8 @@ async function handler(req, res) {
       `));
       html = html.replace(/var DOC_ID = '[^']*'/, `var DOC_ID = '${id}'`);
       if (!html.includes('id="homeBtn"')) {
-        html = html.replace('<button id="histBtn"', `<button id="homeBtn" class="secondary" onclick="location.href='/'">${icon('house', 13)} 首页</button><button id="histBtn"`);
+        // 不写内联 onclick：/edit 的 CSP 挡内联事件属性 → 跳转由注入层绑定（editor-shell.js 的 homeBtn）
+        html = html.replace('<button id="histBtn"', `<button id="homeBtn" class="secondary" title="返回工作台">${icon('house', 13)} 首页</button><button id="histBtn"`);
       }
       const vm = loadMeta()[id] || {};
       // 铁律一（编辑入口=渲染组装同款）+ S1 热修裁决：有效 typo = (meta.typo 定义且非空) ? meta.typo : 内联值。
@@ -1811,12 +1839,27 @@ async function handler(req, res) {
         html = html.replace('<button id="histBtn"', `<span id="verBadge" class="badge">${escHtml((vm.company || '') + '·' + (vm.role || ''))}</span><button id="histBtn"`);
       }
       const mtimeMs = fs.statSync(docPath(id)).mtimeMs;
-      if (!html.includes(ICON_MARK)) html = html.replace('</body>', iconBlock() + '</body>');
-      if (!html.includes(SHELL_MARK)) html = html.replace('</body>', shellBlock(id, mtimeMs) + '</body>');
+      // CSP 的 nonce：放行服务端自己注入的内联脚本（__MATS__ / __ICONS__ 等数据）
+      const cspNonce = randomBytes(16).toString('base64');
+      if (!html.includes(ICON_MARK)) html = html.replace('</body>', iconBlock(cspNonce) + '</body>');
+      if (!html.includes(SHELL_MARK)) html = html.replace('</body>', shellBlock(id, mtimeMs, cspNonce) + '</body>');
       if (!html.includes(AI_MARK)) html = html.replace('</body>', aiBlock(id) + '</body>');
       if (!html.includes(JOB_MARK)) html = html.replace('</body>', jobBlock(id) + '</body>');
       if (!html.includes(ZONE_MARK)) html = html.replace('</body>', zoneBlock(id) + '</body>');
-      return send(200, html);
+      // CSP：文档正文是外部输入（恢复的备份可带 <script>）→ 只放行已知的编辑器主脚本（sha256）
+      // 与服务端注入块（nonce）；其余内联脚本一律被挡（2026-10-22 审查 [高]）
+      const csp = [
+        "default-src 'self'",
+        "script-src 'self' 'nonce-" + cspNonce + "' " + allowedEditorScriptHashes(html).join(' '),
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob: https:",
+        "font-src 'self' data:",
+        "connect-src 'self'",
+        "frame-ancestors 'none'",
+        "base-uri 'none'",
+        "form-action 'self'"
+      ].join('; ');
+      return send(200, html, 'text/html; charset=utf-8', { 'Content-Security-Policy': csp });
     }
     // ===== 文档创建/复制/删除 =====
     if (req.method === 'POST' && url.pathname === '/new') {
@@ -3379,11 +3422,21 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     if (req.method === 'POST' && url.pathname === '/restructure') {
       if (!hasLLM(root)) return send(409, '未配置大模型，请先到"大模型设置"', 'text/plain');
       if (!fs.existsSync(docPath(id))) return send(404, 'doc not found', 'text/plain');
+      // 文档锁 + 冲突检测（2026-10-22 审查 [中]）：结构化要跑几秒 LLM，
+      // 这期间用户可能又保存了一次 → 结构化结果会把用户的编辑整篇覆盖（实测用户的编辑消失）。
+      // 与 /save 同口径：持文档锁（进程内）+ 事后比对 mtime（跨进程/跨标签）。
+      return withDocLock(root, id, async () => {
+      const mtimeBefore = fs.statSync(docPath(id)).mtimeMs;
       const html = fs.readFileSync(docPath(id), 'utf8');
       if (!html.includes('以下为 PDF 提取的原文')) return send(400, '该文档不是降级文档', 'text/plain');
       const text = docToLines(html).filter((l) => !l.includes('以下为 PDF 提取的原文')).join('\n');
       const structured = await structureText(root, text).catch(() => null);
       if (!structured) return send(502, 'LLM 结构化失败，文档未改动', 'text/plain');
+      // LLM 跑完后再看一眼：用户在这期间保存过 → 不覆盖（409 让用户决定是否重来）
+      const mtimeNow = fs.statSync(docPath(id)).mtimeMs;
+      if (mtimeNow > mtimeBefore + 2) {
+        return sendJson(409, { ok: false, error: '文档在结构化期间被修改过，已放弃覆盖（请重新发起）' });
+      }
       snapshot(id);
       const tmp = docPath(id) + '.' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.tmp';
       fs.writeFileSync(tmp, structured);
@@ -3400,6 +3453,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       });
       await renderCurrent(id);   // 当前文档渲染一律走组装入口
       return redirect(`/edit?id=${id}`);
+      });
     }
     if (req.method === 'POST' && url.pathname === '/ai/review') {
       if (!hasLLM(root)) return send(409, '未配置大模型，请先到首页的"大模型设置"', 'text/plain');
@@ -3540,6 +3594,24 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     }
     // ===== 备份 =====
     if (req.method === 'GET' && url.pathname === '/backup') {
+      // 备份要与迁移/恢复互斥：迁移持锁时打出来的包是「替换中途」的混合状态，
+      // 日后拿它恢复会得到不一致数据（2026-10-22 审查 [低] 实测：锁持有时 /backup 仍 200）。
+      // rootLock 是排他锁：已被别人持有时直接 409，不排队（备份是用户手动点的，等一下更合理，
+      // 但 rootLock 的语义是「被占即拒」——与 /save /restore 同一口径 ✓）。
+      try { rootLock.acquire(root); }
+      catch (e) {
+        if (e instanceof LockHeld) return sendJson(409, { ok: false, error: '另一个写操作正在进行（备份/恢复/迁移），请稍后重试' });
+        throw e;
+      }
+      // 锁持有到响应结束（tar 是异步的）：与 /restore 同一套释放口径（res finish/close）
+      let lockReleased = false;
+      const releaseBackupLock = () => {
+        if (lockReleased) return;
+        lockReleased = true;
+        try { rootLock.release(root); } catch {}
+      };
+      res.on('finish', releaseBackupLock);
+      res.on('close', releaseBackupLock);
       const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + new Date().toTimeString().slice(0, 5).replace(':', '');
       // 先落临时文件再回传：原先 stdout 直接 pipe 且不监听退出码，tar 失败时客户端仍收到 200 + 残缺包
       const tmpTar = path.join(os.tmpdir(), `resume-backup-${Date.now()}.tar.gz`);
@@ -3694,6 +3766,10 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       for (const ent of stageEntries) {
         if (ent.isSymbolicLink()) return fail('备份包含符号链接，已拒绝：' + ent.name.slice(0, 80));
       }
+      // 注意：这里**不**校验文档正文里的内联脚本 —— 恢复入口一拒就会误伤合法文档
+      // （编辑器脚本换过版本的旧文档、测试夹具的简化文档都会被拒 ✗）。
+      // 防护放在 /edit 的 CSP 上：未知内联脚本一律被浏览器挡掉（实测外来脚本不执行 ✓），
+      // 已知版本的编辑器主脚本按 sha256 放行 ✓。
       const hasContent = ['docs', 'snapshots', 'pdfs', 'docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json'].some((x) => fs.existsSync(path.join(stage, x)));
       if (!hasContent) return fail('备份包中没有可恢复的内容');
       // 预览：逐条差异（新增/冲突/保留）
