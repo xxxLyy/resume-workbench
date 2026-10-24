@@ -278,7 +278,7 @@
   var docName = document.getElementById('docName');
   var saveState = document.getElementById('saveState');
   // 冻结件工具条按钮：先存原样（注入前），保存时还原 —— 见下方 cloneNode 钩子。
-  var FROZEN_BTN = ['pdfBtn', 'saveBtn', 'histBtn'];
+  var FROZEN_BTN = ['pdfBtn', 'saveBtn', 'histBtn', 'homeBtn'];   // homeBtn 也被注入层改过（class/title）→ 同样要还原
   var frozenOrig = {};
   for (var bi = 0; bi < FROZEN_BTN.length; bi++) {
     var bel = document.getElementById(FROZEN_BTN[bi]);
@@ -435,6 +435,9 @@
   }
   if (geningBtn) {
     var pollGening = function () {
+      // 标签页不可见时别轮询：/job/changes 每次都要重解析整份正文算一致性，
+      // 放着不管就是每 2.5 秒一次全文重算（2026-10-22 审查 [低] 实测）
+      if (document.hidden) return;
       fetch('/job/changes?id=' + encodeURIComponent(DOC_ID)).then(function (r) { return r.json(); }).then(function (d) {
         var gt = d && d.job && d.job.genTasks;
         var run = !!(gt && ((gt.evidence && gt.evidence.status === 'running') || (gt.changes && gt.changes.status === 'running')));
@@ -939,6 +942,7 @@
   [['B', 'bold', '加粗'], ['•', 'insertUnorderedList', '无序列表'], [__icon('link'), 'createLink', '插入链接（仅 http/https/mailto）'], ['⌫', 'removeFormat', '清除多余格式']].forEach(function (b) {
     var btn = document.createElement('button');
     btn.type = 'button'; btn.className = 'secondary'; btn.innerHTML = b[0]; btn.title = b[2];
+    btn.setAttribute('aria-label', b[2]);   // 可访问名不能只是符号本身（2026-10-22 审查 [低]）
     btn.setAttribute('data-fmt', b[1]);
     btn.addEventListener('mousedown', function (e) { e.preventDefault(); });   // 不抢焦点/选区：execCommand 作用于正文当前选区
     btn.addEventListener('click', function () { runFormat(b[1]); });
@@ -1098,8 +1102,8 @@
       + '<input id="ed-find-q" placeholder="查找（当前正文）" aria-label="查找">'
       + '<input id="ed-find-r" placeholder="替换为" aria-label="替换为">'
       + '<span id="ed-find-count" role="status">0/0</span>'
-      + '<button type="button" id="ed-find-prev" class="secondary" title="上一处">↑</button>'
-      + '<button type="button" id="ed-find-next" class="secondary" title="下一处">↓</button>'
+      + '<button type="button" id="ed-find-prev" class="secondary" title="上一处" aria-label="上一处">↑</button>'
+      + '<button type="button" id="ed-find-next" class="secondary" title="下一处" aria-label="下一处">↓</button>'
       + '<button type="button" id="ed-find-one" title="替换当前一处">替换</button>'
       + '<button type="button" id="ed-find-all" title="全部替换（一次撤销）">全部替换</button>'
       + '<button type="button" id="ed-find-close" class="secondary" title="关闭（Esc）">' + (__icon('x') || '×') + '</button>'

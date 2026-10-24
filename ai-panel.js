@@ -274,7 +274,13 @@
     loc.title = '在正文中选中并滚动到原文位置';
     loc.onclick = function () { if (!locateText(c.before)) __status(note, 'warn', '原文未找到（可能已被修改）'); };
     apply.onclick = function () {
-      // 应用前检查：找不到原文即拒绝（文档可能已被改/重复文本按位置区分）
+      // 应用前检查：找不到原文即拒绝（文档可能已被改）
+      // 原文在正文里出现多次 → 改哪一处说不清 → 拒绝（2026-10-22 审查 [高] 同款问题：
+      // 「取全文首个匹配」会改错段落，而面板照样显示「已应用」）
+      if ((sheet.textContent || '').split(c.before).length - 1 > 1) {
+        __status(note, 'warn', '原文在正文里出现多处，无法确定改哪一处，已拒绝（请手动修改）');
+        return;
+      }
       if (window.__edPushUndo) window.__edPushUndo('AI：' + (c.note || '修改'));
       if (findAndReplace(c.before, c.after, { occurrence: c.occurrence, context: c.context })) {
         box.style.opacity = '0.6';

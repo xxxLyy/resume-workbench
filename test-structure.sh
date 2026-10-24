@@ -1995,11 +1995,11 @@ fs.readFileSync(F, 'utf8').split('\n').forEach((ln, i) => {
 const sm = fs.readFileSync(F, 'utf8');
 const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','/ai/prep','/ai/review','/ai/rewrite','/ai/test',
   '/ai/zone-analyze','/ai/zone-rewrite',
-  '/api/extract','/app','/app/add','/app/archive-regenerate','/app/del','/app/ics','/app/jd','/app/update','/applications',
+  '/api/extract','/app','/app/add','/app/archive-regenerate','/app/del','/app/ics','/app/update','/applications',
   '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf',
   '/job-panel.js','/job/brief','/job/changes','/job/create','/job/generate','/job/gen-cancel','/job/gen-start','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',
   '/materials','/new','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings','/eval/create','/eval/promote',
-  '/snapshot/baseline','/snapshot/note','/snapshot/pdf','/snapshot/view','/snapshots','/stats','/tag','/version/create',
+  '/snapshot/baseline','/snapshot/note','/snapshot/pdf','/snapshot/view','/snapshots','/stats','/tag',
   '/zones','/zones/init','/zone-panel.js'].sort();
 const got = [...new Set([...sm.matchAll(/url\.pathname === '([^']+)'/g)].map((m) => m[1]))].sort();
 const missing = ROUTES_FROZEN.filter((r) => !got.includes(r));
@@ -3246,10 +3246,11 @@ const assert = (c, m) => { if (!c) { console.error('❌ S4B-12 ' + m); process.e
 const srv = readFileSync('./server.mjs', 'utf8');
 assert(/const JD_MAX_CHARS = 64 \* 1024/.test(srv), 'JD 粘贴上限 64KB 且提到模块级（三个入口共用）');
 assert(/jdTruncated/.test(srv), '截断必须留痕（写进 jdError → todo）');
-// 三个写 jd 的入口都要截断：/job/create、/version/create、/app/add。
-// 漏一个就是缺口——二轮审查只点了 /job/create，实际 /version/create 与 /app/add 同样无上限（实测后补上）。
+// 两个写 jd 的入口都要截断：/job/create、/app/add。
+// 漏一个就是缺口——二轮审查只点了 /job/create，实际 /app/add 同样无上限（实测后补上）。
+// （第三个入口 /version/create 已于 2026-10-22 删除：与 /job/create 并行的重复实现，前端零引用。）
 const caps = (srv.match(/slice\(0, JD_MAX_CHARS\)/g) || []).length;
-assert(caps >= 3, '三个写 jd 的入口都要截断（实得 ' + caps + ' 处）');
+assert(caps >= 2, '两个写 jd 的入口都要截断（实得 ' + caps + ' 处）');
 assert(!/jd: typeof body\.jd === 'string' \? body\.jd :/.test(srv), '不得再有裸传 body.jd 的入口');
 console.log('✅ S4B-12 /job/create JD 长度上限');
 EOF

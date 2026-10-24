@@ -164,7 +164,8 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
   // ===== 正文替换（跨节点 + 重复消歧；与 ai-panel 同算法，模块独立）=====
   function replaceText(before, after, opts) {
     opts = opts || {};
-    var walker = document.createTreeWalker(sheet, NodeFilter.SHOW_TEXT);
+    // opts.root：只在指定节点内找（zid 锚点）。不给就在整页找。
+    var walker = document.createTreeWalker(opts.root || sheet, NodeFilter.SHOW_TEXT);
     var nodes = [], stream = '', n;
     while ((n = walker.nextNode())) { nodes.push({ node: n, start: stream.length }); stream += n.data; }
     var matches = [], idx = stream.indexOf(before);
@@ -194,6 +195,14 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     touch();
     return true;
   }
+  // 正文里该原文出现几次：>1 就无法确定改哪一处 → 盲改会改错段落（2026-10-22 审查 [高] 实测：
+  // 简历里两段相同文字 → 接受锚在第二段的那条建议 → 改的是第一段，锚点段原封不动，面板还显示「已接受」）
+  function textMatchCount(before) {
+    var t = sheet.textContent || '';
+    var n = 0, i = t.indexOf(before);
+    while (i >= 0) { n++; i = t.indexOf(before, i + (before.length || 1)); }
+    return n;
+  }
   // 程序化变更统一出口（S2-T5）：走外壳共享入口（合成 input 保持 dirty 语义 + 补 op 时间戳）；无外壳时退回裸派发
   function touch() {
     if (window.__edMarkProgrammatic) window.__edMarkProgrammatic();
@@ -203,6 +212,16 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
   // ===== 应用/撤销一条修改 =====
   function applyChange(c) {
     if (c.kind === 'replace') {
+      // 有 zid 锚点（局部重生成回传）→ 只在锚点节点里找，绝不按全文首个匹配盲改
+      var anchor = c.zid ? anchorElOf(c) : null;
+      if (anchor) {
+        if (replaceText(c.before, c.after, { root: anchor })) return { ok: true, meta: {} };
+        return { ok: false, error: '原文未找到（内容可能已被手工修改）' };
+      }
+      // 无锚点但原文多处出现 → 改哪一处说不清 → 拒绝，别赌第一处
+      if (textMatchCount(c.before) > 1) {
+        return { ok: false, error: '原文在正文里出现多处，无法确定改哪一处，已拒绝（请手动修改）' };
+      }
       if (replaceText(c.before, c.after, { occurrence: c.meta && c.meta.occurrence, context: c.context })) return { ok: true, meta: {} };
       return { ok: false, error: '原文未找到（内容可能已被手工修改）' };
     }
@@ -330,13 +349,25 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     if (csave) csave.removeAttribute('disabled');
     return '<!doctype html>\n' + clone.outerHTML;
   }
-  function postSaveOps(ops, label) {
-    api('/save?id=' + DOC_ID, {
-      requestId: 'op-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10),
-      baseRev: docRev, html: buildPageHtml(), ops: ops
+  // 拿最新 rev（不重绘）：用户在正文里改字后自动保存会让面板缓存的 rev 过期
+  // → 接受建议必 409「baseRev 落后」，而 DOM 里的改写留在页面没落盘（2026-10-22 审查 [中] 实测）
+  function freshRev() {
+    return fetch('/job/changes?id=' + DOC_ID).then(function (r) { return r.json(); })
+      .then(function (d) { return (d && d.rev) || docRev; })
+      .catch(function () { return docRev; });
+  }
+  function postSaveOps(ops, label, retried) {
+    freshRev().then(function (rev) {
+      return api('/save?id=' + DOC_ID, {
+        requestId: 'op-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10),
+        baseRev: rev, html: buildPageHtml(), ops: ops
+      });
     }).then(function (d) {
       if (d.ok) {
         if (d.receipt && d.receipt.mtime) window.__edDocMtime = d.receipt.mtime;   // 同步旧路径冲突基线
+      } else if (!retried && d.error && /baseRev/.test(d.error)) {
+        // 基线还是过期（自动保存刚落地）→ 刷一次 rev 重试一次（只一次，别成环）
+        return freshRev().then(function (rev) { docRev = rev; return postSaveOps(ops, label, true); });
       } else {
         note(d.error || (label + '失败'), 'warn');
       }
@@ -358,7 +389,8 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     if (c.kind === 'replace' && viaGate) {
       // 确认门通过：整段替换为候选 after（锚点=当前整段文本，与服务端 origText 校验一致）
       // anchorEl 可能已失效（zid 被移除）：解引用会抛 TypeError，且抛点在本函数 busy 复位之后 → 面板永久锁死
-      r = (anchorEl && replaceText(anchorEl.textContent, c.after)) ? { ok: true, meta: {} } : { ok: false, error: '原文锚点已不存在（正文可能已被修改），请重新载入' };
+      // root=anchorEl：只在锚点节点里替换（正文里可能有同文段落 → 全文首个匹配会改错那段）
+      r = (anchorEl && replaceText(anchorEl.textContent, c.after, { root: anchorEl })) ? { ok: true, meta: {} } : { ok: false, error: '原文锚点已不存在（正文可能已被修改），请重新载入' };
     } else {
       r = applyChange(c);
     }

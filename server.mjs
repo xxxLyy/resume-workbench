@@ -24,7 +24,7 @@ import { sumExpandedBytes, MAX_EXPANDED_BYTES } from './restore-guard.mjs';   //
  * JD 文本入库上限（S4B-12）。链接抓取路径 cap 在 4000 字，粘贴路径原本完全没 cap：
  * 二轮审查实测 6 次 2MB JD 粘贴 → docs-meta.json 涨到 12.59MB，而每次 updateMeta 都整表重写
  * （12.6MB 时单次 /save 0.088s vs 正常 ~10ms）——一次粘贴把之后每次保存都拖慢一个数量级。
- * 提到模块级：/job/create、/version/create、/app/add 三个写 jd 的入口必须共用同一上限。
+ * 提到模块级：/job/create、/app/add 两个写 jd 的入口必须共用同一上限。
  */
 const JD_MAX_CHARS = 64 * 1024;
 import { applyOps, reviewConsistency, refFresh, buildEvidencePrompt, parseEvidence, buildInterviewPrompt, parseInterview, guardOps, exportChecks, layoutDiagnose } from './evidence.mjs';
@@ -84,7 +84,7 @@ const MAX_SNAPSHOTS = 50;
 // 迁移互斥（S1-T7 修复轮1 I-3）：这些 GET 名义是读，实际会 renderCurrent → updateMeta(lastRenderInputId/lastRenderAt)
 // 并覆写 pdfs/<id>.pdf、拉起 Chromium；迁移三门禁期间放行它们＝浏览器标签页与迁移并发写 meta / 抢渲染。
 // 故与他人持 .migrate.lock 期间同样 503（纯读 GET 一律不受影响）。新增会写盘的 GET 必须登记到这里。
-const WRITE_ON_GET = new Set(['/pdf', '/export', '/job/changes']);   // /job/changes GET 读取时清过期 running 任务（S4a-T4）
+const WRITE_ON_GET = new Set(['/pdf', '/export', '/job/changes', '/snapshot/pdf']);   // /job/changes GET 读取时清过期 running 任务（S4a-T4）；/snapshot/pdf 渲染并写 pdfs/history/（2026-10-22 审查 [低]）
 // 编辑器瞬态 body class：旧文档的内联清理选择器不认 ed-focus，必须由服务端兜底（设计 §6.2）
 const EDITOR_ONLY_BODY_CLASS = new Set(['ed-on', 'ed-preview', 'ed-focus']);
 const APP_STATUSES = ['已投递', '笔试', '面试中', 'offer', '已拒', '搁置'];
@@ -232,7 +232,11 @@ async function createJobDraft(root, o) {
   if (!jd && jdLink) {
     try {
       if (!/^https?:\/\//.test(jdLink)) throw new Error('仅支持 http/https 链接');
-      const r = await fetch(jdLink, { signal: AbortSignal.timeout(15000) });
+      // SSRF 防线：与 /ai/jd-text 同一道 assertSafeBaseURL（2026-10-22 审查 [高]）——
+      // 原先这里只有 ^https?://，任意内网/云元数据地址都能被服务端抓取，原文写进 meta.jd 并回显。
+      // redirect:'error'：不跟随 302，否则首跳过了校验、跟着跳到黑名单地址。
+      assertSafeBaseURL(jdLink);
+      const r = await fetch(jdLink, { signal: AbortSignal.timeout(15000), redirect: 'error' });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const buf = Buffer.from(await r.arrayBuffer());
       if (buf.length > 5 * 1024 * 1024) throw new Error('页面超过 5MB 上限');
@@ -313,10 +317,15 @@ function gate(req, res, pathname) {
     res.on('finish', rel); res.on('close', rel);
     return null;
   };
-  if (req.method === 'GET' && (pathname === '/pdf' || pathname === '/export')) {
+  // 渲染闸门：凡会拉起 Chromium 的路由都要进（2026-10-22 审查 [中] 实测：
+  // 原先只管 GET /pdf 与 GET /export → /snapshot/pdf、POST /render、POST /export 各自无限并发拉浏览器）
+  if ((req.method === 'GET' && (pathname === '/pdf' || pathname === '/export' || pathname === '/snapshot/pdf'))
+    || (req.method === 'POST' && (pathname === '/render' || pathname === '/export'))) {
     return take(renderSlot, RENDER_MAX_INFLIGHT, '渲染排队已满（最多同时 2 个），请稍候');
   }
-  if (req.method === 'POST' && /^\/ai\//.test(pathname) && !AI_EXEMPT.has(pathname)) {
+  // /eval/create、/restructure 也直连 LLM → 一并进闸门（实测 4 并发全放行、0×429）
+  if (req.method === 'POST' && (/^\/ai\//.test(pathname) || pathname === '/eval/create' || pathname === '/restructure')
+    && !AI_EXEMPT.has(pathname)) {
     return take(aiSlot, AI_MAX_INFLIGHT, 'AI 请求排队已满（最多同时 2 个），请稍候');
   }
   return null;
@@ -1942,38 +1951,6 @@ async function handler(req, res) {
       saveEvals(list);
       return sendJson(200, { ok: true, id: r.id });
     }
-    // 兼容旧入口（编辑器旧按钮）：按 /job/create 语义处理
-    if (req.method === 'POST' && url.pathname === '/version/create') {
-      const body = JSON.parse(await readBody(req));
-      if (typeof body.company !== 'string' || !body.company.trim() || typeof body.role !== 'string' || !body.role.trim())
-        return send(400, 'company 和 role 必填', 'text/plain');
-      if (!body.from || !VALID_ID.test(body.from)) return send(400, 'invalid from', 'text/plain');
-      if (!fs.existsSync(docPath(body.from))) return send(404, 'doc not found', 'text/plain');
-      const metaAll = loadMeta();
-      const dup = Object.keys(metaAll).find((k) => metaAll[k] && metaAll[k].parent === body.from && metaAll[k].company === body.company.trim() && metaAll[k].role === body.role.trim() && fs.existsSync(docPath(k)));
-      if (dup) return sendJson(409, { ok: false, existing: dup, error: '同岗位草稿已存在' });
-      const srcSnap = snapshot(body.from);   // 冻结点：freezeHtml + manifest，返回冻结 ts
-      let to = body.to, n = 2;
-      if (to) {
-        if (!VALID_ID.test(to)) return send(400, 'invalid to', 'text/plain');
-        if (fs.existsSync(docPath(to))) return send(409, 'target exists', 'text/plain');
-      } else { while (fs.existsSync(docPath(`${body.from}-v${n}`))) n++; to = `${body.from}-v${n}`; }
-      // 冻结点：母版 freezeHtml → 归一化为当前格式落活文档（禁止直接 copy 冻结字节）
-      const srcHtml = fs.readFileSync(docPath(body.from), 'utf8');
-      const srcMeta = metaAll[body.from] || {};
-      const normVer = normalizeToCurrent(freezeHtml(srcHtml, srcMeta).html);
-      // 护栏必须在 atomicWrite 之前算完：它含一次动态 import + 全量指纹计算（最坏数百 ms 的同步计算），
-      // 夹在 atomicWrite 与 updateMeta 之间会把两者原本「紧邻、崩溃窗口为零」的配对撑开一个 await 窗口，
-      // 中途被杀会留下有 doc 无 meta 的孤儿文件（2026-10-18 审查 ⚪ 问题 8）。
-      const { jdFp, dupHints, todos } = await computeFpGuard(body.jd, '', body.company.trim(), metaAll);
-      atomicWrite(docPath(to), normVer.html);
-      updateMeta(root, to, () => ({ parent: body.from, company: body.company.trim(), role: body.role.trim(), jd: typeof body.jd === 'string' ? body.jd.trim().slice(0, JD_MAX_CHARS) : '',   // S4B-12 同样要截断
-        createdAt: new Date().toISOString(), tag: (body.company.trim() + '·' + body.role.trim()).slice(0, 20),
-        typo: normVer.typo, theme: srcMeta.theme || normVer.theme || null, styleHash: normVer.styleHash, rev: 1,
-        kind: 'job', flow: 'draft', archivedAt: null,
-        job: { sourceSnap: srcSnap, sourceHash: contentHash(srcHtml), jdFp, materials: [], changes: [], todos, generatedAt: null, deliveredAt: null } }));
-      return redirect(`/edit?id=${to}`);
-    }
     // 岗位修改清单读/写（状态持久化；应用动作由前端 DOM 执行后回写状态）
     if (req.method === 'GET' && url.pathname === '/job/changes') {
       let m = loadMeta()[id] || {};
@@ -2518,6 +2495,7 @@ async function handler(req, res) {
       const body = JSON.parse(await readBody(req));
       if (!body.id || !/^[0-9-]+$/.test(body.id)) return send(400, 'invalid id', 'text/plain');
       if (body.status !== undefined && !APP_STATUSES.includes(body.status)) return send(400, '非法 status', 'text/plain');
+      if (typeof body.jd === 'string' && body.jd.length > JD_MAX_CHARS) body.jd = body.jd.slice(0, JD_MAX_CHARS);   // 与 /app/add 同上限（2026-10-22 审查 [中]）
       if (body.docId !== undefined && (!VALID_ID.test(body.docId) || !fs.existsSync(docPath(body.docId)))) return send(400, 'invalid docId', 'text/plain');
       const apps = loadApps();
       const app = apps.find((a) => a.id === body.id);
@@ -3129,7 +3107,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       if (typeof body.url !== 'string' || !/^https?:\/\//.test(body.url.trim()))
         return send(400, 'url 仅支持 http/https', 'text/plain');
       try {
-        const r = await fetch(body.url.trim(), { signal: AbortSignal.timeout(15000) });
+        // redirect:'error'：assertSafeBaseURL 只查首个 URL，跟随 302 就绕过了黑名单
+        // （2026-10-22 审查 [高] 实测：302 到 169.254.169.254 照样抓）
+        const r = await fetch(body.url.trim(), { signal: AbortSignal.timeout(15000), redirect: 'error' });
         if (!r.ok) throw new Error('HTTP ' + r.status);
         // 流式累计并即时中断：原先 arrayBuffer() 先把整个响应读进内存、之后才判大小，上限形同虚设
         const MAX_JD = 5 * 1024 * 1024;
@@ -3147,13 +3127,6 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       } catch (e) {
         return sendJson(200, { ok: false, error: String(e.message || e) });
       }
-    }
-    if (req.method === 'GET' && url.pathname === '/app/jd') {
-      const aid = url.searchParams.get('id') || '';
-      if (!/^[0-9-]+$/.test(aid)) return send(404, 'app not found', 'text/plain');
-      const app = loadApps().find((a) => a.id === aid);
-      if (!app) return send(404, 'app not found', 'text/plain');
-      return sendJson(200, { ok: true, jd: app.jd || '' });
     }
     // ===== 设置页 + 备份恢复 =====
     if (req.method === 'GET' && url.pathname === '/settings') {
@@ -3748,7 +3721,16 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
           const a = JSON.parse(fs.readFileSync(f, 'utf8'));
           if (!Array.isArray(a)) return 'CORRUPT';   // 形状错 ≠ 空数组：否则 replace 模式会静默清空本地记录
           for (const x of a) {
-            if (!x || typeof x.id !== 'string' || !VALID_ID.test(x.id)) return 'BAD_ID';
+            // id 口径与写端点一致（/app/update、/mat/update、/mat/del 都是 /^[0-9-]+$/）
+            // → 恢复出来的记录必须「改得了、删得掉」；用宽松的 VALID_ID 会恢复出用不了的记录（2026-10-22 审查 [低]）
+            // id 口径：投递/素材是时间戳（写端点要求 /^[0-9-]+$/，恢复必须同一把尺）；
+            // 评估是 'ev-' 前缀（写端点只要求 ev- 开头 + 无引号/斜杠）→ 这里守的是「不可能是注入载荷」
+            const idRe = file === 'evaluations.json' ? /^ev-[a-z0-9-]+$/ : /^[0-9-]+$/;
+            if (!x || typeof x.id !== 'string' || !idRe.test(x.id)) return 'BAD_ID';
+            // 字段形状：materials 的 tags 必须是数组（渲染端 (m.tags||[]).map —— 非数组会整页 500）
+            if (x.tags !== undefined && !Array.isArray(x.tags)) return 'BAD_SHAPE';
+            // 投递记录的 docId 会拼路径（/app/archive-regenerate 的 snapDir(app.docId)）→ 必须过 VALID_ID
+            if (x.docId !== undefined && (typeof x.docId !== 'string' || !VALID_ID.test(x.docId))) return 'BAD_SHAPE';
           }
           return a;
         } catch { return 'CORRUPT'; }
@@ -3757,6 +3739,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         const bak = jsonIds(file);
         if (bak === 'CORRUPT') return { corrupt: true, add: [], conflict: [], keep: [] };
         if (bak === 'BAD_ID') return { badId: true, add: [], conflict: [], keep: [] };
+        if (bak === 'BAD_SHAPE') return { badShape: true, add: [], conflict: [], keep: [] };
         if (bak === null) return { add: [], conflict: [], keep: [] };
         const local = file === 'materials.json' ? loadMats() : file === 'evaluations.json' ? loadEvals() : loadApps();
         const localIds = new Set(local.map((x) => x.id));
@@ -3795,7 +3778,10 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       if (preview.meta.corrupt) return fail('备份中的 docs-meta.json 损坏，拒绝恢复（不覆盖本地 meta）', 500);
       if (preview.apps.corrupt || preview.mats.corrupt || preview.evals.corrupt) return fail('备份中的 JSON 损坏，拒绝恢复');
       if (preview.apps.badId || preview.mats.badId || preview.evals.badId) {
-        return fail('备份中的记录 id 非法（只允许小写字母/数字/横线），拒绝恢复：防存储型 XSS');
+        return fail('备份中的记录 id 非法（只允许数字与横线），拒绝恢复：防恢复出改不了/删不掉的记录');
+      }
+      if (preview.apps.badShape || preview.mats.badShape || preview.evals.badShape) {
+        return fail('备份中的记录字段形状非法，拒绝恢复：防恢复后页面 500 或路径越界');
       }
       const mode = url.searchParams.get('mode') === 'replace' ? 'replace' : 'merge';
       // 回退点（可操作）：数据根 backups/restore-<ts>/
@@ -3816,6 +3802,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
             try { hardenDataPerms(root); } catch {}   // cpSync 不经 atomicWrite → 权限随源文件，恢复后统一收紧
           }
           for (const f of ['applications.json', 'materials.json', 'evaluations.json']) if (fs.existsSync(path.join(stage, f))) fs.copyFileSync(path.join(stage, f), path.join(root, f));
+          // copyFileSync 保留源文件权限 → 备份里的 0644 会让本地 JSON 变同机可读（2026-10-22 审查 [中]）
+          try { hardenDataPerms(root); } catch {}
           // docs-meta 成对替换：经 updateMeta 逐文档写（唯一写入者），不裸 copyFileSync 覆盖共享文件；损坏 → 抛 CORRUPT（500），绝不当成 {}
           const repMeta = readMetaSnapshotAt(path.join(stage, 'docs-meta.json'));
           if (repMeta) applyMetaSnapshot(repMeta);

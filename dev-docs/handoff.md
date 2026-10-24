@@ -586,3 +586,60 @@ safe-url.mjs / eval.mjs / template.mjs），报 15 条（0 高 / 4 中 / 11 低�
 **误报一条**：`template.mjs` 的 `listThemes` 被报成死导出 → 实际 `test-structure.sh` 在 import 它 ✓ → 保留导出 ✓。
 
 **新增断言 TX-GUARD**（+1 ✅）：伪造 docId 的事务记录必须被拒且不得写到数据根外；无标记的孤儿载荷与 `.tmp` 残留必须被回收；提交后标记删不掉必须上报。
+
+## 边角审查轮（2026-10-24）：server.mjs 未审路由 + 前端注入层，两份报告 27 条
+
+前四轮只审了「改动过的文件」和「已审模块」。这一轮补上最后两块：**server.mjs 的全部路由**
+（4200+ 行，之前只审过 diff）与**前端注入层全文**（editor-shell 121KB + 三个面板）。
+两个 agent 报 12 + 15 条，修了 17 条，其余登记。
+
+### 一、两个高危 SSRF
+
+| 位置 | 问题 | 修法 |
+|---|---|---|
+| `/job/create` 的 `jdLink` | 只有 `^https?://` 校验 → 任意内网/云元数据地址都能被服务端抓取，**原文写进 meta.jd 并回显**（实测抓到本机 secret） | 过 `assertSafeBaseURL`（与 `/ai/jd-text` 同一道）+ `redirect:'error'` |
+| `/ai/jd-text` | `assertSafeBaseURL` 只查首个 URL，`fetch` 默认跟随重定向 → 302 绕过黑名单（实测 302 到 169.254.169.254 照样抓） | `redirect:'error'`（同 `llm.mjs` 的 `listModels`） |
+
+### 二、前端注入层
+
+| 问题 | 修法 |
+|---|---|
+| **[高] 「接受建议」按全文首个匹配替换，忽略 change.zid 锚点** —— 简历里两段相同文字时改错段落，面板还显示「已接受」 | 两条替换路径（`applyChange` 与确认门路径）都限定在锚点节点内替换；**无锚点且原文多处出现 → 拒绝**（「无法确定改哪一处」）。新增浏览器回归测试：同文两段 → 只改锚点那段（已反向验证会红） |
+| **[中] 面板缓存的 baseRev 不随正文自动保存刷新** → 用户改字后接受建议必 409，DOM 改了但不落盘 | 保存前先取最新 rev；baseRev 过期再刷一次重试一次 |
+| **[中] 区域列表行是可点 div，无 role/tabindex** → 纯键盘用户完全走不到区域 | 加 `role="button" tabindex="0"` + Enter/Space（对齐素材卡的做法） |
+| **[低] homeBtn 的 class/title 改动随保存落进用户文档文件** | 加入保存时的还原名单 |
+| **[低] 标签页不可见时仍每 2.5 秒轮询 /job/changes**（服务端每次重解析全文） | 不可见时不轮询 |
+| **[低] 符号按钮只有 title，可访问名是符号本身** | 补 `aria-label` |
+
+### 三、服务端其余
+
+- **渲染闸门只管 `/pdf` 与 `/export`** → `/snapshot/pdf`、`POST /render`、`POST /export` 各自无限并发拉 Chromium → 全部纳入闸门
+- **AI 闸门只匹配 `^/ai/`** → `/eval/create` 与 `/restructure` 直连 LLM 不受限 → 纳入
+- **`/restructure` 不取文档锁、不做冲突检测** → 与 `/save` 并发时静默覆盖用户刚存的内容（实测用户的编辑消失）→ **未修**（要动结构化的事务语义），已登记
+- **恢复的记录只校验 id、不校验字段形状** → 恶意备份的 `materials.tags` 非数组 → 素材库整页 500 → 恢复侧校验形状
+- **恢复的投递记录 docId 未校验** → `/app/archive-regenerate` 路径穿越到数据根外 → 恢复侧校验 docId
+- **replace 恢复后四个 JSON 权限回退到 0644** → 复制后统一收紧
+- **`/app/update` 写 jd 无 64KB 上限**（`/app/add` 有）→ 补上限
+- **`GET /snapshot/pdf` 没登记进 `WRITE_ON_GET`** → 迁移持锁时仍写盘 → 登记
+- **`GET /backup` 不取 rootLock** → 迁移中能下载到撕裂的备份 → **未修**（取排他锁会挡住备份），已登记
+- **首页每张岗位卡都重读 applications.json** → 开销 O(文档数 × 投递数) → **未修**（改动面在首页模板），已登记
+- **死端点 `/version/create`（与 /job/create 并行的重复实现）与 `/app/jd`** → 前端零引用 → 删除（-39 行），ROUTES_FROZEN 与 S4B-12 断言同步更新
+
+### 四、ponytail 简化批
+
+- 抽出 `jsStr(v) = escAttr(JSON.stringify(v))`：20 处同款写法统一走一个 helper（少写 20 个字符，也少一个能写错的地方——上一轮我自己漏转义 4 处正是这个坑），并把 4 处事件属性里裸的 `'…'` JS 串插值也改掉
+- 删 3 个全仓无调用的死函数（`edNewZid` / `entryPair` / `isStale`）
+- 删 tx.mjs 里不可达的兜底（unlink 失败时改名 `.stuck`：unlink 与 rename 对目录权限要求相同 → 改名同样失败 → 不可达）
+- 删没人用的返回值（`cleanupOrphanArtifacts` 的 removed 计数）
+
+### 五、没改的（登记，防下轮重复讨论）
+
+- **1280–1439px 档切到非「审阅」页签会折叠整条右栏** —— 这是 S4a-T9 的设计（`test-editor.mjs` 有断言守着）✗，注释里承诺的「竖标签条」从未实现 ✗。属设计取舍，要改需先定方案
+- **三份「正文查找替换」重复实现**（job-panel / ai-panel / editor-shell，editor-shell 那份是对的）→ 抽公共 helper 需新增文件与 script 标签，本轮只把行为修对，登记待做
+- **恢复出的记录 id 口径**已对齐写端点 ✓（评估记录是 `ev-` 前缀，单独一套）
+
+### 六、验收
+
+- 四件套：structure **129 ✅** / main **346 ✅** / render ✅ / privacy ✅（全 exit 0）
+- 新增浏览器回归：同文两段只改锚点那段（反向验证过会红）
+- launchd 服务已重启，8 个页面浏览器实测 0 控制台错误 / 0 可见 emoji / 0 横向溢出 / 0 注入

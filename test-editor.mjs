@@ -1105,7 +1105,7 @@ const ED_DOC = 'ed-fixture';
 const JOB_DOC = 'ed-fixture-v2';
 {
   let tpl = assembleTemplate('classic');   // 夹具经装配生成（themes 唯一源），不直读 template.html
-  const projects = '<div class="entry-head" data-zid="za7b8c9d0"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024-2025</div></div>\n<ul><li data-zid="za1b2c3d4">旧项目描述</li></ul>\n<div class="entry-head" data-zid="zc9d8e7f2"><div class="entry-title">项目B</div><div class="entry-role">开发</div><div class="entry-date">2023</div></div>\n<ul><li data-zid="zb4c5d6e7">项目B描述</li></ul>';
+  const projects = '<div class="entry-head" data-zid="za7b8c9d0"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024-2025</div></div>\n<ul><li data-zid="zd1e2f3a4">旧项目描述</li><li data-zid="za1b2c3d4">旧项目描述</li></ul>\n<div class="entry-head" data-zid="zc9d8e7f2"><div class="entry-title">项目B</div><div class="entry-role">开发</div><div class="entry-date">2023</div></div>\n<ul><li data-zid="zb4c5d6e7">项目B描述</li></ul>';
   tpl = tpl.replaceAll('{{NAME}}', () => '测试员').replaceAll('{{CONTACT}}', () => 'test@example.com')
     .replaceAll('{{INTENT}}', () => '测试').replaceAll('{{SUMMARY}}', () => '摘要文本').replaceAll('{{SKILLS}}', () => '<p>技能一：内容</p>')
     .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => projects).replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => ED_DOC);
@@ -1121,7 +1121,7 @@ const JOB_DOC = 'ed-fixture-v2';
   fs.writeFileSync(matsPath, JSON.stringify(matsArr));
   meta[JOB_DOC] = {
     parent: ED_DOC, company: '浏览器测试公司', role: '前端工程师', jd: 'React', createdAt: new Date().toISOString(), tag: '浏览器测试', rev: 5,
-    zones: { za1b2c3d4: { zone: 'project', status: 'confirmed' }, za7b8c9d0: { zone: 'project', status: 'confirmed' }, zc9d8e7f2: { zone: 'project', status: 'confirmed' }, zb4c5d6e7: { zone: 'work', status: 'confirmed' } },
+    zones: { za1b2c3d4: { zone: 'project', status: 'confirmed' }, zd1e2f3a4: { zone: 'project', status: 'confirmed' }, za7b8c9d0: { zone: 'project', status: 'confirmed' }, zc9d8e7f2: { zone: 'project', status: 'confirmed' }, zb4c5d6e7: { zone: 'work', status: 'confirmed' } },
     job: {
       status: 'draft', sourceSnap: '', sourceHash: '', materials: [], generatedAt: null, deliveredAt: null, summary: '',
       changes: [
@@ -1296,6 +1296,15 @@ try {
     const disk4 = fs.readFileSync(path.join(dataRoot, 'docs', JOB_DOC + '.html'), 'utf8');
     if (!disk4.includes('新项目描述（定制）')) bad('接受的修改未落盘');
     else ok('接受的修改落盘');
+    // 同文两段：锚定建议必须只改自己那段（2026-10-22 审查 [高]：
+    // 「按全文首个匹配」会改错段落，而面板照样显示「已接受」）
+    const byZid = (zid) => {
+      const m = disk4.match(new RegExp('data-zid="' + zid + '"[^>]*>([^<]*)'));
+      return m ? m[1] : '';
+    };
+    if (byZid('za1b2c3d4') !== '新项目描述（定制）') bad('锚点段未被修改：' + byZid('za1b2c3d4'));
+    else if (byZid('zd1e2f3a4') !== '旧项目描述') bad('同文的另一段被误改：' + byZid('zd1e2f3a4'));
+    else ok('接受建议只改锚点那一段（同文另一段未动）');
     const st = await page.evaluate(() => fetch('/job/changes?id=' + window.__edDocId).then((r) => r.json()));
     const accepted = st.job.changes.find((c) => c.id === 'bt1');
     if (!accepted || accepted.status !== 'accepted') bad('审阅状态未回写服务端'); else ok('审阅状态回写并持久化');
