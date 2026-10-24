@@ -58,21 +58,35 @@ install_cleanup() {
   trap 'exit 143' TERM
   trap 'exit 129' HUP
 }
+# 就绪等待预算：三个量都真实生效，缺一不可。
+#   RESUME_READY_BUDGET_S   整个等待的墙钟总预算（秒）
+#   RESUME_READY_CONNECT_S  单次请求的连接超时（秒）
+#   RESUME_READY_REQUEST_S  单次请求的总超时（秒）
+# 单次请求有上限 → 服务接受连接却不返回时不会卡死在本轮请求里。
+# 整个等待另有墙钟预算 → 真实总时长上界 ≈ 预算 + 秒级取整(1s) + 一次在途请求(≤2s) ≈ 13s。
+# （不是「轮数 × 单次超时」的换算说法；超时后必须明确失败并走 cleanup。）
+RESUME_READY_BUDGET_S=${RESUME_READY_BUDGET_S:-10}
+RESUME_READY_CONNECT_S=${RESUME_READY_CONNECT_S:-1}
+RESUME_READY_REQUEST_S=${RESUME_READY_REQUEST_S:-2}
 # 就绪判定 = 「子进程仍属于本轮」+ 「它自己的启动标记已出现」+ 「URL 真的应答」。
 # 不看固定 sleep，也不把别的服务的响应当成测试就绪。
 wait_ready() {
-  local pid=$1 url=$2 logfile=$3 marker=$4 round
-  for ((round=0; round<100; round++)); do
+  local pid=$1 url=$2 logfile=$3 marker=$4 deadline
+  deadline=$(( SECONDS + RESUME_READY_BUDGET_S ))
+  while :; do
     if ! child_is_owned "$pid"; then
       tail -n 20 "$logfile" >&2
       fail "本轮测试子进程启动失败: $pid"
     fi
     if grep -qF -- "$marker" "$logfile" &&
-       curl -fsS "$url" >/dev/null 2>&1; then return 0; fi
+       curl -fsS --connect-timeout "$RESUME_READY_CONNECT_S" --max-time "$RESUME_READY_REQUEST_S" "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then break; fi
     sleep 0.1
   done
   tail -n 20 "$logfile" >&2
-  fail "本轮测试服务未在时限内就绪: $url"
+  fail "本轮测试服务未在时限内就绪: $url（总预算 ${RESUME_READY_BUDGET_S}s，单次请求上限 ${RESUME_READY_REQUEST_S}s）"
 }
 # 端口：本轮临时分配（PORT=0 → 内核分配）。显式指定 PORT 时若被占用直接失败，不杀占用者。
 # 五个端口在同一批临时监听期间分配，保证批内互不重复；释放到真正启动之间仍有竞争，启动失败即报错。
