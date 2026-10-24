@@ -258,12 +258,9 @@ export function commitTx(root, txId) {
   const dir = txDir(root);
   // 标记（.json）先删：它删掉就等于「本事务已提交」，残留的载荷只是垃圾（由启动清理回收）。
   // 标记删不掉时不能静默：残留标记会让下次启动把「已确认成功的保存」回滚成旧版本（2026-10-22 审查）。
-  // → 改名为 <txId>.json.stuck（恢复流程只扫 .json 结尾 → 不会误判为待恢复），并明确记一条。
+  // （改名兜底试过：unlink 与 rename 对目录权限的要求相同 → unlink 失败时 rename 同样失败 → 不可达，已删。）
   try { fs.unlinkSync(path.join(dir, txId + '.json')); }
-  catch (e) {
-    try { fs.renameSync(path.join(dir, txId + '.json'), path.join(dir, txId + '.json.stuck')); }
-    catch (e2) { console.error('[tx] 提交后标记残留（下次启动可能回滚该次保存）: ' + txId + ' ' + (e2 && e2.message || e2)); }
-  }
+  catch (e) { console.error('[tx] 提交后标记残留（下次启动可能回滚该次保存）: ' + txId + ' ' + (e && e.message || e)); }
   for (const ext of ['.meta.json', '.html']) { try { fs.unlinkSync(path.join(dir, txId + ext)); } catch {} }
 }
 
@@ -299,7 +296,6 @@ export function dropSupersededTx(root, docId) {
  *      恢复侧按条目形状校验会整包拒掉（用户的备份从此不可用，2026-10-22 审查实测）。
  */
 function cleanupOrphanArtifacts(root, txDirPath) {
-  const removed = { txPayloads: 0, tmpFiles: 0 };
   try {
     const files = fs.readdirSync(txDirPath);
     const marked = new Set(files.filter((f) => f.endsWith('.json') && !f.endsWith('.meta.json'))
@@ -308,7 +304,7 @@ function cleanupOrphanArtifacts(root, txDirPath) {
       const m = /^(.*)\.(?:html|meta\.json)$/.exec(f);
       if (!m) continue;
       if (marked.has(m[1])) continue;          // 有标记 → 交给恢复流程
-      try { fs.unlinkSync(path.join(txDirPath, f)); removed.txPayloads++; } catch {}
+      try { fs.unlinkSync(path.join(txDirPath, f)); } catch {}
     }
   } catch {}
   for (const sub of ['docs', 'pdfs', 'snapshots', '.']) {
@@ -317,10 +313,9 @@ function cleanupOrphanArtifacts(root, txDirPath) {
     try { files = fs.readdirSync(d); } catch { continue; }
     for (const f of files) {
       if (!f.endsWith('.tmp')) continue;
-      try { fs.unlinkSync(path.join(d, f)); removed.tmpFiles++; } catch {}
+      try { fs.unlinkSync(path.join(d, f)); } catch {}
     }
   }
-  return removed;
 }
 
 export function recoverPending(root, { restoreDoc } = {}) {

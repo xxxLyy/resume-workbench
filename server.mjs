@@ -1057,13 +1057,17 @@ const escAttr = (s) => escHtml(s).replace(/"/g, '&quot;');   // 属性值转义�
 //   ① HTML 文本节点 → escHtml（引号在文本节点里无害）
 //   ② HTML 属性值 → escAttr（不转义 " 就能闭合属性注入事件处理器；实测 '" onmouseover="x' 可打穿）
 //   ③ JS 字符串上下文（onclick/onsubmit 里的 '...'）→ escAttr 不够！单引号能闭合 JS 串，
-//      必须先 JSON.stringify 成 JS 字面量、再按 HTML 属性转义：escAttr(JSON.stringify(v))
+//      必须先 JSON.stringify 成 JS 字面量、再按 HTML 属性转义：jsStr(v)
 //   ④ 内联 <script> 里的 JSON → jsonScript（见下）
 // 不要把 escHtml 改成「顺手也转义双引号」：那会打穿 docInfo.title → jsonAttr → data-doc-titles
 // 的实体还原链（属性里的 &quot; 被浏览器解码回 " 后 JSON.parse 失败，标题全丢）。
 // 单引号属性内嵌 JSON：沿用本文件既有 JSON.stringify(...).replace(...) 写法（见 shellBlock 的 __MATS__/__JOB_INFO__、
 // 备份页 DATA），把唯一能截断单引号属性的 ' 换成 JSON 转义 \u0027 —— 属性里不再出现裸 '，JSON.parse 原样还原为 '。
 // 值（docInfo.title）已过 escHtml：& < > 以实体形式存在并由属性解析还原，故此处绝不能再转 &（会把 &amp; 变成 &amp;amp;）。
+// JS 字符串上下文（onclick/onsubmit 里的 '…'）：先 JSON.stringify 成 JS 字面量、再按 HTML 属性转义。
+// 单引号能闭合 JS 串 → 只 escAttr 不够（实测 "x'+alert(1)+'b" 会执行）。
+// 同款写法全仓统一走这里：少写 20 个字符，也少一个能写错的地方。
+const jsStr = (v) => escAttr(JSON.stringify(v));
 const jsonAttr = (v) => JSON.stringify(v).replace(/'/g, '\\u0027');
 // 内联 <script> 里的 JSON：必须连 < 一起转，否则数据里的 "</script>" 会闭合脚本标签（实测可执行任意脚本）。
 // 不转 &：值多已过 escHtml（& < > 以实体存在），此处再转会变成 &amp;amp;
@@ -1161,10 +1165,10 @@ function listPage(showArchived = false) {
       <a href="/diff?base=${id}">对比</a> ·
       ${m.parent ? `<a href="/diff?base=${escAttr(m.parent)}&to=${id}">对比母版</a> · ` : ''}
       ${info.degraded ? `<form method="post" action="/restructure?id=${id}" style="display:inline" onsubmit="return confirm('用 LLM 重新结构化这份文档？会先自动留快照')"><button class="secondary">${icon('refresh-cw', 13)} 结构化</button></form> · ` : ''}
-      <form method="post" action="/archive?id=${id}" style="display:inline" onsubmit="event.preventDefault();fetch('/archive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'${id}'})}).then(()=>location.reload())"><button class="secondary">${m.archivedAt ? icon('archive', 13) + ' 取消归档' : icon('archive', 13) + ' 归档'}</button></form> ·
+      <form method="post" action="/archive?id=${id}" style="display:inline" onsubmit="event.preventDefault();fetch('/archive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:${jsStr(id)}})}).then(()=>location.reload())"><button class="secondary">${m.archivedAt ? icon('archive', 13) + ' 取消归档' : icon('archive', 13) + ' 归档'}</button></form> ·
       <!-- tag 是 JS 字符串上下文（onsubmit 里的 prompt 默认值）：escAttr 不够，单引号能闭合 JS 串 →
            必须 JSON.stringify 成 JS 字面量后再按 HTML 属性转义。tag 本身由 company·role 派生，不经 /tag 的 '" 清洗。 -->
-      <form method="post" action="/tag" style="display:inline" onsubmit="event.preventDefault();const t=prompt('标签（≤20字，留空清除）',${escAttr(JSON.stringify(tag))});if(t!==null){fetch('/tag',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'${id}',tag:t})}).then(()=>location.reload())}"><button class="secondary" aria-label="标签" title="标签">${icon('tag', 13)}</button></form> ·
+      <form method="post" action="/tag" style="display:inline" onsubmit="event.preventDefault();const t=prompt('标签（≤20字，留空清除）',${jsStr(tag)});if(t!==null){fetch('/tag',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:${jsStr(id)},tag:t})}).then(()=>location.reload())}"><button class="secondary" aria-label="标签" title="标签">${icon('tag', 13)}</button></form> ·
       <form method="post" action="/duplicate?id=${id}" style="display:inline" onsubmit="event.preventDefault();const t=prompt('新文档 id（小写字母数字横线）');if(t){this.action='/duplicate?id=${id}&to='+t;this.submit()}"><button>复制</button></form> ·
       <form method="post" action="/delete?id=${id}" style="display:inline" onsubmit="return confirm('确认删除 ${id}？快照会保留')"><button class="danger">删除</button></form>
       </div></details>
@@ -2578,12 +2582,12 @@ async function handler(req, res) {
         ${(m.facts && Object.entries(m.facts).filter(([k, v]) => v).map(([k, v]) => `<div style="font-size:12px;color:var(--mut);margin-top:4px"><b style="color:var(--fg)">${escHtml(FACT_LABELS[k] || k)}</b>：${escHtml(v)}</div>`).join('')) || ''}
         ${m.attach ? `<div style="font-size:12px;color:var(--mut);margin-top:4px">附件：${escHtml(m.attach)}</div>` : ''}
         <div style="margin-top:6px;font-size:12px">${m.factStatus === 'confirmed'
-          ? `<button class="secondary" onclick="matStatus(${escAttr(JSON.stringify(m.id))},'pending')">取消确认</button>`
-          : `<button onclick="matStatus(${escAttr(JSON.stringify(m.id))},'confirmed')">确认可用于生成</button>`}
-          ${m.factStatus !== 'outdated' ? `<button class="secondary" onclick="matStatus(${escAttr(JSON.stringify(m.id))},'outdated')">标记过时</button>` : `<button class="secondary" onclick="matStatus(${escAttr(JSON.stringify(m.id))},'pending')">恢复待确认</button>`}
-          <button class="secondary" onclick="matEdit(${escAttr(JSON.stringify(m.id))})">${icon('pencil', 13)} 编辑</button> <button class="danger" onclick="matDel(${escAttr(JSON.stringify(m.id))})">${icon('trash-2', 13)} 删除</button></div>
+          ? `<button class="secondary" onclick="matStatus(${jsStr(m.id)},'pending')">取消确认</button>`
+          : `<button onclick="matStatus(${jsStr(m.id)},'confirmed')">确认可用于生成</button>`}
+          ${m.factStatus !== 'outdated' ? `<button class="secondary" onclick="matStatus(${jsStr(m.id)},'outdated')">标记过时</button>` : `<button class="secondary" onclick="matStatus(${jsStr(m.id)},'pending')">恢复待确认</button>`}
+          <button class="secondary" onclick="matEdit(${jsStr(m.id)})">${icon('pencil', 13)} 编辑</button> <button class="danger" onclick="matDel(${jsStr(m.id)})">${icon('trash-2', 13)} 删除</button></div>
         <details open style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--mut)">事实层</summary>
-          <form class="mat-facts" style="margin-top:6px;font-size:13px" onsubmit="return matFacts(event,${escAttr(JSON.stringify(m.id))})">
+          <form class="mat-facts" style="margin-top:6px;font-size:13px" onsubmit="return matFacts(event,${jsStr(m.id)})">
             ${FACT_KEYS.map((k) => `<p style="margin:2px 0">${FACT_LABELS[k]} <input name="f_${k}" value="${escAttr((m.facts || {})[k] || '')}" style="width:60%"></p>`).join('')}
             <p style="margin:2px 0">状态 <select name="f_factStatus">
               <option value="pending"${m.factStatus === 'pending' ? ' selected' : ''}>待确认</option>
@@ -2795,9 +2799,9 @@ async function handler(req, res) {
               <a href="/snapshot/view?id=${escAttr(id)}&ts=${escAttr(ts)}">预览</a> ·
               <a href="/snapshot/pdf?id=${escAttr(id)}&ts=${escAttr(ts)}" target="_blank">下载该版本 PDF</a> ·
               <a href="/diff?base=${escAttr(id)}@${escAttr(ts)}&to=${escAttr(id)}">对比当前</a> ·
-              <button class="secondary" style="padding:2px 8px" onclick="snapNote(${escAttr(JSON.stringify(id))},${escAttr(JSON.stringify(ts))})">${icon('pencil', 13)}</button>
-              <button class="secondary" style="padding:2px 8px" onclick="snapBaseline(${escAttr(JSON.stringify(id))},${escAttr(JSON.stringify(ts))})" aria-label="设为基准" title="设为基准">${icon('pin', 13)}</button>
-              <form method="post" action="/rollback?id=${escAttr(id)}&ts=${escAttr(ts)}" style="display:inline" onsubmit="return confirm('回滚到 ' + ${escAttr(JSON.stringify(ts))} + '？当前版本会先自动留一份快照')"><button class="secondary" style="padding:2px 8px">回滚</button></form>
+              <button class="secondary" style="padding:2px 8px" onclick="snapNote(${jsStr(id)},${jsStr(ts)})">${icon('pencil', 13)}</button>
+              <button class="secondary" style="padding:2px 8px" onclick="snapBaseline(${jsStr(id)},${jsStr(ts)})" aria-label="设为基准" title="设为基准">${icon('pin', 13)}</button>
+              <form method="post" action="/rollback?id=${escAttr(id)}&ts=${escAttr(ts)}" style="display:inline" onsubmit="return confirm('回滚到 ' + ${jsStr(ts)} + '？当前版本会先自动留一份快照')"><button class="secondary" style="padding:2px 8px">回滚</button></form>
             </div>
           </div>
         </li>`;
@@ -2935,12 +2939,12 @@ async function handler(req, res) {
           ${a.nextStep || a.dueDate ? `<div style="font-size:12px;color:var(--mut)">${a.nextStep ? '下一步：' + escHtml(a.nextStep) : ''}${a.dueDate ? ' 截止：' + escHtml(a.dueDate) : ''}</div>` : ''}
           ${a.note ? `<div style="font-size:12px;color:var(--mut)">${escHtml(a.note)}</div>` : ''}
           <div style="margin-top:4px;font-size:12px">
-            ${idx > 0 ? `<button class="secondary" style="padding:2px 8px" onclick="appPatch(${escAttr(JSON.stringify(a.id))},{status:APP_STATUSES[${idx - 1}]})">◀</button>` : ''}
-            ${idx < APP_STATUSES.length - 1 && !APP_TERMINAL.includes(a.status) ? `<button class="secondary" style="padding:2px 8px" onclick="appPatch(${escAttr(JSON.stringify(a.id))},{status:APP_STATUSES[${idx + 1}]})">▶</button>` : ''}
-            <select style="font-size:12px;padding:2px" aria-label="状态" onchange="if(this.value)appPatch(${escAttr(JSON.stringify(a.id))},{status:this.value})"><option value="">⇅</option>${APP_STATUSES.map((s) => `<option value="${s}"${s === a.status ? ' selected' : ''}>${s}</option>`).join('')}</select>
+            ${idx > 0 ? `<button class="secondary" style="padding:2px 8px" onclick="appPatch(${jsStr(a.id)},{status:APP_STATUSES[${idx - 1}]})">◀</button>` : ''}
+            ${idx < APP_STATUSES.length - 1 && !APP_TERMINAL.includes(a.status) ? `<button class="secondary" style="padding:2px 8px" onclick="appPatch(${jsStr(a.id)},{status:APP_STATUSES[${idx + 1}]})">▶</button>` : ''}
+            <select style="font-size:12px;padding:2px" aria-label="状态" onchange="if(this.value)appPatch(${jsStr(a.id)},{status:this.value})"><option value="">⇅</option>${APP_STATUSES.map((s) => `<option value="${s}"${s === a.status ? ' selected' : ''}>${s}</option>`).join('')}</select>
             <a href="/app?id=${escAttr(a.id)}">详情</a>
-            <button class="secondary" style="padding:2px 8px" aria-label="快速编辑" onclick="appEdit(${escAttr(JSON.stringify(a.id))})">${icon('pencil', 13)}</button>
-            <button class="danger" style="padding:2px 8px;min-height:28px" aria-label="删除投递" onclick="appDel(${escAttr(JSON.stringify(a.id))})">${icon('trash-2', 13)}</button>
+            <button class="secondary" style="padding:2px 8px" aria-label="快速编辑" onclick="appEdit(${jsStr(a.id)})">${icon('pencil', 13)}</button>
+            <button class="danger" style="padding:2px 8px;min-height:28px" aria-label="删除投递" onclick="appDel(${jsStr(a.id)})">${icon('trash-2', 13)}</button>
           </div>
         </div>`;
       };
@@ -4025,7 +4029,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       // S4a 上线后修复3：可投递改为显式确认——整体审阅完成 + 当前 PDF 才出按钮；确认后 S1 flow 契约不变
       const flowNow = flowOf(meta);
       const confirmDeliverable = meta.parent && pdfCurrent && expChecks.reviewComplete && flowNow !== 'reviewed'
-        ? `<form method="post" action="/job/changes?id=${id}" style="display:inline" onsubmit="event.preventDefault();fetch('/job/changes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'${id}',status:'deliverable'})}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);location.reload()}).catch(function(e){alert('确认失败：'+e.message)})"><button class="ok" type="submit">确认可投递（整体审阅已完成）</button></form>`
+        ? `<form method="post" action="/job/changes?id=${id}" style="display:inline" onsubmit="event.preventDefault();fetch('/job/changes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:${jsStr(id)},status:'deliverable'})}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);location.reload()}).catch(function(e){alert('确认失败：'+e.message)})"><button class="ok" type="submit">确认可投递（整体审阅已完成）</button></form>`
         : flowNow === 'reviewed' ? badge('ok', '已确认可投递')
         : `<span class="badge mute" title="整体审阅完成 + 当前 PDF 后可确认">${icon('circle-help', 11)}未确认可投递</span>`;
       const versionLine = pdfCurrent

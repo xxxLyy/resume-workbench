@@ -4702,7 +4702,7 @@ node --input-type=module << 'EOF'
 import { readFileSync } from 'node:fs';
 const fail = (m) => { console.error('❌ XSS-4 ' + m); process.exit(1); };
 const EXTERNAL = /\b(m\.id|a\.id|d\.id|ts|channel|snapTs|docId|link|note|company|role|status|exportId|base\.label|toRaw|fallbackId)\b/;
-const SAFE_FN = /(escAttr|escHtml|jsonScript|jsonAttr|encodeURIComponent|safeUrl|sanitizeFileName)\s*\(/;
+const SAFE_FN = /(escAttr|escHtml|jsonScript|jsonAttr|jsStr|encodeURIComponent|safeUrl|sanitizeFileName)\s*\(/;
 const ATTR = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*("([^"]*)"|'([^']*)')/g;
 for (const f of ['server.mjs', 'editor-shell.js', 'job-panel.js', 'zone-panel.js', 'ai-panel.js']) {
   const src = readFileSync('./' + f, 'utf8');
@@ -4728,7 +4728,7 @@ EOF
 # —— TX-GUARD：事务层的 4 个护栏（2026-10-22 审查修的缺陷类别守卫）——
 # ① 恢复时 docId 必须过 VALID_ID 闸门（否则伪造的 .tx 记录能写到数据根之外）
 # ② 启动清理：没有标记的孤儿载荷（.html/.meta.json）与 atomicWrite 残留的 .tmp 都要回收
-# ③ 提交后标记删不掉时改名成 .json.stuck（恢复流程只扫 .json 结尾 → 不会把已确认的保存回滚）
+# ③ 提交后标记删不掉 → 必须上报（静默吞掉 → 下次启动把已确认的保存回滚，且无人知晓）
 node --input-type=module << 'EOF'
 import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
 import { recoverPending, commitTx } from './tx.mjs';
@@ -4779,5 +4779,5 @@ fs.writeFileSync(path.join(root, 'docs-meta.json'), '{}');
 }
 
 fs.rmSync(root, { recursive: true, force: true });
-console.log('✅ TX-GUARD 事务层护栏（docId 闸门 / 孤儿与 .tmp 回收 / 提交标记 stuck）');
+console.log('✅ TX-GUARD 事务层护栏（docId 闸门 / 孤儿与 .tmp 回收 / 提交失败上报）');
 EOF
