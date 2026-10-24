@@ -1987,12 +1987,14 @@ FLOW2=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"
 echo '✅ 修复3 可投递契约统一（pending/skipped/待核对/全部完成四场景 + 显式确认 + 无自动标记 + flow 契约不变）'
 
 # ===== 16. 浏览器级保存语义（可选，需要本机 Chromium）=====
+# RELIABILITY_BROWSER_RESULT_BEGIN
 if node test-editor.mjs "$B" "$DOCID" "$RESUME_ROOT"; then
   echo '✅ 浏览器级保存/恢复/冲突/审阅验证'
 else
   RC=$?
   if [ "$RC" -eq 2 ]; then echo '⚠️ 跳过浏览器级验证（Chromium 不可用）'; else fail "浏览器级验证失败 (exit $RC)"; fi
 fi
+# RELIABILITY_BROWSER_RESULT_END
 
 # ===== 17. 真实数据指纹比对 =====
 REAL_AFTER=$(real_fp)

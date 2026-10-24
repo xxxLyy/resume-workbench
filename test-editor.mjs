@@ -17,7 +17,8 @@ import { assembleTemplate } from './template.mjs';
 import { paraFingerprint, contentFingerprint } from './evidence.mjs';
 
 const [base, docId, dataRoot] = process.argv.slice(2);
-if (!base || !docId || !dataRoot) { console.error('用法: node test-editor.mjs <baseURL> <docId> <dataRoot>'); process.exit(2); }
+// 参数错误是调用方问题，不是环境缺失：返回 1（失败），不得落到 2（仅浏览器环境不可用）。
+if (!base || !docId || !dataRoot) { console.error('用法: node test-editor.mjs <baseURL> <docId> <dataRoot>'); process.exit(1); }
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 let failures = 0;
 function ok(name) { console.log('  ✅ ' + name); }
@@ -1096,9 +1097,11 @@ await runS1T9Tests();
 // 节点段失败也要把浏览器段跑完：早退会让浏览器层结果整段消失（2026-10-22 审查）
 if (failures) console.error('❌ 事务/锁/冻结点验证失败 ' + failures + ' 项（继续跑浏览器段）');
 
+// RELIABILITY_RESOLVE_BEGIN
 let bin;
 try { bin = await resolveChromium(); }
-catch (e) { console.error('⚠️ Chromium 不可用，跳过浏览器级验证: ' + (e && e.message || e)); process.exit(2); }
+catch (e) { console.error('⚠️ Chromium 不可用，跳过浏览器级验证: ' + (e && e.message || e)); process.exit(failures > 0 ? 1 : 2); }
+// RELIABILITY_RESOLVE_END
 
 // ===== 浏览器测试专用夹具：带两个项目条目的文档 + 岗位草稿 =====
 const ED_DOC = 'ed-fixture';
@@ -1148,6 +1151,7 @@ const JOB_DOC = 'ed-fixture-v2';
   fs.writeFileSync(metaPath, JSON.stringify(meta));
 }
 
+// RELIABILITY_LAUNCH_BEGIN
 let browser;
 try {
   browser = await chromium.launch({ executablePath: bin });
@@ -1159,9 +1163,10 @@ try {
     browser = await chromium.launch({ executablePath: bin });
   } catch (e2) {
     console.error('⚠️ Chromium 不可用，跳过浏览器级验证: ' + (e2 && e2.message || e2));
-    process.exit(2);
+    process.exit(failures > 0 ? 1 : 2);
   }
 }
+// RELIABILITY_LAUNCH_END
 try {
   // ===== 1. 保存期间继续编辑：A 提交，B 期间产生，A 返回后 B 仍未保存 =====
   {

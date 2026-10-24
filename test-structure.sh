@@ -2010,6 +2010,7 @@ EOF
 
 # —— S2-A：注入层纪律（编辑器外壳注入 CSS 的边界护栏；S2 全程生效）——
 echo "── S2-A: 注入层纪律（仅屏幕 / 不声明正文文字属性 / !important 不增）+ print 仍在 + themes 零改动 ──"
+# RELIABILITY_BASELINE_BEGIN
 S2_BASE=5208e44
 # 浅克隆（--depth 1）里没有这个 revision → 跳过比对（不能误报「themes/ 被改动」）
 if git cat-file -e "$S2_BASE^{commit}" 2>/dev/null; then
@@ -2017,6 +2018,7 @@ if git cat-file -e "$S2_BASE^{commit}" 2>/dev/null; then
 else
   echo "⏭  S2 冻结件比对（跳过：本地没有 $S2_BASE 这个 revision，浅克隆）"
 fi
+# RELIABILITY_BASELINE_END
 grep -qF '@media print { .edit-toolbar, .page-line, .toast, .recovery-bar { display: none !important; } }' themes/resume-classic.css \
   || { echo '❌ 主题的 print 隐藏行被删改（冻结件必须自带打印隐藏规则）'; exit 1; }
 node --input-type=module << 'EOF'
@@ -3228,6 +3230,7 @@ const ms2 = Number(process.hrtime.bigint() - t1) / 1e6;
 assert(ms2 < 500, `正常 8000 段须 <500ms（实测 ${ms2.toFixed(1)}ms）`);
 console.log(`✅ S4B-11b 线性化（病态 ${ms.toFixed(1)}ms / 正常 ${ms2.toFixed(1)}ms）`);
 
+// RELIABILITY_PRIVATE_SMOKE_BEGIN
 // ④ 真实简历文档不受影响（干净 clone 没有 docs/ → 跳过，不崩）
 if (existsSync('./docs/linghaoxiang.html')) {
   const real = readFileSync('./docs/linghaoxiang.html', 'utf8');
@@ -3237,6 +3240,7 @@ if (existsSync('./docs/linghaoxiang.html')) {
 } else {
   console.log('⏭  S4B-11c 真实简历提取（跳过：干净 clone 无 docs/linghaoxiang.html）');
 }
+// RELIABILITY_PRIVATE_SMOKE_END
 EOF
 
 # —— S4B-12：/job/create 粘贴 JD 长度上限（二轮审查实测 2MB → meta 12.59MB）——
