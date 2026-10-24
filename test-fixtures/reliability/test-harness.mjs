@@ -86,6 +86,87 @@ if (mode === 'exit') {
     const readFileSync=()=>{throw new Error('不应读私有文档')};
     ${smoke}`, 0, '严格模式仍不依赖私有文档');
   console.log('✅ V1 strict browser/baseline gate 与可选私有 smoke');
+} else if (mode === 'lifecycle') {
+  // V2：端口/PID/日志必须属于本轮。两个并发实例不得互串、不得互杀；
+  // 显式占用端口要直接失败且不得清理占用者；中断只回收本轮子进程。
+  const helper = block('test.sh',
+    '# RELIABILITY_LIFECYCLE_BEGIN', '# RELIABILITY_LIFECYCLE_END');
+  const observer = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-harness-observer-'));
+  const runs = [];
+  const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+  const exists = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const unrelated = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
+    stdio: 'ignore'
+  });
+  try {
+    for (const token of ['A', 'B']) {
+      const manifest = path.join(observer, token + '.txt');
+      const child = spawn('bash', ['-c', `set -e
+        ${helper}
+        TEST_DIR=$(mktemp -d /tmp/resume-harness-case.XXXXXX)
+        install_cleanup
+        PORT=0
+        allocated=$(choose_test_ports)
+        read -r PORT LLM_PORT JD_PORT GAP_PORT RESTART_PORT <<< "$allocated"
+        node -e 'setInterval(()=>{},1000)' > "$TEST_DIR/server.log" 2>&1 &
+        owned=$!; track_child "$owned"
+        printf '%s\n' "$TOKEN" > "$TEST_DIR/request.log"
+        printf '%s\n%s\n%s\n' "$TEST_DIR" "$owned" "$allocated" > "$MANIFEST"
+        while :; do sleep 0.05; done
+      `], {
+        cwd: ROOT,
+        env: { ...process.env, TOKEN: token, MANIFEST: manifest },
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+      const closed = new Promise((resolve) => child.once('close', resolve));
+      runs.push({ child, manifest, token, closed });
+    }
+    const deadline = Date.now() + 10000;
+    while (!runs.every((r) => fs.existsSync(r.manifest)) && Date.now() < deadline) await pause(30);
+    for (const r of runs) {
+      assert(fs.existsSync(r.manifest), '夹具未就绪 ' + r.token);
+      const [dir, pid, ports] = fs.readFileSync(r.manifest, 'utf8').trim().split('\n');
+      r.dir = dir; r.pid = Number(pid);
+      assert.equal(fs.readFileSync(path.join(dir, 'request.log'), 'utf8').trim(), r.token);
+      assert.equal(new Set(ports.split(' ')).size, 5);
+    }
+    assert.notEqual(runs[0].dir, runs[1].dir, '目录必须隔离');
+    // 两轮端口也必须互不相同（否则并行时互相抢占）
+    const portSets = runs.map((r) => fs.readFileSync(r.manifest, 'utf8').trim().split('\n')[2]);
+    assert.notEqual(portSets[0], portSets[1], '两轮端口必须互不相同');
+    runs[0].child.kill('SIGTERM');
+    await runs[0].closed;
+    assert(!exists(runs[0].pid), '中断后的自有进程残留');
+    assert(!fs.existsSync(runs[0].dir), '中断后的临时根残留');
+    assert(exists(runs[1].pid), '中断 A 误杀 B');
+    assert(exists(unrelated.pid), '清理误杀未登记进程');
+    runs[1].child.kill('SIGTERM'); await runs[1].closed;
+    assert(!exists(runs[1].pid), 'B 自有进程残留');
+
+    // 显式端口被占用：必须直接失败，且不得清理占用者。
+    const occupied = await import('node:http').then(({ createServer }) =>
+      new Promise((resolve) => {
+        const s = createServer((q, r) => r.end('owned by fixture'));
+        s.listen(0, '127.0.0.1', () => resolve(s));
+      }));
+    try {
+      shellCase(helper + '\nchoose_test_ports', { PORT: String(occupied.address().port) },
+        1, '显式 PORT 被占用应失败');
+      assert(occupied.listening, '不能清理占用者');
+    } finally { await new Promise((resolve) => occupied.close(resolve)); }
+    console.log('✅ V2 并发实例、日志和 PID 清理隔离');
+  } finally {
+    for (const r of runs) {
+      if (r.child.exitCode === null && r.child.signalCode === null) r.child.kill('SIGTERM');
+      await r.closed;
+    }
+    unrelated.kill('SIGTERM');
+    await new Promise((resolve) => {
+      if (unrelated.exitCode !== null || unrelated.signalCode !== null) return resolve();
+      unrelated.once('close', resolve);
+    });
+    fs.rmSync(observer, { recursive: true, force: true });
+  }
 } else {
   console.error('未知模式: ' + mode + '（可用: exit|strict|lifecycle）');
   process.exit(2);

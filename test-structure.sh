@@ -4815,4 +4815,5 @@ EOF
 # 明确接入现有测试入口：这些用例随 test:all 一起跑，不再靠人工单独执行。
 node test-fixtures/reliability/test-harness.mjs exit
 node test-fixtures/reliability/test-harness.mjs strict
+node test-fixtures/reliability/test-harness.mjs lifecycle
 

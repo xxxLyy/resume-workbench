@@ -10,28 +10,118 @@ REAL_ROOT=$(pwd)
 command -v pdftotext >/dev/null || { echo '需要 poppler: brew install poppler'; exit 1; }
 command -v ffmpeg >/dev/null || { echo '需要 ffmpeg（视觉门禁不降级）: brew install ffmpeg'; exit 1; }
 # playwright-core 是唯一 npm 依赖：缺了就直接说「先 npm install」，
-# 不要让它在后面某个 node 调用里炸成「server 启动失败（端口 17899？）」这种误导信息
+# 不要让它在后面某个 node 调用里炸成「server 启动失败」这种误导信息
 [ -d node_modules/playwright-core ] || { echo '缺少依赖 playwright-core：先跑 npm install'; exit 1; }
+
+fail() { echo "❌ $1"; exit 1; }
+
+# RELIABILITY_LIFECYCLE_BEGIN
+# 本轮测试的资源所有权：端口动态分配、子进程逐一登记、临时目录与日志全在本轮内。
+# 只回收本轮直接启动的子进程；绝不按端口杀进程（会误杀别人的服务）。
+TEST_CHILDREN=()
+track_child() { TEST_CHILDREN+=("$1"); }
+forget_child() {
+  local wanted=$1 item
+  local kept=()
+  for item in "${TEST_CHILDREN[@]}"; do
+    [ "$item" = "$wanted" ] || kept+=("$item")
+  done
+  TEST_CHILDREN=("${kept[@]}")
+}
+# 归属判定 = 「父进程仍是本 shell」+ 「进程还活着」。PID 被系统复用后父 PID 不再是 $$，不会误杀。
+child_is_owned() {
+  local parent
+  parent=$(ps -o ppid= -p "$1" 2>/dev/null | tr -d '[:space:]')
+  [ "$parent" = "$$" ] && kill -0 "$1" 2>/dev/null
+}
+stop_child() {
+  local pid=$1 signal=${2:-TERM} round
+  if child_is_owned "$pid"; then
+    kill "-$signal" "$pid" 2>/dev/null || true
+    for ((round=0; round<20; round++)); do
+      child_is_owned "$pid" || break
+      sleep 0.05
+    done
+    if child_is_owned "$pid"; then kill -KILL "$pid" 2>/dev/null || true; fi
+  fi
+  wait "$pid" 2>/dev/null || true
+  forget_child "$pid"
+}
+cleanup() {
+  local pid
+  for pid in "${TEST_CHILDREN[@]}"; do stop_child "$pid"; done
+  if [ -n "${TEST_DIR:-}" ] && [ -d "$TEST_DIR" ]; then rm -rf "$TEST_DIR"; fi
+}
+install_cleanup() {
+  trap 'test_exit=$?; trap - EXIT; cleanup; exit "$test_exit"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+}
+# 就绪判定 = 「子进程仍属于本轮」+ 「它自己的启动标记已出现」+ 「URL 真的应答」。
+# 不看固定 sleep，也不把别的服务的响应当成测试就绪。
+wait_ready() {
+  local pid=$1 url=$2 logfile=$3 marker=$4 round
+  for ((round=0; round<100; round++)); do
+    if ! child_is_owned "$pid"; then
+      tail -n 20 "$logfile" >&2
+      fail "本轮测试子进程启动失败: $pid"
+    fi
+    if grep -qF -- "$marker" "$logfile" &&
+       curl -fsS "$url" >/dev/null 2>&1; then return 0; fi
+    sleep 0.1
+  done
+  tail -n 20 "$logfile" >&2
+  fail "本轮测试服务未在时限内就绪: $url"
+}
+# 端口：本轮临时分配（PORT=0 → 内核分配）。显式指定 PORT 时若被占用直接失败，不杀占用者。
+# 五个端口在同一批临时监听期间分配，保证批内互不重复；释放到真正启动之间仍有竞争，启动失败即报错。
+choose_test_ports() {
+  RESUME_TEST_REQUESTED_PORT="${PORT:-0}" node --input-type=module <<'NODE'
+import http from 'node:http';
+const requested = Number(process.env.RESUME_TEST_REQUESTED_PORT);
+if (!Number.isInteger(requested) || requested < 0 || requested > 65535) {
+  console.error('PORT 必须是 0–65535 的整数');
+  process.exit(1);
+}
+const servers = [];
+const ports = [];
+let failed = null;
+try {
+  for (let i = 0; i < 5; i++) {
+    const s = http.createServer(); servers.push(s);
+    await new Promise((resolve, reject) => {
+      s.once('error', reject);
+      s.listen(i === 0 ? requested : 0, '127.0.0.1', resolve);
+    });
+    ports.push(s.address().port);
+  }
+  console.log(ports.join(' '));
+} catch (e) {
+  failed = e;
+} finally {
+  await Promise.all(servers.map((s) => new Promise((resolve) => {
+    if (!s.listening) return resolve();
+    s.close(resolve);
+  })));
+}
+if (failed) {
+  console.error('端口分配失败: ' + (failed && failed.message || failed));
+  process.exit(1);
+}
+NODE
+}
+# RELIABILITY_LIFECYCLE_END
 
 TEST_DIR=$(mktemp -d /tmp/resume-isolated-test.XXXXXX)
 export RESUME_ROOT="$TEST_DIR/data"
-export PORT=${PORT:-17899}
 mkdir -p "$RESUME_ROOT/docs" "$RESUME_ROOT/snapshots" "$RESUME_ROOT/pdfs"
-
-cleanup() {
-  kill $SRV $LLM $JDSTUB 2>/dev/null || true
-  kill ${SRV2:-} ${SRV3:-} 2>/dev/null || true
-  # 按端口兜底清夹具服务：SRV2/SRV3 变量被后面夹具复用（附加f 与 T4-j），cleanup 只杀到最后一个，
-  # 前面夹具的孤儿进程占住 17902/17903 会让下一次整跑「夹具服务启动失败」。只清测试端口，不碰断言。
-  # lsof 双端口必须分开 -i（本机 lsof 4.91 对 `:a :b` 报 status error 退出非零 → 兜底曾整体失效）。
-  lsof -ti :17902 2>/dev/null | xargs kill 2>/dev/null || true
-  lsof -ti :17903 2>/dev/null | xargs kill 2>/dev/null || true
-  rm -rf "$TEST_DIR"
-  rm -f /tmp/resume-test-stub.log /tmp/resume-test-llm-last.json
-}
-trap cleanup EXIT
-
-fail() { echo "❌ $1"; exit 1; }
+install_cleanup
+PORT_VALUES=$(choose_test_ports) || { echo '❌ 测试端口不可用（未清理占用者）'; exit 1; }
+read -r PORT LLM_PORT JD_PORT GAP_PORT RESTART_PORT <<< "$PORT_VALUES"
+export PORT
+export RESUME_TEST_LLM_PORT="$LLM_PORT"
+export RESUME_TEST_JD_PORT="$JD_PORT"
 
 # ===== 真实数据指纹（前后必须一致）=====
 # 覆盖面（S1 扩面）：docs/*.html 内容、三个 JSON 内容、snapshots/ 与 pdfs/ 全文件列表+md5、
@@ -55,8 +145,8 @@ REAL_BEFORE=$(real_fp)
 echo '[]' > "$RESUME_ROOT/applications.json"
 echo '[]' > "$RESUME_ROOT/materials.json"
 echo '{}' > "$RESUME_ROOT/docs-meta.json"
-cat > "$RESUME_ROOT/config.json" << 'EOF'
-{"active":0,"profiles":[{"name":"stub","baseURL":"http://127.0.0.1:17900/v1","apiKey":"test-key","model":"stub-model"}]}
+cat > "$RESUME_ROOT/config.json" << EOF
+{"active":0,"profiles":[{"name":"stub","baseURL":"http://127.0.0.1:$LLM_PORT/v1","apiKey":"test-key","model":"stub-model"}]}
 EOF
 
 # ===== 假 PDF 生成器（真实可被 pdftotext 解析，文本层含 TESTPDF 标记）=====
@@ -112,7 +202,6 @@ http.createServer((q, s) => {
   q.on('data', (c) => b += c);
   q.on('end', () => {
     fs.writeFileSync('$TEST_DIR/llm-last.json', b.slice(0, 200000));
-    fs.copyFileSync('$TEST_DIR/llm-last.json', '/tmp/resume-test-llm-last.json');
     // S4a-T4 控制文件（不重启服务即可切换）：llm-slow=延迟毫秒（占住 running 窗口）；llm-err=5xx（错误回调路径）
     const respond = () => {
       if (q.url.includes('/models')) { s.writeHead(200, { 'Content-Type': 'application/json' }); return s.end(JSON.stringify({ data: [{ id: 'stub-model' }] })); }
@@ -178,17 +267,15 @@ http.createServer((q, s) => {
     if (slow > 0) return setTimeout(respond, slow);
     respond();
   });
-}).listen(17900, '127.0.0.1');
+}).listen(Number(process.env.RESUME_TEST_LLM_PORT), '127.0.0.1', () => console.error('READY LLM'));
 EOF
-node "$TEST_DIR/llm-stub.mjs" > /dev/null 2>&1 & LLM=$!
+node "$TEST_DIR/llm-stub.mjs" > "$TEST_DIR/llm.log" 2>&1 & LLM=$!; track_child "$LLM"
+wait_ready "$LLM" "http://127.0.0.1:$LLM_PORT/v1/models" "$TEST_DIR/llm.log" 'READY LLM'
 
 # ===== 启动被测服务（假渲染器注入）=====
-RESUME_RENDER_BIN="$TEST_DIR/fake-render.sh" node server.mjs > /tmp/resume-test-stub.log 2>&1 & SRV=$!
-trap cleanup EXIT
-sleep 0.6
-kill -0 $SRV 2>/dev/null || fail "server 启动失败（端口 $PORT？）"
+RESUME_RENDER_BIN="$TEST_DIR/fake-render.sh" node server.mjs > "$TEST_DIR/server.log" 2>&1 & SRV=$!; track_child "$SRV"
 B="http://localhost:$PORT"
-curl --retry 5 --retry-delay 0 --retry-connrefused -sf "$B/" -o /dev/null || fail "服务不可达"
+wait_ready "$SRV" "$B/" "$TEST_DIR/server.log" "简历平台: http://localhost:$PORT"
 
 # ===== 1. 首页与文档创建 =====
 curl -sf "$B/" | grep -q '简历工作台' || fail '首页缺标题'
@@ -695,9 +782,9 @@ for EP in ai/test settings ai/rewrite ai/chat ai/review ai/match tag app/add app
 done
 echo '✅ 兼容回归（标签/复制/删除/diff/统计/设置/坏 JSON 400）'
 # JD 链接 stub
-node -e "require('http').createServer((q,s)=>{s.writeHead(200,{'Content-Type':'text/html'});s.end('<html><body><script>var a=1;</script><h1>资深后端工程师</h1><p>五年 Node 经验</p></body></html>')}).listen(17901,'127.0.0.1')" > /dev/null 2>&1 & JDSTUB=$!
-sleep 0.3
-JDR=$(curl -s -X POST "$B/ai/jd-text" -H 'Content-Type: application/json' -d '{"url":"http://127.0.0.1:17901"}')
+node -e "require('http').createServer((q,s)=>{s.writeHead(200,{'Content-Type':'text/html'});s.end('<html><body><script>var a=1;</script><h1>资深后端工程师</h1><p>五年 Node 经验</p></body></html>')}).listen($JD_PORT,'127.0.0.1',()=>console.error('READY JD'))" > "$TEST_DIR/jd.log" 2>&1 & JDSTUB=$!; track_child "$JDSTUB"
+wait_ready "$JDSTUB" "http://127.0.0.1:$JD_PORT/" "$TEST_DIR/jd.log" 'READY JD'
+JDR=$(curl -s -X POST "$B/ai/jd-text" -H 'Content-Type: application/json' -d "{\"url\":\"http://127.0.0.1:$JD_PORT\"}")
 echo "$JDR" | grep -q '资深后端工程师' || fail 'JD 提取缺标题'
 echo "$JDR" | grep -q 'var a=1' && fail 'JD 提取未剔脚本'
 CODE=$(curl -s -X POST "$B/ai/jd-text" -H 'Content-Type: application/json' -d '{"url":"file:///etc/passwd"}' -o /dev/null -w '%{http_code}')
@@ -755,8 +842,8 @@ echo '✅ S3 /save 后 zones 与正文一致（孤儿清/缺失补）'
 # S3-T6：带 extra（chips 追问）请求——同一次捕获体上同时断言「最小化」与「追问进 prompt」
 AZ=$(curl -s -X POST "$B/ai/zone-analyze?id=$S3DOC" -H 'Content-Type: application/json' -d '{"zone":"work","extra":"量化数据够吗"}')
 echo "$AZ" | grep -q '"echoes"' || fail "S3 zone-analyze 返回结构化意见（模拟验证）: $(echo "$AZ" | head -c 160)"
-if grep -q 'MARKERZZ' /tmp/resume-test-llm-last.json 2>/dev/null; then fail 'S3 zone-analyze 请求泄漏其他区域全文（超出摘要窗口）'; fi
-grep -q '【追问】量化数据够吗' /tmp/resume-test-llm-last.json || fail 'S3 zone-analyze 追问文本未进 prompt'
+if grep -q 'MARKERZZ' "$TEST_DIR/llm-last.json" 2>/dev/null; then fail 'S3 zone-analyze 请求泄漏其他区域全文（超出摘要窗口）'; fi
+grep -q '【追问】量化数据够吗' "$TEST_DIR/llm-last.json" || fail 'S3 zone-analyze 追问文本未进 prompt'
 pass() { echo "✅ $1"; }
 pass "S3 zone-analyze 请求最小化（模拟验证）"
 RW=$(curl -s -X POST "$B/ai/zone-rewrite?id=$S3DOC" -H 'Content-Type: application/json' -d '{"zone":"work","instruction":"更精简"}')
@@ -943,36 +1030,37 @@ let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => {
 echo '✅ S4a /job/changes GET 新字段渐进默认（brief/evidence/genTasks/saveReceipts 摘要/reviewPos）'
 
 # —— 附加 f：事务失败共同恢复（RESUME_TEST_SAVE_GAP_MS 模拟两次 rename 之间被杀 → 重启恢复正文与 meta 一致）——
-# kill -9 只针对本测试自起的夹具服务（模拟进程崩溃，无 trap 可走）；主服务与真实数据不涉及。
+# 故障副本用 KILL 模拟进程崩溃（无 trap 可走）；只针对本测试自起的子进程，主服务与真实数据不涉及。
 GAPDOC=$(curl -s -X POST "$B/new" -o /dev/null -w '%{redirect_url}' | sed 's/.*id=//')
 [ -n "$GAPDOC" ] && [ -f "$RESUME_ROOT/docs/$GAPDOC.html" ] || fail 'S4a 附加f 夹具文档创建'
 curl -s -X POST "$B/save?id=$GAPDOC" --data-binary "<html><body><p>GAP-BASE 基线</p></body></html>" | grep -q '"ok":true' || fail 'S4a 附加f 基线保存'
 GAPREV=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]].rev)' "$RESUME_ROOT/docs-meta.json" "$GAPDOC")
-PORT2=17902
-RESUME_TEST_SAVE_GAP_MS=2500 PORT=$PORT2 node server.mjs > "$TEST_DIR/s4a-srv2.log" 2>&1 & SRV2=$!
-sleep 0.6
-kill -0 $SRV2 2>/dev/null || fail 'S4a 附加f 夹具服务启动失败'
+PORT2=$GAP_PORT
+RESUME_TEST_SAVE_GAP_MS=2500 PORT=$PORT2 node server.mjs > "$TEST_DIR/s4a-srv2.log" 2>&1 & SRV2=$!; track_child "$SRV2"
+wait_ready "$SRV2" "http://127.0.0.1:$PORT2/" "$TEST_DIR/s4a-srv2.log" "简历平台: http://localhost:$PORT2"
 node -e '
 const fs = require("fs");
 const h = fs.readFileSync(process.argv[2], "utf8").replace("GAP-BASE 基线", "GAP-MARKER 已写入新正文");
 fs.writeFileSync(process.argv[1], JSON.stringify({ requestId: "t3-req-gap", baseRev: Number(process.argv[3]), html: h, ops: [] }));
 ' "$TEST_DIR/t3-gap.json" "$RESUME_ROOT/docs/$GAPDOC.html" "$GAPREV"
 curl -s --max-time 20 -X POST "http://localhost:$PORT2/save?id=$GAPDOC" -H 'Content-Type: application/json' --data-binary "@$TEST_DIR/t3-gap.json" > "$TEST_DIR/t3-gap-resp.json" 2>/dev/null &
-GAPCURL=$!
+GAPCURL=$!; track_child "$GAPCURL"
 sleep 0.9          # 停在 rename#1（正文已写）与 rename#2（meta 未写）之间
-kill -9 $SRV2 2>/dev/null
+stop_child "$SRV2" KILL
 wait $GAPCURL 2>/dev/null || true   # 被杀服务的响应必然失败（curl 非零）——这正是夹具要的形态
+forget_child "$GAPCURL"
 grep -q '"ok":true' "$TEST_DIR/t3-gap-resp.json" && fail 'S4a 附加f 中断的保存不应有成功响应'
 grep -q 'GAP-MARKER' "$RESUME_ROOT/docs/$GAPDOC.html" || fail 'S4a 附加f 夹具未进入「正文已写、meta 未写」窗口（调整时序）'
 GAPREV_MID=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]].rev)' "$RESUME_ROOT/docs-meta.json" "$GAPDOC")
 [ "$GAPREV_MID" = "$GAPREV" ] || fail "S4a 附加f 中断点 meta rev 应未推进（$GAPREV→$GAPREV_MID）"
-PORT=$PORT2 node server.mjs > "$TEST_DIR/s4a-srv3.log" 2>&1 & SRV3=$!
-sleep 0.8
+PORT=$PORT2 node server.mjs > "$TEST_DIR/s4a-srv3.log" 2>&1 & SRV3=$!; track_child "$SRV3"
+wait_ready "$SRV3" "http://127.0.0.1:$PORT2/" "$TEST_DIR/s4a-srv3.log" "简历平台: http://localhost:$PORT2"
 grep -q 'GAP-MARKER' "$RESUME_ROOT/docs/$GAPDOC.html" && fail 'S4a 附加f 重启后未恢复旧正文'
 GAPREV_AFTER=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]].rev)' "$RESUME_ROOT/docs-meta.json" "$GAPDOC")
 [ "$GAPREV_AFTER" = "$GAPREV" ] || fail "S4a 附加f 恢复后 rev 应回到基线（$GAPREV→$GAPREV_AFTER）"
 TXLEFT=$(find "$RESUME_ROOT/.tx" -name '*.json' ! -name '*.meta.json' 2>/dev/null | wc -l | tr -d ' ')
 [ "$TXLEFT" = "0" ] || fail "S4a 附加f 恢复后 .tx 应清空（剩 $TXLEFT 条）"
+stop_child "$SRV3"   # 故障副本用完立即回收（不靠变量复用遗留孤儿）
 echo '✅ S4a 附加f：保存中断后重启恢复（旧正文+旧 meta 一致、.tx 清空）'
 
 # ===== S4a-T4：AI 任务可靠性（gen-start 锁内扫描 / 三类回调 taskId / 双层超时 / 取消 / 重启恢复）=====
@@ -1145,22 +1233,22 @@ echo '✅ S4a-T4 任务级总时限·启动时（过期残留不阻新任务）'
 
 # —— j. 重启恢复：隔离服务杀重启 → running → error(重启中断) 且 taskId=null ——
 echo 3000 > "$TEST_DIR/llm-slow"
-PORT2=17903
-PORT=$PORT2 node server.mjs > "$TEST_DIR/s4a-t4-srv2.log" 2>&1 & SRV2=$!
-sleep 0.6
-kill -0 $SRV2 2>/dev/null || fail 'S4a-T4 重启夹具服务启动失败'
+PORT2=$RESTART_PORT
+PORT=$PORT2 node server.mjs > "$TEST_DIR/s4a-t4-srv2.log" 2>&1 & SRV2=$!; track_child "$SRV2"
+wait_ready "$SRV2" "http://127.0.0.1:$PORT2/" "$TEST_DIR/s4a-t4-srv2.log" "简历平台: http://localhost:$PORT2"
 T4T5=$(curl -s -X POST "http://localhost:$PORT2/job/gen-start?id=$T4DOC&kind=changes" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.ok?j.taskId:"")})')
 [ -n "$T4T5" ] || fail 'S4a-T4 重启夹具任务启动失败'
 sleep 0.5          # 任务仍在 LLM 等待中（slow=3000）
-kill -9 $SRV2 2>/dev/null
+stop_child "$SRV2" KILL
 rm -f "$TEST_DIR/llm-slow"
 [ "$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]];const t=m.job.genTasks.changes;console.log(t.status+" "+t.taskId)' "$RESUME_ROOT/docs-meta.json" "$T4DOC")" = "running $T4T5" ] || fail 'S4a-T4 重启夹具未处于 running'
-PORT=$PORT2 node server.mjs > "$TEST_DIR/s4a-t4-srv3.log" 2>&1 & SRV3=$!
-sleep 0.8
+PORT=$PORT2 node server.mjs > "$TEST_DIR/s4a-t4-srv3.log" 2>&1 & SRV3=$!; track_child "$SRV3"
+wait_ready "$SRV3" "http://127.0.0.1:$PORT2/" "$TEST_DIR/s4a-t4-srv3.log" "简历平台: http://localhost:$PORT2"
 [ "$(gt_taskid "$T4DOC" changes)" = '' ] || fail "S4a-T4 重启恢复应置 taskId=null（得 $(gt_taskid "$T4DOC" changes)）"
 [ "$(gt_status "$T4DOC" changes)" = 'error' ] || fail "S4a-T4 重启恢复应置 error（得 $(gt_status "$T4DOC" changes)）"
 gt_error "$T4DOC" changes | grep -q '重启中断' || fail 'S4a-T4 重启恢复错误应说明中断可重试'
 [ "$(t4_count)" = "$((CNT_BEFORE+2))" ] || fail 'S4a-T4 重启恢复不得改动已落盘 changes'
+stop_child "$SRV3"   # 故障副本用完立即回收
 echo '✅ S4a-T4 重启恢复（running → error(重启中断) + taskId 置空 + 落盘数据不动）'
 
 # ===== S4a-T6：证据表后端（runner 接入 / ID 匹配 / 批次替换时点 / 来源即时计算 / reviewPos）=====
@@ -1965,7 +2053,7 @@ curl -s -X POST "$B/job/changes?id=$FIXDOC" -H 'Content-Type: application/json' 
 curl -s -X POST "$B/job/changes?id=$FIXDOC" -H 'Content-Type: application/json' -d '{"updates":[{"id":"fx-s","status":"resolved"}]}' | grep -q '"ok":true' || fail 'S4a 修复3 skipped 处理失败'
 [ "$(badge)" = "不可投递" ] || fail "S4a 修复3 待核对场景不应可投递（得 $(badge)）"
 FIXZ0TXT=$(node --input-type=module -e '
-import { parasOf } from "/Users/xxxly/resume/zone.mjs";
+import { parasOf } from "./zone.mjs";
 import { readFileSync } from "node:fs";
 const p = parasOf(readFileSync(process.argv[1], "utf8")).find((x) => x.zid === process.argv[2]);
 console.log(p ? p.text : "");
