@@ -28,6 +28,7 @@ import { sumExpandedBytes, MAX_EXPANDED_BYTES } from './restore-guard.mjs';   //
  */
 const JD_MAX_CHARS = 64 * 1024;
 import { applyOps, reviewConsistency, refFresh, buildEvidencePrompt, parseEvidence, buildInterviewPrompt, parseInterview, guardOps, exportChecks, layoutDiagnose } from './evidence.mjs';
+import { completeGenResult } from './gen-result.mjs';   // 任务完成判定纯函数（设计 §4）：显式成功/拒绝 + 独立工作副本
 import { assembleTemplate, themeRegistration } from './template.mjs';
 import { ICONS } from './vendors/icons.mjs';  // Lucide 图标数据（纯数据文件，零 npm 依赖）
 
@@ -352,23 +353,21 @@ function sweepGenTasks(id, m) {
   return next || m;
 }
 
-// 三类回调统一落账口（成功 / 错误 / 超时）：updateMeta 事务内校验 genTasks[kind].taskId 匹配且 status==='running'
-// ——不匹配（已取消 / 已被新任务取代 / 已重启清空）→ 丢弃不写；过期 → 只标超时、结果不落账。
-// apply(cur) 校验通过后对 cur.job 做成功落账变更，可返回附加响应字段；errMsg 存在则走错误落账。
+// 三类回调统一落账口（成功 / 错误 / 超时）：完成判定交给 gen-result.mjs 的纯函数（设计 §4）。
+// 约定：业务回调显式返回 {ok:true,extra} 或 {ok:false,error}，不得再靠自行改写任务状态暗示结果；
+// 判定在独立工作副本上运行，业务拒绝不提交副本里的内容/批次/版本变化；只有成功落账才写 done。
+// 落账用 updateMetaAll：mutator 返回 null = 放弃写入（迟到/被替代/已取消零落账），
+// 而不是 updateMeta 的 null = 删除本文档元数据（设计 §4「next=null 不得误用成删除」）。
 function finishGenTask(id, kind, taskId, apply, errMsg) {
-  let out = null;
-  updateMeta(root, id, (cur) => {
-    if (!cur || !cur.job) return cur;
-    const gt = cur.job.genTasks && cur.job.genTasks[kind];
-    if (!gt || gt.taskId !== taskId || gt.status !== 'running') return cur;   // 迟到回调：丢弃（不污染新状态）
-    if (genExpired(gt, Date.now())) { cur.job.genTasks[kind] = { ...gt, status: 'error', error: '任务超时' }; return cur; }   // 过期回调：结果不落账
-    if (errMsg !== undefined) { cur.job.genTasks[kind] = { ...gt, status: 'error', error: errMsg }; out = { ok: false, error: errMsg }; return cur; }
-    const extra = apply ? (apply(cur) || {}) : {};
-    cur.job.genTasks[kind] = { ...gt, status: 'done', error: null };
-    out = { ok: true, job: cur.job, ...extra };
-    return cur;
+  let out = { dropped: true };
+  updateMetaAll(root, (all) => {
+    const result = completeGenResult(all[id], {
+      kind, taskId, now: Date.now(), ttlMs: GEN_TTL_MS, apply, errMsg
+    });
+    out = result.out;
+    return result.next ? { ...all, [id]: result.next } : null;
   });
-  return out || { dropped: true };
+  return out;
 }
 
 // changes 成功落账（S4a-T8：候选锚定 zid/baseSnapshot/zone + guardOps 锁定与范围护栏 + 局部 supersede 同 zone）
@@ -481,15 +480,18 @@ async function runGenTask(id, kind, taskId, scope = 'all') {
       return finishGenTask(id, kind, taskId, (cur) => {
         // 批次隔离（与 evidence 通道同口径）：生成期间证据表被整批替换 → 链上的 evIndex 已指向别的表，
         // 宁可整批不落账，也不能写出一份「标签对不上要求」的追问（2026-10-18 OCR 高危项）。
+        // 显式拒绝：先校验后修改；拒绝时不提交任何内容/批次/版本变化，旧面试与 interviewGen 保持不变。
         if ((Number(cur.job.evidenceGen) || 0) !== evGenAtStart) {
-          cur.job.genTasks.interview = { ...cur.job.genTasks.interview, status: 'error', error: '生成期间证据表已更新，请重新生成' };
-          return {};
+          return { ok: false, error: '生成期间证据表已更新，请重新生成' };
         }
         cur.job.interview = iv;
         cur.job.interviewGen = gen;
         cur.job.interviewBaseHash = contentHash(html);       // 正文基线
         cur.job.interviewEvidenceGen = evGenAtStart;          // 证据批次基线（证据表重生成不改正文，只靠它判 stale）
-        return { interview: iv.chains.length + iv.generic.length, interviewGen: gen, dropped: iv.dropped };
+        return {
+          ok: true,
+          extra: { interview: iv.chains.length + iv.generic.length, interviewGen: gen, dropped: iv.dropped }
+        };
       });
     } catch (e) {
       return finishGenTask(id, kind, taskId, null, '模型调用失败：' + (e.message || e));
@@ -505,7 +507,7 @@ async function runGenTask(id, kind, taskId, scope = 'all') {
       const p = buildEvidencePrompt({ jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: mats, zones: m0.zones || {}, paras });
       const raw = await chat(root, p.sys, p.user);
       // 解析用批次号在锁外读取即可：同 kind 任务被 startGenTask 串行化（running 期间新任务 409），锁内必然一致；
-      // 期间任务被取消/过期也不影响——迟到落账由 finishGenTask 的 taskId 不匹配与 genExpired 分支拒绝。
+      // 期间任务被取消/过期也不影响——迟到落账由 finishGenTask 的 taskId 不匹配与超时分支拒绝（零落账）。
       const gen = (Number(m0.job.evidenceGen) || 0) + 1;
       const ev = parseEvidence(raw, { gen, mats, paras });
       if (!ev || !ev.length) return finishGenTask(id, kind, taskId, null, '模型输出无法解析为证据表，未替换任何证据');
@@ -514,7 +516,7 @@ async function runGenTask(id, kind, taskId, scope = 'all') {
       return finishGenTask(id, kind, taskId, (cur) => {
         cur.job.evidence = ev;              // 整批替换 + 批次推进只在本次成功落账事务内（旧 refId 不复用）
         cur.job.evidenceGen = gen;
-        return { evidence: ev.length, evidenceGen: gen };
+        return { ok: true, extra: { evidence: ev.length, evidenceGen: gen } };
       });
     } catch (e) {
       return finishGenTask(id, kind, taskId, null, '模型调用失败：' + (e.message || e));
@@ -539,7 +541,10 @@ async function runGenTask(id, kind, taskId, scope = 'all') {
     const raw = await chat(root, p.sys, p.user);
     const ops = parseJobOps(raw);
     if (!ops) return finishGenTask(id, kind, taskId, null, '模型输出无法解析为修改操作，未应用任何修改');
-    return finishGenTask(id, kind, taskId, (cur) => applyChangesResult(cur, ops, { scope, html, paras: parasStart, mats: confirmedMats, brief: m0.job.brief || null }));
+    return finishGenTask(id, kind, taskId, (cur) => ({
+      ok: true,
+      extra: applyChangesResult(cur, ops, { scope, html, paras: parasStart, mats: confirmedMats, brief: m0.job.brief || null })
+    }));
   } catch (e) {
     return finishGenTask(id, kind, taskId, null, '模型调用失败：' + (e.message || e));
   }

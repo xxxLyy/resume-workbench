@@ -4817,3 +4817,7 @@ node test-fixtures/reliability/test-harness.mjs exit
 node test-fixtures/reliability/test-harness.mjs strict
 node test-fixtures/reliability/test-harness.mjs lifecycle
 
+# ===== T1/T2：可靠性加固「任务完成状态」包的纯函数回归（零 I/O / 无模型 / 无服务）=====
+# 明确接入现有测试入口：完成判定（拒绝/成功/被替代/取消/超时/契约不合法）随 test:all 一起跑。
+node ./test-fixtures/reliability/test-gen-result.mjs
+
