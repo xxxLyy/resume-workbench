@@ -2,7 +2,7 @@
 // 纪律：zid 只落在段落单位上（p/li/h1-4/.entry-head/.contact），section 与 section-title 不打；
 // 区域归属只存 docs-meta.json 的 zones map，正文只带非视觉属性 data-zid。
 // 假设：属性值含 > 时开标签匹配退化（与 extract.mjs 同假设）——读取层只降级，写回层同样不处理该形状。
-import { sectionsOf, matchingClose, closeIndex } from './extract.mjs';
+import { sectionsOf, matchingClose, closeIndex, docToText } from './extract.mjs';
 import { factGuard } from './job.mjs';
 
 export const ZONE_KEYS = ['personal', 'education', 'work', 'project', 'skill', 'award', 'summary', 'other'];
@@ -114,6 +114,92 @@ export function parasOf(html) {
     const text = s.slice(u.index, close).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
     out.push({ zid: zidM[1], text });
     skipUntil = close;
+  }
+  return out;
+}
+
+// ===== 区域编辑单位（zone-v1 口径；只增加导出，不改 parasOf / zidsOf / normalizeZids / 历史指纹）=====
+// 与 parasOf 的差别：给出「可替换内容范围」（innerStart/innerEnd）并用统一文本口径规范化。
+// 文本口径：HTML 实体只解码一次、空白（含 NBSP）折叠为单空格、trim；
+// 「A B」与「AB」是不同文本（contentHash 区分，不做空白无关的归一）。
+const NON_BODY_TAGS = new Set(['script', 'style', 'template', 'noscript']);
+
+// 不可写区域（脚本/样式/模板/注释）：其内的标签字面量不是正文单位，
+// 外来内联脚本里的 <li data-zid="z..."> 不得被当成可写正文。
+// 单遍扫描；区域互不重叠 → 总体线性（不做逐候选点回扫）。
+function nonBodyRanges(s) {
+  const out = [];
+  const n = s.length;
+  let lower = null;          // 惰性建小写副本：只在真遇到 chrome 标签时付一次 O(n)
+  let i = 0;
+  while (i < n) {
+    const lt = s.indexOf('<', i);
+    if (lt < 0) break;
+    if (s.startsWith('<!--', lt)) {
+      const end = s.indexOf('-->', lt + 4);
+      const stop = end < 0 ? n : end + 3;
+      out.push([lt, stop]);
+      i = stop;
+      continue;
+    }
+    const m = /^<\s*([a-zA-Z][a-zA-Z0-9-]*)/.exec(s.slice(lt, lt + 64));
+    if (!m) { i = lt + 1; continue; }
+    const tag = m[1].toLowerCase();
+    if (!NON_BODY_TAGS.has(tag)) { i = lt + 1; continue; }
+    if (lower === null) lower = s.toLowerCase();
+    // script/style 按 HTML 规则：遇到第一个同名闭合标签即结束；没有则该元素延伸到文末。
+    const closeAt = lower.indexOf('</' + tag, lt + 1);
+    let stop = n;
+    if (closeAt >= 0) {
+      const gt = s.indexOf('>', closeAt);
+      stop = gt < 0 ? n : gt + 1;
+    }
+    out.push([lt, stop]);
+    i = stop;
+  }
+  return out;
+}
+
+// 区域可写单位：{ zid, count, start, end, innerStart, innerEnd, text }
+// - 只认段落单位（p/li/h1-4/.entry-head/.contact）上唯一的合法 data-zid；
+// - 嵌套单位只出最外层（内层不再单独成条，text 已合并内层文字）；
+// - 未闭合单位不猜范围（不产出）；
+// - 同一 zid 出现多次 → count>1（调用方据此拒绝，不悄悄重打 ID）；
+// - 同一单位出现多个 data-zid 属性 → 直接报错（形状非法，不猜）。
+export function zoneEditUnits(html) {
+  const s = String(html);
+  const bad = nonBodyRanges(s);
+  let bi = 0;
+  const inBad = (index) => {                 // 区间已排序、单位按文档序 → 指针单调前进，总体线性
+    while (bi < bad.length && bad[bi][1] <= index) bi++;
+    return bi < bad.length && index >= bad[bi][0];
+  };
+  const all = unitTags(s).filter((u) => isUnit(u.tag, u.attrs) && ZID_ATTR.test(u.attrs) && !inBad(u.index));
+  const counts = new Map();
+  for (const u of all) {
+    if ((u.attrs.match(/\sdata-zid\s*=/gi) || []).length !== 1) {
+      throw new Error('区域单位存在重复 data-zid 属性');
+    }
+    const zid = ZID_ATTR.exec(u.attrs)[1];
+    counts.set(zid, (counts.get(zid) || 0) + 1);
+  }
+  const idx = closeIndex(s, [...new Set(all.map((u) => u.tag.toLowerCase()))]);
+  let until = 0;
+  const out = [];
+  for (const u of all) {
+    if (u.index < until) continue;            // 嵌套在已接受单位内 → 不重复处理
+    const end = matchingClose(s, u.index, u.tag, idx);
+    if (end < 0) continue;                    // 未闭合 → 不猜范围
+    const innerStart = u.index + u.raw.length;
+    const innerEnd = s.lastIndexOf('<', end - 1);
+    if (innerEnd < innerStart) continue;
+    const zid = ZID_ATTR.exec(u.attrs)[1];
+    out.push({
+      zid, count: counts.get(zid), start: u.index, end, innerStart, innerEnd,
+      text: docToText(s.slice(innerStart, innerEnd), { includeHidden: true })
+        .replace(/\s+/g, ' ').trim()
+    });
+    until = end;
   }
   return out;
 }

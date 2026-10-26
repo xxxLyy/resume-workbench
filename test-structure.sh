@@ -4821,3 +4821,7 @@ node test-fixtures/reliability/test-harness.mjs lifecycle
 # 明确接入现有测试入口：完成判定（拒绝/成功/被替代/取消/超时/契约不合法）随 test:all 一起跑。
 node ./test-fixtures/reliability/test-gen-result.mjs
 
+# ===== Z1/Z6：可靠性加固「区域数据层」包的纯函数回归（零 I/O / 无模型 / 无服务）=====
+# 明确接入现有测试入口：zone-v1 文本口径、安全子集与跳过原因、纯文本转义、重复身份拒绝随 test:all 一起跑。
+node ./test-fixtures/reliability/test-zone-ops.mjs
+
