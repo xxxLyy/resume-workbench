@@ -185,19 +185,76 @@ const zones = {
 
 // ===== F. 输入不被修改 + 旧行为不变 =====
 {
-  const zonesBefore = JSON.parse(JSON.stringify(zones));
-  const opsBefore = JSON.parse(JSON.stringify([op(units[0], '说明')]));
+  // 深冻结：模块若试图就地改写传入对象，ESM 严格模式下会直接抛错。
+  const deepFreeze = (o) => {
+    if (o && typeof o === 'object' && !Object.isFrozen(o)) {
+      Object.freeze(o);
+      for (const v of Object.values(o)) deepFreeze(v);
+    }
+    return o;
+  };
+  const snapshot = (o) => JSON.stringify(o);
+  // 真正传入的对象（不是断言时重新构造的另一个对象）
+  const inZones = deepFreeze({ z11111111: { zone: 'work', status: 'confirmed' } });
+  const inOps = deepFreeze([op(units[0], '说明')]);
+  const zonesSnap = snapshot(inZones);
+  const opsSnap = snapshot(inOps);
   const htmlBefore = html;
-  const r = applyZoneOps({ diskHtml: html, html, zones, zoneOps: [op(units[0], '说明')] });
-  assert.deepEqual(zones, zonesBefore, 'zones 不得被修改');
-  assert.deepEqual([op(units[0], '说明')], opsBefore, 'zoneOps 不得被修改');
+  const r = applyZoneOps({ diskHtml: html, html, zones: inZones, zoneOps: inOps });
+  assert.equal(snapshot(inZones), zonesSnap, '真正传入的 zones 不得被修改');
+  assert.equal(snapshot(inOps), opsSnap, '真正传入的 zoneOps 不得被修改');
   assert.equal(html, htmlBefore, '输入 HTML 不得被修改');
   assert.notEqual(r.html, html, '输出应是新字符串');
+  assert.ok(Object.isFrozen(inZones) && Object.isFrozen(inOps), '传入对象保持冻结（未被就地替换）');
   // 旧提取与指纹行为不变
   assert.deepEqual(parasOf(html).map((p) => p.zid), ['z11111111', 'z22222222']);
   assert.deepEqual(zidsOf(html), ['z11111111', 'z22222222']);
   assert.equal(normalizeZids(html), html, '已有合法 zid 的正文归一后不变');
   assert.equal(contentHash(html), contentHash(html), '指纹函数行为不变');
+}
+
+// ===== H. 闭合配对与非正文范围（假闭标签 / 提前结束 / 非 ASCII 偏移）=====
+{
+  // ① 注释里的假闭标签不得提前截断目标
+  const fakeClose = '<p data-zid="z11111111">原文<!-- </p> -->尾部</p>';
+  const u = zoneEditUnits(fakeClose);
+  assert.equal(u.length, 1, '目标必须被识别为一个单位');
+  assert.equal(u[0].text, '原文尾部', '注释里的假闭标签不得截断目标文本');
+  assert.equal(u[0].end, fakeClose.length, '闭合位置必须是真实闭合标签之后');
+  assert.equal(fakeClose.slice(u[0].innerStart, u[0].innerEnd), '原文<!-- </p> -->尾部', '可替换范围必须覆盖完整内层');
+  // 替换后得到完整目标元素，外部相邻内容不变
+  const around = '<p data-zid="z00000000">前段</p>' + fakeClose + '<p data-zid="z22222222">后段</p>';
+  const ua = zoneEditUnits(around);
+  const target = ua.find((x) => x.zid === 'z11111111');
+  const r = applyZoneOps({
+    diskHtml: around, html: around,
+    zones: { z11111111: { zone: 'work', status: 'confirmed' } },
+    zoneOps: [op(target, '改写')]
+  });
+  assert.equal(r.html, '<p data-zid="z00000000">前段</p><p data-zid="z11111111">改写</p><p data-zid="z22222222">后段</p>',
+    '替换后必须是完整目标元素，且相邻内容不变');
+}
+{
+  // ② script 字符串里的假闭标签（</scripture> 不是 </script>）不得让排除范围提前结束
+  const inScript = '<script>const marker="</scripture>"; const html=\'<p data-zid="z99999999">脚本内部</p>\';</script>'
+    + '<p data-zid="z11111111">正文</p>';
+  assert.deepEqual(zoneEditUnits(inScript).map((x) => x.zid), ['z11111111'], '脚本内部的标签字面量不得成为单位');
+}
+{
+  // ③ 嵌套 template：外层排除范围必须结束于配对的闭合标签
+  const inTemplate = '<template><template></template><p data-zid="z99999999">模板内部</p></template>'
+    + '<p data-zid="z11111111">正文</p>';
+  assert.deepEqual(zoneEditUnits(inTemplate).map((x) => x.zid), ['z11111111'], '模板内部的标签字面量不得成为单位');
+}
+{
+  // ④ 非 ASCII 前缀：坐标不得因大小写转换或屏蔽而漂移
+  const prefix = '<p>İstanbul 中文前缀</p>';      // 'İ' 小写后长度会变（U+0130 → 2 码元）
+  const withPrefix = prefix + '<p data-zid="z11111111">原文<!-- </p> -->尾部</p>';
+  const up = zoneEditUnits(withPrefix);
+  assert.equal(up.length, 1, '非 ASCII 前缀后目标仍被识别');
+  assert.equal(up[0].text, '原文尾部', '非 ASCII 前缀不得影响文本');
+  assert.equal(up[0].end, withPrefix.length, '非 ASCII 前缀后闭合坐标不得漂移');
+  assert.equal(withPrefix.slice(up[0].innerStart, up[0].innerEnd), '原文<!-- </p> -->尾部', '非 ASCII 前缀后可替换范围必须准确');
 }
 
 // ===== G. 模块不访问网络或磁盘（结构检查：导入图里没有 fs/http）=====

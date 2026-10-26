@@ -123,14 +123,44 @@ export function parasOf(html) {
 // 文本口径：HTML 实体只解码一次、空白（含 NBSP）折叠为单空格、trim；
 // 「A B」与「AB」是不同文本（contentHash 区分，不做空白无关的归一）。
 const NON_BODY_TAGS = new Set(['script', 'style', 'template', 'noscript']);
+// script/style 的内容按 HTML 规则结束（第一个同名闭合标签即止，不计嵌套）；
+// template/noscript 是真嵌套结构，按深度计数。
+const NON_BODY_NESTED = new Set(['template', 'noscript']);
+
+// 非正文元素（script/style/template/noscript）的结束位置（其后一位）。
+// 闭标签必须完整匹配标签名：</scripture> 不是 </script>。
+// 用「原串上的大小写不敏感正则」而不是 toLowerCase 副本：
+// 部分字符（如 U+0130）小写后长度会变，副本会让下标漂移。
+function nonBodyEnd(s, start, tag) {
+  const n = s.length;
+  const countDepth = NON_BODY_NESTED.has(tag);
+  const re = new RegExp('<\\s*(/?)\\s*' + tag + '(?![a-zA-Z0-9-])', 'gi');
+  re.lastIndex = start + 1;
+  let depth = 1;                 // 已经在这个元素内部
+  let m;
+  while ((m = re.exec(s))) {
+    if (m[1] === '/') {          // 闭标签
+      depth--;
+      if (depth === 0) {         // 与本元素配对的闭合标签
+        const gt = s.indexOf('>', re.lastIndex);
+        return gt < 0 ? n : gt + 1;
+      }
+      continue;
+    }
+    if (countDepth) {            // 嵌套开标签（自闭合不计深度）
+      const gt = s.indexOf('>', re.lastIndex);
+      if (!(gt >= 0 && s.charAt(gt - 1) === '/')) depth++;
+    }
+  }
+  return n;                      // 没有闭合 → 该元素延伸到文末（不猜范围）
+}
 
 // 不可写区域（脚本/样式/模板/注释）：其内的标签字面量不是正文单位，
 // 外来内联脚本里的 <li data-zid="z..."> 不得被当成可写正文。
-// 单遍扫描；区域互不重叠 → 总体线性（不做逐候选点回扫）。
+// 单遍扫描；区域互不重叠且按文档序 → 总体线性（不做逐候选点回扫）。
 function nonBodyRanges(s) {
   const out = [];
   const n = s.length;
-  let lower = null;          // 惰性建小写副本：只在真遇到 chrome 标签时付一次 O(n)
   let i = 0;
   while (i < n) {
     const lt = s.indexOf('<', i);
@@ -146,18 +176,20 @@ function nonBodyRanges(s) {
     if (!m) { i = lt + 1; continue; }
     const tag = m[1].toLowerCase();
     if (!NON_BODY_TAGS.has(tag)) { i = lt + 1; continue; }
-    if (lower === null) lower = s.toLowerCase();
-    // script/style 按 HTML 规则：遇到第一个同名闭合标签即结束；没有则该元素延伸到文末。
-    const closeAt = lower.indexOf('</' + tag, lt + 1);
-    let stop = n;
-    if (closeAt >= 0) {
-      const gt = s.indexOf('>', closeAt);
-      stop = gt < 0 ? n : gt + 1;
-    }
+    const stop = nonBodyEnd(s, lt, tag);
     out.push([lt, stop]);
-    i = stop;
+    i = stop;                    // 跳过整个区域：其内的 chrome 元素已被覆盖
   }
   return out;
+}
+
+// 等长屏蔽视图：把非正文区域替换成空格，长度不变 → 所有下标仍对应原始 HTML。
+// 单位识别与闭合配对都跑在这份视图上，注释/脚本里的假闭标签就不会参与配对。
+function maskNonBody(s, ranges) {
+  if (!ranges.length) return s;
+  const buf = s.split('');
+  for (const [a, b] of ranges) for (let k = a; k < b; k++) buf[k] = ' ';
+  return buf.join('');
 }
 
 // 区域可写单位：{ zid, count, start, end, innerStart, innerEnd, text }
@@ -168,13 +200,9 @@ function nonBodyRanges(s) {
 // - 同一单位出现多个 data-zid 属性 → 直接报错（形状非法，不猜）。
 export function zoneEditUnits(html) {
   const s = String(html);
-  const bad = nonBodyRanges(s);
-  let bi = 0;
-  const inBad = (index) => {                 // 区间已排序、单位按文档序 → 指针单调前进，总体线性
-    while (bi < bad.length && bad[bi][1] <= index) bi++;
-    return bi < bad.length && index >= bad[bi][0];
-  };
-  const all = unitTags(s).filter((u) => isUnit(u.tag, u.attrs) && ZID_ATTR.test(u.attrs) && !inBad(u.index));
+  const masked = maskNonBody(s, nonBodyRanges(s));
+  // 单位识别与闭合配对用同一份屏蔽视图（同一套非正文排除规则）
+  const all = unitTags(masked).filter((u) => isUnit(u.tag, u.attrs) && ZID_ATTR.test(u.attrs));
   const counts = new Map();
   for (const u of all) {
     if ((u.attrs.match(/\sdata-zid\s*=/gi) || []).length !== 1) {
@@ -183,12 +211,12 @@ export function zoneEditUnits(html) {
     const zid = ZID_ATTR.exec(u.attrs)[1];
     counts.set(zid, (counts.get(zid) || 0) + 1);
   }
-  const idx = closeIndex(s, [...new Set(all.map((u) => u.tag.toLowerCase()))]);
+  const idx = closeIndex(masked, [...new Set(all.map((u) => u.tag.toLowerCase()))]);
   let until = 0;
   const out = [];
   for (const u of all) {
     if (u.index < until) continue;            // 嵌套在已接受单位内 → 不重复处理
-    const end = matchingClose(s, u.index, u.tag, idx);
+    const end = matchingClose(masked, u.index, u.tag, idx);
     if (end < 0) continue;                    // 未闭合 → 不猜范围
     const innerStart = u.index + u.raw.length;
     const innerEnd = s.lastIndexOf('<', end - 1);
@@ -196,6 +224,7 @@ export function zoneEditUnits(html) {
     const zid = ZID_ATTR.exec(u.attrs)[1];
     out.push({
       zid, count: counts.get(zid), start: u.index, end, innerStart, innerEnd,
+      // 文本取自原始 HTML：屏蔽视图里的空格是屏蔽产物，不应进入用户可见文本
       text: docToText(s.slice(innerStart, innerEnd), { includeHidden: true })
         .replace(/\s+/g, ' ').trim()
     });
