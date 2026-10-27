@@ -298,6 +298,8 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
   }
   // 与旧保存路径（template doSave）同口径的整页序列化：clone + 注入块清理；服务端 stripInjections 再兜底剥离
   function buildPageHtml() {
+    // 共享序列化（ZONE-06）：与区域面板、模板 doSave 同口径 —— 不再各自复制一份
+    if (typeof window.__edBuildSaveHtml === 'function') return window.__edBuildSaveHtml();
     var clone = document.documentElement.cloneNode(true);
     clone.querySelectorAll('.page-line, .toast, .recovery-bar, [data-ai-panel], [data-ed-shell], [data-ed-inj], [data-job-panel]').forEach(function (el) { el.remove(); });
     var cbody = clone.querySelector('body');
@@ -323,23 +325,53 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       .then(function (d) { return (d && d.rev) || docRev; })
       .catch(function () { return docRev; });
   }
-  function postSaveOps(ops, label, retried) {
-    freshRev().then(function (rev) {
-      return api('/save?id=' + DOC_ID, {
-        requestId: 'op-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10),
-        baseRev: rev, html: buildPageHtml(), ops: ops
-      });
+  // 岗位操作的提交（AUD-03）
+  // 并发基线用「本地正文所基于的磁盘 mtime」，不再取服务器最新 rev 给旧整页背书：
+  //   取最新 rev 时，本地 DOM 若落后于磁盘（另一标签页已改），这页的旧整页 html 会把别人的改动覆盖掉
+  //   （实测：另一页把 P2 改成 OTHER-NEW，旧页接受 P1 后带最新 rev 提交，服务端返回 200，P2 回到 OTHER-OLD）。
+  //   mtime 是磁盘正文的精确信号：磁盘被谁动过 → 不匹配 → 409，旧整页不会被提交。
+  // onFail：落账失败时的回滚（精确还原本次改的那一段，不整片回滚 → 保留用户在途输入）。
+  function postSaveOps(ops, label, onFail) {
+    var baseMtime = Number(window.__edDocMtime || 0);
+    api('/save?id=' + DOC_ID, {
+      requestId: 'op-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10),
+      baseRev: docRev, baseMtime: baseMtime,
+      html: buildPageHtml(), ops: ops
     }).then(function (d) {
       if (d.ok) {
         if (d.receipt && d.receipt.mtime) window.__edDocMtime = d.receipt.mtime;   // 同步旧路径冲突基线
-      } else if (!retried && d.error && /baseRev/.test(d.error)) {
-        // 基线还是过期（自动保存刚落地）→ 刷一次 rev 重试一次（只一次，别成环）
-        return freshRev().then(function (rev) { docRev = rev; return postSaveOps(ops, label, true); });
+        if (typeof d.rev === 'number') docRev = d.rev;                       // 已确认 rev（下次提交用）
       } else {
-        note(d.error || (label + '失败'), 'warn');
+        note(d.error || (label + '失败') + '（本次改动未落账，已还原本页改动）', 'warn');
+        if (onFail) { try { onFail(); } catch (e) {} }
       }
       refresh();   // 成败都按服务器最新状态重渲染（409/400 的 DOM 差异由后续保存收敛）
-    }).catch(function (e) { note(e.message || e, 'warn'); refresh(); });
+    }).catch(function (e) {
+      note((e && e.message ? e.message : String(e)) + '（本次改动未落账，已还原本页改动）', 'warn');
+      if (onFail) { try { onFail(); } catch (e2) {} }
+      refresh();
+    });
+  }
+  // 精确回滚本次改的那一段（replace/add/hide 各有各的还原方式）；
+  // 还原不了就返回 false —— 由调用方提示用户手动处理，绝不整片回滚（会吞掉用户在途输入）。
+  function rollbackApplied(c, anchorEl, r) {
+    try {
+      if (c.kind === 'replace' && anchorEl) {
+        window.__edReplaceText(anchorEl.textContent, c.before, { root: anchorEl });
+        return true;
+      }
+      if (c.kind === 'add' && r && r.node && r.node.parentNode) {
+        r.node.parentNode.removeChild(r.node);
+        return true;
+      }
+      if (c.kind === 'hide') {
+        var found = findEntry(c);
+        if (found) { hidePair(found.pair, false); return true; }
+        var sec = sectionByTitle(c.section);
+        if (sec) { sec.classList.remove('ed-sec-hidden'); return true; }
+      }
+    } catch (e) {}
+    return false;
   }
   function accept(c, viaGate) {
     if (busy) return; busy = true;
@@ -368,7 +400,10 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     }
     busy = false;
     if (!r.ok) { note(r.error, 'warn'); return; }
-    postSaveOps([op], '接受');
+    // 落账失败 → 精确还原本段（不整片回滚，保留用户在途输入），并明确提示未落账
+    postSaveOps([op], '接受', function () {
+      if (!rollbackApplied(c, anchorEl, r)) note('本次改动未能落账且无法自动还原，请手动检查该段', 'warn');
+    });
   }
   function revert(c) {
     if (busy) return; busy = true;
@@ -382,18 +417,23 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     if (window.__edPushUndo) window.__edPushUndo('撤销修改：' + (c.note || c.kind));
     var anchorEl = anchorElOf(c);
     var op = { operationId: 'op-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10), changeId: c.id, action: 'revert', origText: anchorEl ? normWs(anchorEl.textContent) : '' };
+    var revertBefore = anchorEl ? normWs(anchorEl.textContent) : '';   // 撤回前的文字：落账失败时据此还原
     var r = revertChange(c);
     if (!r.ok && c.kind === 'replace' && c.origText && anchorEl) {
       r = window.__edReplaceText(anchorEl.textContent, c.origText) ? { ok: true } : r;   // 确认门整段接受过的：整段恢复接受时快照
     }
     busy = false;
     if (!r.ok) { note(r.error, 'warn'); return; }
-    postSaveOps([op], '撤回');
+    postSaveOps([op], '撤回', function () {
+      if (anchorEl && revertBefore) {
+        try { window.__edReplaceText(anchorEl.textContent, revertBefore, { root: anchorEl }); } catch (e) {}
+      }
+    });
   }
   function batchAccept(ids) {
     if (busy) return; busy = true;
     if (window.__edPushUndo) window.__edPushUndo('批量接受 ' + ids.length + ' 条');
-    var ops = [], fails = 0, failedUpdates = [];
+    var ops = [], fails = 0, failedUpdates = [], applied = [];
     ids.forEach(function (id) {
       var c = job.changes.find(function (x) { return x.id === id; });
       if (!c) return;
@@ -416,6 +456,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
           op.newZid = nz;
         }
         ops.push(op);
+        applied.push({ c: c, anchorEl: anchorEl, r: r, beforeText: origText });
       } else {
         fails++;
         failedUpdates.push({ id: c.id, status: 'pending', note: r.error });
@@ -424,7 +465,13 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     busy = false;
     if (fails) note(fails + ' 条未能应用（原文可能已变化），其余已接受', 'warn');
     if (failedUpdates.length) setStatus(failedUpdates);
-    if (ops.length) postSaveOps(ops, '批量接受'); else render();
+    if (ops.length) {
+      postSaveOps(ops, '批量接受', function () {
+        // 整批未落账 → 逐条精确还原（不整片回滚，保留用户在途输入）
+        applied.forEach(function (it) { if (!rollbackApplied(it.c, it.anchorEl, it.r)) { /* 还原不了的提示 */ } });
+        note('本次批量接受未落账，已逐条还原本页改动', 'warn');
+      });
+    } else render();
   }
 
   // ===== 渲染 =====

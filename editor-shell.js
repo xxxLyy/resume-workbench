@@ -455,6 +455,25 @@
     pollGening();
     setInterval(pollGening, 2500);
   }
+  // ===== 共享保存序列化（ZONE-06）=====
+  // 区域面板与岗位面板必须产出**同一份字节**的正文（否则同一份文档两条路径存出不同 HTML
+  // → bodyHash / renderInputId 不同 → PDF 被误判「较旧」）。
+  // 口径与 template.html 的 doSave 一致：同一组瞬态元素要剥、同一组状态要写。
+  window.__edBuildSaveHtml = function () {
+    var clone = document.documentElement.cloneNode(true);
+    clone.querySelectorAll('.page-line, .toast, .recovery-bar, [data-ai-panel], [data-ed-shell], [data-ed-inj], [data-job-panel]').forEach(function (el) { el.remove(); });
+    var cbody = clone.querySelector('body');
+    if (cbody) { cbody.classList.remove('ed-on', 'ed-preview'); cbody.style.cssText = ''; }
+    var csheet = clone.querySelector('.sheet');
+    if (csheet) { csheet.style.zoom = ''; csheet.style.transform = ''; csheet.setAttribute('contenteditable', 'true'); }
+    var dirty = (typeof window.__edIsDirty === 'function') ? window.__edIsDirty() : false;
+    var cstate = clone.querySelector('#saveState');
+    if (cstate) { cstate.dataset.state = dirty ? 'dirty' : 'saved'; cstate.textContent = dirty ? '未保存 ●' : '已保存 ✓'; }
+    var csave = clone.querySelector('#saveBtn');
+    if (csave) csave.removeAttribute('disabled');
+    return '<!doctype html>\n' + clone.outerHTML;
+  };
+
   // ===== 正文查找替换（job-panel / ai-panel 共用这一份）=====
   // 之前两个面板各抄了一份（2026-10-24 审查 [低]：三份实现，改一处要改三处；
   // 上一轮的「接受建议改错段落」缺陷就是两份副本都漏了锚点定位）。
@@ -640,6 +659,15 @@
     if (undoStack.length > 30) undoStack.shift();
     updateUndoBtn();
     return opSeq;
+  };
+  // 丢弃一条未生效的撤销记录（程序化替换失败时由调用方调用）：
+  // 栈项 pending=true 时还没绑定 nativeCountAtApply，若不丢弃，下一次任何程序化变更
+  // 都会把它误认成「已应用」→ 之后一次 ⌘Z 会回滚到错误基点。
+  window.__edDropUndo = function (id) {
+    for (var i = undoStack.length - 1; i >= 0; i--) {
+      if (undoStack[i].id === id) { undoStack.splice(i, 1); updateUndoBtn(); return true; }
+    }
+    return false;
   };
   // 只有"该 op 之后没有新的受信任输入"时，⌘Z 才消费它；否则整片快照会吞掉后续文字
   function programmaticUndoSafeNow() {

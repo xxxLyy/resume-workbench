@@ -14,7 +14,8 @@ import { buildRewrite, buildChat, parseChanges, buildReview, buildMatch, parseRe
 import { buildJobPrompt, parseJobOps, pageSuggestions } from './job.mjs';
 import { buildEvalPrompt, parseEvalReport, evalSource, evalRecordView } from './eval.mjs';
 import { docToLines, docToText, contentHash, sectionsOf } from './extract.mjs';
-import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, digestOf, buildZoneAnalyzePrompt, parseZoneAnalysis, buildZoneRewritePrompt, parseZoneRewrites, FACT_KEYS, MAT_STATES, migrateMats, parasOf, zidsOf } from './zone.mjs';
+import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, digestOf, buildZoneAnalyzePrompt, parseZoneAnalysis, buildZoneRewritePrompt, parseZoneRewrites, FACT_KEYS, MAT_STATES, migrateMats, parasOf, zidsOf, zoneEditUnits } from './zone.mjs';
+import { applyZoneOps } from './zone-ops.mjs';   // 区域安全子集（ZONE-04）：磁盘正文 + 提交原文 + 归属 + 锁 + 事实护栏 五项齐备才应用
 import { rotateLogIfNeeded } from './logrotate.mjs';
 import { freezeHtml, normalizeToCurrent, splitDoc, staleInfo } from './freeze.mjs';
 import { beginTx, commitTx, dropSupersededTx, recoverPending, withDocLock, updateMeta, updateMetaAll, rootLock, atomicWrite, LockHeld } from './tx.mjs';
@@ -1060,6 +1061,36 @@ function icon(name, size = 16, cls = '') {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"${c ? ` class="${c}"` : ''} aria-hidden="true" focusable="false">${body}</svg>`;
 }
 
+
+// 写请求统一失败语义（AUD-15）：HTTP 业务失败与网络异常都进失败分支；
+// 失败时保留输入与旧有效值，不 reload、不显示已生效。
+// 由 page() 统一注入到每个页面 —— 各写入口只调 __wv(url, body, msgEl)。
+const WRITE_HELPER_JS = `<script>
+window.__wv = function (url, body, msgEl) {
+  var setMsg = function (m) {
+    if (msgEl && window.__status) { try { window.__status(msgEl, 'err', m); return; } catch (e) {} }
+    if (window.alert) window.alert(m);
+  };
+  return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) })
+    .then(function (r) {
+      return r.text().then(function (t) {
+        var d = null; try { d = JSON.parse(t); } catch (e) {}
+        if (!r.ok || (d && d.ok === false)) {
+          var msg = (d && (d.error || d.msg)) || ('HTTP ' + r.status);
+          setMsg(msg);
+          var e = new Error(msg); e.__writeFailed = true; throw e;
+        }
+        return d || {};
+      });
+    })
+    .catch(function (e) {
+      if (e && e.__writeFailed) throw e;
+      var m2 = '网络异常：' + ((e && e.message) || e);
+      setMsg(m2);
+      var e2 = new Error(m2); e2.__writeFailed = true; throw e2;
+    });
+};
+</script>`;
 function page(title, inner, active = '', wide = false) {
   // 第 4 参 ic = Lucide 图标名（白名单外 icon() 返回空串 → 退化为纯文字，不炸）
   const nav = (key, href, label, ic) => `<a href="${href}"${active === key ? ' class="on"' : ''}>${ic ? icon(ic, 15) : ''}${label}</a>`;
@@ -1187,7 +1218,7 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 <nav class="topnav"><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><span class="links">${nav('docs', '/', '文档', 'file-text')}${nav('materials', '/materials', '素材库', 'box')}${nav('apps', '/applications', '投递看板', 'columns-3')}${nav('stats', '/stats', '复盘', 'chart-bar')}${nav('settings', '/settings', '设置', 'settings')}</span></nav>
 <div class="home">${side}<div class="mainarea">${inner}</div></div>
 <footer>简历平台 · 本地优先 · 数据在 ${path.basename(root) === 'resume' ? '~/resume' : 'RESUME_ROOT'}</footer>
-</body></html>`;
+${WRITE_HELPER_JS}</body></html>`;
 }
 
 // 徽章：底色 + 语义色 + 小图标 + 文字。类名沿用既有的 .badge ok/.warn/.err/.ai（既有 43 处在用），
@@ -1394,10 +1425,10 @@ function listPage(showArchived = false) {
       <a href="/diff?base=${id}">对比</a> ·
       ${m.parent ? `<a href="/diff?base=${escAttr(m.parent)}&to=${id}">对比母版</a> · ` : ''}
       ${info.degraded ? `<form method="post" action="/restructure?id=${id}" style="display:inline" onsubmit="return confirm('用 LLM 重新结构化这份文档？会先自动留快照')"><button class="secondary">${icon('refresh-cw', 13)} 结构化</button></form> · ` : ''}
-      <form method="post" action="/archive?id=${id}" style="display:inline" onsubmit="event.preventDefault();fetch('/archive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:${jsStr(id)}})}).then(()=>location.reload())"><button class="secondary">${m.archivedAt ? icon('archive', 13) + ' 取消归档' : icon('archive', 13) + ' 归档'}</button></form> ·
+      <form method="post" action="/archive?id=${id}" style="display:inline" onsubmit="event.preventDefault();__wv('/archive', {id:${jsStr(id)}}).then(function(){location.reload();}).catch(function(){})"><button class="secondary">${m.archivedAt ? icon('archive', 13) + ' 取消归档' : icon('archive', 13) + ' 归档'}</button></form> ·
       <!-- tag 是 JS 字符串上下文（onsubmit 里的 prompt 默认值）：escAttr 不够，单引号能闭合 JS 串 →
            必须 JSON.stringify 成 JS 字面量后再按 HTML 属性转义。tag 本身由 company·role 派生，不经 /tag 的 '" 清洗。 -->
-      <form method="post" action="/tag" style="display:inline" onsubmit="event.preventDefault();const t=prompt('标签（≤20字，留空清除）',${jsStr(tag)});if(t!==null){fetch('/tag',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:${jsStr(id)},tag:t})}).then(()=>location.reload())}"><button class="secondary" aria-label="标签" title="标签">${icon('tag', 13)}</button></form> ·
+      <form method="post" action="/tag" style="display:inline" onsubmit="event.preventDefault();const t=prompt('标签（≤20字，留空清除）',${jsStr(tag)});if(t!==null){__wv('/tag', {id:${jsStr(id)},tag:t}).then(function(){location.reload();}).catch(function(){})}"><button class="secondary" aria-label="标签" title="标签">${icon('tag', 13)}</button></form> ·
       <form method="post" action="/duplicate?id=${id}" style="display:inline" onsubmit="event.preventDefault();const t=prompt('新文档 id（小写字母数字横线）');if(t){this.action='/duplicate?id=${id}&to='+t;this.submit()}"><button>复制</button></form> ·
       <form method="post" action="/delete?id=${id}" style="display:inline" onsubmit="return confirm('确认删除 ${id}？快照会保留')"><button class="danger">删除</button></form>
       </div></details>
@@ -1793,6 +1824,20 @@ function stripInjections(html) {
 const DOC_PAYLOAD_RE = /<[a-zA-Z][^>]*>/;
 const looksLikeDoc = (html) => DOC_PAYLOAD_RE.test(String(html ?? ''));
 
+// ===== 区域请求的版本基线（ZONE-03）=====
+// 区域分析/改写读的是磁盘正文：客户端必须带「它已确认的那一版正文」的 mtime，
+// 否则它可能基于旧内容生成建议，再把旧候选写回新正文。
+function zoneRequestError(id, body) {
+  if (!fs.existsSync(docPath(id))) return { status: 404, code: 'DOC_NOT_FOUND', error: '文档不存在' };
+  if (typeof body.baseMtime !== 'number' || !Number.isFinite(body.baseMtime) || body.baseMtime <= 0) {
+    return { status: 400, code: 'INVALID_REQUEST', error: 'baseMtime 必填（区域请求必须绑定已确认的正文版本）' };
+  }
+  if (body.baseMtime !== fs.statSync(docPath(id)).mtimeMs) {
+    return { status: 409, code: 'STALE_DOCUMENT', error: '文档已变化，请先同步内容再生成区域建议' };
+  }
+  return null;
+}
+
 // ===== S4a-T3：JSON 保存协议（设计 §4.2 v1.6，复审批定顺序：全部校验通过前零写入）=====
 // ① 请求指纹 = 转换前原始请求体的规范化序列化 sha1（键序无关；重试方重发原文即同指纹；
 //    "转换"指 html 剥离归一——指纹绝不受其影响）→ ② saveReceipts 判重（同 requestId 同内容 → 只回执零重写；
@@ -1817,6 +1862,16 @@ async function saveJsonProtocol(req, id, url) {
   if (!Array.isArray(body.ops)) body.ops = [];
   if (typeof body.baseRev !== 'number' || !Number.isInteger(body.baseRev) || body.baseRev < 0)
     return { status: 400, body: { ok: false, error: 'baseRev 必须是非负整数（客户端所见的 meta.rev）' } };
+  // 区域保存（ZONE-04）：一次保存只走一条通道（zoneOps 与岗位 ops 互斥）；且必须绑定已确认的正文版本
+  const isZoneSave = Object.hasOwn(body, 'zoneOps');
+  if (isZoneSave) {
+    if (!Array.isArray(body.zoneOps) || !body.zoneOps.length)
+      return { status: 400, body: { ok: false, error: 'zoneOps 必须是非空数组' } };
+    if (body.ops.length)
+      return { status: 400, body: { ok: false, error: 'zoneOps 与 ops 不能混用（一次保存只走一条通道）' } };
+    if (typeof body.baseMtime !== 'number' || !Number.isFinite(body.baseMtime) || body.baseMtime <= 0)
+      return { status: 400, body: { ok: false, error: 'baseMtime 必填（区域保存必须绑定已确认的正文版本）' } };
+  }
   if (!fs.existsSync(docPath(id))) return { status: 404, body: { ok: false, error: 'doc not found' } };
   const reqHash = createHash('sha1').update(canonicalJson(body)).digest('hex');
   try { rootLock.acquire(root); }
@@ -1828,31 +1883,74 @@ async function saveJsonProtocol(req, id, url) {
       const job = (oldMeta && oldMeta.job) ? oldMeta.job : null;
       // ② 判重先于 baseRev：同 ID 同内容 → 只返回已存回执，任何文件、版本、快照零重写（事务不写）；
       //    接受成功→撤回成功→旧接受重试走这里：正文与状态保持撤回后版本（baseRev 已落后是双保险，非依赖）。
-      const receipts = (job && Array.isArray(job.saveReceipts)) ? job.saveReceipts : [];
+      const receipts = isZoneSave
+        ? (Array.isArray(oldMeta && oldMeta.zoneSaveReceipts) ? oldMeta.zoneSaveReceipts : [])
+        : ((job && Array.isArray(job.saveReceipts)) ? job.saveReceipts : []);
       const hit = receipts.find((r) => r && r.requestId === body.requestId);
       if (hit) {
         if (hit.contentHash === reqHash) return { status: 200, body: { ok: true, deduped: true, ...hit.receipt } };
         return { status: 400, body: { ok: false, error: '重复 requestId 但请求内容不同：同 ID 必须重发完全相同的内容' } };
       }
-      // ③ 严格基线（严格相等——落后或未来都 409）
+      // ③ 严格基线
+      // baseMtime 存在时以它为准：它是「本地正文所基于的磁盘版本」的精确信号。
+      //   baseRev 会被本地自动保存推进而显得落后，不能拿它判断「有没有别人动过正文」；
+      //   取服务器最新 rev 给旧整页背书，会把另一标签页的改动整页覆盖掉
+      //   （实测：另一页把 P2 改成 OTHER-NEW，旧页接受 P1 后带最新 rev 提交，P2 回到 OTHER-OLD）。
+      // 没有 baseMtime 的旧客户端仍走 baseRev 严格相等（既有语义不变）。
       const curRev = Number(oldMeta && oldMeta.rev) || 0;
-      if (body.baseRev !== curRev) {
+      const baseMtime = Number(body.baseMtime || 0);
+      if (baseMtime > 0) {
+        const curM = fs.existsSync(docPath(id)) ? fs.statSync(docPath(id)).mtimeMs : 0;
+        if (Math.abs(curM - baseMtime) > 2) {
+          return { status: 409, body: { ok: false, conflict: true, mtime: curM, error: '磁盘上的文档已被其他窗口更新（请求基线 ' + baseMtime + '，当前 ' + curM + '）：请载入最新版本后重试' } };
+        }
+      } else if (body.baseRev !== curRev) {
         return { status: 409, body: { ok: false, conflict: true, rev: curRev, error: body.baseRev < curRev
           ? `baseRev 落后（请求 ${body.baseRev}，当前 ${curRev}）：正文已被其他保存更新，请载入最新版本后重试`
           : `baseRev 来自未来（请求 ${body.baseRev}，当前 ${curRev}）：客户端版本状态异常，请刷新页面` } };
       }
-      // ④ ops 全量校验（任一失败整份 400，正文不保存——快照与事务尚未开启）
-      const stripped = normalizeZids(stripInjections(body.html));
+      // ④ 全量校验（任一失败整份 400，正文不保存——快照与事务尚未开启）
+      const strippedRaw = stripInjections(body.html);
+      const stripped = normalizeZids(strippedRaw);
       if (!stripped.trim()) return { status: 400, body: { ok: false, error: 'empty save rejected' } };
       if (!looksLikeDoc(stripped)) return { status: 400, body: { ok: false, error: '非文档载荷：剥离后不含任何 HTML 元素，已拒绝（正文、meta、rev、快照均未变化）' } };
       const oldHtml = fs.readFileSync(docPath(id), 'utf8');
-      if (body.ops.length && !job) return { status: 400, body: { ok: false, error: '该文档不是岗位草稿（无 changes 可操作）' } };
-      // hide 接受要求目标段落在正文（删除式隐藏会被 anchor-gone 拒）——T4+ UI 必须属性式实现 hide（加隐藏标记类，不删节点）。
-      const pre = applyOps(body.ops, job, oldHtml, { zones: (oldMeta && oldMeta.zones) || {} });
-      if (!pre.ok) return { status: 400, body: { ok: false, badOp: pre.badOp, reason: pre.reason, error: '操作校验失败，整份拒绝（正文未保存）：' + pre.reason } };
+      let zoneResult = null, pre = { ok: true, applied: [] };
+      if (isZoneSave) {
+        // 区域安全子集（ZONE-04）：磁盘正文、提交原文、归属、锁定、事实护栏 五项齐备才应用。
+        // ① 磁盘正文必须仍是我们确认过的那一版（baseMtime 严格比对；不自动取新 rev 重放）
+        const curM = fs.statSync(docPath(id)).mtimeMs;
+        if (Math.abs(curM - body.baseMtime) > 2) {
+          return { status: 409, body: { ok: false, code: 'STALE_DOCUMENT', error: '文档已变化（请求基线 ' + body.baseMtime + '，当前 ' + curM + '），请刷新后重试' } };
+        }
+        // ② 归一化前检查目标唯一性（防 normalizeZids 把重复目标悄悄改名）
+        try {
+          const seen = new Set();
+          for (const u2 of zoneEditUnits(strippedRaw)) {
+            if (seen.has(u2.zid)) return { status: 400, body: { ok: false, error: '正文存在重复 zid：' + u2.zid + '（整份拒绝）' } };
+            seen.add(u2.zid);
+          }
+        } catch (e) { return { status: 400, body: { ok: false, error: '正文形状非法，整份拒绝：' + (e.message || e) } }; }
+        // ③ 计算安全子集（不猜落点、不重打 ID）
+        try {
+          zoneResult = applyZoneOps({ diskHtml: oldHtml, html: strippedRaw, zones: (oldMeta && oldMeta.zones) || {}, zoneOps: body.zoneOps });
+        } catch (e) {
+          return { status: 400, body: { ok: false, error: '区域操作校验失败，整份拒绝（正文未保存）：' + (e.message || e) } };
+        }
+        // ④ 零安全目标 → 不写（正文/meta/快照/版本全部零变化）
+        if (!zoneResult.applied.length) {
+          return { status: 409, body: { ok: false, code: 'NO_APPLICABLE_CANDIDATES', error: '没有可安全应用的目标（正文、meta、快照与版本均未变化）', skipped: zoneResult.skipped } };
+        }
+      } else {
+        if (body.ops.length && !job) return { status: 400, body: { ok: false, error: '该文档不是岗位草稿（无 changes 可操作）' } };
+        // hide 接受要求目标段落在正文（删除式隐藏会被 anchor-gone 拒）——T4+ UI 必须属性式实现 hide（加隐藏标记类，不删节点）。
+        pre = applyOps(body.ops, job, oldHtml, { zones: (oldMeta && oldMeta.zones) || {} });
+        if (!pre.ok) return { status: 400, body: { ok: false, badOp: pre.badOp, reason: pre.reason, error: '操作校验失败，整份拒绝（正文未保存）：' + pre.reason } };
+      }
       // ⑤ 四步全过 → 旧版快照（既有手动快照）+ beginTx 写入
       const autosave = !!url.searchParams.get('autosave');
-      const norm = normalizeToCurrent(stripped);
+      // 区域分支：正文来自安全子集结果（只转义一次、保留目标开闭标签）
+      const norm = normalizeToCurrent(zoneResult ? zoneResult.html : stripped);
       const newHtml = norm.html, newTypo = norm.typo;
       const oldSnapTs = autosave ? '' : snapshot(id);
       const txId = beginTx(root, id, 'save', oldSnapTs);
@@ -1872,7 +1970,16 @@ async function saveJsonProtocol(req, id, url) {
             if (base.job) base.job = { ...base.job, invalidatedAt: new Date().toISOString() };
           }
           Object.assign(base, zoneSync(newHtml, base));
-          if (base.job) {
+          if (zoneResult) {
+            // 区域回执（ZONE-04）：文档级 zoneSaveReceipts 环形 ≤50；母版不因区域保存出现 job
+            const zoneReceipt = {
+              requestId: body.requestId, mtime: fs.statSync(docPath(id)).mtimeMs, hash: contentHash(newHtml),
+              rev: base.rev, applied: zoneResult.applied, skipped: zoneResult.skipped
+            };
+            base.zoneSaveReceipts = [...(Array.isArray(base.zoneSaveReceipts) ? base.zoneSaveReceipts : []),
+              { requestId: body.requestId, contentHash: reqHash, receipt: zoneReceipt }].slice(-50);
+            receipt = zoneReceipt;
+          } else if (base.job) {
             // 审阅状态与正文同事务（v1.6）：applyOps 在锁内新鲜 meta 上复核（④已过，兜底极小并发窗口；
             // 失败抛错走既有双恢复）；reviewConsistency 正文维度逐条写 consistency（zoneSync 之后、同一事务）；
             // saveReceipts 环形 ≤50 记进 meta.job。非 job 文档（母版）不记回执——meta.job 是岗位草稿子树，
@@ -2239,7 +2346,9 @@ async function handler(req, res) {
       // S4a-T6：jobViewLive 叠加来源维度即时计算（refs fresh / consistency 现算，不落盘）。
       const job = jobViewLive(id, m);
       // S4a-T8：rev 随响应暴露——客户端 JSON 保存协议的 baseRev 基线来源
-      return sendJson(200, { ok: true, job, rev: Number(m.rev) || 0, zones: m.zones || null, zoneOrder: m.zoneOrder || null, zoneRounds: m.zoneRounds || null, doc: { id, parent: m.parent || '', company: m.company || '', role: m.role || '', jd: m.jd || '', jdSource: m.jdSource || '' } });
+      // doc.mtime = 当前正文版本（ZONE-03）：区域请求必须带它作基线，服务端据此拒绝陈旧请求
+      const docMtime = fs.existsSync(docPath(id)) ? fs.statSync(docPath(id)).mtimeMs : null;
+      return sendJson(200, { ok: true, job, rev: Number(m.rev) || 0, zones: m.zones || null, zoneOrder: m.zoneOrder || null, zoneRounds: m.zoneRounds || null, doc: { id, parent: m.parent || '', company: m.company || '', role: m.role || '', jd: m.jd || '', jdSource: m.jdSource || '', mtime: docMtime } });
     }
     if (req.method === 'POST' && url.pathname === '/job/changes') {
       const body = JSON.parse(await readBody(req));
@@ -2364,7 +2473,9 @@ async function handler(req, res) {
           return sendJson(400, { ok: false, error: `非法条目 ${zid}` });
         }
       }
-      updateMeta(root, id, (m) => {
+      try { rootLock.acquire(root); } catch (e) { if (e instanceof LockHeld) return sendJson(409, { ok: false, error: '另一保存/迁移正在进行（.migrate.lock），请稍后重试' }); throw e; }
+      try {
+        updateMeta(root, id, (m) => {
         const base = { ...(m || {}) };
         const zones = { ...(base.zones || {}) };
         for (const [zid, z] of Object.entries(zonesIn)) {
@@ -2382,13 +2493,16 @@ async function handler(req, res) {
         return base;
       });
       return sendJson(200, { ok: true });
+      } finally { try { rootLock.release(root); } catch {} }
     }
     if (req.method === 'POST' && url.pathname === '/zones/init') {
       const body = JSON.parse(await readBody(req));
       const entries = Array.isArray(body.entries) ? body.entries.filter((e) => e && /^z[0-9a-f]{8}$/.test(e.zid)) : [];
       if (!entries.length) return sendJson(400, { ok: false, error: 'entries 必填' });
       let created = null;
-      const w = updateMeta(root, id, (m) => {
+      try { rootLock.acquire(root); } catch (e) { if (e instanceof LockHeld) return sendJson(409, { ok: false, error: '另一保存/迁移正在进行（.migrate.lock），请稍后重试' }); throw e; }
+      try {
+        const w = updateMeta(root, id, (m) => {
         if (m && m.zones && Object.keys(m.zones).length) { created = 'exists'; return m; }   // 已有 zones：幂等不动
         const zones = {};
         for (const e of entries) {
@@ -2398,6 +2512,7 @@ async function handler(req, res) {
         return { ...(m || {}), zones, zoneOrder: ['personal', 'work', 'project', 'skill', 'education', 'award', 'summary', 'other'] };
       });
       return sendJson(200, { ok: true, zones: w.zones });   // 用写入后返回值，不回读磁盘
+      } finally { try { rootLock.release(root); } catch {} }
     }
     // ===== S4a-T4：AI 任务可靠性端点（设计 §6）=====
     // gen-start：原子启动——updateMetaAll 锁内扫描全表判并发（同类 ≤1 / 合计 ≤2），立即返回 taskId；
@@ -2684,6 +2799,18 @@ async function handler(req, res) {
         if (v[k] < FLOORS[k]) return sendJson(400, { ok: false, error: k + ' 低于最小可读下限（' + FLOORS[k] + '）' });
       }
       const m0 = loadMeta()[id] || {};
+      // AUD-13：最终读取状态下复核前置 —— 陈旧页面不能直接盖章
+      //   ① 排版轮次上限（3 轮）：到顶就不再接受新的排版应用
+      if ((Number(m0.layoutRounds) || 0) >= 3) {
+        return sendJson(409, { ok: false, error: '已达排版迭代 3 轮上限，不再接受新的排版应用（请人工取舍或走超页导出）' });
+      }
+      //   ② 审阅未完成的岗位草稿不接受排版应用（与导出检查同源）
+      if (m0.job) {
+        const live = jobViewLive(id, m0);
+        if (!live || !live.checks || !live.checks.reviewComplete) {
+          return sendJson(409, { ok: false, error: '整体审阅尚未完成，不能应用排版参数（请先在审阅页处理完待核对项）' });
+        }
+      }
       const rounds = (Number(m0.layoutRounds) || 0) + 1;
       const t = String(m0.typo || '');
       const css = '/*TYPO-CUSTOM*/'
@@ -2886,7 +3013,7 @@ async function handler(req, res) {
         navigator.clipboard.writeText(sel.textContent).then(function () { btn.innerHTML = __STATUS_ICONS__.ok; setTimeout(function () { btn.textContent = '复制'; }, 800); });
       }
       function matStatus(id, s) {
-        fetch('/mat/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id, factStatus: s }) }).then(function () { location.reload(); });
+        __wv('/mat/update', { id: id, factStatus: s }).then(function () { location.reload(); }).catch(function () {});
       }
       function matFacts(e, id) {
         e.preventDefault();
@@ -2894,11 +3021,7 @@ async function handler(req, res) {
         for (var en of f.entries()) if (en[0].indexOf('f_') === 0) facts[en[0].slice(2)] = en[1];
         var factStatus = facts.factStatus; delete facts.factStatus;
         var form = e.target;
-        fetch('/mat/update', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: id, facts: facts, factStatus: factStatus }) }).then(function (r) {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.json();
-        }).then(function () { location.reload(); }).catch(function (err) {
+        __wv('/mat/update', { id: id, facts: facts, factStatus: factStatus }).then(function () { location.reload(); }).catch(function (err) {
           matShowErr(form, '保存失败：' + (err.message || err) + '（输入已保留，可重试）');
         });
         return false;
@@ -2907,7 +3030,7 @@ async function handler(req, res) {
         var pend = MATS.filter(function (m) { return m.factStatus !== 'confirmed'; });   // S4a-T11：范围=待确认素材（文案明示）
         if (!pend.length) { alert('没有待确认的素材。'); return; }
         if (!confirm('将把 ' + pend.length + ' 条待确认素材标记为已确认——请先确认事实层内容准确。')) return;
-        fetch('/mat/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: pend.map(function (m) { return m.id; }), confirmed: true }) }).then(function () { location.reload(); });
+        __wv('/mat/confirm', { ids: pend.map(function (m) { return m.id; }), confirmed: true }).then(function () { location.reload(); }).catch(function () {});
       }
       function matShowErr(form, msg) {
         var el = form.querySelector('.mat-err');
@@ -2922,24 +3045,23 @@ async function handler(req, res) {
         var te = prompt('技术表达', m.technical || ''); if (te === null) return;
         var iv = prompt('面试讲述', m.interview || ''); if (iv === null) return;
         var at = prompt('附件路径', m.attach || ''); if (at === null) return;
-        fetch('/mat/update', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: id, title: t, brief: b, technical: te, interview: iv, attach: at }) }).then(function () { location.reload(); });
+        __wv('/mat/update', { id: id, title: t, brief: b, technical: te, interview: iv, attach: at }).then(function () { location.reload(); }).catch(function () {});
       }
       function matDel(id) {
         if (!confirm('删除这条素材？')) return;
-        fetch('/mat/del', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) }).then(function () { location.reload(); });
+        __wv('/mat/del', { id: id }).then(function () { location.reload(); }).catch(function () {});
       }
       document.getElementById('matForm').addEventListener('submit', async function (e) {
         e.preventDefault();
-        var r = await fetch('/mat/add', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: document.getElementById('mtitle').value.trim(), brief: document.getElementById('mbrief').value.trim(),
+        try {
+          await __wv('/mat/add', { title: document.getElementById('mtitle').value.trim(), brief: document.getElementById('mbrief').value.trim(),
             technical: document.getElementById('mtech').value.trim(), interview: document.getElementById('mitv').value.trim(),
             attach: document.getElementById('mattach').value.trim(), confirm: true,
-            tags: document.getElementById('mtags').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean) }) });
-        try {
-          if (r.ok) { location.reload(); return; }
-          __status(document.getElementById('matmsg'), 'err', '保存失败：' + (await r.text()));
+            tags: document.getElementById('mtags').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean) },
+            document.getElementById('matmsg'));
+          location.reload();
         } catch (err) {
+          // __wv 已给出失败原因（业务失败/网络异常）；这里只补一句「输入已保留」
           __status(document.getElementById('matmsg'), 'err', '保存失败：' + (err.message || err) + '（输入已保留，可重试）');
         }
       });
@@ -3076,10 +3198,10 @@ async function handler(req, res) {
       function snapNote(id, ts) {
         var name = prompt('快照名', ''); if (name === null) return;
         var note = prompt('备注', ''); if (note === null) return;
-        fetch('/snapshot/note', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id, ts: ts, name: name, note: note }) }).then(function () { location.reload(); });
+        __wv('/snapshot/note', { id: id, ts: ts, name: name, note: note }).then(function () { location.reload(); }).catch(function () {});
       }
       function snapBaseline(id, ts) {
-        fetch('/snapshot/baseline', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id, ts: ts }) }).then(function () { location.reload(); });
+        __wv('/snapshot/baseline', { id: id, ts: ts }).then(function () { location.reload(); }).catch(function () {});
       }
     </script>`, 'docs'));
     }
@@ -3230,8 +3352,7 @@ async function handler(req, res) {
     <script>var APP_STATUSES = ${JSON.stringify(APP_STATUSES)}; var APPS = ${JSON.stringify(apps).replace(/</g, '\\u003c')};</script>
     <script>
       function appPatch(id, patch) {
-        fetch('/app/update', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(Object.assign({ id: id }, patch)) }).then(function () { location.reload(); });
+        __wv('/app/update', Object.assign({ id: id }, patch)).then(function () { location.reload(); }).catch(function () {});
       }
       function appEdit(id) {
         var a = APPS.find(function (x) { return x.id === id; });
@@ -3244,17 +3365,21 @@ async function handler(req, res) {
       }
       function appDel(id) {
         if (!confirm('删除这条投递？')) return;
-        fetch('/app/del', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) }).then(function () { location.reload(); });
+        __wv('/app/del', { id: id }).then(function () { location.reload(); }).catch(function () {});
       }
       document.getElementById('appForm').addEventListener('submit', async function (e) {
         e.preventDefault();
-        var r = await fetch('/app/add', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ company: document.getElementById('company').value.trim(), role: document.getElementById('role').value.trim(), docId: document.getElementById('docId').value,
+        try {
+          var d = await __wv('/app/add', { company: document.getElementById('company').value.trim(), role: document.getElementById('role').value.trim(), docId: document.getElementById('docId').value,
             jd: document.getElementById('jd').value, note: document.getElementById('note').value,
             channel: document.getElementById('channel').value.trim(), link: document.getElementById('link').value.trim(),
-            appliedAt: document.getElementById('appliedAt').value, nextStep: document.getElementById('nextStep').value.trim(), dueDate: document.getElementById('dueDate').value }) });
-        if (r.ok) { var d = await r.json().catch(function () { return null; }); if (d && d.warning) alert(d.warning); location.reload(); }
-        else __status(document.getElementById('appmsg'), 'err', await r.text());
+            appliedAt: document.getElementById('appliedAt').value, nextStep: document.getElementById('nextStep').value.trim(), dueDate: document.getElementById('dueDate').value },
+            document.getElementById('appmsg'));
+          if (d && d.warning) alert(d.warning);
+          location.reload();
+        } catch (err) {
+          __status(document.getElementById('appmsg'), 'err', '保存失败：' + (err.message || err) + '（输入已保留，可重试）');
+        }
       });
     </script>`, 'apps', true));
     }
@@ -3329,7 +3454,7 @@ async function handler(req, res) {
         ivs.push({ round: round, time: document.getElementById('ivTime').value,
           questions: document.getElementById('ivQ').value, answer: document.getElementById('ivA').value,
           feedback: document.getElementById('ivF').value, next: document.getElementById('ivN').value });
-        fetch('/app/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: APPID, interviews: ivs }) }).then(function () { location.reload(); });
+        __wv('/app/update', { id: APPID, interviews: ivs }).then(function () { location.reload(); }).catch(function () {});
       };
       document.getElementById('prepBtn').onclick = async function () {
         document.getElementById('prepMsg').textContent = ' 生成中…';
@@ -3490,10 +3615,16 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         await applyAndSave(function () { state.active = i; }, radio);
       }
       async function save() {
-        var r = await fetch('/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state) });
         var msgEl = document.getElementById('msg');
-        if (r.ok) __status(msgEl, 'ok', '已保存'); else __status(msgEl, 'err', await r.text());
-        return r.ok;
+        var r;
+        // 网络异常也必须进失败分支：原先这里抛出 → applyAndSave 不回滚 → UI 显示已切换，磁盘仍是旧值
+        try { r = await fetch('/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state) }); }
+        catch (e) { __status(msgEl, 'err', '网络异常：' + ((e && e.message) || e) + '（未生效，可重试）'); return false; }
+        if (!r.ok) { __status(msgEl, 'err', await r.text().catch(function () { return 'HTTP ' + r.status; })); return false; }
+        var d = null; try { d = await r.json(); } catch (e) {}
+        if (d && d.ok === false) { __status(msgEl, 'err', d.error || '操作被拒绝（未生效）'); return false; }
+        __status(msgEl, 'ok', '已保存');
+        return true;
       }
       function pickModel(btn) {
         var i = Number(btn.getAttribute('data-pi'));
@@ -3718,9 +3849,11 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     // ===== S3-T5：区域级 AI（analyze 意见 / rewrite 候选；只带本区域段落 + 有界全文摘要）=====
     const ZONE_KEYS_SET = new Set(ZONE_KEYS);
     if (req.method === 'POST' && url.pathname === '/ai/zone-analyze') {
-      if (!hasLLM(root)) return send(409, '未配置大模型，请先到设置页配置', 'text/plain');
       const body = JSON.parse(await readBody(req));
       if (!ZONE_KEYS_SET.has(body.zone)) return send(400, 'invalid zone', 'text/plain');
+      const zerr = zoneRequestError(id, body);
+      if (zerr) return sendJson(zerr.status, { ok: false, code: zerr.code, error: zerr.error });
+      if (!hasLLM(root)) return sendJson(409, { ok: false, code: 'LLM_NOT_CONFIGURED', error: '未配置大模型，请先到设置页配置' });
       const html = fs.existsSync(docPath(id)) ? fs.readFileSync(docPath(id), 'utf8') : '';
       const meta = loadMeta()[id] || {};
       const zoneText = zoneParas(html, meta, body.zone).map((p) => p.text).join('\n');
@@ -3736,22 +3869,38 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       return sendJson(200, parsed ? { ok: true, ...parsed } : { ok: false, error: '分析失败，稍后再试' });
     }
     if (req.method === 'POST' && url.pathname === '/ai/zone-rewrite') {
-      if (!hasLLM(root)) return send(409, '未配置大模型，请先到设置页配置', 'text/plain');
       const body = JSON.parse(await readBody(req));
       if (!ZONE_KEYS_SET.has(body.zone)) return send(400, 'invalid zone', 'text/plain');
+      const zerr = zoneRequestError(id, body);
+      if (zerr) return sendJson(zerr.status, { ok: false, code: zerr.code, error: zerr.error });
+      if (!hasLLM(root)) return sendJson(409, { ok: false, code: 'LLM_NOT_CONFIGURED', error: '未配置大模型，请先到设置页配置' });
       if (!body.instruction || typeof body.instruction !== 'string') return send(400, 'instruction 必填', 'text/plain');
       const instruction = body.instruction.replace(/\s+/g, ' ').trim();   // S3-T6：服务端同压单行（curl 直打也过；instruction 在 prompt 独占一行，换行可伪造段落行）
       if (!instruction) return send(400, 'instruction 必填', 'text/plain');
       const html = fs.existsSync(docPath(id)) ? fs.readFileSync(docPath(id), 'utf8') : '';
       const meta = loadMeta()[id] || {};
-      const all = zoneParas(html, meta, body.zone);
-      const locked = new Set(all.filter((x) => meta.zones[x.zid] && meta.zones[x.zid].locked === true).map((x) => x.zid));
+      // 区域单位用 zone-v1 口径（与提示词、解析、落盘同一份文本）：prompt 与 parser 共用同一批单位
+      const all = zoneEditUnits(html).filter((x) => meta.zones && meta.zones[x.zid] && meta.zones[x.zid].zone === body.zone);
+      const locked = new Set(all.filter((x) => meta.zones[x.zid].locked === true).map((x) => x.zid));
       const free = all.filter((x) => !locked.has(x.zid));       // locked 段落跳过（段级保留标记）
-      if (!free.length) return sendJson(200, { ok: true, rewrites: [], skipped: [...locked] });
+      if (!free.length) return sendJson(200, { ok: true, rewrites: [], skipped: [...locked], baseMtime: body.baseMtime });
       const p = buildZoneRewritePrompt({ zoneName: ZONE_LABELS[body.zone], paras: free, instruction });
       const raw = await chat(root, p.sys, p.user, { lease: leaseOf(req) });
       const parsed = parseZoneRewrites(raw, free);
-      return sendJson(200, parsed ? { ok: true, rewrites: parsed, skipped: [...locked] } : { ok: false, error: '改写失败，稍后再试' });
+      if (!parsed) return sendJson(200, { ok: false, error: '改写失败，稍后再试' });
+      // 基线与操作身份由服务端生成（模型不得自报）：before/beforeHash 取本次实际发送的单位文本
+      const requestPrefix = randomBytes(8).toString('hex');
+      const baseline = new Map(free.map((u) => [u.zid, u]));
+      const rewrites = parsed.map((r, i) => ({
+        ...r,
+        operationId: requestPrefix + '-' + i,
+        baselineVersion: 'zone-v1',
+        before: baseline.get(r.zid).text,
+        beforeHash: contentHash(baseline.get(r.zid).text),
+        zone: body.zone,
+        candidate: r.candidate
+      }));
+      return sendJson(200, { ok: true, rewrites, skipped: [...locked], baseMtime: body.baseMtime });
     }
     // ===== 标签 / 关联 =====
     if (req.method === 'POST' && url.pathname === '/tag') {
@@ -4345,7 +4494,13 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     <div class="card" style="margin-top:12px"><b>排版诊断</b><span style="font-size:12px;color:var(--mut)">（排版迭代 ${layout.rounds}/3 轮 · 实际 ${layout.pages} 页 / 目标 ${layout.target} 页 · 请以实际渲染核对）</span>
       ${layout.items.length ? `<ul style="font-size:13px">${layout.items.map((it) => `<li>${escHtml(it.text)}${it.zid ? `（<a href="/edit?id=${id}">定位 ${escHtml(it.zid)}</a>）` : it.page ? `（第 ${it.page} 页）` : ''}</li>`).join('')}</ul>` : '<p style="font-size:13px;color:var(--mut)">无跨页标题 / 末页偏少等结构性事项。</p>'}
       ${layout.over && layout.apply ? `<div style="font-size:13px">建议本轮参数：字号 ${typoVals.fontSize}px → <b>${layout.apply.fontSize}px</b> · 行高 ${typoVals.lineHeight} → <b>${layout.apply.lineHeight}</b> · 段距 ${typoVals.paraGap}mm → <b>${layout.apply.paraGap}mm</b>
-        <form method="post" action="/export/layout-apply?id=${id}" style="display:inline;margin-left:8px"><button class="secondary" type="submit">应用本轮建议并重渲染</button></form></div>` : ''}
+        <form id="layApplyForm" style="display:inline;margin-left:8px"
+          onsubmit="event.preventDefault();var f=this,m=document.getElementById('layMsg');m.textContent=' 应用中…';__wv('/export/layout-apply?id=${id}',{fontSize:Number(f.fontSize.value),lineHeight:Number(f.lineHeight.value),paraGap:Number(f.paraGap.value)},m).then(function(d){m.textContent=' 已应用（第 '+d.rounds+' 轮，实际 '+d.pages+' 页）';setTimeout(function(){location.reload();},900);}).catch(function(e){m.textContent=' 应用失败：'+(e.message||e);});">
+          <input type="hidden" name="fontSize" value="${layout.apply.fontSize}">
+          <input type="hidden" name="lineHeight" value="${layout.apply.lineHeight}">
+          <input type="hidden" name="paraGap" value="${layout.apply.paraGap}">
+          <button class="secondary" type="submit">应用本轮建议并重渲染</button>
+          <span id="layMsg" style="font-size:12px"></span></form></div>` : ''}
       ${layout.over && (!layout.apply) ? `<div style="font-size:13px">${layout.atFloor ? '已达最小可读参数下限（字号 ≥12px、行高 ≥1.3、段距 ≥0.4mm），不再给压缩建议。' : '已到排版迭代 3 轮上限。'}超页出路二选一：<b>a) 人工取舍</b>——最长的候选精简项：${layout.topLong.map((p) => `<a href="/edit?id=${id}">${escHtml(p.text.slice(0, 18))}…</a>`).join('、')}；<b>b) 超页导出</b>——PDF 正常下载，导出记录将标注「超页导出：${layout.pages} 页」。</div>` : ''}
       <p style="font-size:12px;color:var(--mut)">内容精简（上方建议核对/风格建议）与排版调整（本轮参数）分别接受，互不替代。</p>
     </div>`;
@@ -4364,7 +4519,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       // S4a 上线后修复3：可投递改为显式确认——整体审阅完成 + 当前 PDF 才出按钮；确认后 S1 flow 契约不变
       const flowNow = flowOf(meta);
       const confirmDeliverable = meta.parent && pdfCurrent && expChecks.reviewComplete && flowNow !== 'reviewed'
-        ? `<form method="post" action="/job/changes?id=${id}" style="display:inline" onsubmit="event.preventDefault();fetch('/job/changes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:${jsStr(id)},status:'deliverable'})}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);location.reload()}).catch(function(e){alert('确认失败：'+e.message)})"><button class="ok" type="submit">确认可投递（整体审阅已完成）</button></form>`
+        ? `<form method="post" action="/job/changes?id=${id}" style="display:inline" onsubmit="event.preventDefault();__wv('/job/changes?id=${id}',{id:${jsStr(id)},status:'deliverable'}).then(function(){location.reload();}).catch(function(e){alert('确认失败：'+e.message)})"><button class="ok" type="submit">确认可投递（整体审阅已完成）</button></form>`
         : flowNow === 'reviewed' ? badge('ok', '已确认可投递')
         : `<span class="badge mute" title="整体审阅完成 + 当前 PDF 后可确认">${icon('circle-help', 11)}未确认可投递</span>`;
       const versionLine = pdfCurrent

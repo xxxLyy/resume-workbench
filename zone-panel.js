@@ -77,7 +77,34 @@
   }
 
   var state = { zones: {}, zoneOrder: null, zoneRounds: {}, colorOn: false, aiZone: null, aiDegraded: false, lastAnalysis: null };
+  // ===== ZONE-05：请求身份（epoch）=====
+  // 只有「区域键」当守卫不够：A→B→A 时旧 A 的响应会因区域键相同而写进新界面。
+  // epoch 随每次新请求/切换递增；旧响应一律不得渲染、不得改 busy。
+  var requestEpoch = 0, activeRequest = null;
+  function invalidateRequest() { requestEpoch++; activeRequest = null; }
+  function beginRequest(kind, zone) {
+    var token = { epoch: ++requestEpoch, kind: kind, zone: zone };
+    activeRequest = token;
+    return token;
+  }
+  function isCurrent(token) { return activeRequest === token && token.epoch === requestEpoch; }
+  // 保存前置（ZONE-05 / Z1）：区域建议基于磁盘正文 —— 本地必须先确认落盘。
+  // 保存钩子返回 false 也是失败（模板 doSave 失败时 return false 而不抛）。
+  function ensureSavedForZone() {
+    if (typeof window.__edFlushSave !== 'function' || typeof window.__edIsDirty !== 'function') {
+      return Promise.reject(new Error('当前编辑器无法确认保存，请刷新后重试'));
+    }
+    return Promise.resolve(window.__edFlushSave()).then(function (ok) {
+      if (ok !== true) throw new Error('当前修改尚未保存成功，已停止本次请求（请先保存再试）');
+      if (window.__edIsDirty()) throw new Error('保存期间又有新修改，已停止本次请求（请稍后重试）');
+      var mtime = Number(window.__edDocMtime || 0);
+      if (!isFinite(mtime) || mtime <= 0) throw new Error('缺少已确认的文档版本，已停止本次请求');
+      return mtime;
+    });
+  }
   var preview = [];   // S3-T6：当前可接受候选集（非 conflict；renderPreview 维护，accept 消费）
+  var previewSnapshot = null;   // ZONE-06：生成时各目标节点的 innerHTML（判定期间是否被改过）
+  var adoptedZoneReceipts = {}; // ZONE-06：已采用的回执（同一 requestId 只消费一次）
   var root = document.createElement('div');
   root.id = 'zp-root';
   root.className = 'zp';
@@ -134,6 +161,7 @@
   // ===== 区域级 AI（T5）：意见卡 + chips 追问 + 修改模式输入 + 改写候选预览 =====
   // 改写候选经 ed-zone-preview 事件进 renderPreview（T6 起事件是正式消费通道），接受走 S2 统一撤销链路。
   function openAi(zoneKey) {
+    invalidateRequest();          // 切换区域 → 旧请求全部失效（ZONE-05）
     state.aiZone = zoneKey;
     state.aiDegraded = false;
     state.lastAnalysis = null;
@@ -246,32 +274,53 @@
   }
   function analyze(zoneKey, extra) {
     if (state.aiDegraded) return;
+    var token = beginRequest('analyze', zoneKey);
     setBusy(true);
     var out = document.getElementById('zp-ai-out');
     if (out) out.textContent = '分析中…';
-    api('/ai/zone-analyze?id=' + encodeURIComponent(DOC_ID), { zone: zoneKey, extra: extra }).then(function (d) {
+    // 保存前置：本地正文先确认落盘，再带基线请求（否则可能基于旧内容给建议）
+    ensureSavedForZone().then(function (baseMtime) {
+      if (!isCurrent(token)) return null;
+      return api('/ai/zone-analyze?id=' + encodeURIComponent(DOC_ID), { zone: zoneKey, extra: extra, baseMtime: baseMtime });
+    }).then(function (d) {
+      if (!d) return;                       // 已被更新的请求取代
+      if (!isCurrent(token)) return;        // 旧响应不得渲染、不得改 busy
       setBusy(false);
-      if (d._status === 409) { degrade('未配置大模型'); return; }
+      if (d._status === 409 && d.code === 'LLM_NOT_CONFIGURED') { degrade('未配置大模型'); return; }
+      if (d._status === 409) { if (out) out.textContent = d.error || '文档已变化，请先同步内容'; return; }
       if (!d.ok) { if (out) out.textContent = d.error || '分析失败，稍后再试'; return; }
-      if (state.aiZone !== zoneKey) return;   // 慢响应守卫：用户已切区域，旧意见不得写进新卡
       state.lastAnalysis = { zone: zoneKey, data: d };
       load();                          // 轮次自增后刷新行内计数（load 重绘保留 AI 区）
       showAnalysis(d);
-    }).catch(function () { setBusy(false); if (out) out.textContent = '分析失败，稍后再试'; });
+    }).catch(function (e) {
+      if (!isCurrent(token)) return;
+      setBusy(false);
+      if (out) out.textContent = (e && e.message) || '分析失败，稍后再试';
+    });
   }
   function rewrite(zoneKey, instruction) {
     if (state.aiDegraded) return;
     instruction = String(instruction || '').replace(/\s+/g, ' ').trim();   // S3-T6（T5 移交）：压单行，闭合经换行伪造段落行的注入面
+    var token = beginRequest('rewrite', zoneKey);
     setBusy(true);
     var prev = document.getElementById('zp-preview');
     if (prev) prev.textContent = '生成中…';
-    api('/ai/zone-rewrite?id=' + encodeURIComponent(DOC_ID), { zone: zoneKey, instruction: instruction }).then(function (d) {
+    ensureSavedForZone().then(function (baseMtime) {
+      if (!isCurrent(token)) return null;
+      return api('/ai/zone-rewrite?id=' + encodeURIComponent(DOC_ID), { zone: zoneKey, instruction: instruction, baseMtime: baseMtime });
+    }).then(function (d) {
+      if (!d) return;
+      if (!isCurrent(token)) return;        // 旧候选不渲染、不派发 ed-zone-preview
       setBusy(false);
-      if (d._status === 409) { degrade('未配置大模型'); if (prev) prev.textContent = ''; return; }
+      if (d._status === 409 && d.code === 'LLM_NOT_CONFIGURED') { degrade('未配置大模型'); if (prev) prev.textContent = ''; return; }
+      if (d._status === 409) { if (prev) prev.textContent = d.error || '文档已变化，请先同步内容'; return; }
       if (!d.ok) { if (prev) prev.textContent = d.error || '改写失败，稍后再试'; return; }
-      if (state.aiZone !== zoneKey) return;   // 慢响应守卫：旧候选不渲染、不派发 ed-zone-preview
       window.dispatchEvent(new CustomEvent('ed-zone-preview', { detail: { doc: DOC_ID, zone: zoneKey, rewrites: d.rewrites || [] } }));
-    }).catch(function () { setBusy(false); if (prev) prev.textContent = '改写失败，稍后再试'; });
+    }).catch(function (e) {
+      if (!isCurrent(token)) return;
+      setBusy(false);
+      if (prev) prev.textContent = (e && e.message) || '改写失败，稍后再试';
+    });
   }
   // 改写候选预览（S3-T6）：非 conflict 候选整体接受（一条撤销 op）；conflict 项只展示 ⚠ 理由，不计入可接受集合
   function renderPreview(rewrites) {
@@ -283,6 +332,12 @@
     }
     prev.innerHTML = '';
     preview = (rewrites || []).filter(function (r) { return r.level !== 'conflict'; });
+    // 生成时的节点快照：接受时用它判断「这段是否在等待期间被改过」
+    previewSnapshot = {};
+    preview.forEach(function (it) {
+      var el = sheet.querySelector('[data-zid="' + it.zid + '"]');
+      if (el) previewSnapshot[it.zid] = el.innerHTML;
+    });
     if (!(rewrites || []).length) { prev.textContent = '（无可应用的改写候选）'; return; }
     rewrites.forEach(function (r) {
       var card = document.createElement('div');
@@ -311,7 +366,12 @@
       prev.appendChild(acc);
     }
   }
-  // 接受区域改写：严格走 S2 统一撤销链路——快照先压栈 → 改 DOM → 标记程序化 → Toast 绑 opId（与工具条同一条 op）
+  // 接受区域改写（ZONE-06）：不再直接改 DOM。
+  //   ① 本地正文先确认落盘（拿已确认的 mtime 作并发基线）
+  //   ② 剔除等待期间被改过的目标（与生成时快照比较）
+  //   ③ 把「未套候选」的正文 + 安全子集 zoneOps 一次提交（服务端在同一事务里落正文与状态）
+  //   ④ 只合并【提交后未被改动】的目标；其余保留用户的本地内容
+  //   ⑤ 一次实际应用 = 一次撤销（压栈一次，工具条与 Toast 共用同一个 opId）
   function accept() {
     var todo = preview.filter(function (it) { return sheet.querySelector('[data-zid="' + it.zid + '"]'); });
     var stale = preview.length - todo.length;
@@ -320,15 +380,97 @@
       if (p) p.textContent = '段落已变化，请重新生成';
       return;
     }
-    var opId = window.__edPushUndo('区域改写');
-    todo.forEach(function (it) {
+    // 剔除等待期间被改过的目标（正文里已被用户动过 → 不动它）
+    var ready = todo.filter(function (it) {
       var el = sheet.querySelector('[data-zid="' + it.zid + '"]');
-      el.textContent = it.candidate;      // 纯文本替换：整段拍平 inline 标记是 S3 已知限制（diff 预览可见原文与候选）
+      var snap = previewSnapshot && previewSnapshot[it.zid];
+      return !snap || el.innerHTML === snap;
     });
-    window.__edMarkProgrammatic();
-    if (window.__edUndoToast) window.__edUndoToast('已应用区域改写' + (stale ? '（' + stale + ' 段已变化跳过）' : ''), opId);
+    if (!ready.length) {
+      var p2 = document.getElementById('zp-preview');
+      if (p2) p2.textContent = '候选段落已被修改，未应用（请重新生成）';
+      return;
+    }
+    var changedCount = todo.length - ready.length;
+    var prev = document.getElementById('zp-preview');
+    if (prev) prev.textContent = '保存中…';
+    ensureSavedForZone().then(function (baseMtime) {
+      // 取服务端版本并核对：必须与我们确认过的 mtime 一致
+      return api('/job/changes?id=' + encodeURIComponent(DOC_ID)).then(function (d) {
+        if (!d || !d.ok || !d.doc) throw new Error('无法读取文档版本，请刷新后重试');
+        if (d.doc.mtime !== baseMtime) throw new Error('文档已变化（其他窗口已修改），请刷新后重试');
+        return d.rev;
+      });
+    }).then(function (rev) {
+      var zoneOps = ready.map(function (it) {
+        return {
+          operationId: it.operationId, zid: it.zid, zone: it.zone, baselineVersion: 'zone-v1',
+          before: it.before, beforeHash: it.beforeHash, candidate: it.candidate
+        };
+      });
+      // 提交快照：合并时只合并「提交后仍未被改动」的目标
+      var snapshots = {};
+      ready.forEach(function (it) {
+        var el = sheet.querySelector('[data-zid="' + it.zid + '"]');
+        if (el) snapshots[it.zid] = el.innerHTML;
+      });
+      var sent = {
+        requestId: 'zp-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10),
+        baseRev: rev, baseMtime: baseMtime,
+        html: (typeof window.__edBuildSaveHtml === 'function') ? window.__edBuildSaveHtml() : '',
+        ops: [], zoneOps: zoneOps
+      };
+      return api('/save?id=' + encodeURIComponent(DOC_ID), sent).then(function (d) {
+        if (!d || !d.ok) throw new Error((d && d.error) || '保存失败');
+        return mergeZoneReceipt(sent, d, snapshots, changedCount);
+      });
+    }).catch(function (e) {
+      if (prev) prev.textContent = '未应用：' + ((e && e.message) || e);
+    });
+  }
+
+  // 回执合并（ZONE-06）：只回退基线到本次确认的版本；旧回执不推进基线；同一回执只消费一次。
+  function mergeZoneReceipt(sent, d, snapshots, changedCount) {
+    var receipt = (d && d.receipt) ? d.receipt : d;
+    var prev = document.getElementById('zp-preview');
+    if (!receipt || receipt.requestId !== sent.requestId) {
+      if (prev) prev.textContent = '回执与本次提交不匹配，未应用（请刷新核对）';
+      return { merged: 0, changed: [] };
+    }
+    if (adoptedZoneReceipts[sent.requestId]) {
+      if (prev) prev.textContent = '该操作已处理过，未重复应用';
+      return { merged: 0, changed: [] };
+    }
+    // 基线推进前提：本地已确认的版本仍是我们提交时那一版（否则期间有别的保存）
+    if (Number(window.__edDocMtime) !== sent.baseMtime) {
+      if (prev) prev.textContent = '期间文档已被其他保存更新，本次结果未合并（请刷新核对）';
+      return { merged: 0, changed: [], superseded: true };
+    }
+    var ready = [], changed = [];
+    (receipt.applied || []).forEach(function (it) {
+      var el = sheet.querySelector('[data-zid="' + it.zid + '"]');
+      if (!el || el.innerHTML !== snapshots[it.zid]) { changed.push(it.zid); return; }
+      ready.push({ el: el, candidate: it.candidate });
+    });
+    var opId = null;
+    if (ready.length) {
+      opId = window.__edPushUndo ? window.__edPushUndo('区域改写') : null;
+      ready.forEach(function (it) { it.el.textContent = it.candidate; });
+      if (window.__edMarkProgrammatic) window.__edMarkProgrammatic();
+    }
+    adoptedZoneReceipts[sent.requestId] = true;
+    if (receipt.mtime) window.__edDocMtime = receipt.mtime;
+    if (prev) {
+      prev.textContent = ready.length
+        ? ('已应用 ' + ready.length + ' 段' + (changed.length ? '（' + changed.length + ' 段在等待期间继续编辑，已保留本地内容）' : '') + (changedCount ? '；' + changedCount + ' 段在提交前已变化，未应用' : ''))
+        : ('没有可合并的段落' + (changed.length ? '（' + changed.length + ' 段在等待期间继续编辑，已保留本地内容）' : ''));
+    }
+    if (opId != null && window.__edUndoToast) {
+      window.__edUndoToast('已应用区域改写' + (changed.length ? '（' + changed.length + ' 段已保留本地内容）' : ''), opId);
+    }
     preview = [];
-    renderPreview([]);
+    previewSnapshot = null;
+    return { merged: ready.length, changed: changed };
   }
 
   // 定位与闪烁（CSS Custom Highlight，不给正文挂 class）

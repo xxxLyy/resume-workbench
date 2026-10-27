@@ -139,8 +139,17 @@
   // 保存失败必须上抛：吞掉异常会带着旧 mtime 继续请求，服务端基于过期内容做体检/对话，
   // 给出基于旧文档的改写建议（用户看到的却是新内容）。调用方（sendChat/runReview）已在 try 内
   async function flushFirst() {
-    if (window.__edFlushSave) await window.__edFlushSave();
-    return Number(window.__edDocMtime || 0);
+    // AUD-02：保存钩子返回 false 也是失败 —— 模板的 doSave 失败时 return false 而不抛，
+    // 「保存中再次触发」也 return false。漏看返回值 → 带着旧 mtime 继续请求，
+    // 服务端基于过期正文给出基于旧文档的建议（用户看到的却是新内容）。
+    // 四项缺一不可：钩子存在、返回 true、已不 dirty、版本号有效。
+    if (typeof window.__edFlushSave !== 'function') throw new Error('当前编辑器无法确认保存，请刷新后重试');
+    var ok = await window.__edFlushSave();
+    if (ok !== true) throw new Error('当前修改尚未保存成功，已停止本次请求（请先保存再试）');
+    if (typeof window.__edIsDirty === 'function' && window.__edIsDirty()) throw new Error('保存期间又有新修改，已停止本次请求（请稍后重试）');
+    var mt = Number(window.__edDocMtime || 0);
+    if (!Number.isFinite(mt) || mt <= 0) throw new Error('缺少已确认的文档版本，已停止本次请求');
+    return mt;
   }
 
   function aiError(e) {
@@ -238,23 +247,31 @@
         __status(note, 'warn', '原文在正文里出现多处，无法确定改哪一处，已拒绝（请手动修改）');
         return;
       }
-      if (window.__edPushUndo) window.__edPushUndo('AI：' + (c.note || '修改'));
+      // 撤销身份：一次应用一个 opId，卡片 / 工具条 / Toast 共用同一个
+      var opId = window.__edPushUndo ? window.__edPushUndo('AI：' + (c.note || '修改')) : null;
       if (window.__edReplaceText(c.before, c.after, { occurrence: c.occurrence, context: c.context })) {
         box.style.opacity = '0.6';
         apply.style.display = skip.style.display = loc.style.display = 'none';
         var undo = document.createElement('button');
         undo.textContent = '↩ 撤销';
         undo.onclick = function () {
-          if (window.__edReplaceText(c.after, c.before)) {
+          // AUD-04：撤销走统一撤销栈（按 opId 消费），不再按全文反向搜索 ——
+          //   全文搜索会改到另一段含相同文本的段落（实测原目标被手改后，撤销改到了别处）；
+          //   自己再反向替换还会与工具条撤销重复记账（同一次操作能被撤销两次）。
+          //   整片快照回滚天然精确回到应用前，目标被手改时走既有确认门，拒绝改错段落。
+          if (window.__edUndoLast && window.__edUndoLast(opId)) {
             box.style.opacity = '1';
             undo.remove();
             apply.style.display = skip.style.display = loc.style.display = '';
             apply.disabled = skip.disabled = false;
-          } else { __status(note, 'warn', '撤销失败：改写后的文本已被再次修改'); }
+          } else { __status(note, 'warn', '撤销失败：改写后的内容已被再次修改，或该操作已被撤销'); }
         };
         box.appendChild(undo);
       }
-      else { __status(note, 'warn', '未在文档中找到原文（可能已被修改），未应用（可手动改）'); }
+      else {
+        if (opId != null && window.__edDropUndo) window.__edDropUndo(opId);   // 失败不留空撤销记录
+        __status(note, 'warn', '未在文档中找到原文（可能已被修改），未应用（可手动改）');
+      }
     };
     skip.onclick = function () { box.style.opacity = '0.5'; apply.disabled = skip.disabled = true; loc.disabled = true; };
     box.append(note, b, a, apply, skip, loc);
@@ -423,8 +440,9 @@
   };
   $('ai-apply').onclick = function () {
     if (pendingAfter) {
-      if (window.__edPushUndo) window.__edPushUndo('AI 改写');
+      var popOpId = window.__edPushUndo ? window.__edPushUndo('AI 改写') : null;
       if (window.__edReplaceText(pendingBefore, pendingAfter)) $('ai-pop').style.display = 'none';
+      else if (popOpId != null && window.__edDropUndo) window.__edDropUndo(popOpId);   // 失败不留空撤销记录
       else __status($('ai-preview'), 'warn', '原文未找到（可能已被修改），未应用');
     }
   };
