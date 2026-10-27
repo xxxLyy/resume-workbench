@@ -169,6 +169,9 @@ const saveEvals = (list) => writeJson('evals', list);
 // 两条防线：① Content-Length 已知超限 → 直接拒绝，不必下载；
 // ② 没有长度 → 流式累计并即时中断。不能等完整 body 收完再判大小（那等于没有上限）。
 const JD_PAGE_MAX_BYTES = 5 * 1024 * 1024;
+// 恢复/撤销的受管项（AUD-09）：存在性台账只覆盖这些；config.json 刻意不在其中（恢复不碰配置）。
+const RESTORE_MANAGED_DIRS = ['docs', 'snapshots', 'pdfs'];
+const RESTORE_MANAGED_FILES = ['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json'];
 async function fetchPageText(url) {
   const r = await fetch(url, { signal: AbortSignal.timeout(15000), redirect: 'error' });
   if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -4093,7 +4096,13 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       for (const d of ['docs', 'snapshots', 'pdfs']) if (fs.existsSync(path.join(root, d))) fs.cpSync(path.join(root, d), path.join(safety, 'data', d), { recursive: true });
       try { hardenDataPerms(root); } catch {}   // cpSync 不经 atomicWrite → 权限随源文件，恢复后统一收紧
       for (const f of ['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json']) if (fs.existsSync(path.join(root, f))) fs.copyFileSync(path.join(root, f), path.join(safety, 'data', f));
-      fs.writeFileSync(path.join(safety, 'manifest.json'), JSON.stringify({ ts, mode, at: new Date().toISOString(), preview }));
+      // 存在性台账（AUD-09）：安全点只复制「存在的」文件 → 「原本不存在」这一事实丢失，
+      // 撤销时无法把恢复引入的文件删回去（实测：原本没有 evaluations.json，恢复后撤销，文件仍在）。
+      // present 记录恢复前每个受管项是否存在；config.json 不在受管范围（恢复不碰它）。
+      const present = {};
+      for (const d of RESTORE_MANAGED_DIRS) present[d] = fs.existsSync(path.join(root, d));
+      for (const f of RESTORE_MANAGED_FILES) present[f] = fs.existsSync(path.join(root, f));
+      fs.writeFileSync(path.join(safety, 'manifest.json'), JSON.stringify({ ts, mode, at: new Date().toISOString(), preview, present }, null, 2));
       try {
         if (mode === 'replace') {
           for (const d of ['docs', 'snapshots', 'pdfs']) {
@@ -4161,6 +4170,10 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       if (!/^restore-[0-9]+$/.test(tsParam)) return send(400, 'invalid ts', 'text/plain');
       const dir = path.join(root, 'backups', tsParam, 'data');
       if (!fs.existsSync(dir)) return sendJson(404, { ok: false, error: '回退点不存在' });
+      // 存在性台账（AUD-09）：旧安全点没有 present → 不猜测删除任何用户数据（只覆盖备份里有的）。
+      let undoManifest = null;
+      try { undoManifest = JSON.parse(fs.readFileSync(path.join(root, 'backups', tsParam, 'manifest.json'), 'utf8')); } catch {}
+      const present = (undoManifest && undoManifest.present && typeof undoManifest.present === 'object') ? undoManifest.present : null;
       // 回退点里的 docs-meta 先校验：损坏 → 500 拒绝，且发生在任何删除/覆盖之前（否则会先清空本地再把 meta 当成 {} 全删）
       let undoMeta;
       try { undoMeta = readMetaSnapshotAt(path.join(dir, 'docs-meta.json')); }
@@ -4171,24 +4184,48 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       // 回退点结构须与 restore 主路径一致（backups/<ts>/data/...）：undo 的读取端按 data/ 取，
       // 原先只建 safety2 本身并把内容放在其下，等于自己造的回退点无法再回退
       fs.mkdirSync(path.join(safety2, 'data'), { recursive: true });
-      for (const d of ['docs', 'snapshots', 'pdfs']) if (fs.existsSync(path.join(root, d))) fs.cpSync(path.join(root, d), path.join(safety2, 'data', d), { recursive: true });
+      for (const d of RESTORE_MANAGED_DIRS) if (fs.existsSync(path.join(root, d))) fs.cpSync(path.join(root, d), path.join(safety2, 'data', d), { recursive: true });
       try { hardenDataPerms(root); } catch {}   // cpSync 不经 atomicWrite → 权限随源文件，恢复后统一收紧
-      for (const f of ['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json']) if (fs.existsSync(path.join(root, f))) fs.copyFileSync(path.join(root, f), path.join(safety2, 'data', f));
+      for (const f of RESTORE_MANAGED_FILES) if (fs.existsSync(path.join(root, f))) fs.copyFileSync(path.join(root, f), path.join(safety2, 'data', f));
+      // 自己的回退点同样要带存在性台账 → 「undo 之后再 undo」也能精确还原
+      {
+        const p2 = {};
+        for (const d of RESTORE_MANAGED_DIRS) p2[d] = fs.existsSync(path.join(root, d));
+        for (const f of RESTORE_MANAGED_FILES) p2[f] = fs.existsSync(path.join(root, f));
+        fs.writeFileSync(path.join(safety2, 'manifest.json'), JSON.stringify({ ts: String(ts2), mode: 'undo', at: new Date().toISOString(), present: p2 }, null, 2));
+      }
       try {
-        for (const d of ['docs', 'snapshots', 'pdfs']) {
+        for (const d of RESTORE_MANAGED_DIRS) {
           const src = path.join(dir, d);
-          if (!fs.existsSync(src)) continue;
+          // 恢复前不存在 → 撤销时必须删掉恢复引入的目录（否则「恢复→撤销」不回到原状）
+          if (present && present[d] === false) {
+            try { fs.rmSync(path.join(root, d), { recursive: true, force: true }); } catch {}
+            continue;
+          }
+          if (!fs.existsSync(src)) continue;   // 旧安全点或备份不完整 → 不动，不猜
           fs.rmSync(path.join(root, d), { recursive: true, force: true });
           fs.cpSync(src, path.join(root, d), { recursive: true });
           try { hardenDataPerms(root); } catch {}   // cpSync 不经 atomicWrite → 权限随源文件，恢复后统一收紧
         }
-        for (const f of ['applications.json', 'materials.json', 'evaluations.json']) if (fs.existsSync(path.join(dir, f))) fs.copyFileSync(path.join(dir, f), path.join(root, f));
+        for (const f of ['applications.json', 'materials.json', 'evaluations.json']) {
+          // 恢复前不存在 → 撤销时删掉恢复导入的（否则导入的评估文件留在原地）
+          if (present && present[f] === false) {
+            try { fs.rmSync(path.join(root, f), { force: true }); } catch {}
+            continue;
+          }
+          if (fs.existsSync(path.join(dir, f))) fs.copyFileSync(path.join(dir, f), path.join(root, f));
+        }
         // docs-meta 成对回退：经 updateMeta 逐文档写（唯一写入者）
         if (undoMeta) applyMetaSnapshot(undoMeta);
+        // 恢复前没有 meta 文件 → 撤销后也不该有（applyMetaSnapshot 已把表清空）
+        if (present && present['docs-meta.json'] === false) {
+          try { fs.rmSync(path.join(root, 'docs-meta.json'), { force: true }); } catch {}
+        }
       } catch (e) {
         return sendJson(500, { ok: false, error: '回退失败：' + (e.message || e) + '（本次操作前的状态在 ' + safety2 + '）' });
       }
-      return sendJson(200, { ok: true });
+      // 返回自己的回退点名 → 「撤销之后再撤销」可用（AUD-09 验收要求）
+      return sendJson(200, { ok: true, safety: path.basename(safety2) });
     }
     // ===== PDF / 导出 =====
     // 历史版本 PDF：从快照内容渲染到独立文件，语义与「最新版」明确分开
