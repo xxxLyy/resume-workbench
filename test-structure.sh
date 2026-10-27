@@ -4868,3 +4868,7 @@ node ./test-fixtures/reliability/test-job-create.mjs
 # ===== AUD-05/AUD-07：渲染信任边界与成对产物发布（隔离根 / 合成文档 / 本机接收器 + 假渲染器）=====
 # 明确接入现有测试入口：未知脚本渲染零外联；渲染失败保持旧成对产物（新 PDF 配旧旁车不得出现）。
 node ./test-fixtures/reliability/test-render-boundary.mjs
+
+# ===== TASK-04：后台生成任务的真实生命周期（隔离服务 + 本机假 LLM）=====
+# 明确接入现有测试入口：成功落账 / 证据换批被拒 / 业务拒绝不被 done 覆盖 / 取消与过期不落账。
+node ./test-fixtures/reliability/test-gen-task.mjs

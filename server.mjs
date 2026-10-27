@@ -609,11 +609,18 @@ async function runGenTaskInner(id, kind, taskId, scope, held) {
       // 解析用批次号在锁外读取即可：同 kind 任务被 startGenTask 串行化（running 期间新任务 409），锁内必然一致；
       // 期间任务被取消/过期也不影响——迟到落账由 finishGenTask 的 taskId 不匹配与超时分支拒绝（零落账）。
       const gen = (Number(m0.job.evidenceGen) || 0) + 1;
+      // 生成时的证据批次（换批隔离）：生成期间证据表被整批替换 → 迟到结果整批不落账，
+      // 否则新批次会被旧批次的证据覆盖（TASK-04 / T1）。
+      const evGenAtStart = Number(m0.job.evidenceGen) || 0;
       const ev = parseEvidence(raw, { gen, mats, paras });
       if (!ev || !ev.length) return finishGenTask(id, kind, taskId, null, '模型输出无法解析为证据表，未替换任何证据');
       // S4a-T7 保护门：模型返回非空但整次解析零有效 ref（全部 refId 匹配不上）→ 视为解析失败，旧表与批次不动
       if (!ev.some((e) => (e.refs || []).length)) return finishGenTask(id, kind, taskId, null, '模型输出的证据无任何有效来源引用（refId 全部无法匹配），未替换任何证据——可重试');
       return finishGenTask(id, kind, taskId, (cur) => {
+        // 批次隔离（与 interview 通道同口径）：生成期间证据表被换批 → 显式拒绝，旧批次不覆盖新批次
+        if ((Number(cur.job.evidenceGen) || 0) !== evGenAtStart) {
+          return { ok: false, error: '生成期间证据表已更新，请重新生成' };
+        }
         cur.job.evidence = ev;              // 整批替换 + 批次推进只在本次成功落账事务内（旧 refId 不复用）
         cur.job.evidenceGen = gen;
         return { ok: true, extra: { evidence: ev.length, evidenceGen: gen } };

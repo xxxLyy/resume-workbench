@@ -2106,6 +2106,20 @@ else
 fi
 # RELIABILITY_BROWSER_RESULT_END
 
+# ===== 16b. 浏览器行为回归（AUD-02/03/04：AI 保存前置 / 撤销绑定 / 跨标签不覆盖）=====
+# 自起隔离服务与浏览器；退出码契约同 16（0 通过 / 1 断言失败 / 2 仅 Chromium 不可用）。
+if node test-fixtures/reliability/test-browser-behaviors.mjs; then
+  echo '✅ 浏览器行为回归（保存失败零请求 / 撤销绑定目标且只消费一次 / 跨标签不覆盖）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 浏览器行为回归未执行：Chromium 不可用'
+  else
+    fail "浏览器行为回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi
+
 # ===== 17. 真实数据指纹比对 =====
 REAL_AFTER=$(real_fp)
 [ "$REAL_BEFORE" = "$REAL_AFTER" ] || fail '真实数据被测试改动（指纹不一致）'
