@@ -854,14 +854,23 @@ console.log("zones=" + inDoc.length);' "$RESUME_ROOT/docs-meta.json" "$S3DOC" "$
 echo '✅ S3 /save 后 zones 与正文一致（孤儿清/缺失补）'
 # S3-T5 区域级 AI（stub 模拟验证）：端点结构 / 请求最小化 / 改写候选
 # S3-T6：带 extra（chips 追问）请求——同一次捕获体上同时断言「最小化」与「追问进 prompt」
-AZ=$(curl -s -X POST "$B/ai/zone-analyze?id=$S3DOC" -H 'Content-Type: application/json' -d '{"zone":"work","extra":"量化数据够吗"}')
+# ZONE-03：区域请求必须绑定已确认的正文版本（缺 → 400，陈旧 → 409 STALE_DOCUMENT）
+S3MTIME=$(node -e "console.log(require('fs').statSync(process.argv[1]).mtimeMs)" "$RESUME_ROOT/docs/$S3DOC.html")
+AZ0=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/ai/zone-analyze?id=$S3DOC" -H 'Content-Type: application/json' -d '{"zone":"work"}')
+[ "$AZ0" = "400" ] || fail "S3 zone-analyze 缺 baseMtime 应 400（得 $AZ0）"
+AZS=$(curl -s -X POST "$B/ai/zone-analyze?id=$S3DOC" -H 'Content-Type: application/json' -d "{\"zone\":\"work\",\"baseMtime\":1}")
+echo "$AZS" | grep -q 'STALE_DOCUMENT' || fail "S3 zone-analyze 陈旧 baseMtime 应 STALE_DOCUMENT: $(echo "$AZS" | head -c 160)"
+AZ=$(curl -s -X POST "$B/ai/zone-analyze?id=$S3DOC" -H 'Content-Type: application/json' -d "{\"zone\":\"work\",\"extra\":\"量化数据够吗\",\"baseMtime\":$S3MTIME}")
 echo "$AZ" | grep -q '"echoes"' || fail "S3 zone-analyze 返回结构化意见（模拟验证）: $(echo "$AZ" | head -c 160)"
 if grep -q 'MARKERZZ' "$TEST_DIR/llm-last.json" 2>/dev/null; then fail 'S3 zone-analyze 请求泄漏其他区域全文（超出摘要窗口）'; fi
 grep -q '【追问】量化数据够吗' "$TEST_DIR/llm-last.json" || fail 'S3 zone-analyze 追问文本未进 prompt'
 pass() { echo "✅ $1"; }
 pass "S3 zone-analyze 请求最小化（模拟验证）"
-RW=$(curl -s -X POST "$B/ai/zone-rewrite?id=$S3DOC" -H 'Content-Type: application/json' -d '{"zone":"work","instruction":"更精简"}')
+S3MTIME2=$(node -e "console.log(require('fs').statSync(process.argv[1]).mtimeMs)" "$RESUME_ROOT/docs/$S3DOC.html")
+RW=$(curl -s -X POST "$B/ai/zone-rewrite?id=$S3DOC" -H 'Content-Type: application/json' -d "{\"zone\":\"work\",\"instruction\":\"更精简\",\"baseMtime\":$S3MTIME2}")
 echo "$RW" | grep -q '"rewrites"' || fail "S3 zone-rewrite 返回候选（模拟验证）: $(echo "$RW" | head -c 160)"
+# ZONE-03/04：候选必须带 zone-v1 形状（基线与操作身份由服务端生成）
+echo "$RW" | grep -q '"baselineVersion":"zone-v1"' || fail "S3 zone-rewrite 候选缺 baselineVersion=zone-v1: $(echo "$RW" | head -c 200)"
 pass "S3 zone-rewrite（模拟验证）"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/ai/zone-analyze?id=$S3DOC" -H 'Content-Type: application/json' -d '{"zone":"nope"}')
 [ "$CODE" = "400" ] || fail "S3 zone-analyze 坏区域应 400 得 $CODE"
@@ -2129,4 +2138,17 @@ if [ "${BROWSER_CHECK_SKIPPED:-0}" -eq 1 ]; then
   echo '可执行检查通过；浏览器验证未执行，本次不构成完整交付验收'
 else
   echo '全部通过（隔离数据根：本测试未触碰真实数据与真实模型）'
+fi
+
+# ===== 16c. 区域面板浏览器场景回归（ZONE-05/06/07：请求 epoch / 安全子集提交 / 局部合并）=====
+if node test-fixtures/reliability/test-browser-zones.mjs; then
+  echo '✅ 区域浏览器回归（保存前置零请求 / 迟到响应不污染 / 只合并未变目标且保留在途输入）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 区域浏览器回归未执行：Chromium 不可用'
+  else
+    fail "区域浏览器回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
 fi

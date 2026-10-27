@@ -394,7 +394,9 @@
     var changedCount = todo.length - ready.length;
     var prev = document.getElementById('zp-preview');
     if (prev) prev.textContent = '保存中…';
-    ensureSavedForZone().then(function (baseMtime) {
+    var baseMtime = null;   // 已确认的正文版本（跨两个 then 传递）
+    ensureSavedForZone().then(function (mt) {
+      baseMtime = mt;
       // 取服务端版本并核对：必须与我们确认过的 mtime 一致
       return api('/job/changes?id=' + encodeURIComponent(DOC_ID)).then(function (d) {
         if (!d || !d.ok || !d.doc) throw new Error('无法读取文档版本，请刷新后重试');
