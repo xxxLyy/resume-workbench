@@ -265,4 +265,84 @@ const zones = {
   }
 }
 
+// ===== I. AUD-01：区域范围的词法上下文（浏览器差分反例 + 合法分隔符矩阵）=====
+// 六例来自浏览器差分：Chromium 的 body [data-zid] 只有 z11111111，
+// 假段落 z99999999 位于模板/原始文本里，不是正文单位。
+{
+  const FAKE = 'z99999999', REAL = 'z11111111';
+  const six = [
+    ['① template 注释里的 </template>',
+      '<template><!-- </template> --><p data-zid="' + FAKE + '">FAKE</p></template><p data-zid="' + REAL + '">BODY</p>'],
+    ['② template 内脚本字符串里的 </template>',
+      '<template><script>const marker="</template>";</script><p data-zid="' + FAKE + '">FAKE</p></template><p data-zid="' + REAL + '">BODY</p>'],
+    ['③ template 内属性值里的 </template>',
+      '<template><span title="</template>"></span><p data-zid="' + FAKE + '">FAKE</p></template><p data-zid="' + REAL + '">BODY</p>'],
+    ['④ script 里的 </script:fake> 不是 script 结束',
+      '<script>const marker="</script:fake>";const h=\'<p data-zid="' + FAKE + '">FAKE</p>\';</script><p data-zid="' + REAL + '">BODY</p>'],
+    ['⑤ textarea（RCDATA）里的标签字面量',
+      '<textarea><p data-zid="' + FAKE + '">FAKE</p></textarea><p data-zid="' + REAL + '">BODY</p>'],
+    ['⑥ xmp（raw text）里的标签字面量',
+      '<xmp><p data-zid="' + FAKE + '">FAKE</p></xmp><p data-zid="' + REAL + '">BODY</p>'],
+  ];
+  for (const [name, html] of six) {
+    const zids = zoneEditUnits(html).map((u) => u.zid);
+    assert.deepEqual(zids, [REAL], name + '：假段落不得成为可写单位');
+    // 可写范围之外字节保持不变
+    const u = zoneEditUnits(html)[0];
+    assert.equal(html.slice(u.innerStart, u.innerEnd), 'BODY', name + '：正文范围必须精确');
+  }
+  // 真 applyZoneOps 不得改动假段落
+  const html = six[0][1];
+  const u = zoneEditUnits(html)[0];
+  const r = applyZoneOps({
+    diskHtml: html, html,
+    zones: { z11111111: { zone: 'work', status: 'confirmed' } },
+    zoneOps: [op(u, '改写正文')]
+  });
+  assert.match(r.html, /z99999999[^>]*>FAKE/, '假段落必须原样保留');
+  assert.equal(r.html.includes('FAKE</p>'), true, '假段落内容不得被改写');
+  assert.match(r.html, /z11111111[^>]*>改写正文/, '正文段落必须被改写');
+}
+
+// raw text 结束标签的合法分隔符矩阵 + 大小写 + 引号中的 '>'
+{
+  const ends = [
+    ['</script>', '无属性'],
+    ['</script >', '结束标签后有空白'],
+    ['</script/>', '结束标签自闭合形'],
+    ['</SCRIPT>', '大写结束标签'],
+    ['</Script>', '混合大小写']
+  ];
+  for (const [close, why] of ends) {
+    // 假段落在 script 内部 → 必须被屏蔽；结束标签之后才是正文
+    const built = '<script>const h=\'<p data-zid="z99999999">FAKE</p>\';' + close
+      + '<p data-zid="z11111111">BODY</p>';
+    const zids = zoneEditUnits(built).map((u) => u.zid);
+    assert.deepEqual(zids, ['z11111111'], '结束标签 ' + close + '（' + why + '）必须正确识别');
+  }
+  // </scripture> 不是 </script>；</script:fake> 也不是
+  for (const fake of ['</scripture>', '</script:fake>', '</script-x>', '</scripts>']) {
+    const html = '<script>const a="' + fake + '";const h=\'<p data-zid="z99999999">FAKE</p>\';</script>'
+      + '<p data-zid="z11111111">BODY</p>';
+    assert.deepEqual(zoneEditUnits(html).map((u) => u.zid), ['z11111111'],
+      fake + ' 不得结束 script');
+  }
+  // 引号里的 '>' 不是标签结束
+  const quoted = '<script>var x = "a>b"; var y = \'c>d\';</script><p data-zid="z11111111">BODY</p>';
+  assert.deepEqual(zoneEditUnits(quoted).map((u) => u.zid), ['z11111111'], '脚本里引号中的 > 不得影响边界');
+  // 未闭合的 script → 保守屏蔽到文末（不猜范围）
+  const unclosed = '<p data-zid="z11111111">正文</p><script>const a=1;';
+  assert.deepEqual(zoneEditUnits(unclosed).map((u) => u.zid), ['z11111111'], '未闭合 script 之后的残片不得成为单位');
+}
+
+// template 的真实嵌套：内层 </template> 不结束外层
+{
+  const nested = '<template><template></template><p data-zid="z99999999">FAKE</p></template><p data-zid="z11111111">BODY</p>';
+  assert.deepEqual(zoneEditUnits(nested).map((u) => u.zid), ['z11111111'], '内层 </template> 不得提前结束外层');
+  // 属性值里的 </template> 也不结束
+  const attr = '<template><span title="</template>"></span><p data-zid="z99999999">FAKE</p></template><p data-zid="z11111111">BODY</p>';
+  assert.deepEqual(zoneEditUnits(attr).map((u) => u.zid), ['z11111111'], '属性值里的 </template> 不得结束 template');
+}
+
 console.log('PASS ZONE-01/02: canonical text, chrome exclusion, subset, skipping reasons, escaping, duplicates, immutability');
+console.log('PASS AUD-01: 词法上下文（template/注释/属性/脚本字符串/raw-text/RCDATA）不再把假段落当正文');

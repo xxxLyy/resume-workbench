@@ -122,40 +122,98 @@ export function parasOf(html) {
 // 与 parasOf 的差别：给出「可替换内容范围」（innerStart/innerEnd）并用统一文本口径规范化。
 // 文本口径：HTML 实体只解码一次、空白（含 NBSP）折叠为单空格、trim；
 // 「A B」与「AB」是不同文本（contentHash 区分，不做空白无关的归一）。
-const NON_BODY_TAGS = new Set(['script', 'style', 'template', 'noscript']);
-// script/style 的内容按 HTML 规则结束（第一个同名闭合标签即止，不计嵌套）；
-// template/noscript 是真嵌套结构，按深度计数。
-const NON_BODY_NESTED = new Set(['template', 'noscript']);
+// raw text 元素：内容按纯文本处理，结束于同名结束标签（不计嵌套）。
+// RCDATA 元素（textarea/title）：内容同样不是标签（实体可解码，但标签字面量不成立）。
+// noscript 在启用脚本的浏览器里走 raw text 规则（其内容不渲染）→ 归入 raw text。
+const RAW_TEXT_TAGS = new Set(['script', 'style', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript', 'plaintext']);
+const RCDATA_TAGS = new Set(['textarea', 'title']);
 
-// 非正文元素（script/style/template/noscript）的结束位置（其后一位）。
-// 闭标签必须完整匹配标签名：</scripture> 不是 </script>。
-// 用「原串上的大小写不敏感正则」而不是 toLowerCase 副本：
-// 部分字符（如 U+0130）小写后长度会变，副本会让下标漂移。
-function nonBodyEnd(s, start, tag) {
+// 标签名字符：ASCII 字母数字、'-'、':'。
+// ':' 必须收进名字里：HTML 的 tag name state 把 ':' 当普通字符追加，
+// 所以 </script:fake> 的结束标签名是 "script:fake"（≠ "script"）—— 它不是 script 的结束。
+const isTagNameChar = (c) => (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 45 || c === 58;
+const isWsChar = (c) => c === 32 || c === 9 || c === 10 || c === 13 || c === 12;
+
+// 读一个标签：{ lt, name, closing, selfClosing, end }
+// end = '>' 之后一位。属性区引号内的 '>' 不结束标签；引号未闭合 → 延伸到文末（不猜范围）。
+function readTag(s, lt) {
   const n = s.length;
-  const countDepth = NON_BODY_NESTED.has(tag);
-  const re = new RegExp('<\\s*(/?)\\s*' + tag + '(?![a-zA-Z0-9-])', 'gi');
-  re.lastIndex = start + 1;
-  let depth = 1;                 // 已经在这个元素内部
-  let m;
-  while ((m = re.exec(s))) {
-    if (m[1] === '/') {          // 闭标签
-      depth--;
-      if (depth === 0) {         // 与本元素配对的闭合标签
-        const gt = s.indexOf('>', re.lastIndex);
-        return gt < 0 ? n : gt + 1;
-      }
+  let j = lt + 1;
+  let closing = false;
+  if (s.charCodeAt(j) === 47) { closing = true; j++; }   // '/'
+  const ns = j;
+  while (j < n && isTagNameChar(s.charCodeAt(j))) j++;
+  if (j === ns) return null;                              // 没有标签名 → 不是标签
+  const name = s.slice(ns, j).toLowerCase();              // 只含 ASCII → 长度不变，下标不漂移
+  let k = j;
+  while (k < n) {
+    const c = s.charCodeAt(k);
+    if (c === 34 || c === 39) {                          // '"' / '\''：引号内的 '>' 不是标签结束
+      const q = s.indexOf(c === 34 ? '"' : "'", k + 1);
+      if (q < 0) return { lt, name, closing, selfClosing: false, end: n };
+      k = q + 1;
       continue;
     }
-    if (countDepth) {            // 嵌套开标签（自闭合不计深度）
-      const gt = s.indexOf('>', re.lastIndex);
-      if (!(gt >= 0 && s.charAt(gt - 1) === '/')) depth++;
+    if (c === 62) {                                       // '>'
+      let p = k - 1;
+      while (p > j && isWsChar(s.charCodeAt(p))) p--;
+      return { lt, name, closing, selfClosing: s.charCodeAt(p) === 47, end: k + 1 };
     }
+    k++;
   }
-  return n;                      // 没有闭合 → 该元素延伸到文末（不猜范围）
+  return { lt, name, closing, selfClosing: false, end: n };
 }
 
-// 不可写区域（脚本/样式/模板/注释）：其内的标签字面量不是正文单位，
+// 注释结束位置（其后一位）
+function skipComment(s, lt) {
+  const end = s.indexOf('-->', lt + 4);
+  return end < 0 ? s.length : end + 3;
+}
+
+// raw text / RCDATA 内容结束位置。
+// 结束标签名之后必须是空白、'/' 或 '>'：所以 </scripture>、</script:fake> 都不是结束，
+// 而 </script>、</script foo>、</script/> 都是。
+// 用原串上的正则（带 i）而不是 toLowerCase 副本：部分字符（如 U+0130）小写后长度会变，副本会让下标漂移。
+function skipRawText(s, from, tag) {
+  const re = new RegExp('</' + tag + '(?=[\\s/>])', 'gi');
+  re.lastIndex = from;
+  const m = re.exec(s);
+  if (!m) return s.length;
+  const t = readTag(s, m.index);
+  return t ? t.end : s.length;
+}
+
+// template 内容结束位置（真实嵌套配对）。
+// 注释、属性引号里的 </template>、template 内的脚本内容都不能提前结束它。
+function skipTemplate(s, from) {
+  const n = s.length;
+  let i = from;
+  let depth = 1;
+  while (i < n) {
+    const lt = s.indexOf('<', i);
+    if (lt < 0) break;
+    if (s.startsWith('<!--', lt)) { i = skipComment(s, lt); continue; }
+    if (s.charCodeAt(lt + 1) === 33) {                  // '<!'：doctype / bogus comment → 跳到 '>'
+      const gt = s.indexOf('>', lt + 2);
+      i = gt < 0 ? n : gt + 1;
+      continue;
+    }
+    const t = readTag(s, lt);
+    if (!t) { i = lt + 1; continue; }
+    if (t.closing) {
+      if (t.name === 'template') { depth--; if (depth === 0) return t.end; }
+      i = t.end;
+      continue;
+    }
+    if (t.name === 'template') { depth++; i = t.end; continue; }
+    if (RAW_TEXT_TAGS.has(t.name)) { i = skipRawText(s, t.end, t.name); continue; }
+    if (RCDATA_TAGS.has(t.name)) { i = skipRawText(s, t.end, t.name); continue; }
+    i = t.end;
+  }
+  return n;   // 未闭合 → 延伸到文末（不猜范围）
+}
+
+// 不可写区域（脚本/样式/模板/原始文本/注释）：其内的标签字面量不是正文单位，
 // 外来内联脚本里的 <li data-zid="z..."> 不得被当成可写正文。
 // 单遍扫描；区域互不重叠且按文档序 → 总体线性（不做逐候选点回扫）。
 function nonBodyRanges(s) {
@@ -166,19 +224,32 @@ function nonBodyRanges(s) {
     const lt = s.indexOf('<', i);
     if (lt < 0) break;
     if (s.startsWith('<!--', lt)) {
-      const end = s.indexOf('-->', lt + 4);
-      const stop = end < 0 ? n : end + 3;
+      const stop = skipComment(s, lt);
       out.push([lt, stop]);
       i = stop;
       continue;
     }
-    const m = /^<\s*([a-zA-Z][a-zA-Z0-9-]*)/.exec(s.slice(lt, lt + 64));
-    if (!m) { i = lt + 1; continue; }
-    const tag = m[1].toLowerCase();
-    if (!NON_BODY_TAGS.has(tag)) { i = lt + 1; continue; }
-    const stop = nonBodyEnd(s, lt, tag);
-    out.push([lt, stop]);
-    i = stop;                    // 跳过整个区域：其内的 chrome 元素已被覆盖
+    if (s.charCodeAt(lt + 1) === 33) {                  // doctype / bogus comment：不含标签字面量，不入屏蔽区
+      const gt = s.indexOf('>', lt + 2);
+      i = gt < 0 ? n : gt + 1;
+      continue;
+    }
+    const t = readTag(s, lt);
+    if (!t) { i = lt + 1; continue; }
+    if (t.closing) { i = t.end; continue; }
+    if (RAW_TEXT_TAGS.has(t.name) || RCDATA_TAGS.has(t.name)) {
+      const stop = skipRawText(s, t.end, t.name);
+      out.push([lt, stop]);
+      i = stop;
+      continue;
+    }
+    if (t.name === 'template') {
+      const stop = skipTemplate(s, t.end);
+      out.push([lt, stop]);
+      i = stop;
+      continue;
+    }
+    i = t.end;
   }
   return out;
 }
