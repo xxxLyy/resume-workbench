@@ -5,7 +5,7 @@ import path from 'node:path';
 import { hasLLM, loadConfig } from './llm.mjs';
 import { structureText } from './structure.mjs';
 import { assembleTemplate, themeRegistration } from './template.mjs';
-import { updateMeta } from './tx.mjs';
+import { updateMeta, atomicWrite } from './tx.mjs';
 
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
@@ -15,11 +15,23 @@ function slugify(name) {
   return base.slice(0, 40);
 }
 
-function uniqueId(root, name) {
+// 原子分配文档 id（AUD-12）：fs.openSync(path, 'wx') 是原子的「不存在才创建」——
+// 两个同名上传同时通过「不存在」检查 → 只保留一份文档（实测过：并发两个同名请求拿到同一个 id）。
+// 占位文件即最终文件名，后面写正文用 atomicWrite 覆盖；失败时删掉占位，不留空壳文档。
+function allocateDocId(root, name) {
   const base = slugify(name);
   let id = base, n = 2;
-  while (fs.existsSync(path.join(root, 'docs', id + '.html'))) id = `${base}-${n++}`;
-  return id;
+  for (;;) {
+    const p = path.join(root, 'docs', id + '.html');
+    try {
+      const fd = fs.openSync(p, 'wx', 0o600);
+      fs.closeSync(fd);
+      return id;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      id = `${base}-${n++}`;
+    }
+  }
 }
 
 // 降级文档：纯文本进"导入原文"区，模板结构完整可编辑；degradeReason 说明降级原因
@@ -44,16 +56,22 @@ function buildRawDoc(root, text, name, degradeReason, docId) {
 export async function importPdfText(root, pdfPath, name) {
   const text = execFileSync('pdftotext', ['-layout', pdfPath, '-'], { maxBuffer: 32 * 1024 * 1024, timeout: 30000 }).toString('utf8');
   if (!text.trim()) throw new Error('PDF 提取不到文本（可能是扫描件）');
-  const id = uniqueId(root, name);
-  let html;
-  if (hasLLM(root)) {
-    html = await structureText(root, text);   // 失败返回 null 则降级
-    if (!html) html = buildRawDoc(root, text, name, 'failed', id);
-  } else {
-    html = buildRawDoc(root, text, name, loadConfig(root) ? 'partial' : null, id);
+  // 先原子占位再干活：结构化可能耗时几十秒，占位必须先落，否则并发同名会撞车
+  const id = allocateDocId(root, name);
+  try {
+    let html;
+    if (hasLLM(root)) {
+      html = await structureText(root, text);   // 失败返回 null 则降级
+      if (!html) html = buildRawDoc(root, text, name, 'failed', id);
+    } else {
+      html = buildRawDoc(root, text, loadConfig(root) ? 'partial' : null, id);
+    }
+    atomicWrite(path.join(root, 'docs', id + '.html'), html);   // 导入的简历正文同样收紧（0o600）
+    // 新建即登记样式来源（meta 唯一写入者 updateMeta）：theme/styleHash/typo/schemaVersion
+    updateMeta(root, id, (m) => ({ ...(m || {}), ...themeRegistration('classic') }));
+  } catch (e) {
+    try { fs.rmSync(path.join(root, 'docs', id + '.html'), { force: true }); } catch {}   // 不留空壳文档
+    throw e;
   }
-  fs.writeFileSync(path.join(root, 'docs', id + '.html'), html, { mode: 0o600 });   // 导入的简历正文同样收紧（2026-10-19 审查 ⚪-6 扩展）
-  // 新建即登记样式来源（meta 唯一写入者 updateMeta）：theme/styleHash/typo/schemaVersion
-  updateMeta(root, id, (m) => ({ ...(m || {}), ...themeRegistration('classic') }));
   return id;
 }

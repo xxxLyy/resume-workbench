@@ -4,6 +4,13 @@ set -e
 cd "$(dirname "$0")"
 # 本套件断言的是未覆盖 RESUME_CHROMIUM 时的探测契约（段 X cacheValid 最后一条），外部导出该变量会误红，统一取消；段 Y 内部自设自删，不受影响。
 unset RESUME_CHROMIUM
+
+# ===== SRC-07 I3：来源包纯函数回归显式接入结构套件（零 I/O / 无模型 / 无服务）=====
+node --test test-fixtures/reliability/test-sources.mjs
+
+# ===== RES-01..05：资源槽池纯函数回归显式接入结构套件（零 I/O / 无模型 / 无服务）=====
+node ./test-fixtures/reliability/test-resources.mjs
+
 node --input-type=module << 'EOF'
 import { structureText } from './structure.mjs';
 
@@ -2662,7 +2669,12 @@ EOF
 
 # —— S4B-3：面试追问解析 + 双护栏（子串验证 + factGuard）——
 node --input-type=module << 'EOF'
-import { parseInterview, parseEvidence } from './evidence.mjs';
+import { parseInterview as parseInterviewCore, parseEvidence, resolveInterviewSources } from './evidence.mjs';
+const parseInterview = (raw, ctx = {}) => {
+  const evidence = Array.isArray(ctx.evidence) ? ctx.evidence : [];
+  const paras = Array.isArray(ctx.paras) ? ctx.paras : [];
+  return parseInterviewCore(raw, { evidence, sources: resolveInterviewSources({ evidence, paras }) });
+};
 const assert = (c, m) => { if (!c) { console.error('❌ S4B-3 ' + m); process.exit(1); } };
 const paras = [{ zid: 'za1111111', text: '负责存储层改造，QPS 从 300 提升到 5000' }];
 // ⚠️ 必须用 parseEvidence 的真实产出做夹具，不得手写 {req, zid}——
@@ -2741,7 +2753,12 @@ EOF
 # —— S4B-4：跨文件契约断言（护栏口径漂移的护栏）（2026-10-18 OCR 后加）——
 node --input-type=module << 'EOF'
 import fs from 'fs';
-import { parseEvidence, parseInterview } from './evidence.mjs';
+import { parseInterview as parseInterviewCore, parseEvidence, resolveInterviewSources } from './evidence.mjs';
+const parseInterview = (raw, ctx = {}) => {
+  const evidence = Array.isArray(ctx.evidence) ? ctx.evidence : [];
+  const paras = Array.isArray(ctx.paras) ? ctx.paras : [];
+  return parseInterviewCore(raw, { evidence, sources: resolveInterviewSources({ evidence, paras }) });
+};
 const assert = (c, m) => { if (!c) { console.error('❌ S4B-4 ' + m); process.exit(1); } };
 
 const paras = [{ zid: 'za1111111', text: '负责存储层改造，QPS 从 300 提升到 5000' }];
@@ -2764,7 +2781,7 @@ const two = parseInterview(JSON.stringify({ chains: [
 assert(two.chains[0].evIndex === 0 && two.chains[1].evIndex === 1, 'evIndex 原样透出，不被重编号');
 
 // ③ prompt 必须真的带上简历原文（曾因读顶层 zid 而恒为空）
-const bp = (await import('./evidence.mjs')).buildInterviewPrompt({ company: 'A', role: '后端', jd: 'J', evidence: ev, paras });
+const bp = (await import('./evidence.mjs')).buildInterviewPrompt({ company: 'A', role: '后端', jd: 'J', evidence: ev, sources: resolveInterviewSources({ evidence: ev, paras }) });
 assert(bp.user.includes('负责存储层改造，QPS 从 300 提升到 5000'), 'prompt 含真实简历原文（非空串）');
 
 // ④ stale 双口径：正文哈希 + 证据批次（证据表重生成不改正文，只靠哈希查不出来）
@@ -2777,7 +2794,12 @@ EOF
 
 # —— S4B-5：generic 护栏缺口 + 解析侧上限（2026-10-18 OCR 中高危）——
 node --input-type=module << 'EOF'
-import { parseEvidence, parseInterview } from './evidence.mjs';
+import { parseInterview as parseInterviewCore, parseEvidence, resolveInterviewSources } from './evidence.mjs';
+const parseInterview = (raw, ctx = {}) => {
+  const evidence = Array.isArray(ctx.evidence) ? ctx.evidence : [];
+  const paras = Array.isArray(ctx.paras) ? ctx.paras : [];
+  return parseInterviewCore(raw, { evidence, sources: resolveInterviewSources({ evidence, paras }) });
+};
 const assert = (c, m) => { if (!c) { console.error('❌ S4B-5 ' + m); process.exit(1); } };
 const paras = [{ zid: 'za1111111', text: '负责存储层改造，QPS 从 300 提升到 5000' }];
 const ev = parseEvidence(JSON.stringify({ evidence: [{ req: '后端能力', refHints: [{ type: 'para', zid: 'za1111111', quote: '负责存储层改造' }] }] }), { gen: 1, mats: [], paras });
@@ -3266,7 +3288,12 @@ EOF
 
 # —— S4B-13：quote 最小长度护栏（子串存在 ≠ 语义相关）——
 node --input-type=module << 'EOF'
-import { parseInterview, parseEvidence } from './evidence.mjs';
+import { parseInterview as parseInterviewCore, parseEvidence, resolveInterviewSources } from './evidence.mjs';
+const parseInterview = (raw, ctx = {}) => {
+  const evidence = Array.isArray(ctx.evidence) ? ctx.evidence : [];
+  const paras = Array.isArray(ctx.paras) ? ctx.paras : [];
+  return parseInterviewCore(raw, { evidence, sources: resolveInterviewSources({ evidence, paras }) });
+};
 const assert = (c, m) => { if (!c) { console.error('❌ S4B-13 ' + m); process.exit(1); } };
 const paras = [{ zid: 'za1111111', text: '负责存储层改造，QPS 从 300 提升到 5000，主导跨部门技术方案评审与容量规划落地' }];
 const ev = parseEvidence(JSON.stringify({ evidence: [{ req: '后端', refHints: [{ type: 'para', zid: 'za1111111', quote: '负责存储层改造' }] }] }), { gen: 1, mats: [], paras });
@@ -3334,8 +3361,9 @@ assert(p.user.includes('使用 SQL 进行数据查询与治理规则实现'), 'u
 assert(p.user.includes('熟悉自动驾驶数据链路'), 'user 必须含 JD 逐字原文');
 assert(p.user.includes('某公司') && p.user.includes('数据工程师'), 'user 必须带目标公司/岗位');
 // ② 输出契约：枚举值必须写进 sys，否则模型无从对齐（解析层按同一套枚举校验）
-for (const k of ['under', 'right', 'over', 'covered', 'sourced', 'partial', 'missing', 'apply', 'caution', 'skip'])
+for (const k of ['under', 'right', 'over', 'covered', 'partial', 'missing', 'apply', 'caution', 'skip'])
   assert(p.sys.includes(k), 'sys 必须声明枚举 ' + k);
+assert(!p.sys.includes('covered|sourced'), '新输出 schema 不再宣称素材来源');
 assert(p.sys.includes('JD 未提供'), 'sys 必须声明薪资缺失口径');
 assert(p.sys.includes('结构推断（无出处标注）'), 'sys 必须声明 weightFrom 的两种取值');
 // ③ 反编造约束必须落在 sys 里（这是本功能唯一的防线，不能只写注释）
@@ -3361,12 +3389,14 @@ const base = {
 };
 
 // ① 合规报告逐字段保真
-const ok = parseEvalReport(JSON.stringify(base));
+const ok = parseEvalReport(JSON.stringify(base), { docText: '使用 SQL 进行数据查询与治理规则实现' });
 assert(ok.ok === true, '合规报告应 ok:true，实际 ' + ok.ok + ' / ' + ok.reason);
 assert(ok.report.score === 4.0, 'score 保留');
 assert(ok.report.verdict === 'apply', '合法 verdict 保留，不回落');
 assert(ok.report.level === 'right', '合法 level 保留');
 assert(ok.report.matches.length === 2, '合法 matches 全保留');
+assert(ok.report.matches[1].status === 'missing', '旧 sourced 归一为 missing');
+assert(ok.report.matches[1].compatibilityReason === 'LEGACY_SOURCED', '保留旧 sourced 兼容原因');
 assert(ok.report.salary.source === 'JD 自带', '合法 salary.source 保留');
 assert(ok.dropped === 0, '合规报告 dropped=0');
 assert(ok.report.gaps.length === 1 && ok.report.gaps[0] === '标注平台经验', 'gaps 保留');
@@ -3422,7 +3452,7 @@ const m = parseEvalReport(JSON.stringify({
     { req: '要求D' },
     null
   ]
-}));
+}), { docText: '原文A' });
 assert(m.ok === true, 'matches 畸形不应让整份作废');
 assert(m.report.matches.length === 1, '只留 1 条合法，实际 ' + m.report.matches.length);
 assert(m.dropped === 4, 'dropped 应为 4（status 枚举外 / req 空 / status 缺失 / 非对象），实际 ' + m.dropped);
@@ -3487,17 +3517,25 @@ r = parseEvalReport(mk('covered', '负责存储层改造'), { docText: DOC });
 assert(r.report.matches[0].status === 'covered' && r.report.matches[0].evidence === '负责存储层改造', '真实子串必须保留 covered + 原文');
 r = parseEvalReport(mk('covered', '负责存储层改造，QPS 从 300 提升到 5000'), { docText: DOC });
 assert(r.report.matches[0].status === 'covered', '整段逐字子串必须保留');
-// sourced 声称来自素材（非简历正文），不参与子串验证
+// sourced 声称来自素材（非简历正文）：本次没有素材输入 → 归一 missing 并清证据，留兼容原因
 r = parseEvalReport(mk('sourced', '素材库里的任意表述'), { docText: DOC });
-assert(r.report.matches[0].status === 'sourced' && r.report.matches[0].evidence === '素材库里的任意表述', 'sourced 不验证（它不声称简历原文命中）');
-// partial/missing 本就不声称原文命中，同样不验证
-for (const st of ['partial', 'missing']) {
-  r = parseEvalReport(mk(st, '任何内容'), { docText: DOC });
-  assert(r.report.matches[0].status === st, `${st} 不参与子串验证`);
-}
-// 未传 docText（无基准则无从验证）时不改变任何东西
+assert(r.report.matches[0].status === 'missing' && r.report.matches[0].evidence === '',
+  'sourced 没有真实素材输入，归一 missing 并清证据');
+assert(r.report.matches[0].compatibilityReason === 'LEGACY_SOURCED',
+  '保留兼容原因供 UI 说明');
+
+// partial/missing 不声称原文命中：伪引文一律清空，状态保留
+r = parseEvalReport(mk('partial', '任何内容'), { docText: DOC });
+assert(r.report.matches[0].status === 'partial' && r.report.matches[0].evidence === '',
+  'partial 判断保留，伪引文清除');
+r = parseEvalReport(mk('missing', '负责存储层改造'), { docText: DOC });
+assert(r.report.matches[0].status === 'missing' && r.report.matches[0].evidence === '',
+  'missing 不展示证据引文');
+
+// 没有正文基准（未传 docText）就不得声称 covered
 r = parseEvalReport(mk('covered', '任意'));
-assert(r.report.matches[0].status === 'covered', '未传 docText 时不验证（调用方需保证传）');
+assert(r.report.matches[0].status === 'partial' && r.report.matches[0].evidence === '',
+  '未提供正文基准不得声称 covered');
 // 护栏不得放宽既有校验：score 越界仍然整份作废
 assert(parseEvalReport(JSON.stringify({ score: 9, matches: [] }), { docText: DOC }).ok === false, 'docText 不得影响 score 校验');
 console.log('✅ EV-4 evidence 子串验证（编造清空降级 / 真实保留 / sourced 不参与）');
@@ -3922,25 +3960,10 @@ assert(/sameHost/.test(srv), 'CSRF 同源判定应保留（Host 白名单是前�
 console.log('✅ SEC-1 Host 白名单（DNS rebinding 防线）');
 EOF
 
-# —— SEC-2：/ai/* 与渲染的全局并发闸门（2026-10-19 安全审查 🟡-1 / 🟡-3）——
-node --input-type=module << 'EOF'
-import { readFileSync } from 'node:fs';
-const assert = (c, m) => { if (!c) { console.error('❌ SEC-2 ' + m); process.exit(1); } };
-const srv = readFileSync('./server.mjs', 'utf8');
-assert(/const AI_MAX_INFLIGHT = 2/.test(srv), 'AI 并发上限必须是 2');
-assert(/const RENDER_MAX_INFLIGHT = 2/.test(srv), '渲染并发上限必须是 2');
-assert(/sendJson\(429/.test(srv), '超限必须返回 429');
-assert(/AI_EXEMPT = new Set\(\['\/ai\/test'\]\)/.test(srv), '豁免表只能是 /ai/test（它不调 LLM）');
-assert(/'\/pdf' \|\| pathname === '\/export'/.test(srv), '渲染闸门须覆盖 /pdf 与 /export');
-assert(/\/\^\\\/ai\\\//.test(srv), '闸门须按 /ai/ 前缀覆盖全部端点（源码 /^\\/ai\\//）');
-// ⚠️ 关键回归哨兵：计数器必须在模块级 —— 放请求处理函数内会每次请求归零，等于没有闸门
-//    （2026-10-19 实测踩过：6 并发全 200、假 LLM 峰值 6，闸门形同虚设）
-assert(/const aiSlot = \{ value: 0 \}, renderSlot = \{ value: 0 \}/.test(srv), '必须用模块级槽位对象持有计数');
-assert(!/^\s*let aiInFlight = 0/m.test(srv), '不得把计数器声明在请求处理函数内（每请求归零 = 无闸门）');
-// gate 必须显式收 req/res —— 模块级函数访问不到 handler 的局部参数
-assert(/function gate\(req, res, pathname\)/.test(srv), 'gate 必须显式接收 req/res');
-console.log('✅ SEC-2 /ai/* 与渲染并发闸门（429 + 模块级计数器 + 显式参数）');
-EOF
+# —— SEC-2：/ai/* 与渲染的共享容量闸门（行为验收：真并发 → 实际峰值 ≤2 + 超限 429）——
+# 原先此处是对 server.mjs 的【源码关键词检查】（要求出现某个计数器声明）。
+# 源码形状不是行为 —— 并发峰值与 429 只能靠真实并发请求证明，故改为行为验收。
+node ./test-fixtures/reliability/test-gate.mjs
 
 # —— UI-1：图标数据完整且可渲染（批次A 地基）——
 node --input-type=module << 'EOF'
@@ -4825,3 +4848,23 @@ node ./test-fixtures/reliability/test-gen-result.mjs
 # 明确接入现有测试入口：zone-v1 文本口径、安全子集与跳过原因、纯文本转义、重复身份拒绝随 test:all 一起跑。
 node ./test-fixtures/reliability/test-zone-ops.mjs
 
+
+# ===== AUD-06/RES-08：模型调用「单次发送 + 禁止透明重定向」回归（本机回环桩，零外网/零真实模型）=====
+# 明确接入现有测试入口：五种 3xx 重定向（跨 origin 与同 origin）× POST 一次发送 × GET 有界重试随 test:all 一起跑。
+node ./test-fixtures/reliability/test-llm-post.mjs
+
+# ===== AUD-08/AUD-10：服务端写路径行为回归（隔离服务 + 真实请求；起自己的子进程与端口）=====
+# 明确接入现有测试入口：4xx 零落盘（字节+mtime）、上传 I/O 失败收敛到请求且服务存活。
+node ./test-fixtures/reliability/test-server-io.mjs
+
+# ===== AUD-11/AUD-12：编辑器迁移守锁 + PDF 上传入口与同名并发（隔离根 / 合成 PDF / 本机回环）=====
+# 明确接入现有测试入口：外来锁拒绝 / 陈旧锁接管 / 幂等；上传 303 重定向 / 类型闸门 / 体积闸门 / 同名并发不覆盖。
+node ./test-fixtures/reliability/test-upload-migrate.mjs
+
+# ===== AUD-14：岗位创建的身份保留与去重（隔离服务 + 本机 JD 接收器）=====
+# 明确接入现有测试入口：同岗位并发创建只一份 / 不同岗位独立 / 重复得 existing / promote 交错不丢记录。
+node ./test-fixtures/reliability/test-job-create.mjs
+
+# ===== AUD-05/AUD-07：渲染信任边界与成对产物发布（隔离根 / 合成文档 / 本机接收器 + 假渲染器）=====
+# 明确接入现有测试入口：未知脚本渲染零外联；渲染失败保持旧成对产物（新 PDF 配旧旁车不得出现）。
+node ./test-fixtures/reliability/test-render-boundary.mjs

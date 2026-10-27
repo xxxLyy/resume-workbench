@@ -430,75 +430,150 @@ export function layoutDiagnose(pages, ctx = {}) {
   return { over, items, apply, atFloor, rounds, topLong, pages: totalPages, target };
 }
 
-// ===== S4B-3 面试追问（S4b③）：证据表 → 追问链 + 答法要点 =====
-// 双护栏：① quote 子串验证（对不上锚定段落就丢弃并计数）② 要点文本对锚定段落跑 factGuard（只标级不丢弃）
-// 不生成成稿答案——只给要点，避免制造「这不是我的风格」的距离感（小红书 2026-10-14 实测）
+// ===== 面试追问：来源可信层（SRC-01/02/03）=====
+// 纪律：一次生成只构造一份请求来源集合（resolveInterviewSources），prompt 与 parser 共用同一份；
+// 模型只回引用（quote / sourceZid），来源身份与核验标记一律由程序赋值，不信模型自报的 source / anchored。
+// 不生成成稿答案——只给要点，避免制造「这不是我的风格」的距离感（小红书 2026-10-14 实测）。
 const normSpace = (s) => String(s == null ? '' : s).replace(/\s+/g, '');
 
-// 证据行 → 锚点 zid。⚠️ zid 藏在 refs[] 里，证据行顶层没有 zid 字段
-// （parseEvidence 产出 {id,req,status,refs:[{refId,type,id,zid,hash,title,quote}],note}）。
-// 曾按顶层 e.zid 取值 → 恒 undefined → prompt 无原文 + 双护栏全被跳过（2026-10-18 蓝军自检）。
-// paras 校验：zid 必须仍在当前正文里，否则锚点已失效（证据重生成后旧 zid 会消失）。
-function evAnchorZid(e, paras) {
-  const refs = (e && Array.isArray(e.refs)) ? e.refs : [];
-  const hit = refs.find((r) => r && r.type === 'para' && typeof r.zid === 'string'
-    && (paras || []).some((p) => p && p.zid === r.zid));
-  return hit ? hit.zid : null;
+// 核验标记：来源可核验（引文确实来自本次发送的片段）且该要点没有引入来源之外的事实，
+// 才算「已核验」。数字归属原则：模型声称的数字必须由它自己引用的段落支持——
+// 只出现在别的段落里的数字不算已核验（sourceState 与 guard 仍是两个独立字段）。
+const isVerified = (sourceFresh, guard) => sourceFresh === true && guard !== 'conflict';
+
+// ===== SRC-01 请求来源集合（一次生成只构造这一份）=====
+// 键 = 原始 evIndex（不重编号：模型回传的 evIndex 必须对得上原始证据行）；
+// 值 = { zid, hash, text }：hash = 完整段落指纹，text = 本次实际发送的片段（≤600 UTF-16 码元）。
+// 不接收 mats：只有素材的行记 material-only，不为素材伪造 para；不看 ref.quote / ref.title。
+export function resolveInterviewSources({ evidence = [], paras = [] } = {}) {
+  const rows = Array.isArray(evidence) ? evidence : [];
+  const currentParas = Array.isArray(paras) ? paras : [];
+  const byZid = new Map(currentParas.filter((p) => p && typeof p.zid === 'string').map((p) => [p.zid, p]));
+  const sourcesByEvIndex = new Map();
+  const unique = new Map();
+  const omitted = [];
+  rows.forEach((entry, evIndex) => {
+    const refs = entry && Array.isArray(entry.refs) ? entry.refs : [];
+    const paraRefs = refs.filter((r) => r && r.type === 'para');
+    let chosen = null;
+    let sawFreshEmpty = false;
+    for (const ref of paraRefs) {
+      // 只有「指纹仍匹配当前段落」的 para ref 才是来源；模型给的 quote 永远不参与身份判定
+      if (!refFresh(ref, { paras: currentParas })) continue;
+      const para = byZid.get(ref.zid);
+      const rawText = para && typeof para.text === 'string' ? para.text : '';
+      if (!rawText.trim()) { sawFreshEmpty = true; continue; }
+      chosen = { zid: para.zid, hash: paraFingerprint(rawText), text: rawText.slice(0, 600) };
+      break;
+    }
+    if (!chosen) {
+      omitted.push({
+        evIndex,
+        reason: sawFreshEmpty ? 'empty'
+          : paraRefs.length ? 'stale'
+            : refs.some((r) => r && r.type === 'mat') ? 'material-only' : 'missing'
+      });
+      return;
+    }
+    if (!unique.has(chosen.zid)) unique.set(chosen.zid, chosen);
+    sourcesByEvIndex.set(evIndex, unique.get(chosen.zid));
+  });
+  return { sourcesByEvIndex, sourceParas: [...unique.values()], omitted };
+}
+
+// sources 形状检查：Map + 两个数组 + 每项 {zid,hash,text} 且 text ≤600 + 索引项与目录一致
+function validInterviewSources(sources) {
+  if (!sources || !(sources.sourcesByEvIndex instanceof Map)
+    || !Array.isArray(sources.sourceParas) || !Array.isArray(sources.omitted)) return false;
+  const ok = (p) => p && typeof p.zid === 'string' && typeof p.hash === 'string'
+    && typeof p.text === 'string' && p.text.length <= 600;
+  if (!sources.sourceParas.every(ok)) return false;
+  const catalog = new Map(sources.sourceParas.map((p) => [p.zid, p]));
+  for (const [index, p] of sources.sourcesByEvIndex) {
+    if (!Number.isInteger(index) || index < 0 || !ok(p)) return false;
+    const known = catalog.get(p.zid);
+    if (!known || known.hash !== p.hash || known.text !== p.text) return false;
+  }
+  return true;
+}
+
+// ===== SRC-02 prompt / parser 共用同一 sources =====
+// 缺 sources → prompt 抛 TypeError、parser 返回 null（fail-closed：没有真源就不发问、不落库）。
+export function buildInterviewPrompt({ jd = '', company = '', role = '', evidence = [], sources }) {
+  if (!validInterviewSources(sources)) throw new TypeError('interview sources required');
+  const rows = Array.isArray(evidence) ? evidence : [];
+  // 要求行只报 evIndex 与来源 zid；原文一律来自 sourceParas（本次实际发送的那批片段）
+  const requirements = [...sources.sourcesByEvIndex.entries()].map(([i, source]) =>
+    '【要求 ' + (i + 1) + '，evIndex=' + i + '】' + String((rows[i] && rows[i].req) || '')
+    + '\n【来源】' + source.zid).join('\n\n');
+  const fragments = sources.sourceParas.map((p) =>
+    '【简历片段 sourceZid=' + p.zid + '】\n' + p.text).join('\n\n');
+  const sys = '你是资深技术面试官，为真实岗位预判追问。只输出 JSON。\n'
+    + '1. 只依据提供的简历片段，不得虚构经历、职级、项目或数字；JD 仅为岗位要求。\n'
+    + '2. chains 的 evIndex 只可引用已提供的要求，answerPoints.quote 必须是对应来源片段中至少 6 字的子串。\n'
+    + '3. generic 的非空 quote 必须同时给 sourceZid，且 quote 是该来源片段的至少 6 字子串。\n'
+    + '4. generic 的 quote 为空时只给作答结构思路，不代写未经核验的个人经历，sourceZid 留空。\n'
+    + '5. followUp 是再深一层的追问；answerPoints 只给要点，不写背诵稿。\n';
+  const user = '【目标公司】' + company + '\n【目标岗位】' + role + '\n【JD】\n'
+    + (jd || '（未提供 JD）') + '\n\n【可追问要求】\n'
+    + (requirements || '（没有可用简历证据，chains 必须为空）')
+    + '\n\n【本次实际提供的简历片段】\n'
+    + (fragments || '（没有简历片段，仅可给无引文的 generic 作答思路）')
+    + '\n\n输出格式：{"chains":[{"evIndex":0,"question":"问题","followUp":"追问",'
+    + '"answerPoints":[{"text":"要点","quote":"原文子串"}]}],'
+    + '"generic":[{"question":"自我介绍","answerPoints":'
+    + '[{"text":"要点或作答思路","quote":"","sourceZid":""}]}]}\n'
+    + 'chains 最多 ' + Math.max(1, rows.length) + ' 条，generic 最多 4 条。';
+  return { sys, user };
 }
 
 export function parseInterview(raw, ctx = {}) {
-  let d;
-  try { d = JSON.parse(stripFence(raw)); } catch { return null; }
-  if (!d || typeof d !== 'object') return null;
-  const paras = ctx.paras || [];
-  const byZid = new Map(paras.filter((p) => p && p.zid).map((p) => [p.zid, p]));
-  const evList = Array.isArray(ctx.evidence) ? ctx.evidence : [];
-  // 解析侧兜底 prompt 里声明的条数上限——模型不遵守上限时不该把超量内容整批落库
-  const maxChains = Math.max(1, evList.length);
-  const MAX_GENERIC = 4;
+  const sources = ctx.sources;
+  if (!validInterviewSources(sources)) return null;
+  let data;
+  try { data = JSON.parse(stripFence(raw)); } catch { return null; }
+  if (!data || typeof data !== 'object') return null;
+  const evidence = Array.isArray(ctx.evidence) ? ctx.evidence : [];
+  const byZid = new Map(sources.sourceParas.map((p) => [p.zid, p]));
+  const wholeProvided = sources.sourceParas.map((p) => p.text).join('\n').trim();
   let dropped = 0;
 
-  const mkChain = (c, anchoredZid, guardBase) => {
+  const makeChain = (c, fixedSource, evIndex) => {
     if (!c || typeof c !== 'object') return null;
     const question = typeof c.question === 'string' ? c.question.trim() : '';
     if (!question) return null;
-    const anchorHit = anchoredZid ? byZid.get(anchoredZid) : null;
-    const anchorText = (anchorHit && typeof anchorHit.text === 'string') ? anchorHit.text : '';
-    // 有锚点就必须验证（锚定段落已被删除也算验证失败）；无锚点时用 guardBase（全篇正文）做基准
-    const anchorRequired = !!anchoredZid;
-    const baseText = anchorText || (typeof guardBase === 'string' ? guardBase : '');
-
-    // ① 子串验证：quote 对不上锚定段落就丢弃（无锚点时不做此检查——通用问题的 quote 无处可锚）
     const points = [];
-    for (const p of Array.isArray(c.answerPoints) ? c.answerPoints : []) {
-      if (!p || typeof p !== 'object') continue;
-      const text = typeof p.text === 'string' ? p.text.trim() : '';
+    for (const rawPoint of Array.isArray(c.answerPoints) ? c.answerPoints : []) {
+      if (!rawPoint || typeof rawPoint !== 'object') continue;
+      const text = typeof rawPoint.text === 'string' ? rawPoint.text.trim() : '';
       if (!text) continue;
-      const quote = typeof p.quote === 'string' ? p.quote.trim() : '';
-      if (anchorRequired && (!anchorText || !quote || !normSpace(anchorText).includes(normSpace(quote)))) { dropped++; continue; }
-      // quote 太短等于没锚：二轮安全审查实测 quote:'负责'（段落里确实有）双护栏全过，
-      // 却与「主导过公司级战略并购与海外分拆上市」这种纯编造要点一同放行。
-      // 子串存在 ≠ 语义相关，正则判不了语义；但「至少引用一段有信息量的原文」是能判的。
-      // 门槛定 6 字：既有的 S4B-3 夹具用「负责存储层改造」（7 字）作合法锚定，
-      // 它指明了具体改造对象，是有效引用，丢弃它属误报；而「负责」「完成了」
-      // 这类 2–3 字动词短语不含任何被引内容，过不了这道门。6 字刚好分开这两类。
-      if (quote && [...normSpace(quote)].length < 6) { dropped++; continue; }
-      points.push({ text, quote, anchored: !!(anchorText && quote), guard: 'normal' });
-    }
-
-    // ② factGuard（checkLoss:false）：只查「新增原文没有的数字」= 编造。
-    //    不查丢失方向——答法要点是提炼，漏数字是精简，不是编造。
-    //    逐条跑而非整链跑：一条要点编造数字时，同链的正常要点不应被一起标红（误报扩散）。
-    if (baseText) {
-      for (const p of points) {
-        const g = factGuard({ kind: 'replace', before: baseText, after: p.text }, { checkLoss: false });
-        if (g.level === 'conflict') p.guard = 'conflict';
+      const quote = typeof rawPoint.quote === 'string' ? rawPoint.quote.trim() : '';
+      // 链内要点的来源由该行的真源决定；generic 要点的来源必须由模型给出 sourceZid 且在本批来源里
+      const cited = fixedSource || (quote && typeof rawPoint.sourceZid === 'string'
+        ? byZid.get(rawPoint.sourceZid) : null);
+      if (fixedSource || quote) {
+        // 引文必须命中本次实际发送的片段（≤600 码元），短于 6 字等于没锚
+        if (!cited || !quote || [...normSpace(quote)].length < 6
+          || !normSpace(cited.text).includes(normSpace(quote))) {
+          dropped++;
+          continue;
+        }
       }
+      const source = cited && quote ? { type: 'para', zid: cited.zid, hash: cited.hash } : { type: 'none' };
+      const point = { text, quote, source, anchored: false, guard: 'normal' };
+      // factGuard（checkLoss:false）只查「新增原文没有的数字」= 编造；基准是它自己引用的那段，
+      // 不是全篇——否则别的段落里的数字会替它背书。
+      const base = source.type === 'para' ? cited.text : wholeProvided;
+      if (base) {
+        const g = factGuard({ kind: 'replace', before: base, after: text }, { checkLoss: false });
+        if (g.level === 'conflict') point.guard = 'conflict';
+      }
+      point.anchored = isVerified(source.type === 'para', point.guard);
+      points.push(point);
     }
-
     return {
-      evIndex: Number.isInteger(c.evIndex) ? c.evIndex : -1,
-      zid: anchoredZid || '',
+      evIndex,
+      zid: fixedSource ? fixedSource.zid : '',
       question,
       followUp: typeof c.followUp === 'string' ? c.followUp.trim() : '',
       answerPoints: points,
@@ -507,49 +582,95 @@ export function parseInterview(raw, ctx = {}) {
   };
 
   const chains = [];
-  const rawChains = (Array.isArray(d.chains) ? d.chains : []).slice(0, maxChains);
-  for (const c of rawChains) {
-    // fail-closed：证据链必须锚得上正文段落才落库。evIndex 越界/非整数、或该行无可用 para ref
-    // （含锚点段落已被删除/改版）→ 整链丢弃，绝不降级成「无锚点」绕过两条护栏。
+  for (const c of (Array.isArray(data.chains) ? data.chains : []).slice(0, Math.max(1, evidence.length))) {
     const i = c && c.evIndex;
-    if (!Number.isInteger(i) || i < 0 || i >= evList.length) { dropped++; continue; }
-    const zid = evAnchorZid(evList[i], paras);
-    if (!zid || !byZid.has(zid)) { dropped++; continue; }
-    const chain = mkChain(c, zid);
+    // fail-closed：evIndex 越界 / 非整数 / 该行没有真源 → 整链丢弃，绝不降级成「无锚点」绕过护栏
+    const source = Number.isInteger(i) && i >= 0 && i < evidence.length
+      ? sources.sourcesByEvIndex.get(i) : null;
+    if (!source) { dropped++; continue; }
+    const chain = makeChain(c, source, i);
     if (chain) chains.push(chain);
   }
-  // generic 链（自我介绍/为什么选我们）没有单段锚点，但仍要有基准：
-  // 用**全篇正文**当基准跑 added-only factGuard，模型编造的数字照样会被抓。
-  // 完全无基准 = 模型可为通用问题凭空造事实，与「双护栏」承诺相悖（2026-10-18 OCR 护栏缺口）。
-  const wholeDoc = paras.map((p) => (p && p.text) || '').join('\n').trim();
+  // generic 链（自我介绍/为什么选我们）没有单段锚点：空引文只作未经核验的作答思路；
+  // 非空引文必须给出本批来源里的 sourceZid，否则整条丢弃。
   const generic = [];
-  for (const g of (Array.isArray(d.generic) ? d.generic : []).slice(0, MAX_GENERIC)) {
-    const item = mkChain({ ...g, evIndex: -1 }, '', wholeDoc);
-    if (item) generic.push(item);
+  for (const c of (Array.isArray(data.generic) ? data.generic : []).slice(0, 4)) {
+    const chain = makeChain(c, null, -1);
+    if (chain) generic.push(chain);
   }
-  return { chains, generic, dropped };
+  return { chains, generic, dropped, omitted: sources.omitted.map((entry) => ({ ...entry })) };
 }
 
-export function buildInterviewPrompt({ jd = '', company = '', role = '', evidence = [], paras = [] }) {
-  const evLines = evidence.map((e, i) => {
-    const zid = evAnchorZid(e, paras);
-    const para = zid ? paras.find((p) => p && p.zid === zid) : null;
-    // 无 para 锚点时退回该行 refs 里已校验过的 quote 片段（parseEvidence 已按 refId/zid 校验过）
-    const quotes = ((e && e.refs) || []).map((r) => r && r.quote).filter(Boolean).join(' / ');
-    const body = para ? para.text : quotes;
-    return `【要求 ${i + 1}】${(e && e.req) || ''}\n【简历原文${zid ? '（zid=' + zid + '）' : ''}】${String(body).slice(0, 600) || '（本条无可用原文，勿据此提问）'}`;
-  }).join('\n\n');
-  const sys = '你是资深技术面试官，正在为一轮真实面试预判追问。\n'
-    + '严格规则：\n'
-    + '1. 只基于给出的简历原文与岗位要求提问，不得虚构简历里不存在的经历、项目、职级或数字。\n'
-    + '2. 每条 answerPoint 必须回填支撑它的原文子串（quote），我会逐字校验；对不上就整条作废。\n'
-    + '3. followUp 是这个点上再往下一层的追问，不是换个说法重问。\n'
-    + '4. answerPoint 只写「要说的要点」，不要写成可直接背诵的成稿答案——用户要用自己的话讲。\n'
-    + '5. 只输出 JSON，不要任何解释文字。';
-  const user = `【目标公司】${company}\n【目标岗位】${role}\n【JD】\n${jd || '（未提供 JD）'}\n\n`
-    + `【岗位要求与简历证据（索引即 evIndex）】\n${evLines || '（证据表为空）'}\n\n`
-    + '输出格式：{"chains":[{"evIndex":0,"question":"…","followUp":"…","answerPoints":[{"text":"…","quote":"原文子串"}]}],'
-    + '"generic":[{"question":"自我介绍","answerPoints":[{"text":"…","quote":""}]}]}\n'
-    + `chains 最多 ${Math.max(1, evidence.length)} 条（对应证据表行），generic 最多 4 条。`;
-  return { sys, user };
+// ===== SRC-03 读取时来源视图（只读：改派生字段，不改输入、不落盘）=====
+// 旧数据没有 source 字段 → legacy（不认旧的 anchored）；source 形状坏 → invalid；
+// 段落已改/已删 → stale；source.type==='none' → none；引文命中当前段落 → fresh。
+export function interviewSourceView(interview, { paras = [] } = {}) {
+  const original = interview && typeof interview === 'object' && !Array.isArray(interview) ? interview : {};
+  const byZid = new Map((Array.isArray(paras) ? paras : []).filter((p) => p && p.zid)
+    .map((p) => [p.zid, p]));
+  const pointView = (value) => {
+    const p = value && typeof value === 'object' ? value : {};
+    const source = p.source;
+    let sourceState = 'invalid';
+    let quoteForDisplay = '';
+    let sourceZid = '';
+    if (!Object.prototype.hasOwnProperty.call(p, 'source')) sourceState = 'legacy';
+    else if (source && source.type === 'none') sourceState = 'none';
+    else if (source && source.type === 'para' && typeof source.zid === 'string'
+      && typeof source.hash === 'string' && /^[0-9a-f]{40}$/.test(source.hash)) {
+      const para = byZid.get(source.zid);
+      if (!para || paraFingerprint(para.text) !== source.hash) sourceState = 'stale';
+      else {
+        const quote = typeof p.quote === 'string' ? p.quote.trim() : '';
+        if (quote && [...normSpace(quote)].length >= 6
+          && normSpace(String(para.text).slice(0, 600)).includes(normSpace(quote))) {
+          sourceState = 'fresh';
+          quoteForDisplay = quote;
+          sourceZid = source.zid;
+        }
+      }
+    }
+    return { ...p, sourceState, quoteForDisplay, sourceZid, anchored: isVerified(sourceState === 'fresh', p.guard) };
+  };
+  const chainView = (value) => {
+    const c = value && typeof value === 'object' ? value : {};
+    return { ...c, answerPoints: (Array.isArray(c.answerPoints) ? c.answerPoints : []).map(pointView) };
+  };
+  return {
+    ...original,
+    chains: (Array.isArray(original.chains) ? original.chains : []).map(chainView),
+    generic: (Array.isArray(original.generic) ? original.generic : []).map(chainView)
+  };
+}
+
+// 单条 ref 的来源视图：sourceTitle/sourceText 只取真实素材标题与已确认 facts，
+// para 的 sourceText 留空；模型给的 quote 永不冒充来源（对不上就清空展示引用，不动身份）。
+export function evidenceSourceView(ref, { paras = [], mats = [] } = {}) {
+  const empty = { sourceState: 'unavailable', sourceTitle: '', sourceText: '', quoteForDisplay: '', sourceZid: '' };
+  if (!ref || typeof ref !== 'object') return empty;
+  if (!refFresh(ref, { paras, mats })) return { ...empty, sourceState: 'stale' };
+  if (ref.type === 'para') {
+    const para = (Array.isArray(paras) ? paras : []).find((p) => p && p.zid === ref.zid);
+    const quote = typeof ref.quote === 'string' ? ref.quote.trim() : '';
+    return {
+      ...empty,
+      sourceState: 'fresh',
+      sourceZid: ref.zid,
+      quoteForDisplay: quote && para && normSpace(para.text).includes(normSpace(quote)) ? quote : ''
+    };
+  }
+  if (ref.type === 'mat') {
+    const mat = (Array.isArray(mats) ? mats : []).find((m) => m && m.id === ref.id);
+    const facts = mat && mat.facts && typeof mat.facts === 'object' ? mat.facts : {};
+    const sourceText = Object.keys(FACT_LABELS)
+      .filter((key) => typeof facts[key] === 'string' && facts[key].trim())
+      .map((key) => FACT_LABELS[key] + '：' + facts[key].trim()).join(' · ');
+    return {
+      ...empty,
+      sourceState: sourceText ? 'fresh' : 'unavailable',
+      sourceTitle: (mat && typeof mat.title === 'string' && mat.title) || ref.id || '',
+      sourceText
+    };
+  }
+  return empty;
 }

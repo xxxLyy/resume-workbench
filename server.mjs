@@ -8,10 +8,11 @@ import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { structureText } from './structure.mjs';
+import { importPdfText } from './importer.mjs';   // PDF 上传导入（AUD-12：接回既有首页入口）
 import { loadProfiles, hasLLM, chat, chatMsgs, listModels, assertSafeBaseURL } from './llm.mjs';   // assertSafeBaseURL：/ai/jd-text 的 SSRF 防线
 import { buildRewrite, buildChat, parseChanges, buildReview, buildMatch, parseReport } from './ai.mjs';
 import { buildJobPrompt, parseJobOps, pageSuggestions } from './job.mjs';
-import { buildEvalPrompt, parseEvalReport } from './eval.mjs';
+import { buildEvalPrompt, parseEvalReport, evalSource, evalRecordView } from './eval.mjs';
 import { docToLines, docToText, contentHash, sectionsOf } from './extract.mjs';
 import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, digestOf, buildZoneAnalyzePrompt, parseZoneAnalysis, buildZoneRewritePrompt, parseZoneRewrites, FACT_KEYS, MAT_STATES, migrateMats, parasOf, zidsOf } from './zone.mjs';
 import { rotateLogIfNeeded } from './logrotate.mjs';
@@ -19,6 +20,9 @@ import { freezeHtml, normalizeToCurrent, splitDoc, staleInfo } from './freeze.mj
 import { beginTx, commitTx, dropSupersededTx, recoverPending, withDocLock, updateMeta, updateMetaAll, rootLock, atomicWrite, LockHeld } from './tx.mjs';
 import { safeUrl } from './safe-url.mjs';   // URL 协议白名单（S4B-9；escAttr 不校验协议）
 import { sumExpandedBytes, MAX_EXPANDED_BYTES } from './restore-guard.mjs';   // 备份包展开尺寸护栏（S4B-10）
+import { aiPool, renderPool, ResourceBusy } from './resource-slots.mjs';
+import { trustedRenderHtml } from './render-safe.mjs';   // 受信渲染输入（AUD-05）：未知脚本/事件属性/外联载体不得进入渲染
+import { publishPair, makeIdentityValidator } from './render-publish.mjs';   // PDF+旁车成对发布（AUD-07）   // 共享容量池（RES-01/02/03）：AI 与渲染各 2 个并发
 
 /**
  * JD 文本入库上限（S4B-12）。链接抓取路径 cap 在 4000 字，粘贴路径原本完全没 cap：
@@ -27,7 +31,7 @@ import { sumExpandedBytes, MAX_EXPANDED_BYTES } from './restore-guard.mjs';   //
  * 提到模块级：/job/create、/app/add 两个写 jd 的入口必须共用同一上限。
  */
 const JD_MAX_CHARS = 64 * 1024;
-import { applyOps, reviewConsistency, refFresh, buildEvidencePrompt, parseEvidence, buildInterviewPrompt, parseInterview, guardOps, exportChecks, layoutDiagnose } from './evidence.mjs';
+import { applyOps, reviewConsistency, refFresh, buildEvidencePrompt, parseEvidence, buildInterviewPrompt, parseInterview, guardOps, exportChecks, layoutDiagnose, resolveInterviewSources, interviewSourceView, evidenceSourceView } from './evidence.mjs';
 import { completeGenResult } from './gen-result.mjs';   // 任务完成判定纯函数（设计 §4）：显式成功/拒绝 + 独立工作副本
 import { assembleTemplate, themeRegistration } from './template.mjs';
 import { ICONS } from './vendors/icons.mjs';  // Lucide 图标数据（纯数据文件，零 npm 依赖）
@@ -161,6 +165,26 @@ const saveEvals = (list) => writeJson('evals', list);
 // —— JD 指纹护栏（career-ops 移植，设计: dev-docs/2026-10-18-career-ops-jd-fingerprint-design.md）——
 // 用动态 import 而非顶部静态 import：vendors 模块损坏（如上游同步引入语法错误）时
 // 降级跳过护栏，不拖垮 server 启动。模糊匹配不阻断创建；任何异常只记日志。
+// 有界远程页面读取（AUD-17）：/job/create 与 /ai/jd-text 共用同一实现。
+// 两条防线：① Content-Length 已知超限 → 直接拒绝，不必下载；
+// ② 没有长度 → 流式累计并即时中断。不能等完整 body 收完再判大小（那等于没有上限）。
+const JD_PAGE_MAX_BYTES = 5 * 1024 * 1024;
+async function fetchPageText(url) {
+  const r = await fetch(url, { signal: AbortSignal.timeout(15000), redirect: 'error' });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const len = Number(r.headers.get('content-length'));
+  if (Number.isFinite(len) && len > JD_PAGE_MAX_BYTES) throw new Error('页面超过 5MB 上限');
+  const chunks = []; let size = 0;
+  for await (const c of r.body) {
+    size += c.length;
+    if (size > JD_PAGE_MAX_BYTES) throw new Error('页面超过 5MB 上限');
+    chunks.push(c);
+  }
+  return Buffer.concat(chunks).toString('utf8')
+    .replace(/<script[\s\S]*?<\/script>/g, '').replace(/<style[\s\S]*?<\/style>/g, '')
+    .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 4000);
+}
+
 async function computeFpGuard(jd, jdLink, company, metaAll) {
   try {
     const { fingerprintText } = await import('./vendors/jd-fingerprint/fingerprint-core.mjs');
@@ -196,6 +220,44 @@ async function computeFpGuard(jd, jdLink, company, metaAll) {
  * 「先评估后转换」这条低频路径上暴露，正则级回归也测不出来。改这里，两条路径一起改。
  * 返回 {ok:true, id, jdError, dupHints} 或 {ok:false, status, body}（body 直接可 sendJson）。
  */
+// ===== 创建保留（AUD-14）=====
+// 保留文件放在 <root>/.creating/ 下：原子创建（wx）= 唯一赢家。
+// 不用共享根锁：那会把整个数据根的写操作都挡住（而 JD 抓取可能等十几秒）。
+const CLAIM_DIR = '.creating';
+const claimPath = (root, key) => path.join(root, CLAIM_DIR, contentHash(String(key)).slice(0, 24) + '.claim');
+// 陈旧保留：持有者已死，或超过 5 分钟兜底 → 可破除（否则进程崩溃会永久挡住该身份）
+function claimStale(p) {
+  try {
+    const info = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (info && typeof info.pid === 'number' && info.pid !== process.pid) {
+      try { process.kill(info.pid, 0); return false; } catch (e) { if (e.code === 'EPERM') return false; }
+    }
+    if (info && typeof info.at === 'number' && Date.now() - info.at > 300000) return true;
+    return false;
+  } catch { return false; }
+}
+function acquireClaim(p) {
+  try { fs.mkdirSync(path.dirname(p), { recursive: true }); } catch {}
+  for (let i = 0; i < 2; i++) {
+    try {
+      const fd = fs.openSync(p, 'wx');
+      try { fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() })); } finally { fs.closeSync(fd); }
+      return true;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      if (!claimStale(p)) return false;
+      try { fs.unlinkSync(p); } catch {}   // 陈旧保留 → 破除后重试一次
+    }
+  }
+  return false;
+}
+function releaseClaim(p) { try { fs.rmSync(p, { force: true }); } catch {} }
+async function waitClaim(p, ms) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) { if (!fs.existsSync(p)) return true; await new Promise((r) => setTimeout(r, 50)); }
+  return !fs.existsSync(p);
+}
+
 async function createJobDraft(root, o) {
   const from = String(o.from || '');
   const company = String(o.company || '').trim();
@@ -205,64 +267,90 @@ async function createJobDraft(root, o) {
   const nb = normBrief(o.brief);   // S4a-T5：brief 可选（缺省渐进默认），非法值 400
   if (nb.error) return { ok: false, status: 400, body: { ok: false, error: nb.error } };
   if (!fs.existsSync(docPath(from))) return { ok: false, status: 404, body: { ok: false, error: '母版文档不存在' } };
-  const metaAll = loadMeta();
-  const dup = Object.keys(metaAll).find((k) => {
-    const m = metaAll[k];
-    return m && m.parent === from && m.company === company && m.role === role && fs.existsSync(docPath(k));
-  });
-  if (dup) return { ok: false, status: 409, body: { ok: false, existing: dup } };
-  // 冻结来源版本（快照 = freezeHtml + manifest），返回冻结 ts 供之后追溯
-  const srcSnap = snapshot(from);
-  let to, n = 2;
-  while (fs.existsSync(docPath(`${from}-v${n}`))) n++;
-  to = `${from}-v${n}`;
-  // 冻结点：母版 freezeHtml（自包含内联 typo）→ 归一化为当前格式落活文档（禁止直接 copy 冻结字节）
-  const srcHtml = fs.readFileSync(docPath(from), 'utf8');
-  const srcMeta = metaAll[from] || {};
-  const normJob = normalizeToCurrent(freezeHtml(srcHtml, srcMeta).html);
-  atomicWrite(docPath(to), normJob.html);
-  // JD：优先文本；给了链接且无文本时尝试读取，失败则记录待补充
-  let jdRaw = typeof o.jd === 'string' ? o.jd.trim() : '';
-  let jdTruncated = jdRaw.length > JD_MAX_CHARS;
-  let jd = jdTruncated ? jdRaw.slice(0, JD_MAX_CHARS) : jdRaw;
-  let jdLink = typeof o.jdLink === 'string' ? o.jdLink.trim() : '';
-  // 截断与「链接读取失败」是两回事，todo 文案必须分开：复用后者的模板会显示成
-  // 「JD 链接读取失败（…），请粘贴 JD 文本」——用户明明已经粘贴了，让它再粘一次是荒谬的（2026-10-18 实测）。
-  let jdError = '';
-  let jdTruncNote = jdTruncated ? 'JD 超过 64 KB，仅前 64 KB 纳入分析（尾部未读）。JD 过长通常意味着粘进了整页网页，可只保留「岗位职责 + 任职要求」两段。' : '';
-  if (!jd && jdLink) {
-    try {
-      if (!/^https?:\/\//.test(jdLink)) throw new Error('仅支持 http/https 链接');
-      // SSRF 防线：与 /ai/jd-text 同一道 assertSafeBaseURL（2026-10-22 审查 [高]）——
-      // 原先这里只有 ^https?://，任意内网/云元数据地址都能被服务端抓取，原文写进 meta.jd 并回显。
-      // redirect:'error'：不跟随 302，否则首跳过了校验、跟着跳到黑名单地址。
-      assertSafeBaseURL(jdLink);
-      const r = await fetch(jdLink, { signal: AbortSignal.timeout(15000), redirect: 'error' });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const buf = Buffer.from(await r.arrayBuffer());
-      if (buf.length > 5 * 1024 * 1024) throw new Error('页面超过 5MB 上限');
-      jd = buf.toString('utf8').replace(/<script[\s\S]*?<\/script>/g, '').replace(/<style[\s\S]*?<\/style>/g, '')
-        .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 4000);
-    } catch (e) { jdError = String(e.message || e); }
+
+  // 创建保留（AUD-14）：同一 (母版,公司,岗位) 的并发创建只能成功一个。
+  // 原实现的去重检查发生在异步 JD 抓取【之前】→ 两个并发请求都读到同一份 meta、都没查到重复，
+  // 各自建出 -v2 / -v3 两份草稿（实测两次都 200）。
+  // 这里用「锁文件 + wx 原子创建」做小范围保留：只挡同一创建身份，
+  // 不占共享根锁（那会把整个数据根的写操作都挡住，而网络等待可能十几秒），别的文档照常保存。
+  const claim = claimPath(root, from + '|' + company + '|' + role);
+  if (!acquireClaim(claim)) {
+    // 别人正在创建同一身份：等它结束（最多 5s）再看结果
+    await waitClaim(claim, 5000);
+    const after = loadMeta();
+    const dup2 = Object.keys(after).find((k) => {
+      const m = after[k];
+      return m && m.parent === from && m.company === company && m.role === role && fs.existsSync(docPath(k));
+    });
+    if (dup2) return { ok: false, status: 409, body: { ok: false, existing: dup2 } };
+    return { ok: false, status: 409, body: { ok: false, error: '同一岗位正在创建中，请稍后重试' } };
   }
-  const { jdFp, dupHints, todos } = await computeFpGuard(jd, jdLink, company, metaAll);
-  const nowIso = new Date().toISOString();
-  // meta 唯一写入者 updateMeta：只写目标文档 to（不整表覆盖，避免踩并发更新）；状态维度 kind/flow/archivedAt（job.status 不再写，单源 flow）
-  updateMeta(root, to, () => ({
-    parent: from, company, role, jd, jdSource: jd ? (o.jdSource ? String(o.jdSource) : (jdLink ? jdLink : '手动')) : (jdLink || ''),
-    createdAt: nowIso,
-    tag: (company + '·' + role).slice(0, 20),
-    typo: normJob.typo, theme: srcMeta.theme || normJob.theme || null, styleHash: normJob.styleHash, rev: 1,
-    kind: 'job', flow: 'draft', archivedAt: null,
-    job: {
-      sourceSnap: srcSnap, sourceHash: contentHash(srcHtml),
-      materials: Array.isArray(o.materials) ? o.materials.filter((x) => typeof x === 'string') : [],
-      brief: nb.brief, jdFp,   // S4a-T5 要求卡（渐进默认：无 brief 时字段全默认）
-      changes: [], todos: [...(jdError ? [{ section: '岗位信息', question: 'JD 链接读取失败（' + jdError + '），请粘贴 JD 文本', why: '岗位匹配分析需要 JD', resolved: false }] : []), ...(jdTruncNote ? [{ section: '岗位信息', question: jdTruncNote, why: '截断部分未参与岗位匹配分析，可能影响要求覆盖度判断', resolved: false }] : []), ...todos],
-      generatedAt: null, deliveredAt: null
+  let to = null;
+  try {
+    // 拿到保留后再查重（此刻没有同身份的并发创建）
+    const metaAll = loadMeta();
+    const dup = Object.keys(metaAll).find((k) => {
+      const m = metaAll[k];
+      return m && m.parent === from && m.company === company && m.role === role && fs.existsSync(docPath(k));
+    });
+    if (dup) return { ok: false, status: 409, body: { ok: false, existing: dup } };
+    // 冻结来源版本（快照 = freezeHtml + manifest），返回冻结 ts 供之后追溯
+    const srcSnap = snapshot(from);
+    // 目标文件名也要原子分配（wx）：两个并发可能算出同一个 -v2（都看到文件不存在）
+    for (let n = 2; ; n++) {
+      const cand = `${from}-v${n}`;
+      try { const fd = fs.openSync(docPath(cand), 'wx', 0o600); fs.closeSync(fd); to = cand; break; }
+      catch (e) { if (e.code !== 'EEXIST') throw e; }
     }
-  }));
-  return { ok: true, id: to, jdError: jdError || null, dupHints };
+    // 冻结点：母版 freezeHtml（自包含内联 typo）→ 归一化为当前格式落活文档（禁止直接 copy 冻结字节）
+    const srcHtml = fs.readFileSync(docPath(from), 'utf8');
+    const srcMeta = metaAll[from] || {};
+    const normJob = normalizeToCurrent(freezeHtml(srcHtml, srcMeta).html);
+    atomicWrite(docPath(to), normJob.html);
+    // JD：优先文本；给了链接且无文本时尝试读取，失败则记录待补充
+    let jdRaw = typeof o.jd === 'string' ? o.jd.trim() : '';
+    let jdTruncated = jdRaw.length > JD_MAX_CHARS;
+    let jd = jdTruncated ? jdRaw.slice(0, JD_MAX_CHARS) : jdRaw;
+    let jdLink = typeof o.jdLink === 'string' ? o.jdLink.trim() : '';
+    // 截断与「链接读取失败」是两回事，todo 文案必须分开：复用后者的模板会显示成
+    // 「JD 链接读取失败（…），请粘贴 JD 文本」——用户明明已经粘贴了，让他再粘一次是荒谬的（2026-10-18 实测）。
+    let jdError = '';
+    let jdTruncNote = jdTruncated ? 'JD 超过 64 KB，仅前 64 KB 纳入分析（尾部未读）。JD 过长通常意味着粘进了整页网页，可只保留「岗位职责 + 任职要求」两段。' : '';
+    if (!jd && jdLink) {
+      try {
+        if (!/^https?:\/\//.test(jdLink)) throw new Error('仅支持 http/https 链接');
+        // SSRF 防线：与 /ai/jd-text 同一道 assertSafeBaseURL（2026-10-22 审查 [高]）——
+        // 原先这里只有 ^https?://，任意内网/云元数据地址都能被服务端抓取，原文写进 meta.jd 并回显。
+        // redirect:'error'：不跟随 302，否则首跳过了校验、跟着跳到黑名单地址。
+        assertSafeBaseURL(jdLink);
+        jd = await fetchPageText(jdLink);
+      } catch (e) { jdError = String(e.message || e); }
+    }
+    const { jdFp, dupHints, todos } = await computeFpGuard(jd, jdLink, company, metaAll);
+    const nowIso = new Date().toISOString();
+    // meta 唯一写入者 updateMeta：只写目标文档 to（不整表覆盖，避免踩并发更新）；状态维度 kind/flow/archivedAt（job.status 不再写，单源 flow）
+    updateMeta(root, to, () => ({
+      parent: from, company, role, jd, jdSource: jd ? (o.jdSource ? String(o.jdSource) : (jdLink ? jdLink : '手动')) : (jdLink || ''),
+      createdAt: nowIso,
+      tag: (company + '·' + role).slice(0, 20),
+      typo: normJob.typo, theme: srcMeta.theme || normJob.theme || null, styleHash: normJob.styleHash, rev: 1,
+      kind: 'job', flow: 'draft', archivedAt: null,
+      job: {
+        sourceSnap: srcSnap, sourceHash: contentHash(srcHtml),
+        materials: Array.isArray(o.materials) ? o.materials.filter((x) => typeof x === 'string') : [],
+        brief: nb.brief, jdFp,   // S4a-T5 要求卡（渐进默认：无 brief 时字段全默认）
+        changes: [], todos: [...(jdError ? [{ section: '岗位信息', question: 'JD 链接读取失败（' + jdError + '），请粘贴 JD 文本', why: '岗位匹配分析需要 JD', resolved: false }] : []), ...(jdTruncNote ? [{ section: '岗位信息', question: jdTruncNote, why: '截断部分未参与岗位匹配分析，可能影响要求覆盖度判断', resolved: false }] : []), ...todos],
+        generatedAt: null, deliveredAt: null
+      }
+    }));
+    return { ok: true, id: to, jdError: jdError || null, dupHints };
+  } catch (e) {
+    // 失败不留冒充母版的孤儿：正文已落盘但 meta 未登记 → 删掉正文
+    if (to) { try { fs.rmSync(docPath(to), { force: true }); } catch {} }
+    throw e;
+  } finally {
+    releaseClaim(claim);   // 提交或失败都释放保留（只有实际工作结束才释放）
+  }
 }
 
 const corruptBanner = () => corrupt.size
@@ -304,30 +392,24 @@ const GEN_KINDS = ['evidence', 'changes', 'interview'];
 // 也不会漏掉将来新增的端点（豁免表显式列出）。
 // ⚠️ 计数器必须在【模块级】：放请求处理函数内会每次请求归零，等于没有闸门
 //   （2026-10-19 首次实现踩过这个坑，实测 6 并发全 200、假 LLM 峰值 6）。
-const AI_MAX_INFLIGHT = 2;
-const RENDER_MAX_INFLIGHT = 2;
 const AI_EXEMPT = new Set(['/ai/test']);   // 测连接不调 LLM，必须放行否则无法验证配置
-const aiSlot = { value: 0 }, renderSlot = { value: 0 };
 
-function gate(req, res, pathname) {
-  const take = (counter, limit, msg) => {
-    if (counter.value >= limit) return msg;
-    counter.value++;
-    let done = false;
-    const rel = () => { if (!done) { done = true; counter.value--; } };
-    res.on('finish', rel); res.on('close', rel);
-    return null;
-  };
-  // 渲染闸门：凡会拉起 Chromium 的路由都要进（2026-10-22 审查 [中] 实测：
-  // 原先只管 GET /pdf 与 GET /export → /snapshot/pdf、POST /render、POST /export 各自无限并发拉浏览器）
-  if ((req.method === 'GET' && (pathname === '/pdf' || pathname === '/export' || pathname === '/snapshot/pdf'))
-    || (req.method === 'POST' && (pathname === '/render' || pathname === '/export'))) {
-    return take(renderSlot, RENDER_MAX_INFLIGHT, '渲染排队已满（最多同时 2 个），请稍候');
+// 闸门判定：该路由应占用哪个共享池（null = 不受限）。容量与并发上限由 resource-slots.mjs 统一持有。
+// 渲染闸门：凡会拉起 Chromium 的路由都要进（2026-10-22 审查 [中] 实测：
+// 原先只管 GET /pdf 与 GET /export → /snapshot/pdf、POST /render、POST /export 各自无限并发拉浏览器）
+// 闸门租约透传（RES-02）：handler 借到的 lease 必须一路传到最底层调用。
+// 否则底层（llm.mjs / renderDoc）会各自兜底再占一个槽 → 一个请求占两个槽，实际并发减半。
+const leaseOf = (req) => (req && req.__resLease) || undefined;
+
+function gatePool(method, pathname) {
+  if ((method === 'GET' && (pathname === '/pdf' || pathname === '/export' || pathname === '/snapshot/pdf'))
+    || (method === 'POST' && (pathname === '/render' || pathname === '/export'))) {
+    return { pool: renderPool, label: '渲染' };
   }
   // /eval/create、/restructure 也直连 LLM → 一并进闸门（实测 4 并发全放行、0×429）
-  if (req.method === 'POST' && (/^\/ai\//.test(pathname) || pathname === '/eval/create' || pathname === '/restructure')
+  if (method === 'POST' && (/^\/ai\//.test(pathname) || pathname === '/eval/create' || pathname === '/restructure')
     && !AI_EXEMPT.has(pathname)) {
-    return take(aiSlot, AI_MAX_INFLIGHT, 'AI 请求排队已满（最多同时 2 个），请稍候');
+    return { pool: aiPool, label: 'AI' };
   }
   return null;
 }
@@ -457,7 +539,18 @@ function applyChangesResult(cur, ops, ctx = {}) {
 // 任务体（node 单进程 fire-and-forget：Promise 即可，不引调度平台）。changes 通道完整复用既有链路；
 // evidence 通道（S4a-T6）：JD + 已确认素材（facts+表达）+ 区域分组段落（请求内 ID）→ parseEvidence →
 // finishGenTask 校验落账——整批替换与 evidenceGen+1 只在成功落账事务内（设计 §5.1 反例2：失败/取消/超时不碰旧数据）。
-async function runGenTask(id, kind, taskId, scope = 'all') {
+async function runGenTask(id, kind, taskId, scope = 'all', { lease } = {}) {
+  // 后台任务自己占一个 AI 槽（RES-04）：HTTP 响应早已结束，真实占用才开始。
+  // 释放 = 这次后台工作真正结束（最外层 finally）；逻辑取消/超时/HTTP 断连都不等于释放。
+  // 与同步入口共用同一个 aiPool → 全进程 AI 实际并发 ≤2（RES-02）。
+  const ownLease = lease ? null : await aiPool.acquire();
+  try {
+    return await runGenTaskInner(id, kind, taskId, scope, lease || ownLease);
+  } finally {
+    if (ownLease) { try { ownLease.release(); } catch {} }
+  }
+}
+async function runGenTaskInner(id, kind, taskId, scope, held) {
   if (kind === 'interview') {
     try {
       const m0 = loadMeta()[id];
@@ -467,10 +560,13 @@ async function runGenTask(id, kind, taskId, scope = 'all') {
       const html = fs.readFileSync(docPath(id), 'utf8');
       const paras = parasOf(html);
       const evGenAtStart = Number(m0.job.evidenceGen) || 0;   // 生成时的证据批次，interview 的 evIndex 绑定它
-      const p = buildInterviewPrompt({ jd: m0.jd || '', company: m0.company || '', role: m0.role || '', evidence: ev, paras });
-      const raw = await chat(root, p.sys, p.user);
+      // 真源集合（SRC-01）：来源身份只由段落 zid 决定；quote/title 不作兜底。
+      // prompt 与 parser 共用同一批 sourceParas → 模型能引用的片段与被核验的片段完全一致。
+      const sources = resolveInterviewSources({ evidence: ev, paras });
+      const p = buildInterviewPrompt({ jd: m0.jd || '', company: m0.company || '', role: m0.role || '', evidence: ev, sources });
+      const raw = await chat(root, p.sys, p.user, { lease: held });
       const gen = (Number(m0.job.interviewGen) || 0) + 1;
-      const iv = parseInterview(raw, { paras, evidence: ev });
+      const iv = parseInterview(raw, { evidence: ev, sources });
       if (!iv) return finishGenTask(id, kind, taskId, null, '模型输出无法解析为面试追问，未替换任何内容');
       // 「无有效内容」要看**要点**而非链数：模型可能只给问题、要点全被护栏丢弃，
       // 这种链留着会让用户看到一屏空卡片（2026-10-18 OCR）
@@ -505,7 +601,7 @@ async function runGenTask(id, kind, taskId, scope = 'all') {
       const mats = loadMats().filter((x) => x.factStatus === 'confirmed' && m0.job.materials.includes(x.id));
       const paras = parasOf(html);
       const p = buildEvidencePrompt({ jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: mats, zones: m0.zones || {}, paras });
-      const raw = await chat(root, p.sys, p.user);
+      const raw = await chat(root, p.sys, p.user, { lease: held });
       // 解析用批次号在锁外读取即可：同 kind 任务被 startGenTask 串行化（running 期间新任务 409），锁内必然一致；
       // 期间任务被取消/过期也不影响——迟到落账由 finishGenTask 的 taskId 不匹配与超时分支拒绝（零落账）。
       const gen = (Number(m0.job.evidenceGen) || 0) + 1;
@@ -538,7 +634,7 @@ async function runGenTask(id, kind, taskId, scope = 'all') {
       docText = docToText(html, { includeHidden: false });
     }
     const p = buildJobPrompt({ docText, jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: confirmedMats, twoPage: true, brief: m0.job.brief || null, scope: scopeInfo, feedback: m0.job.feedback || null });   // S4a-T9：过往反馈进 prompt
-    const raw = await chat(root, p.sys, p.user);
+    const raw = await chat(root, p.sys, p.user, { lease: held });
     const ops = parseJobOps(raw);
     if (!ops) return finishGenTask(id, kind, taskId, null, '模型输出无法解析为修改操作，未应用任何修改');
     return finishGenTask(id, kind, taskId, (cur) => ({
@@ -638,7 +734,9 @@ function jobViewLive(id, m) {
   const paras = parasOf(html);   // S4a-T7：算一次透传给 reviewConsistency 与 refs fresh（原先每请求跑两遍）
   const out = reviewConsistency(job, html, { zones: (m || {}).zones, mats, paras });
   out.evidence = (out.evidence || []).map((e) => {
-    const refs = (Array.isArray(e.refs) ? e.refs : []).map((r) => ({ ...r, fresh: refFresh(r, { mats, paras }) }));
+    // 来源状态由程序判定（SRC-03）：旧 anchored 布尔不被信任，来源身份只认段落 zid。
+    // 兼容视图只读：不回写历史存储（evidenceSourceView 不改传入对象）。
+    const refs = (Array.isArray(e.refs) ? e.refs : []).map((r) => ({ ...r, ...evidenceSourceView(r, { mats, paras }), fresh: refFresh(r, { mats, paras }) }));
     return { ...e, refs, stale: refs.length > 0 && refs.every((r) => !r.fresh) };
   });
   // S4a-T10：导出检查三级（阻止/建议核对/风格）与两级完成——与导出页共用同一纯函数，状态取即时视图（非落盘快照）
@@ -652,6 +750,8 @@ function jobViewLive(id, m) {
       (typeof m.job.interviewEvidenceGen === 'number' && m.job.interviewEvidenceGen !== Number(m.job.evidenceGen || 0))
     )
   );
+  // 面试追问的引用来源：旧 anchored 只读降级（SRC-03/SRC-07），不写回 meta
+  if (out.interview) out.interview = interviewSourceView(out.interview, { paras });
   return out;
 }
 const exportsOf = (m) => (Array.isArray(m && m.exports) ? m.exports : []);
@@ -750,18 +850,63 @@ function snapshot(id, keepExtraTs) {
 
 // ===== 渲染（原子替换；RETRY=1 次；测试可用 RESUME_RENDER_BIN 注入假渲染器）=====
 // renderDoc 只接受 --src 冻结/组装输入（render.mjs 对文档元数据盲态）；env 透传渲染标识与可复现性（旁车用）。
-function renderDoc({ src, out, env }) {
-  const args = [path.join(APP_ROOT, 'render.mjs'), '--src', src, '--out', out];
-  const attempt = () => new Promise((resolve) => {
-    const child = spawn(process.env.RESUME_RENDER_BIN || 'node', args, {
-      stdio: 'inherit',
-      env: { ...process.env, RESUME_ROOT: root, ...(env || {}) }
+async function renderDoc({ src, out, env, lease }) {
+  // 渲染容量（RES-05）：入口层拿到 lease 就透传；没拿到就在底层兜底占一个渲染槽。
+  // 释放 = 渲染子进程真正结束（含超时终止），不是 HTTP 响应结束。
+  const ownLease = lease ? null : await renderPool.acquire();
+  // 成对发布（AUD-07）：先渲染到 staging 位置，PDF 与旁车都成功且身份匹配后才发布到最终路径。
+  // 直接渲染到最终路径存在「新 PDF + 旧旁车」的混合窗口（注入 ENOSPC 复现：PDF 已换、旁车写失败）。
+  const stamp = `${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`;
+  const stage = out + '.stage-' + stamp;
+  const stageSide = stage + '.env.json';
+  let removed = [];
+  try {
+    // 受信渲染输入（AUD-05）：冻结的 render.mjs 用 page.setContent 渲染，**没有 CSP** ——
+    // 文档里的未知脚本会在渲染时执行并外联（编辑页有 CSP，渲染页没有）。
+    // 所有渲染路径（当前/快照/不可变导出/投递存档/补生成）都经过本函数 → 在这里统一净化。
+    let renderSrc = src;
+    try {
+      const safe = trustedRenderHtml(fs.readFileSync(src, 'utf8'), { knownScriptHashes: knownEditorScriptHashes() });
+      removed = safe.removed || [];
+      renderSrc = path.join(os.tmpdir(), `resume-render-src-${stamp}.html`);
+      fs.writeFileSync(renderSrc, safe.html, { mode: 0o600 });
+    } catch (e) {
+      // 净化失败（含超限）→ 不渲染：宁可不产出，也不渲染未净化的内容
+      console.error(`[render] 渲染输入净化失败：${(e && e.message) || e}`);
+      return { ok: false, removed };
+    }
+    const args = [path.join(APP_ROOT, 'render.mjs'), '--src', renderSrc, '--out', stage];
+    const attempt = () => new Promise((resolve) => {
+      const child = spawn(process.env.RESUME_RENDER_BIN || 'node', args, {
+        stdio: 'inherit',
+        env: { ...process.env, RESUME_ROOT: root, ...(env || {}) }
+      });
+      const timer = setTimeout(() => child.kill(), 60000);
+      child.on('close', (code) => { clearTimeout(timer); resolve(code === 0); });
+      child.on('error', () => { clearTimeout(timer); resolve(false); });
     });
-    const timer = setTimeout(() => child.kill(), 60000);
-    child.on('close', (code) => { clearTimeout(timer); resolve(code === 0); });
-    child.on('error', () => { clearTimeout(timer); resolve(false); });
-  });
-  return attempt().then((ok) => ok || attempt());
+    let ok = false;
+    try { ok = await attempt(); } catch { ok = false; }
+    if (!ok) { try { ok = await attempt(); } catch { ok = false; } }
+    if (!ok) return { ok: false, removed };
+    // 成对身份校验：旁车 renderInputId 必须与本次冻结输入一致，且旁车不得早于 PDF
+    const expected = (env && env.RESUME_RENDER_INPUT_ID) || null;
+    const pub = publishPair({
+      tmpPdf: stage, tmpSidecar: stageSide,
+      outPdf: out, outSidecar: out + '.env.json',
+      validate: makeIdentityValidator({ expectedRenderInputId: expected })
+    });
+    if (!pub.ok) {
+      console.error(`[render] 产物发布失败（${pub.reason}）：${pub.detail} —— 旧产物原样保留`);
+      return { ok: false, removed, publish: pub };
+    }
+    return { ok: true, removed, published: pub };
+  } finally {
+    try { fs.rmSync(renderSrc, { force: true }); } catch {}
+    try { fs.rmSync(stage, { force: true }); } catch {}
+    try { fs.rmSync(stageSide, { force: true }); } catch {}
+    if (ownLease) { try { ownLease.release(); } catch {} }
+  }
 }
 
 // 当前文档陈旧状态单出口（staleInfo）：当前 HTML + 当前 meta 冻结出 renderInputId，
@@ -784,7 +929,7 @@ function currentRenderState(id) {
 //   渲染期间又保存 → 下次判定自然 stale，无需 mtime）。
 // POST /render、/export 与 /pdf 的缺失/过期自动重渲、/rollback、/restructure 一律走这里；绝不直渲磁盘 HTML
 // （迁移后当前文档不含内联 typo，直渲会丢排版）。
-async function renderCurrent(id) {
+async function renderCurrent(id, { lease } = {}) {
   const html = fs.readFileSync(docPath(id), 'utf8');
   const meta = loadMeta()[id] || {};
   const frozen = freezeHtml(html, meta);   // 任务启动即冻结输入
@@ -792,14 +937,17 @@ async function renderCurrent(id) {
   atomicWrite(tmp, frozen.html);
   let ok = false;
   try {
-    ok = await renderDoc({
+    const rr = await renderDoc({
       src: tmp,
       out: pdfPath(id),
-      env: { RESUME_RENDER_INPUT_ID: frozen.renderInputId, RESUME_RENDER_REPRODUCIBLE: frozen.reproducible ? '1' : '0' }
+      env: { RESUME_RENDER_INPUT_ID: frozen.renderInputId, RESUME_RENDER_REPRODUCIBLE: frozen.reproducible ? '1' : '0' },
+      lease
     });
-    ok = ok && fs.existsSync(pdfPath(id));
+    ok = rr.ok && fs.existsSync(pdfPath(id));
     if (ok) {
-      updateMeta(root, id, (m) => ({ ...(m || {}), lastRenderInputId: frozen.renderInputId, lastRenderAt: new Date().toISOString() }));
+      // 净化情况如实记录（AUD-05）：实际参与渲染的输入被改过就必须留痕，不能声称「与原文一致」
+      updateMeta(root, id, (m) => ({ ...(m || {}), lastRenderInputId: frozen.renderInputId, lastRenderAt: new Date().toISOString(),
+        lastRenderSanitized: !!(rr.removed && rr.removed.length), lastRenderRemoved: (rr.removed || []).slice(0, 20) }));
       console.error(`[render] 已渲染 id=${id} renderInputId=${frozen.renderInputId} reproducible=${frozen.reproducible}`);
     } else {
       console.error(`[render] 渲染失败 id=${id} renderInputId=${frozen.renderInputId}（详见上方渲染输出）`);
@@ -833,17 +981,41 @@ async function readBodyAuto(req) {
 }
 
 // 流式写文件（大备份上传用）
+// AUD-08：一次结算 —— 输入错误、输出错误、超限、客户端中断都只 reject 一次；
+// 输出流的 'error' 必须监听：未监听的 error 事件是未处理异常，会直接终止整个服务
+// （2026-10-28 隔离复现：给文件 sink 注入受控 I/O 错误 → 请求断开、服务退出 1）。
+// 背压：write 返回 false 时暂停输入、等 drain 再继续（否则大上传会把内存撑爆）。
 function readBodyToFile(req, file, maxSize) {
   return new Promise((resolve, reject) => {
     const ws = fs.createWriteStream(file);
-    let size = 0, stopped = false;
+    let size = 0, done = false;
+    const finish = (err, n) => {
+      if (done) return;
+      done = true;
+      try { ws.destroy(); } catch {}
+      if (err) reject(err);
+      else resolve(n);
+    };
+    // 成功判定必须等 fd 真正打开并写完：
+    // writable.end(cb) 的回调（'finish'）在 open 失败时【也会触发】（数据只是进了内部缓冲），
+    // 旧实现据此 resolve → 「写入失败被当成成功」。故以 open+finish+close 三者齐备为准。
+    let opened = false, flushed = false;
+    ws.on('open', () => { opened = true; });
+    ws.on('finish', () => { flushed = true; });
+    ws.on('error', (e) => finish(e));            // 输出侧：EIO / ENOSPC / 权限
+    ws.on('close', () => finish(opened && flushed ? null : new Error('写入未完成'), size));
+    req.on('error', (e) => finish(e));           // 输入侧
+    req.on('aborted', () => finish(new Error('上传中断')));
     req.on('data', (c) => {
+      if (done) return;
       size += c.length;
-      if (size > maxSize) { stopped = true; ws.destroy(); reject(new Error('body too large')); return; }
-      ws.write(c);
+      if (size > maxSize) { finish(new Error('body too large')); return; }
+      if (!ws.write(c)) {
+        req.pause();
+        ws.once('drain', () => { if (!done) req.resume(); });
+      }
     });
-    req.on('end', () => { if (!stopped) ws.end(() => resolve(size)); });
-    req.on('error', (e) => { ws.destroy(); reject(e); });
+    req.on('end', () => { if (!done) ws.end(); });
   });
 }
 
@@ -1789,8 +1961,13 @@ async function handler(req, res) {
   // 在 stale 时会各拉起一个 Chromium（实测 3 请求 = 12 个 chrome-headless-shell），无上限打爆内存。
   // 实现：统一在路由分发前取槽，用 res 的 finish/close 事件释放 —— 不必进每个端点包 try/finally，
   // 也不会漏掉将来新增的端点（豁免表显式列出）。
-  const gated = gate(req, res, url.pathname);
-  if (gated) return sendJson(429, { ok: false, error: gated });
+  // 容量闸门：入口先保留槽位（满则 429）。释放由 server 入口在 handler 的 Promise
+  // 真正结束时统一做 —— 客户端断连后模型请求/渲染子进程仍在跑，那段真实占用必须继续占着（RES-03）。
+  const gated = gatePool(req.method, url.pathname);
+  if (gated) {
+    try { req.__resLease = gated.pool.borrow(); }
+    catch (e) { return sendJson(429, { ok: false, error: gated.label + '排队已满（最多同时 2 个），请稍候' }); }
+  }
   try {
     // ===== 静态资源（代码目录，非数据目录）=====
     if (req.method === 'GET' && url.pathname === '/ai-panel.js') {
@@ -1880,6 +2057,30 @@ async function handler(req, res) {
       return send(200, html, 'text/html; charset=utf-8', { 'Content-Security-Policy': csp });
     }
     // ===== 文档创建/复制/删除 =====
+    // ===== PDF 上传导入（AUD-12）=====
+    // 首页「导入 PDF」入口一直在发 POST /upload?name=…，但服务端没有这条路由 → 404，功能形同缺失。
+    // 口径：只收 PDF（看魔数不看文件名）、体积有上限、提取有超时、临时文件自有所有权、
+    // 同名并发各自成文档（id 分配见 importer.allocateDocId）、失败不留空壳。
+    if (req.method === 'POST' && url.pathname === '/upload') {
+      const upName = url.searchParams.get('name') || '';
+      let upBuf;
+      try { upBuf = await readBody(req, 'buffer', 20 * 1024 * 1024); }
+      catch (e) { return sendJson(413, { ok: false, error: '上传失败：文件过大（上限 20MB）或传输中断' }); }
+      if (upBuf.length < 5 || upBuf[0] !== 0x25 || upBuf[1] !== 0x50 || upBuf[2] !== 0x44 || upBuf[3] !== 0x46) {
+        return sendJson(400, { ok: false, error: '上传失败：只接受 PDF 文件' });
+      }
+      const upTmp = path.join(os.tmpdir(), `resume-upload-${Date.now()}-${process.pid}-${randomBytes(4).toString('hex')}.pdf`);
+      try { fs.writeFileSync(upTmp, upBuf, { mode: 0o600 }); }
+      catch (e) { return sendJson(500, { ok: false, error: '上传失败：临时文件写入失败' }); }
+      try {
+        const upId = await importPdfText(root, upTmp, upName);
+        return redirect(`/edit?id=${upId}`);
+      } catch (e) {
+        return sendJson(400, { ok: false, error: '导入失败：' + String((e && e.message) || e).slice(0, 200) });
+      } finally {
+        try { fs.rmSync(upTmp, { force: true }); } catch {}   // 临时文件自有所有权：失败/断连都清掉
+      }
+    }
     if (req.method === 'POST' && url.pathname === '/new') {
       const tpl = assembleTemplate('classic');   // 主题唯一源装配（template.mjs）；代码/静态资源永远来自 APP_ROOT
       let i = 0, newId;
@@ -1980,10 +2181,13 @@ async function handler(req, res) {
       if (jd.length > JD_MAX_CHARS) jd = jd.slice(0, JD_MAX_CHARS);   // 与 /job/create 同上限（S4B-12）
       const company = String(body.company || '').trim();
       const role = String(body.role || '').trim();
-      const docText = fs.readFileSync(docPath(from), 'utf8');
+      // 可见正文（不是原始 HTML）：模型看到的、parser 校验的、hash 绑定的必须是同一份文本（E1/E2）。
+      // 样式变化不得改变正文 hash。
+      const html = fs.readFileSync(docPath(from), 'utf8');
+      const docText = docToText(html, { includeHidden: false });
       const p = buildEvalPrompt({ docText, jd, company, role });
       let raw;
-      try { raw = await chat(root, p.sys, p.user); }
+      try { raw = await chat(root, p.sys, p.user, { lease: leaseOf(req) }); }
       catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
       const parsed = parseEvalReport(raw, { docText });
       // 解析失败一律不落库：半条/错分记录会进指纹护栏（第五路）反过来污染后续所有岗位提醒
@@ -1994,10 +2198,12 @@ async function handler(req, res) {
         id: 'ev-' + timestamp(), jd, jdFp: fingerprintText(jd),
         company, role, score: parsed.report.score, verdict: parsed.report.verdict,
         blocks: parsed.report, model: (cfg.profiles[cfg.active] || {}).model || '',
+        source: evalSource(docText, from),   // 来源字段由程序赋值：bodyHash 绑定实际送审正文
         createdAt: new Date().toISOString(), promotedTo: null
       };
       saveEvals([rec, ...loadEvals()]);   // 新记录在前：列表按时间倒序读
-      return sendJson(200, { ok: true, eval: rec });
+      // 读时视图：旧记录的 sourced 降级为 missing、历史分数不重算（SRC-04/SRC-06）
+      return sendJson(200, { ok: true, eval: evalRecordView(rec) });
     }
     // 高分评估转岗位适配：与 /job/create 共用 createJobDraft（同一套去重/冻结/截断/指纹/meta 落库）
     if (req.method === 'POST' && url.pathname === '/eval/promote') {
@@ -2008,8 +2214,16 @@ async function handler(req, res) {
       if (rec.promotedTo) return sendJson(409, { ok: false, error: '该评估已转为岗位草稿', existing: rec.promotedTo });
       const r = await createJobDraft(root, { from: body.from, company: rec.company, role: rec.role, jd: rec.jd, jdSource: '评估' });
       if (!r.ok) return sendJson(r.status, r.body);
-      rec.promotedTo = r.id;
-      saveEvals(list);
+      // 跨 await 后重新读表（AUD-14）：createJobDraft 可能要等 JD 抓取，
+      // 这期间别的评估可能已落库或已被 promote → 用 await 前的旧列表写回会丢掉它们。
+      const list2 = loadEvals();
+      const rec2 = list2.find((e) => e && e.id === String(body.evalId || ''));
+      if (!rec2) return sendJson(409, { ok: false, error: '评估记录在转换期间消失，未写入 promotedTo' });
+      if (rec2.promotedTo && rec2.promotedTo !== r.id) {
+        return sendJson(409, { ok: false, error: '该评估已被转换', existing: rec2.promotedTo });
+      }
+      rec2.promotedTo = r.id;
+      saveEvals(list2);
       return sendJson(200, { ok: true, id: r.id });
     }
     // 岗位修改清单读/写（状态持久化；应用动作由前端 DOM 执行后回写状态）
@@ -2057,64 +2271,68 @@ async function handler(req, res) {
           return sendJson(400, { ok: false, error: 'evidenceNote 非法（reqId 必填、note 字符串可选、confirmed 布尔可选）' });
         }
       }
-      let written = null, isJob = false, evMiss = false, evEmpty = false, resBad = false;
-      // docs-meta 唯一写入者 updateMeta：读最新→只改本文档 job 子树→原子写（不整表覆盖）
-      written = updateMeta(root, id, (m) => {
-        if (!m || !m.job) return m;   // 非岗位草稿：原样返回（下方 404）
-        isJob = true;
+      let written = null, outcome = null;
+      // docs-meta 唯一写入者：全表 RMW（updateMetaAll 的 mutator 返回 null → 放弃不写，字节与 mtime 都不变）。
+      // AUD-10：所有业务校验与变更都在【独立工作副本】上完成；任一校验失败 → 放弃整个更新。
+      //   ① 空说明不得清空已存在的 note，也不得保留「已确认」标志；
+      //   ② 组合请求不得前半段成功后后半段报错（半提交）；
+      //   ③ 每种 4xx 前后 meta 字节与 mtime 不变。
+      written = updateMetaAll(root, (all) => {
+        const m = all[id];
+        if (!m || !m.job) { outcome = { status: 404, error: '该文档不是岗位草稿' }; return null; }
+        const work = JSON.parse(JSON.stringify(m));   // 工作副本：校验与改动都不碰真实表
         for (const u of updates) {
           if (!u || typeof u.id !== 'string') continue;
-          const c = m.job.changes.find((x) => x.id === u.id);
+          const c = work.job.changes.find((x) => x.id === u.id);
           if (!c) continue;
           if (typeof u.status === 'string' && ['pending', 'accepted', 'rejected', 'reverted', 'resolved', 'superseded', 'skipped'].includes(u.status)) c.status = u.status;   // S4a-T9：+skipped（稍后处理，pending⇄skipped）
           if (typeof u.note === 'string') c.note = u.note;
           if (u.meta && typeof u.meta === 'object') c.meta = { ...(c.meta || {}), ...u.meta };
           c.updatedAt = new Date().toISOString();
         }
-        if (Array.isArray(body.todos)) m.job.todos = body.todos;
-        if (body.reviewPos !== undefined) m.job.reviewPos = { section: body.reviewPos.section, changeId: body.reviewPos.changeId || null, filter: body.reviewPos.filter };
+        if (Array.isArray(body.todos)) work.job.todos = body.todos;
+        if (body.reviewPos !== undefined) work.job.reviewPos = { section: body.reviewPos.section, changeId: body.reviewPos.changeId || null, filter: body.reviewPos.filter };
         if (body.evidenceNote) {
           const en = body.evidenceNote;
-          const ev = (m.job.evidence || []).find((x) => x && x.id === en.reqId);
-          if (!ev) evMiss = true;
-          else {
-            if (typeof en.note === 'string') ev.note = en.note;
-            if (en.confirmed !== undefined) {
-              // 「确认为证据」需有说明内容（note 是证据本体）；退回（false）不要求
-              if (en.confirmed && !((typeof en.note === 'string' ? en.note : ev.note || '')).trim()) evEmpty = true;
-              else ev.noteConfirmed = en.confirmed;
-            }
+          const ev = (work.job.evidence || []).find((x) => x && x.id === en.reqId);
+          if (!ev) { outcome = { status: 400, error: '证据条目不存在：' + en.reqId }; return null; }
+          // 「确认为证据」需有说明内容（note 是证据本体）；退回（false）不要求。
+          // 空说明 → 整个更新放弃：已存在的 note 不被清空，「已确认」标志也不被改。
+          if (en.confirmed === true) {
+            const noteText = (typeof en.note === 'string' ? en.note : (ev.note || '')).trim();
+            if (!noteText) { outcome = { status: 400, error: '确认为证据前请先填写说明内容' }; return null; }
           }
+          if (typeof en.note === 'string') ev.note = en.note;
+          if (en.confirmed !== undefined) ev.noteConfirmed = en.confirmed;
         }
         if (body.resolve) {
           // 「保留当前版本」（设计 §4.2 v1.4）：绑定 resolvedText（当前段落文本）+ resolvedRefs（依赖 ref 指纹快照）→ 退出待核对；再变重新核对（candidatesState 读取时判定）
           const rs = body.resolve;
-          const c = (m.job.changes || []).find((x) => x && x.id === rs.changeId);
-          if (!c || !['pending', 'accepted'].includes(c.status)) resBad = true;
-          else {
-            c.status = 'resolved';
-            c.resolvedAt = new Date().toISOString();
-            c.resolvedText = rs.text;
-            if (rs.refs && typeof rs.refs === 'object') c.resolvedRefs = rs.refs;
-            c.updatedAt = new Date().toISOString();
+          const c = (work.job.changes || []).find((x) => x && x.id === rs.changeId);
+          if (!c || !['pending', 'accepted'].includes(c.status)) {
+            outcome = { status: 400, error: '保留当前版本：候选不存在或不在 pending/accepted（' + rs.changeId + '）' };
+            return null;
           }
+          c.status = 'resolved';
+          c.resolvedAt = new Date().toISOString();
+          c.resolvedText = rs.text;
+          if (rs.refs && typeof rs.refs === 'object') c.resolvedRefs = rs.refs;
+          c.updatedAt = new Date().toISOString();
         }
         if (body.feedback !== undefined) {
           // 拒绝原因 → job.feedback 环形（≤20 条，进下一次生成 prompt）
-          m.job.feedback = (Array.isArray(m.job.feedback) ? m.job.feedback : []).concat(body.feedback.trim()).slice(-20);
+          work.job.feedback = (Array.isArray(work.job.feedback) ? work.job.feedback : []).concat(body.feedback.trim()).slice(-20);
         }
         if (typeof body.status === 'string') {
           // 状态维度单源（S1-T8）：旧词汇映射 deliverable/delivered→reviewed（投递历史改由 applications.json 派生），新词汇直通；
           // 只写 flow，不再写 job.status（迁移会删除它）
           const toFlow = { draft: 'draft', deliverable: 'reviewed', delivered: 'reviewed', reviewing: 'reviewing', reviewed: 'reviewed' };
-          if (toFlow[body.status]) m.flow = toFlow[body.status];
+          if (toFlow[body.status]) work.flow = toFlow[body.status];
         }
-        return m;
+        return { ...all, [id]: work };
       });
-      if (!isJob) return sendJson(404, { ok: false, error: '该文档不是岗位草稿' });
-      if (resBad) return sendJson(400, { ok: false, error: '保留当前版本：候选不存在或不在 pending/accepted（' + body.resolve.changeId + '）' });
-      if (evMiss) return sendJson(400, { ok: false, error: '证据条目不存在：' + body.evidenceNote.reqId });
-      if (evEmpty) return sendJson(400, { ok: false, error: '确认为证据前请先填写说明内容' });
+      if (outcome) return sendJson(outcome.status, { ok: false, error: outcome.error });
+      return sendJson(200, { ok: true, job: jobViewLive(id, written && written[id]) });   // 响应与 GET 同视图（含 live 标注与渐进默认）
       return sendJson(200, { ok: true, job: jobViewLive(id, written) });   // 响应与 GET 同视图（含 live 标注与渐进默认）
     }
     // ===== S4a-T5：岗位草稿要求卡保存（同 normBrief 校验；普通文档 404）=====
@@ -2335,7 +2553,7 @@ async function handler(req, res) {
     // 显式渲染 PDF（正文保存不触发渲染，避免自动保存拖渲染进程）：统一走 renderCurrent 组装，绝不直渲磁盘 HTML
     if (req.method === 'POST' && url.pathname === '/render') {
       if (!fs.existsSync(docPath(id))) return sendJson(404, { ok: false, error: 'doc not found' });
-      const r = await renderCurrent(id);
+      const r = await renderCurrent(id, { lease: leaseOf(req) });
       const exists = fs.existsSync(pdfPath(id));
       return sendJson(r.ok && exists ? 200 : 500, { ok: r.ok && exists, mtime: exists ? fs.statSync(pdfPath(id)).mtimeMs : 0, renderInputId: r.frozen.renderInputId, error: r.ok && exists ? null : '渲染失败（详见服务日志）' });
     }
@@ -2381,11 +2599,12 @@ async function handler(req, res) {
           atomicWrite(srcTmp, frozen.html);
           let hok = false;
           try {
-            hok = await renderDoc({
+            const hr = await renderDoc({
               src: srcTmp,
               out: tmp,
               env: { RESUME_RENDER_INPUT_ID: frozen.renderInputId, RESUME_RENDER_REPRODUCIBLE: frozen.reproducible ? '1' : '0' }
             });
+            hok = hr.ok;
             let sideRid = null;
             try { sideRid = JSON.parse(fs.readFileSync(side, 'utf8')).renderInputId; } catch {}
             hok = hok && fs.existsSync(tmp) && sideRid === frozen.renderInputId;
@@ -2419,7 +2638,7 @@ async function handler(req, res) {
       atomicWrite(path.join(sDir, snapTs + '.html'), frozen.html);
       atomicWrite(path.join(sDir, snapTs + '.manifest.json'), JSON.stringify(buildManifest(frozen, frozen.html, metaNow)));
       let pages = 0;
-      try { pages = parseInt(execFileSync('pdfinfo', [histPathOf(id, frozen.renderInputId)]).toString().match(/Pages:\s*(\d+)/)?.[1] || '0', 10); } catch { pages = 0; }
+      try { pages = parseInt(execFileSync('pdfinfo', [histPathOf(id, frozen.renderInputId)], { timeout: 10000 }).toString().match(/Pages:\s*(\d+)/)?.[1] || '0', 10); } catch { pages = 0; }
       // 测试钩子：模拟"文件已生成、记录写入失败"（重试须复用文件并补记录）
       const recFailFile = process.env.RESUME_TEST_EXPORT_RECORD_FAIL_FILE;
       if (recFailFile && fs.existsSync(recFailFile)) throw Object.assign(new Error('测试钩子：导出记录写入失败（文件已存在，重试应复用并补记录）'), { httpCode: 500 });
@@ -2480,7 +2699,7 @@ async function handler(req, res) {
       if (!r.ok) return sendJson(500, { ok: false, error: '重渲染失败（详见服务日志），参数已保存，可重试' });
       const rst = currentRenderState(id);
       let pages = 0;
-      try { pages = parseInt(execFileSync('pdfinfo', [pdfPath(id)]).toString().match(/Pages:\s*(\d+)/)?.[1] || '0', 10); } catch { pages = 0; }
+      try { pages = parseInt(execFileSync('pdfinfo', [pdfPath(id)], { timeout: 10000 }).toString().match(/Pages:\s*(\d+)/)?.[1] || '0', 10); } catch { pages = 0; }
       return sendJson(200, { ok: true, rounds, pages, typo: cssFull });
     }
     // ===== 不可变导出产物下载（S1-T8）：按 exportId（全局唯一）跨文档 meta.exports 查找并伺服；纯读 =====
@@ -2533,7 +2752,8 @@ async function handler(req, res) {
       const hash = contentHash(fs.readFileSync(frozenFile, 'utf8'));
       fs.mkdirSync(path.join(root, 'pdfs', 'archive'), { recursive: true });
       const out = archivePath(now);
-      const archiveOk = await renderDoc({ src: frozenFile, out });  // 从冻结内容生成，绝不复用旧 PDF、绝不重冻当前正文
+      const archiveR = await renderDoc({ src: frozenFile, out });
+      const archiveOk = archiveR.ok;  // 从冻结内容生成，绝不复用旧 PDF、绝不重冻当前正文
       const apps = loadApps();
       apps.push({
         id: now, company: body.company.trim(), role: body.role.trim(), docId: body.docId,
@@ -2597,7 +2817,8 @@ async function handler(req, res) {
       if (!app) return sendJson(404, { ok: false, error: 'app not found' });
       const frozen = path.join(snapDir(app.docId), String(app.snapTs || '').replace(/[^0-9-]/g, '') + '.html');
       if (!app.snapTs || !fs.existsSync(frozen)) return sendJson(409, { ok: false, error: '原始内容快照已缺失，无法还原当时版本（不允许用当前文档冒充）' });
-      const ok = await renderDoc({ src: frozen, out: archivePath(app.id) });
+      const archR2 = await renderDoc({ src: frozen, out: archivePath(app.id) });
+      const ok = archR2.ok;
       app.archive = ok && fs.existsSync(archivePath(app.id))
         ? { status: 'ok', generatedAt: timestamp(), hash: app.contentHash || '' }
         : { status: 'failed', hash: app.contentHash || '', error: '渲染失败' };
@@ -3155,7 +3376,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const docText = fs.existsSync(docPath(app.docId)) ? docToText(fs.readFileSync(docPath(app.docId), 'utf8')) : '';
       const sys = '你是面试准备教练。根据 JD 和简历给出 3-5 条具体准备建议（可能问什么、怎么答、注意什么），中文简洁。';
       const user = `【JD】\n${app.jd || '（无 JD）'}\n\n【简历】\n${docText}`;
-      const text = await chat(root, sys, user);
+      const text = await chat(root, sys, user, { lease: leaseOf(req) });
       return sendJson(200, { ok: true, text });
     }
     // ===== JD 链接读取 =====
@@ -3170,20 +3391,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       try {
         // redirect:'error'：assertSafeBaseURL 只查首个 URL，跟随 302 就绕过了黑名单
         // （2026-10-22 审查 [高] 实测：302 到 169.254.169.254 照样抓）
-        const r = await fetch(body.url.trim(), { signal: AbortSignal.timeout(15000), redirect: 'error' });
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        // 流式累计并即时中断：原先 arrayBuffer() 先把整个响应读进内存、之后才判大小，上限形同虚设
-        const MAX_JD = 5 * 1024 * 1024;
-        const chunks = []; let size = 0;
-        for await (const c of r.body) {
-          size += c.length;
-          if (size > MAX_JD) throw new Error('页面超过 5MB 上限');
-          chunks.push(c);
-        }
-        const buf = Buffer.concat(chunks);
-        const text = buf.toString('utf8')
-          .replace(/<script[\s\S]*?<\/script>/g, '').replace(/<style[\s\S]*?<\/style>/g, '')
-          .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 4000);
+        // 与 /job/create 共用同一套有界读取（AUD-17）
+        const text = await fetchPageText(body.url.trim());
         return sendJson(200, { ok: true, text });
       } catch (e) {
         return sendJson(200, { ok: false, error: String(e.message || e) });
@@ -3415,7 +3624,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const body = JSON.parse(await readBody(req));
       if (!body.text || !body.instruction) return send(400, 'text 和 instruction 必填', 'text/plain');
       const p = buildRewrite(body.text, body.instruction);
-      const revised = await chat(root, p.sys, p.user);
+      const revised = await chat(root, p.sys, p.user, { lease: leaseOf(req) });
       return sendJson(200, { ok: true, revised });
     }
     if (req.method === 'POST' && url.pathname === '/ai/chat') {
@@ -3433,7 +3642,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         if (m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string') msgs.push({ role: m.role, content: m.content });
       }
       msgs.push({ role: 'user', content: body.message });
-      const raw = await chatMsgs(root, msgs);
+      const raw = await chatMsgs(root, msgs, { lease: leaseOf(req) });
       const parsed = parseChanges(raw);
       return sendJson(200, { ok: true, ...(parsed || { reply: raw }) });
     }
@@ -3448,7 +3657,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const html = fs.readFileSync(docPath(id), 'utf8');
       if (!html.includes('以下为 PDF 提取的原文')) return send(400, '该文档不是降级文档', 'text/plain');
       const text = docToLines(html).filter((l) => !l.includes('以下为 PDF 提取的原文')).join('\n');
-      const structured = await structureText(root, text).catch(() => null);
+      const structured = await structureText(root, text, undefined, { lease: leaseOf(req) }).catch(() => null);
       if (!structured) return send(502, 'LLM 结构化失败，文档未改动', 'text/plain');
       // LLM 跑完后再看一眼：用户在这期间保存过 → 不覆盖（409 让用户决定是否重来）
       const mtimeNow = fs.statSync(docPath(id)).mtimeMs;
@@ -3484,7 +3693,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       if (stale) return sendJson(409, stale);
       const docText = docToText(fs.readFileSync(docPath(docId), 'utf8'), { includeHidden: false });
       const p = buildReview(docText, body.mode);
-      const raw = await chat(root, p.sys, p.user);
+      const raw = await chat(root, p.sys, p.user, { lease: leaseOf(req) });
       const parsed = parseReport(raw);
       return sendJson(200, parsed ? { ok: true, report: parsed } : { ok: true, reply: raw });
     }
@@ -3499,7 +3708,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       if (stale) return sendJson(409, stale);
       const docText = docToText(fs.readFileSync(docPath(docId), 'utf8'), { includeHidden: false });
       const p = buildMatch(docText, body.jd);
-      const raw = await chat(root, p.sys, p.user);
+      const raw = await chat(root, p.sys, p.user, { lease: leaseOf(req) });
       const parsed = parseReport(raw);
       return sendJson(200, parsed ? { ok: true, report: parsed } : { ok: true, reply: raw });
     }
@@ -3516,7 +3725,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const p = buildZoneAnalyzePrompt({ zoneName: ZONE_LABELS[body.zone], zoneText, digest: digestOf(html), rounds });
       // S3-T6：chips 追问文本（可选字符串）拼进 user prompt；压单行 + 截断，防经换行伪造 prompt 段落结构
       if (typeof body.extra === 'string' && body.extra.trim()) p.user += '\n\n【追问】' + body.extra.trim().replace(/\s+/g, ' ').slice(0, 200);
-      const raw = await chat(root, p.sys, p.user);
+      const raw = await chat(root, p.sys, p.user, { lease: leaseOf(req) });
       const parsed = parseZoneAnalysis(raw);
       if (parsed) {
         updateMeta(root, id, (m) => { const b = { ...(m || {}) }; b.zoneRounds = { ...(b.zoneRounds || {}) }; b.zoneRounds[body.zone] = (b.zoneRounds[body.zone] || 0) + 1; return b; });
@@ -3537,7 +3746,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const free = all.filter((x) => !locked.has(x.zid));       // locked 段落跳过（段级保留标记）
       if (!free.length) return sendJson(200, { ok: true, rewrites: [], skipped: [...locked] });
       const p = buildZoneRewritePrompt({ zoneName: ZONE_LABELS[body.zone], paras: free, instruction });
-      const raw = await chat(root, p.sys, p.user);
+      const raw = await chat(root, p.sys, p.user, { lease: leaseOf(req) });
       const parsed = parseZoneRewrites(raw, free);
       return sendJson(200, parsed ? { ok: true, rewrites: parsed, skipped: [...locked] } : { ok: false, error: '改写失败，稍后再试' });
     }
@@ -3692,7 +3901,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       // 路径列表：tzf 输出纯路径（路径白名单校验依赖这个形状，勿改成 tzvf——
       //   tzvf 每行带 权限/用户/组/大小/日期，整行当路径校验会把所有备份包全拒，2026-10-18 实测踩过）。
       let list = '';
-      try { list = execFileSync('tar', ['tzf', tmpTar], { maxBuffer: 20 * 1024 * 1024 }).toString('utf8'); }
+      try { list = execFileSync('tar', ['tzf', tmpTar], { maxBuffer: 20 * 1024 * 1024, timeout: 60000 }).toString('utf8'); }
       catch { return fail('不是合法的 tar.gz 备份包'); }
       const entries = list.split('\n').filter(Boolean);
       if (!entries.length || entries.length > 20000) return fail('备份包条目数异常');
@@ -3701,7 +3910,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       // 尺寸另跑一次 tzvf 取第 5 列（tzf 没有 -v 拿不到 size）；与 entries 同序，不用于路径校验。
       // 任一行解析不出 size 就 fail closed：真实备份不会有这种行，解析失败放行等于留后门。
       try {
-        const verbose = execFileSync('tar', ['tzvf', tmpTar], { maxBuffer: 20 * 1024 * 1024 }).toString('utf8');
+        const verbose = execFileSync('tar', ['tzvf', tmpTar], { maxBuffer: 20 * 1024 * 1024, timeout: 60000 }).toString('utf8');
         const { bytes } = sumExpandedBytes(verbose);
         // 只用绝对上限（校准见 restore-guard.mjs）：倍率限会误拒「多版本快照」这种正常场景（实测 40.5×）
         if (bytes > MAX_EXPANDED_BYTES) {
@@ -3774,7 +3983,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         // ⑥ 其余形状一律拒（目录/文件混淆、pdfs 嵌套、任意路径形态）
         return fail('备份包含不允许的条目形状：' + p.slice(0, 60));
       }
-      try { execFileSync('tar', ['xzf', tmpTar, '-C', stage], { stdio: 'pipe' }); }
+      try { execFileSync('tar', ['xzf', tmpTar, '-C', stage], { stdio: 'pipe', timeout: 120000 }); }
       catch { return fail('解包失败，备份包可能损坏'); }
       // 防 symlink：条目路径校验只查字符串，查不出「合法路径 + 符号链接指向别处」。
       // 实测 pdfs/leak.pdf -> /任意本地文件 经 copyMissing 的 copyFile 会把目标内容读进 root/pdfs/。
@@ -3990,7 +4199,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       if (!fs.existsSync(snapFile)) return send(404, 'snapshot not found', 'text/plain');
       const out = path.join(root, 'pdfs', 'history', id + '@' + ts + '.pdf');
       if (!fs.existsSync(out)) {
-        const ok = await renderDoc({ src: snapFile, out });
+        const snapR = await renderDoc({ src: snapFile, out });
+        const ok = snapR.ok;
         if (!ok || !fs.existsSync(out)) return send(500, '历史版本渲染失败，请重试（详见服务日志）', 'text/plain');
       }
       res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${sanitizeFileName(id + '_' + ts)}.pdf"` });
@@ -4057,9 +4267,14 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const mark = (ok) => `<span style="color:var(--${ok ? 'ok' : 'warn'})">${icon(ok ? 'check' : 'circle-alert', 12)}</span>`;
       let pages = 0;   // 块外 3254 的 layout 门控要用到，声明须在 pdfStat 分支之前
       if (pdfStat) {
-        try { pages = parseInt(execFileSync('pdfinfo', [pdfPath(id)]).toString().match(/Pages:\s*(\d+)/)?.[1] || '0', 10); } catch { pages = 0; }
+        try { pages = parseInt(execFileSync('pdfinfo', [pdfPath(id)], { timeout: 10000 }).toString().match(/Pages:\s*(\d+)/)?.[1] || '0', 10); } catch { pages = 0; }
         const blank = [], orphan = [];
+        // 总预算（AUD-17）：单页 15s 超时 × 页数会累积成无界等待 → 加整轮上限，耗尽即停并如实说明。
+        const EXTRACT_BUDGET_MS = 20000;
+        const extractDeadline = Date.now() + EXTRACT_BUDGET_MS;
+        let budgetCut = false;
         for (let p = 1; p <= pages; p++) {
+          if (Date.now() > extractDeadline) { budgetCut = true; break; }
           let t = '';
           try { t = execFileSync('pdftotext', ['-f', String(p), '-l', String(p), pdfPath(id), '-'], { timeout: 15000 }).toString('utf8'); } catch {}
           pageTexts.push({ page: p, text: t });
@@ -4070,6 +4285,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         }
         const totalChars = (() => { try { return execFileSync('pdftotext', [pdfPath(id), '-'], { timeout: 30000 }).toString('utf8').length; } catch { return 0; } })();
         rows.push(`${mark(pages > 0)} 实际页数：${pages || '读取失败'}${pages === 2 ? '（符合两页目标）' : pages > 2 ? '（超过两页，见下方建议）' : ''}`);
+        if (budgetCut) rows.push(`${mark(false)} 分页文本提取：超出 ${EXTRACT_BUDGET_MS / 1000}s 总预算，只提取了前 ${pageTexts.length}/${pages} 页（结论不完整）`);
         rows.push(`${mark(!blank.length)} 空白页检查：${blank.length ? `疑似空白页：${blank.join('、')}` : '无'}`);
         rows.push(`${mark(!orphan.length)} 孤立标题检查：${orphan.length ? orphan.map((p) => `第${p}页末疑似孤立标题`).join('；') : '无'}`);
         rows.push(`${mark(totalChars >= 200)} 文本层字符量：${totalChars}`);
@@ -4276,7 +4492,18 @@ function decodeName(s) {
 
 const PORTS = process.env.PORT && Number.isFinite(Number(process.env.PORT)) ? [Number(process.env.PORT)] : [7766, 7767, 7768];
 function tryListen(i) {
-  const s = http.createServer(handler);
+  // 释放时机 = handler 的 Promise 真正结束（= 实际工作结束），不是 HTTP 响应结束。
+  // 旧实现按 res 的 finish/close 释放：客户端一断连就腾槽，而模型请求/渲染子进程还在跑 →
+  // 新请求进来会突破真实容量上限（RES-03 要求「断连后活跃工作仍占槽」）。
+  const s = http.createServer((req, res) => {
+    let p;
+    try { p = handler(req, res); }
+    catch (e) { try { res.statusCode = 500; res.end(String((e && e.message) || e)); } catch {} return; }
+    Promise.resolve(p).finally(() => {
+      const l = req.__resLease;
+      if (l) { req.__resLease = null; try { l.release(); } catch {} }
+    });
+  });
   s.on('error', (e) => {
     if (e.code === 'EADDRINUSE' && i < PORTS.length - 1) return tryListen(i + 1);
     console.error('端口不可用:', e.message);

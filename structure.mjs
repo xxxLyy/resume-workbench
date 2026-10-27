@@ -39,8 +39,8 @@ function buildDoc(root, data) {
 }
 
 // llmFn 可注入（测试用假函数）；真实路径调 llm.mjs 的 chat
-export async function structureText(root, text, llmFn) {
-  const call = llmFn || ((sys, user) => chat(root, sys, user));
+export async function structureText(root, text, llmFn, { lease } = {}) {
+  const call = llmFn || ((sys, user) => chat(root, sys, user, { lease }));
   try {
     const raw = await call(SYS, text);
     const cleaned = String(raw).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
