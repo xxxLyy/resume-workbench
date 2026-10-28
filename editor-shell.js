@@ -468,7 +468,8 @@
     if (csheet) { csheet.style.zoom = ''; csheet.style.transform = ''; csheet.setAttribute('contenteditable', 'true'); }
     var dirty = (typeof window.__edIsDirty === 'function') ? window.__edIsDirty() : false;
     var cstate = clone.querySelector('#saveState');
-    if (cstate) { cstate.dataset.state = dirty ? 'dirty' : 'saved'; cstate.textContent = dirty ? '未保存 ●' : '已保存 ✓'; }
+    // emoji 用 \u 转义写（UI-7 断言：前端源码零 emoji 字面量）；运行时由注入层换成 SVG
+    if (cstate) { cstate.dataset.state = dirty ? 'dirty' : 'saved'; cstate.textContent = dirty ? '未保存 \u25cf' : '已保存 \u2713'; }
     var csave = clone.querySelector('#saveBtn');
     if (csave) csave.removeAttribute('disabled');
     return '<!doctype html>\n' + clone.outerHTML;
