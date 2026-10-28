@@ -783,6 +783,8 @@ safe-url.mjs / eval.mjs / template.mjs），报 15 条（0 高 / 4 中 / 11 低�
 | 「确认可投递」 | 旧验收自造表单 + 强改 action + 绕过 onsubmit（等于没测页面自己的入口） | 改成**点真实页面按钮**，并核对服务端真实状态（flow→reviewed）与展示语义（徽章/按钮消失） | `test-fixtures/reliability/test-page-writes.mjs` AUD-13 段 |
 | AUD-15 写失败矩阵 | 只抽样两处入口，其余靠「同一封装」推断 | 矩阵化：16 个真实调用点逐个注入失败，逐条断言「不刷新 + 失败可见 + 旧值保留」 | `test-page-writes.mjs` AUD-15 矩阵段（归档/标签/素材状态·事实层·编辑·删除·新增/投递状态·编辑·删除·新增·面试记录/快照备注·基准/设置删除·保存/设置切换） |
 | 来源语义 UI | 只测纯函数，没测真实 DOM 的标签与回跳 | 读视图降级（旧 anchored 不被信任）+ 零回写 + 真实标签（简历已覆盖 / 来源已变化）+ 真实「定位」「回跳」按钮且点击生效 | `test-fixtures/reliability/test-src-ui.mjs` |
+| 来源实际 prompt | 只断言 prompt 构造函数，没断言真正发出去的那份请求体 | 断言实际请求体含真源段落的文本与 zid（模型才可能引用真源） | `test-fixtures/reliability/test-gen-task.mjs` T1-a |
+| 渲染生命周期 | 子进程超时/发布中断残留/并发同目标没验 | 超时改 TERM→KILL 升级（可注入时长）；回归用「无视 SIGTERM 的假渲染器」验证收敛与旧产物保留；补发布中断残留的恢复断言 | `test-render-boundary.mjs` / `test-render-safe.mjs` |
 
 ### 2. 交付事实修正
 
@@ -800,7 +802,7 @@ safe-url.mjs / eval.mjs / template.mjs），报 15 条（0 高 / 4 中 / 11 低�
 
 ### 4. 最小回退顺序（可审阅、保护已有改动）
 
-本轮起止：`main@eaf3194` → `main@943d0bf`（5 个提交，按动机分）：
+本轮起止：`main@eaf3194` → 本节所在提交（7 个提交，按动机分）：
 
 | 提交 | 动机 |
 |---|---|
@@ -809,6 +811,9 @@ safe-url.mjs / eval.mjs / template.mjs），报 15 条（0 高 / 4 中 / 11 低�
 | `cd2441c` | 区域回执基线只进不退 + Z6/Z7 行为验收 |
 | `61af20d` | 「确认可投递」点真实按钮 + AUD-15 写失败矩阵 + 来源真实 UI 验收 |
 | `943d0bf` | 文档：交付事实修正 + README 旧口径 |
+| `1dacdee` | 渲染：子进程超时终止 + 发布中断残留恢复的验收 |
+| `66969d2` | 文档：补起止提交号与逐提交回退映射 |
+| （本提交） | 文档：补「实际 prompt 输入」验收说明 + 提交表 |
 
 **禁止 `git reset --hard`、`git clean -fd`、`git checkout .`**：它们会连同用户在工作区里的其他改动一起丢掉。
 按下面顺序逐个回退，每步都能单独审阅：
