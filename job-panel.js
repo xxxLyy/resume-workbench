@@ -402,6 +402,9 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
   //   · 新操作必须新身份：按操作内容派生永久 ID 会让「接受→撤回→再次接受」命中旧回执
   // 一次逻辑提交 = {requestId, body}：body 在提交瞬间冻结；重试原样重发（同一身份、同一请求体）。
   var pendingSubs = {};   // changeId → 结果未知的提交（供同身份重试）
+  // 待核对标记：本次改动已落账，但目标在等待期间被用户改过 → 保留用户内容、不覆盖，面板明确标注。
+  var verifyMarks = {};   // changeId → 原因
+  function markVerify(id, reason) { verifyMarks[id] = reason; }
 
   function newOperationId() { return 'op-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10); }
 
@@ -451,9 +454,10 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     }).then(function (d) {
       if (d && d.ok) {
         clearPending(sub);
-        if (d.receipt && d.receipt.mtime) window.__edDocMtime = d.receipt.mtime;   // 同步旧路径冲突基线
-        if (typeof d.rev === 'number') docRev = d.rev;                       // 已确认 rev（下次提交用）
-        if (h.onSuccess) h.onSuccess(d);
+        // 回执接纳（与补查命中、同 ID 重放共用一条路径）：校验身份 + 采纳 mtime/rev（只前进）
+        var acc = acceptReceipt(sub, takeReceipt(sub, d));
+        if (!acc.accepted) note('提交已返回成功，但回执无法接纳（' + acc.reason + '）：基线未更新，请刷新核对', 'warn');
+        if (h.onSuccess) h.onSuccess(d, acc);
         refresh();
         return;
       }
@@ -489,7 +493,10 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
         var hit = found[sub.requestId];
         if (hit) {
           clearPending(sub);
-          if (h.onLanded) h.onLanded(hit);
+          // 补查命中 → 与普通成功响应共用接纳路径（基线必须一起更新，否则下一次保存拿旧 mtime → 409）
+          var acc = acceptReceipt(sub, takeReceipt(sub, { ok: true, receipt: hit.receipt, requestId: hit.requestId }));
+          if (!acc.accepted) { note('核对到回执但无法接纳（' + acc.reason + '）：基线未更新，请刷新核对', 'warn'); refresh(); return; }
+          if (h.onLanded) h.onLanded(hit, acc);
           refresh();
           return;
         }
@@ -509,9 +516,67 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
         note('无法核对上一次提交的结果（核对请求断网）：仍按「结果未知」处理，页面未改动，可稍后重试', 'warn');
       });
   }
-  // 落账确认后把本次改动应用到页面（提交期间正文里一直是原样）
-  function applyConfirmedOne(a) {
+  // 回执接纳：普通成功响应 / 按 requestId 补查命中 / 同 ID 重放返回 —— 共用这一条路径。
+  //   · 校验请求身份（回执必须属于本次提交）
+  //   · 采纳回执里的 mtime/rev（只前进，不倒退：本地已是更新版本时不得把基线拉回去）
+  //   · 只动基线，不动正文 → 用户在途修订、dirty 与本地恢复内容都不受影响
+  function takeReceipt(sub, d) {
+    if (!d || !d.ok) return null;
+    // ① 普通成功响应：回执在 d.receipt
+    if (d.receipt && typeof d.receipt === 'object') return { receipt: d.receipt, requestId: d.receipt.requestId || sub.requestId };
+    // ③ 同 ID 重放（deduped）：回执字段被摊平在响应顶层
+    if (d.mtime || d.rev) return { receipt: { mtime: d.mtime, rev: d.rev, appliedOps: d.appliedOps }, requestId: sub.requestId };
+    // ② 按 requestId 补查命中
+    var found = (d.job && d.job.saveReceipts && d.job.saveReceipts.found) || {};
+    var hit = found[sub.requestId];
+    if (hit) return { receipt: hit.receipt || null, requestId: hit.requestId || sub.requestId };
+    return null;
+  }
+  function acceptReceipt(sub, got) {
+    if (!got || !got.receipt) return { accepted: false, reason: '回执缺失' };
+    if (got.requestId && sub.requestId && got.requestId !== sub.requestId) {
+      return { accepted: false, reason: '回执身份不符（' + got.requestId + ' ≠ ' + sub.requestId + '）' };
+    }
+    var mtime = Number(got.receipt.mtime || 0);
+    var rev = Number(got.receipt.rev != null ? got.receipt.rev : 0);
+    if (mtime > 0 && mtime > Number(window.__edDocMtime || 0)) window.__edDocMtime = mtime;   // 只前进
+    if (rev > 0 && rev > (docRev || 0)) docRev = rev;                                      // 只前进
+    return { accepted: true, mtime: mtime, rev: rev };
+  }
+  // 目标守卫：提交瞬间记录受影响目标的状态，回执到达时逐目标核对。
+  //   目标没了 → 不能合并（保留用户内容，标待核对）
+  //   这次改动会覆盖目标里的文字（replace）且文字变了 → 用户在等待期间改过 → 保留用户内容，标待核对
+  //   否则 → 才应用已确认的修改
+  // 确认门授权只覆盖确认当时的内容：等待期间的新输入不在授权范围内。
+  function guardOf(a) {
     var c = a.c;
+    if (c.kind === 'replace') {
+      var el = anchorElOf(c);
+      return { el: el || null, html: el ? el.innerHTML : null, writes: true };
+    }
+    if (c.kind === 'hide') {
+      var f = findEntry(c);
+      var sec = sectionByTitle(c.section);
+      return { el: (f && f.pair.head) || sec || null, writes: false };
+    }
+    if (c.kind === 'add') {
+      var sec2 = sectionByTitle(c.section);
+      var ul = sec2 ? sec2.querySelector('ul') : null;
+      return { el: ul || sec2 || null, writes: false };
+    }
+    if (c.kind === 'reorder') {
+      var f2 = findEntry(c);
+      return { el: f2 ? f2.pair.head : null, writes: false };
+    }
+    return null;
+  }
+  // 落账确认后把本次改动应用到页面（逐目标核对：用户在等待期间改过的目标不动）
+  function applyConfirmedOne(a, guard) {
+    var c = a.c;
+    if (guard) {
+      if (!guard.el || !guard.el.isConnected) return { ok: false, skipped: true, reason: '目标已不存在' };
+      if (guard.writes && guard.el.innerHTML !== guard.html) return { ok: false, skipped: true, reason: '目标在等待期间被修改' };
+    }
     var r;
     if (a.action === 'accept' && c.kind === 'replace' && a.viaGate) {
       var anchorEl = anchorElOf(c);
@@ -522,35 +587,64 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     } else {
       r = revertChange(c);
     }
-    if (!r || !r.ok) return false;
+    if (!r || !r.ok) return { ok: false, reason: (r && r.error) || '应用失败' };
     if (r.node && a.nz) r.node.setAttribute('data-zid', a.nz);
-    return true;
+    return { ok: true };
   }
+  // 合并已确认的改动：先逐目标核对，再只对**确实要合并**的目标建撤销记录。
+  //   守卫不通过 → 保留用户内容（不覆盖）、标「待核对」。
+  //   撤销快照取**合并前一刻**：那时用户的在途修订已经在正文里 → 撤销不会把用户的输入一起退回去。
   function applySubConfirmed(sub) {
     var list = sub.appliers || [];
-    if (!list.length) return true;
+    if (!list.length) return { applied: 0, skipped: [] };
+    var guards = sub.guards || [];
+    var ready = [], skipped = [];
+    list.forEach(function (a, i) {
+      var g = guards[i];
+      if (g) {
+        if (!g.el || !g.el.isConnected) { skipped.push({ a: a, reason: '目标已不存在' }); return; }
+        if (g.writes && g.el.innerHTML !== g.html) { skipped.push({ a: a, reason: '目标在等待期间被修改' }); return; }
+      }
+      ready.push(a);
+    });
+    if (!ready.length) {
+      skipped.forEach(function (s) { markVerify(s.a.c.id, s.reason); });
+      note('本次改动已落账，但目标在等待期间被修改：已保留你的输入，未覆盖（面板标注待核对）', 'warn');
+      return { applied: 0, skipped: skipped };
+    }
     // 撤销快照必须在改动之前压栈（改动后再压 → 撤销变成空操作）
     var undoId = window.__edPushUndo ? window.__edPushUndo(sub.undoLabel || '岗位改动') : null;
-    var ok = true;
-    list.forEach(function (a) { if (!applyConfirmedOne(a)) ok = false; });
-    if (!ok) {
-      if (undoId != null && window.__edDropUndo) window.__edDropUndo(undoId);
-      note('本次改动已落账，但页面未能同步显示（请刷新核对）', 'warn');
+    var applied = [];
+    ready.forEach(function (a) {
+      var r = applyConfirmedOne(a, null);      // 守卫已核过
+      if (r && r.ok) applied.push(a);
+      else skipped.push({ a: a, reason: (r && r.reason) || '应用失败' });
+    });
+    skipped.forEach(function (s) { markVerify(s.a.c.id, s.reason); });
+    if (!applied.length && undoId != null && window.__edDropUndo) window.__edDropUndo(undoId);   // 一段都没合上 → 不留空撤销
+    if (applied.length && applied.length < list.length) {
+      note('本次改动部分合并：' + applied.length + ' 段已应用，' + (list.length - applied.length) + ' 段因你在等待期间的修改而保留（面板标注待核对）', 'warn');
     }
-    return ok;
+    return { applied: applied.length, skipped: skipped };
+  }
+  // 落账确认 → 合并 → 提示：只有真的合并了才说「已应用」
+  function mergeNotice(sub, okText) {
+    var res = applySubConfirmed(sub);
+    if (res.applied > 0 && okText) note(okText, 'ok');
+    return res;
   }
   // 同一逻辑提交的重试：原样重发（同一 requestId 与同一请求体；服务端判重只回执不重放）
   function retrySub(sub) {
     postSaveOps(sub, {
-      onSuccess: function () { applySubConfirmed(sub); },
-      onLanded: function () { applySubConfirmed(sub); note('此前的提交已落账（以服务端回执为准），已把改动应用到页面', 'ok'); }
+      onSuccess: function () { mergeNotice(sub); },
+      onLanded: function () { mergeNotice(sub, '此前的提交已落账（以服务端回执为准），已把改动应用到页面'); }
     });
   }
   // 重试判定：正文与提交时一致 → 原样重发；正文已被用户改过 → 冻结的请求体已过时（重发会覆盖在途输入）→ 先核对
   function retryOrReconcile(sub) {
     if (contentFingerprint() === sub.content) { retrySub(sub); return; }
     reconcileSub(sub, {
-      onLanded: function () { applySubConfirmed(sub); note('此前的提交已落账（以服务端回执为准），已把改动应用到页面', 'ok'); },
+      onLanded: function () { mergeNotice(sub, '此前的提交已落账（以服务端回执为准），已把改动应用到页面'); },
       onNotLanded: function () { note('此前的提交未落账：页面保持你的在途输入，可重新接受', 'warn'); }
     });
   }
@@ -592,10 +686,11 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     // 同步撤回本次改动：落账确认前正文里不留它 —— 普通自动/手动保存因此不会把未落账的候选写进磁盘
     runInv(r.inv, c);
     sub.content = contentFingerprint();   // 此刻正文里已无本次改动 → 之后据此判断能否原样重发
+    sub.guards = sub.appliers.map(guardOf);   // 目标快照：回执到达时逐目标核对（用户在等待期间改过 → 不覆盖）
     busy = false;
     postSaveOps(sub, {
-      onSuccess: function () { applySubConfirmed(sub); },
-      onLanded: function () { applySubConfirmed(sub); note('此前的提交已落账（以服务端回执为准），已把改动应用到页面', 'ok'); }
+      onSuccess: function () { mergeNotice(sub); },
+      onLanded: function () { mergeNotice(sub, '此前的提交已落账（以服务端回执为准），已把改动应用到页面'); }
     });
   }
   function revert(c) {
@@ -625,10 +720,11 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     sub.undoLabel = '撤销修改：' + (c.note || c.kind);
     runInv(r.inv, c);        // 同步撤回：页面保持原样，直到落账确认
     sub.content = contentFingerprint();
+    sub.guards = sub.appliers.map(guardOf);
     busy = false;
     postSaveOps(sub, {
-      onSuccess: function () { applySubConfirmed(sub); },
-      onLanded: function () { applySubConfirmed(sub); note('此前的撤回已落账（以服务端回执为准），已把改动应用到页面', 'ok'); }
+      onSuccess: function () { mergeNotice(sub); },
+      onLanded: function () { mergeNotice(sub, '此前的撤回已落账（以服务端回执为准），已把改动应用到页面'); }
     });
   }
   function batchAccept(ids) {
@@ -675,9 +771,10 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       sub.undoLabel = '批量接受 ' + ops.length + ' 条';
       applied.forEach(function (it) { runInv(it.r.inv, it.c); });   // 同步撤回：页面保持原样
       sub.content = contentFingerprint();
+      sub.guards = sub.appliers.map(guardOf);
       postSaveOps(sub, {
-        onSuccess: function () { applySubConfirmed(sub); },
-        onLanded: function () { applySubConfirmed(sub); note('此前的批量接受已落账（以服务端回执为准），已把改动应用到页面', 'ok'); }
+        onSuccess: function () { mergeNotice(sub); },
+        onLanded: function () { mergeNotice(sub, '此前的批量接受已落账（以服务端回执为准），已把改动应用到页面'); }
       });
     } else render();
   }
@@ -821,6 +918,12 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       cons.className = 'jp-reason';
       cons.innerHTML = __icon('circle-alert') + ' ' + esc(c.consistency.map(function (h) { return CONS_LABEL[h] || h; }).join('；'));
       div.appendChild(cons);
+    }
+    if (verifyMarks[c.id]) {
+      var vm = document.createElement('div');
+      vm.className = 'jp-reason';
+      vm.innerHTML = __icon('circle-alert') + ' 待核对：' + esc(verifyMarks[c.id]) + '（已落账，但未覆盖你在等待期间的修改）';
+      div.appendChild(vm);
     }
     if (c.reason) { var why = document.createElement('div'); why.className = 'jp-reason'; why.textContent = '理由：' + c.reason + (c.source ? '（来源：' + c.source + '）' : ''); div.appendChild(why); }
     if (c.kind === 'replace') {
