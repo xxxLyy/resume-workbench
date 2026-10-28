@@ -364,7 +364,9 @@ try {
 } finally {
   try { if (browser) await browser.close(); } catch {}
   try { server.kill('SIGTERM'); } catch {}
-  await new Promise((r) => setTimeout(r, 400));
+  // 等它真的退出：只发信号不等，进程会变成孤儿（实测漏过一个）
+  for (let i = 0; i < 40 && !exited; i++) await new Promise((r) => setTimeout(r, 50));
   try { server.kill('SIGKILL'); } catch {}
+  await new Promise((r) => setTimeout(r, 200));
   try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
 }
