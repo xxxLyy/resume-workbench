@@ -46,10 +46,33 @@ export function createSlotPool({ size, name, waitMs = 5000 } = {}) {
       id: ++seq,
       name: poolName,
       released: false, // 释放后变 true；调用方可读
+      inUse: false,    // 已被某个执行器占用（同一凭证不能并发给两个执行器）
       release() { releaseLease(lease); },
     };
     owned.add(lease);
     return lease;
+  }
+
+  // claim — 执行器占用凭证（内部接口合同）：
+  //   ① 必须是本池签发的真实 lease（对象身份校验，伪造的 {} 一律拒）
+  //   ② 必须未释放
+  //   ③ 必须未被其他执行器占用（同一凭证不能被两个执行器同时使用）
+  // 校验失败抛 ResourceLeaseError；调用方必须在产生任何实际工作（模型请求/渲染子进程）之前 claim。
+  function claim(lease) {
+    if (!lease || typeof lease !== 'object' || !owned.has(lease))
+      throw new ResourceLeaseError(`槽位不属于池 ${poolName}：凭证无效`);
+    if (lease.name !== poolName)
+      throw new ResourceLeaseError(`槽位不属于池 ${poolName}：凭证来自其他池`);
+    if (lease.released)
+      throw new ResourceLeaseError(`槽位 ${poolName} 的凭证已释放：不能用于新的工作`);
+    if (lease.inUse)
+      throw new ResourceLeaseError(`槽位 ${poolName} 的凭证正在被其他执行器使用：同一凭证不能并发使用`);
+    lease.inUse = true;
+    return lease;
+  }
+  // unclaim — 归还执行器占用（不释放槽位；槽位由 release 归还）
+  function unclaim(lease) {
+    if (lease && typeof lease === 'object' && lease.inUse) lease.inUse = false;
   }
 
   // 把空槽交给队首等待者。同步交接：槽位不空窗，等待方的 await 在微任务里继续。
@@ -100,9 +123,11 @@ export function createSlotPool({ size, name, waitMs = 5000 } = {}) {
   async function withLease(fn) {
     const lease = await acquire();
     try {
+      claim(lease);   // 执行器占用（同一凭证不得并发给两个执行器）
       // 必须 await：槽位必须在 fn 的异步工作真正结束后才释放（RES-03/04）。
       return await fn(lease);
     } finally {
+      unclaim(lease);
       releaseLease(lease);
     }
   }
@@ -115,6 +140,8 @@ export function createSlotPool({ size, name, waitMs = 5000 } = {}) {
     acquire,
     borrow,
     release: releaseLease,
+    claim,
+    unclaim,
     withLease,
     stats() { return { name: poolName, size: limit, active, waiting: waiters.length }; },
   };

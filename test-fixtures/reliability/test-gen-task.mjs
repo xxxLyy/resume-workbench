@@ -199,6 +199,27 @@ try {
     console.log('  ✅ T3 资源准入：槽满即拒绝且不留 running 假任务');
   }
 
+  // ===== T3-b：容量拒绝不得改动 feedback / 任务 / 版本（准入在业务写入之前）=====
+  {
+    llmMode = 'good'; llmDelay = 3000;
+    const chatReq = (msg) => fetch(base + '/ai/chat?id=' + DOC, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg })
+    }).catch(() => null);
+    const p1 = chatReq('占位一');
+    const p2 = chatReq('占位二');
+    await new Promise((r) => setTimeout(r, 600));            // 两个同步请求已占满两个槽
+    const before = await jobState();
+    const gen = await post('/job/generate?id=' + DOC, { feedback: ['容量拒绝测试反馈'] });
+    assert.notEqual(gen.status, 200, '容量满时 /job/generate 不得成功，实际 ' + gen.status + ' ' + gen.text.slice(0, 160));
+    const after = await jobState();
+    assert.deepEqual(after.job.feedback || [], before.job.feedback || [], '容量拒绝不得写入 feedback');
+    assert.deepEqual(after.job.genTasks || {}, before.job.genTasks || {}, '容量拒绝不得登记任务');
+    assert.equal(after.rev, before.rev, '容量拒绝不得推进版本');
+    await Promise.all([p1, p2]);
+    llmDelay = 0;
+    console.log('  ✅ T3-b 容量拒绝 → feedback/任务/版本零改动');
+  }
+
   // ===== T4：断连 → 真实工作结束前不腾槽（RES-03）=====
   {
     llmMode = 'good'; llmDelay = 2500;

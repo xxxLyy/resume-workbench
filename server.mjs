@@ -864,7 +864,10 @@ function snapshot(id, keepExtraTs) {
 async function renderDoc({ src, out, env, lease }) {
   // 渲染容量（RES-05）：入口层拿到 lease 就透传；没拿到就在底层兜底占一个渲染槽。
   // 释放 = 渲染子进程真正结束（含超时终止），不是 HTTP 响应结束。
+  // 凭证校验（内部接口合同）：透传的 lease 必须真实、同池、未释放、未被其他执行器占用；
+  //   校验不通过 → 抛错，且**不拉起任何渲染子进程**（此前只判 truthy）。
   const ownLease = lease ? null : await renderPool.acquire();
+  const heldLease = lease ? renderPool.claim(lease) : null;   // 校验失败即抛：渲染子进程还没起
   // 成对发布（AUD-07）：先渲染到 staging 位置，PDF 与旁车都成功且身份匹配后才发布到最终路径。
   // 直接渲染到最终路径存在「新 PDF + 旧旁车」的混合窗口（注入 ENOSPC 复现：PDF 已换、旁车写失败）。
   const stamp = `${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`;
@@ -924,7 +927,7 @@ async function renderDoc({ src, out, env, lease }) {
       validate: makeIdentityValidator({ expectedRenderInputId: expected })
     });
     if (!pub.ok) {
-      console.error(`[render] 产物发布失败（${pub.reason}）：${pub.detail} —— 旧产物原样保留`);
+      console.error(`[render] 产物发布失败（${pub.reason}）：${pub.detail}` + (pub.retained && pub.retained.length ? ` —— 恢复源保留：${pub.retained.join('、')}` : ' —— 旧产物原样保留'));
       return { ok: false, removed, publish: pub };
     }
     return { ok: true, removed, published: pub };
@@ -936,6 +939,7 @@ async function renderDoc({ src, out, env, lease }) {
     }
     try { fs.rmSync(stage, { force: true }); } catch {}
     try { fs.rmSync(stageSide, { force: true }); } catch {}
+    if (heldLease) { try { renderPool.unclaim(heldLease); } catch {} }
     if (ownLease) { try { ownLease.release(); } catch {} }
   }
 }
@@ -2375,6 +2379,21 @@ async function handler(req, res) {
       // S4a-T8：rev 随响应暴露——客户端 JSON 保存协议的 baseRev 基线来源
       // doc.mtime = 当前正文版本（ZONE-03）：区域请求必须带它作基线，服务端据此拒绝陈旧请求
       const docMtime = fs.existsSync(docPath(id)) ? fs.statSync(docPath(id)).mtimeMs : null;
+      // 提交核对（2026-10-28 补丁轮）：按 requestId 查本次落账回执。
+      //   客户端用它判断「那次提交到底落没落账」——不能靠候选状态猜：
+      //   撤回成功后状态回到 pending（服务端状态机 revert→pending），只看状态会把「已落账」误判成「未落账」。
+      //   回执含 appliedOps（operationId/changeId/action），核对因此能对应到具体操作。
+      const wantReqIds = (url.searchParams.get('saveReqIds') || '').split(',').map((s) => s.trim()).filter(Boolean).slice(0, 20);
+      if (wantReqIds.length) {
+        const receipts = (m.job && Array.isArray(m.job.saveReceipts)) ? m.job.saveReceipts : [];
+        const found = {};
+        for (const r of receipts) {
+          if (r && wantReqIds.includes(r.requestId)) {
+            found[r.requestId] = { requestId: r.requestId, contentHash: r.contentHash || null, receipt: r.receipt || null };
+          }
+        }
+        job.saveReceipts = { ...(job.saveReceipts || {}), found, queried: wantReqIds };
+      }
       return sendJson(200, { ok: true, job, rev: Number(m.rev) || 0, zones: m.zones || null, zoneOrder: m.zoneOrder || null, zoneRounds: m.zoneRounds || null, doc: { id, parent: m.parent || '', company: m.company || '', role: m.role || '', jd: m.jd || '', jdSource: m.jdSource || '', mtime: docMtime } });
     }
     if (req.method === 'POST' && url.pathname === '/job/changes') {
@@ -2565,7 +2584,15 @@ async function handler(req, res) {
       let lease;
       try { lease = aiPool.borrow(); }
       catch (e) { return sendJson((e && e.httpCode) || 429, { ok: false, error: (e && e.message) || 'AI 排队已满，请稍候' }); }
-      const { taskId, reject } = startGenTask(id, kind, scope);
+      // 借槽之后登记任务若抛错，槽位必须归还（不能既没任务又占着容量）
+      let taskId = null, reject = null;
+      try {
+        const st = startGenTask(id, kind, scope);
+        taskId = st.taskId; reject = st.reject;
+      } catch (e) {
+        try { lease.release(); } catch {}
+        throw e;
+      }
       if (reject) { try { lease.release(); } catch {} return sendJson(reject.status, { ok: false, error: reject.error }); }
       // 槽位透传（RES-02）：后台任务不再二次获取；释放 = 这次后台工作真正结束（最外层 finally）
       runGenTask(id, kind, taskId, scope, { lease })
@@ -2600,34 +2627,49 @@ async function handler(req, res) {
     if (req.method === 'POST' && url.pathname === '/job/generate') {
       if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型：草稿仍可手动编辑，配置后可生成建议' });
       const genBody = JSON.parse(await readBody(req) || '{}');   // 兼容既有调用形状：空对象体；坏 JSON 400 路径保持
-      // S4a-T9：长期偏好（localStorage 显式记住）随生成请求并入 job.feedback（环形 ≤20）
-      if (Array.isArray(genBody.feedback) && genBody.feedback.length) {
-        updateMeta(root, id, (m) => {
-          if (!m || !m.job) return m;
-          m.job.feedback = (Array.isArray(m.job.feedback) ? m.job.feedback : [])
-            .concat(genBody.feedback.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim())).slice(-20);
-          return m;
-        });
-      }
       if (!fs.existsSync(docPath(id))) return sendJson(404, { ok: false, error: 'doc not found' });
-      const { taskId, reject } = startGenTask(id, 'changes');
-      if (reject) return sendJson(reject.status, { ok: false, error: reject.error });
-      let r;
+      // 资源准入前置（与 gen-start 同口径，2026-10-28 补丁轮）：容量拒绝必须在任何业务写入之前
+      //   —— 此前 feedback 先落盘再判并发，被拒时 feedback 已经写进去了。
+      let lease;
+      try { lease = aiPool.borrow(); }
+      catch (e) { return sendJson((e && e.httpCode) || 429, { ok: false, error: (e && e.message) || 'AI 排队已满，请稍候' }); }
+      let taskId = null;
       try {
-        r = await runGenTask(id, 'changes', taskId);
-      } catch (e) {
-        // 拿不到 AI 槽（等满 5s）等异常：任务态必须收敛，不能留下永远 running 的假任务
-        try { finishGenTask(id, 'changes', taskId, null, '任务失败：' + ((e && e.message) || e)); } catch {}
-        return sendJson((e && e.httpCode) || 500, { ok: false, error: (e && e.message) || '任务失败' });
+        // 借槽成功后才做业务写入（S4a-T9：长期偏好随生成请求并入 job.feedback，环形 ≤20）
+        if (Array.isArray(genBody.feedback) && genBody.feedback.length) {
+          updateMeta(root, id, (m) => {
+            if (!m || !m.job) return m;
+            m.job.feedback = (Array.isArray(m.job.feedback) ? m.job.feedback : [])
+              .concat(genBody.feedback.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim())).slice(-20);
+            return m;
+          });
+        }
+        // 借槽之后登记任务若抛错，槽位必须归还
+        let reject = null;
+        try {
+          const st = startGenTask(id, 'changes');
+          taskId = st.taskId; reject = st.reject;
+        } catch (e) { throw e; }
+        if (reject) return sendJson(reject.status, { ok: false, error: reject.error });
+        let r;
+        try {
+          r = await runGenTask(id, 'changes', taskId, 'all', { lease });
+        } catch (e) {
+          // 拿不到 AI 槽（等满 5s）等异常：任务态必须收敛，不能留下永远 running 的假任务
+          try { finishGenTask(id, 'changes', taskId, null, '任务失败：' + ((e && e.message) || e)); } catch {}
+          return sendJson((e && e.httpCode) || 500, { ok: false, error: (e && e.message) || '任务失败' });
+        }
+        // S4a-T5 转交修 a：dropped 读锁内已写的真实原因（finishGenTask 过期路径已落 error=任务超时），
+        // 真超时不再恒称「已被取消或取代」；error 为空（真被取消/取代）才用兜底文案。
+        if (r.dropped) {
+          const gt = ((loadMeta()[id] || {}).job || {}).genTasks?.changes;
+          return sendJson(409, { ok: false, error: (gt && gt.error) || '任务已被取消或取代' });
+        }
+        if (!r.ok) return sendJson(502, { ok: false, error: r.error });
+        return sendJson(200, { ok: true, job: r.job, generated: r.generated, todos: r.todos });
+      } finally {
+        try { lease.release(); } catch {}
       }
-      // S4a-T5 转交修 a：dropped 读锁内已写的真实原因（finishGenTask 过期路径已落 error=任务超时），
-      // 真超时不再恒称「已被取消或取代」；error 为空（真被取消/取代）才用兜底文案。
-      if (r.dropped) {
-        const gt = ((loadMeta()[id] || {}).job || {}).genTasks?.changes;
-        return sendJson(409, { ok: false, error: (gt && gt.error) || '任务已被取消或取代' });
-      }
-      if (!r.ok) return sendJson(502, { ok: false, error: r.error });
-      return sendJson(200, { ok: true, job: r.job, generated: r.generated, todos: r.todos });
     }
     // ===== 保存（正文与 PDF 分离；revision 冲突检测）=====
     if (req.method === 'POST' && url.pathname === '/save') {
@@ -3856,7 +3898,11 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         if (m && m.schemaVersion !== undefined) reg.schemaVersion = m.schemaVersion;
         return { ...(m || {}), ...reg };
       });
-      await renderCurrent(id, { lease: leaseOf(req) });   // 当前文档渲染一律走组装入口
+      // 当前文档渲染一律走组装入口。
+      // 注意：/restructure 走的是 **AI 池** 的闸门租约（它要调 LLM），
+      // 渲染要用的是 **渲染池** 的租约 —— 跨池凭证会被资源凭证合同拒绝（2026-10-28 补丁轮）。
+      // 这里不传租约：renderDoc 自己按渲染池借一个槽（渲染的真实占用照样计入渲染容量）。
+      await renderCurrent(id, {});
       return redirect(`/edit?id=${id}`);
       });
     }
@@ -4735,7 +4781,15 @@ function tryListen(i) {
     let p;
     try { p = handler(req, res); }
     catch (e) { try { res.statusCode = 500; res.end(String((e && e.message) || e)); } catch {} return; }
-    Promise.resolve(p).finally(() => {
+    // 路由里 `return somePromise` 的拒绝**不会**落进 handler 内部的 try/catch（try 只管同步抛与 await 到的拒绝），
+    // 于是它会变成未处理拒绝 → 整个服务被杀（2026-10-28 补丁轮实证：/restructure 的渲染错误直接带崩服务）。
+    // 这里兜住：记日志 + 回 500，服务继续活着。
+    Promise.resolve(p).catch((e) => {
+      console.error('[handler] 路由内部错误：', (e && e.stack) || (e && e.message) || e);
+      if (!res.headersSent && !res.writableEnded) {
+        try { res.statusCode = (e && e.httpCode) || 500; res.end('server error: ' + ((e && e.message) || e)); } catch {}
+      }
+    }).finally(() => {
       const l = req.__resLease;
       if (l) { req.__resLease = null; try { l.release(); } catch {} }
     });

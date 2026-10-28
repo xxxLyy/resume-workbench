@@ -96,7 +96,10 @@ export async function chatMsgs(root, messages, { lease } = {}) {
   const base = assertSafeBaseURL(c.baseURL).toString().replace(/\/$/, '');
   // 资源占用（RES-02）：入口层拿到 lease 就透传；没拿到就在底层兜底占一个 AI 槽。
   // 释放时机 = 这次调用真正结束（请求 + 解析），逻辑取消/断连不等于释放。
+  // 凭证校验（内部接口合同）：透传的 lease 必须真实、同池、未释放、未被其他执行器占用；
+  //   校验不通过 → 抛错，且**不发出任何模型请求**（此前只判 truthy，伪造的 {} 也能真发请求）。
   const own = lease ? null : await aiPool.acquire();
+  const held = lease ? aiPool.claim(lease) : null;   // 校验失败即抛：请求还没发出去
   try {
     const r = await withRetry(() => fetch(`${base}/chat/completions`, {
       method: 'POST',
@@ -118,6 +121,7 @@ export async function chatMsgs(root, messages, { lease } = {}) {
     if (!data.choices?.[0]?.message?.content) throw new Error('LLM 返回格式异常');
     return data.choices[0].message.content;
   } finally {
+    if (held) { try { aiPool.unclaim(held); } catch {} }
     if (own) { try { own.release(); } catch {} }
   }
 }
