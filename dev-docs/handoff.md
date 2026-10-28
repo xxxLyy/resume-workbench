@@ -667,3 +667,83 @@ safe-url.mjs / eval.mjs / template.mjs），报 15 条（0 高 / 4 中 / 11 低�
 
 **验收**：structure 129 ✅ / main 347 ✅ / render ✅ / privacy ✅（全 exit 0）；
 新增浏览器断言「外来内联脚本被 CSP 挡住、编辑器仍可用」；8 个页面浏览器实测 0 控制台错误 / 0 可见 emoji / 0 横向溢出 / 0 注入。
+
+## 可靠性收口轮（2026-10-28）：审查总账 AUD-01～17 + 已批准六包剩余 27 项
+
+起点 `main@e76a366`（审查基线）。本轮一次性处理审查总账的 17 组问题与已批准六个工作包中
+尚未交付的 27 项（ZONE-03～07、TASK-04、SRC-01～07、RES-01～09、DEL-01～05），
+并补修 ZONE-01/02 的范围识别缺口。冻结件 `template.html` / `themes/` / `render.mjs` 全程未改。
+
+### 1. 这轮改了什么（按主题）
+
+| 主题 | 内容 | 关键文件 |
+|---|---|---|
+| 区域范围识别（AUD-01） | 非正文区域的词法扫描重写：raw text / RCDATA / template 真嵌套 / 引号 / 注释；结束标签名后必须是空白、`/` 或 `>`（`</scripture>`、`</script:fake>` 不再结束脚本） | `zone.mjs` |
+| AI 请求前置（AUD-02） | 保存前置逐项检查：钩子存在、返回 true、已不 dirty、版本号有效。模板 `doSave` 失败时返回 false 而不抛，此前只 await 不看返回值 | `ai-panel.js` |
+| AI 撤销绑定（AUD-04） | 卡片撤销改走统一撤销栈（按 opId 消费），不再按全文反向搜索；新增 `__edDropUndo` 避免失败时留空撤销记录 | `ai-panel.js` / `editor-shell.js` |
+| 岗位接受的并发基线（AUD-03） | 并发基线改用「本地正文所基于的磁盘 mtime」，不再取服务器最新 rev 给旧整页背书；服务端 JSON 保存协议新增 baseMtime 严格比对；落账失败精确还原本次改动 | `job-panel.js` / `server.mjs` |
+| 渲染信任边界（AUD-05） | 渲染输入统一净化：未知 inline script、外链 script、事件属性、`javascript:` URL、iframe/object/embed、meta refresh、script 类 link、base 与 HTML 注释全部剥离；已知编辑器脚本按指纹原样保留 | `render-safe.mjs` / `server.mjs` |
+| 成对产物发布（AUD-07） | 先渲染到 staging，PDF 与旁车都成功且身份匹配才发布；失败回滚到旧的完整产物 | `render-publish.mjs` / `server.mjs` |
+| 模型调用单次语义（AUD-06 / RES-08） | POST 一次发送不重试未知结果；禁止透明重定向（此前 307 会把 messages 原文 POST 到重定向目标） | `llm.mjs` |
+| 写路径零落盘（AUD-10） | `/job/changes` 的业务校验改在独立工作副本上完成，任一失败放弃整个更新（此前空说明会先清空 note 再返回 400） | `server.mjs` |
+| 流错误收敛（AUD-08） | 恢复上传的输出流 error 有人监听（此前未处理 → 服务退出 1）；成功判定落在 open+finish+close 齐备上（此前 fd 打不开也会被判为成功）；处理背压与客户端中断 | `server.mjs` |
+| 恢复撤销的存在性（AUD-09） | 安全点 manifest 记录受管项的「存在/不存在」；撤销按台账还原；旧安全点不猜测删除用户数据 | `server.mjs` |
+| 迁移守锁（AUD-11） | 编辑器迁移改用共享根锁：外来新鲜锁持有时整个迁移拒绝并退出非 0；陈旧锁接管；异常路径释放自己取得的锁 | `migrate-editor.mjs` |
+| PDF 上传入口（AUD-12） | 接回首页一直在调用却缺失的 `POST /upload`；PDF 魔数与体积闸门；临时文件自有所有权；导入 id 原子分配（同名并发各自成文档） | `server.mjs` / `importer.mjs` |
+| 导出页动作（AUD-13） | 「确认可投递」补目标 id（原先 body.id 不被 handler 使用，请求落到默认文档）；「应用本轮建议」真正提交页面展示的排版参数，并复核排版轮次与可读下限（可投递的审阅完成与 PDF 身份仍由既有派生量 exportChecks / deliverableNow 复核） | `server.mjs` |
+| 岗位创建去重（AUD-14） | 创建身份保留（锁文件 + 原子创建，小范围，不占共享根锁）；目标文件名原子分配；失败不留孤儿；`/eval/promote` 跨 await 后重读评估表 | `server.mjs` |
+| 写失败的页面行为（AUD-15） | 页面写入口统一走注入的 `__wv`（HTTP 状态 + 业务 ok + 网络异常都进失败分支）；失败不刷新、不清空输入、不显示已生效；设置页网络异常会回滚 UI | `server.mjs` |
+| 诊断口径（AUD-16） | doctor 复用 `llm.loadProfiles` 的配置归一层（旧单配置不再被误报）；`--probe` 成功后重判 Chromium 选择 | `doctor.mjs` |
+| 前置资源界限（AUD-17） | JD 抓取与 `/ai/jd-text` 共用有界读取；差异矩阵分配前设规模界限；pdfinfo/tar 设超时；逐页提取加总预算 | `server.mjs` / `diff.mjs` |
+| 共享容量池（RES-01～05） | 每进程唯一 aiPool / renderPool（各 2 个）；容量跟随实际工作生命周期，HTTP 断连不腾槽；闸门租约一路透传到最底层 | `resource-slots.mjs` / `llm.mjs` / `server.mjs` |
+| 来源可信层（SRC-01～07） | 来源只认实际发送的段落 zid（quote/title 不作兜底）；prompt 与 parser 共用同一批片段；旧 anchored/sourced 读时降级且不回写；评估的正文 hash 绑定可见正文 | `evidence.mjs` / `eval.mjs` / `server.mjs` |
+| 区域包（ZONE-03～07） | 生成基线（doc.mtime）、区域请求版本基线、zone-v1 形状、安全子集事务、请求 epoch、局部合并与一次撤销 | `server.mjs` / `zone-panel.js` / `editor-shell.js` |
+| 后台任务（TASK-04） | 证据通道补「换批隔离」（此前只有面试通道有这道闸门）；真实后台生命周期回归 | `server.mjs` |
+| 交付（DEL-01～05） | 脱敏历史主脚本夹具（逐字，附说明）；严格 CSP 下历史/当前脚本可保存、未知脚本被拒；文档回写 | `test-fixtures/history/` |
+
+### 2. 回归证据
+
+新增夹具（全部接入 `test:all`）：
+
+| 夹具 | 覆盖 |
+|---|---|
+| `test-fixtures/reliability/test-zone-ops.mjs` | AUD-01 六例浏览器差分反例 + 结束标签分隔符矩阵（既有，补强） |
+| `test-fixtures/reliability/test-llm-post.mjs` | AUD-06 / RES-08：五种 3xx 跨与同 origin、5xx、超时、断连各只发一次；GET 有界重试 |
+| `test-fixtures/reliability/test-resources.mjs` | RES-01～05：容量、FIFO、超时、幂等释放、跨池拒绝、逻辑取消不腾槽、并发峰值 ≤2 |
+| `test-fixtures/reliability/test-sources.mjs` | SRC-01～07：真源集合、同集合 prompt/parser、程序赋值来源、旧数据读时降级、可见正文 hash、零回写视图 |
+| `test-fixtures/reliability/test-server-io.mjs` | AUD-10：4xx 前后 meta 字节与 mtime 不变；AUD-08：上传 I/O 失败后服务存活 |
+| `test-fixtures/reliability/test-upload-migrate.mjs` | AUD-12：上传 303 重定向 / 类型 / 体积 / 同名并发；AUD-11：迁移锁拒绝 / 陈旧锁接管 / 幂等 |
+| `test-fixtures/reliability/test-render-boundary.mjs`（`test-render-safe.mjs`） | AUD-05 / AUD-07：未知脚本零外联；渲染失败保持旧的成对产物 |
+| `test-fixtures/reliability/test-job-create.mjs` | AUD-14：同岗位并发只一份 / 不同岗位独立 / 重复得 existing / promote 交错不丢记录 |
+| `test-fixtures/reliability/test-gate.mjs` | SEC-2 行为验收：AI 与渲染各自实际并发 ≤2、超限 429（替代原源码关键词检查） |
+| `test-fixtures/reliability/test-gen-task.mjs` | TASK-04：成功落账 / 换批被拒 / 业务拒绝 / 取消与过期不落账 |
+| `test-fixtures/reliability/test-browser-behaviors.mjs` | AUD-02 / AUD-03 / AUD-04 的真实浏览器复现 |
+| `test-fixtures/reliability/test-browser-zones.mjs` | ZONE-05/06/07：保存前置零请求 / 迟到响应不污染 / 只合并未变目标 |
+| `test-fixtures/reliability/test-history-editor.mjs` | DEL-01/02：历史与当前主脚本在严格 CSP 下可保存，未知脚本被拒 |
+
+**负向控制**（已逐项验证「恢复旧实现 → 对应断言变红」）：
+
+| 恢复的旧行为 | 变红的断言 |
+|---|---|
+| `flushFirst` 只 await 不看返回值 | 保存失败后仍发出 /ai/chat |
+| 卡片撤销按全文反向搜索 | 撤销改到了另一段（P2 变成原文） |
+| 服务端去掉 mtime 并发基线 | 旧页提交覆盖了另一标签页的修改 |
+| 证据通道去掉换批隔离 | 换批后迟到结果落账并污染新批次 |
+
+### 3. 这轮没有做的事（明确留白）
+
+- **产品扩展**（S4b 流水线增强、S5 引导建档、S6 模板库、S7 语音/截图、S8 网申包、S9 录音复盘）
+  按既定裁决暂缓，不属于可靠性修复包；另见路线图 §3.1。
+- **评估历史列表与评估后台任务**不在本轮批准范围（SRC 只处理当前评估来源与旧记录读取视图）。
+- **跨进程共享 AI 容量**不做；容量是每进程独立的（单用户本地服务）。
+- **真实模型语义质量、真实移动端、供应商计费核对**需要真实条件，本轮全部用本地桩，不作结论。
+- **区域纯文本改写拍平内联格式、原生输入撤销与程序化撤销分别管理、旧 PDF 合法陈旧、
+  headless iframe 预览限制、单用户本地明文 key** 等既有边界不变，未按缺陷处理。
+- **不复活 migrate-style**；不扩展服务端大拆分；不新增 npm 依赖；不重写锁框架。
+
+### 4. 纪律提醒（沿用既有规矩）
+
+- 写操作前先看 `git status`；本轮所有提交都精确暂存，未碰用户已有的未跟踪文件
+  （`dev-docs/2026-10-28-*.md` 与 `.jsonl` 仍保持未跟踪）。
+- 测试一律用隔离 `RESUME_ROOT` + 合成文档 + 本机桩；不读真实简历、不调真实收费模型。
+- 改完服务代码要重启 7766 再用真实浏览器点一遍（`node --check` 只证明能解析）。

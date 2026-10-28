@@ -19,6 +19,8 @@
 - 重启服务：先确保日志目录存在 `mkdir -p ~/resume/logs`（launchd 在启动 node 前就打开日志文件，首次 `launchctl bootstrap` 前该目录必须已存在），再 `launchctl bootout gui/$(id -u)/com.lhx.resume-server && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lhx.resume-server.plist`
 - 临时停服：`launchctl bootout gui/$(id -u)/com.lhx.resume-server`（注意 KeepAlive，直接 kill 进程会被自动拉起）
 - 手动冒烟测试：`bash ~/resume/test.sh`
+- 完整验收（含浏览器、渲染、隐私四套件）：`RESUME_TEST_STRICT=1 npm run test:all`
+  —— 严格模式下缺浏览器即视为未完成，不会降级放过
 - 卸载：`launchctl bootout gui/$(id -u)/com.lhx.resume-server && rm ~/Library/LaunchAgents/com.lhx.resume-server.plist`
 - 隐私门槛：bash privacy-check.sh（建仓/开源前必跑）；日志在 ~/resume/logs/（轮转 50MB/尾 2MB）
 
@@ -32,9 +34,14 @@
 ├── render.mjs                   渲染（playwright-core + 系统缓存 Chromium）
 ├── llm.mjs / ai.mjs             LLM 客户端 / AI prompt 与解析
 ├── importer.mjs / structure.mjs PDF 导入 / 结构化组装
-├── ai-panel.js                  编辑器 AI 面板
+├── ai-panel.js / job-panel.js / zone-panel.js   编辑器 AI / 岗位 / 区域面板
+├── resource-slots.mjs            共享容量池（AI 与渲染各 2 个并发）
+├── render-safe.mjs               受信渲染输入（未知脚本与外联在渲染前被剥离）
+├── render-publish.mjs            PDF 与旁车成对发布（失败不留混合产物）
 ├── template.html                文档骨架（8 占位符）
 ├── test.sh / test-structure.sh / test-render.sh   测试三套件
+├── test-fixtures/reliability/     可靠性回归夹具（每项一个，可单独跑）
+├── test-fixtures/history/         脱敏历史编辑器主脚本夹具（逐字，勿改）
 ├── package.json                 唯一依赖 playwright-core@1.60.0（pin）
 ├── dev-docs/                    ★ 项目文档（设计/计划/交接）
 │   ├── 2026-08-17-resume-platform-design.md      设计 spec

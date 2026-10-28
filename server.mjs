@@ -2447,6 +2447,9 @@ async function handler(req, res) {
           // 只写 flow，不再写 job.status（迁移会删除它）
           const toFlow = { draft: 'draft', deliverable: 'reviewed', delivered: 'reviewed', reviewing: 'reviewing', reviewed: 'reviewed' };
           if (toFlow[body.status]) work.flow = toFlow[body.status];
+          // 注：「是否可投递」不在这里复核 —— flow 只是状态维度（用户声明审阅完成），
+          // 可投递是派生量，由 exportChecks（审阅完成）+ deliverableNow（PDF 当前身份）计算。
+          // 在这里按可投递条件拦截会与既有语义冲突（flow 可先于逐条处理置位）。
         }
         return { ...all, [id]: work };
       });
@@ -2810,13 +2813,6 @@ async function handler(req, res) {
       //   ① 排版轮次上限（3 轮）：到顶就不再接受新的排版应用
       if ((Number(m0.layoutRounds) || 0) >= 3) {
         return sendJson(409, { ok: false, error: '已达排版迭代 3 轮上限，不再接受新的排版应用（请人工取舍或走超页导出）' });
-      }
-      //   ② 审阅未完成的岗位草稿不接受排版应用（与导出检查同源）
-      if (m0.job) {
-        const live = jobViewLive(id, m0);
-        if (!live || !live.checks || !live.checks.reviewComplete) {
-          return sendJson(409, { ok: false, error: '整体审阅尚未完成，不能应用排版参数（请先在审阅页处理完待核对项）' });
-        }
       }
       const rounds = (Number(m0.layoutRounds) || 0) + 1;
       const t = String(m0.typo || '');
