@@ -71,6 +71,8 @@ server.stdout.on('data', (d) => { serverLog += d; });
 server.stderr.on('data', (d) => { serverLog += d; });
 let exited = null;
 server.on('exit', (c, s) => { exited = { c, s }; });
+// process.exit（断言失败）会跳过 finally → 这里用 exit 钩子保证测试服务一定被收掉（否则会留下孤儿进程）
+process.on('exit', () => { try { server.kill('SIGKILL'); } catch {} });
 const base = `http://127.0.0.1:${port}`;
 
 let browser = null;
