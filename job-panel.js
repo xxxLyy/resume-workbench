@@ -93,13 +93,23 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
   var curSec = null, posFilter = 'all', pollTimer = null;
   var SEC_LABELS = { evidence: '要求与证据', changes: '修改清单', export: '导出检查' };
 
+  // 统一请求出口：三态可辨（写路径据此区分「明确拒绝」与「结果未知」）
+  //   · 业务/HTTP 失败 → {ok:false, error, _status}
+  //   · 网络异常（fetch 抛错）→ {ok:false, error, _network:true}（不 reject：调用点不必各写一遍 catch）
+  //   · 成功 → {ok:true, ...}
   function api(url, body) {
     return fetch(url, {
       method: body ? 'POST' : 'GET',
       headers: body ? { 'Content-Type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined
     }).then(function (r) {
-      return r.json().catch(function () { return { ok: false, error: 'HTTP ' + r.status }; }).then(function (d) { d._status = r.status; return d; });
+      return r.json().catch(function () { return null; }).then(function (d) {
+        if (!d || typeof d !== 'object') return { ok: false, error: 'HTTP ' + r.status, _status: r.status };
+        d._status = r.status;
+        return d;
+      });
+    }).catch(function (e) {
+      return { ok: false, error: (e && e.message) || '网络异常', _network: true };
     });
   }
   // kind 省略 → 纯文本；给了（ok/warn/err）→ 状态图标 + 转义文本（替代原来的裸 emoji 前缀）
@@ -182,21 +192,23 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       // 有 zid 锚点（局部重生成回传）→ 只在锚点节点里找，绝不按全文首个匹配盲改
       var anchor = c.zid ? anchorElOf(c) : null;
       if (anchor) {
-        if (window.__edReplaceText(c.before, c.after, { root: anchor })) return { ok: true, meta: {} };
+        if (window.__edReplaceText(c.before, c.after, { root: anchor })) return { ok: true, meta: {}, inv: { find: c.after, repl: c.before, opts: { root: anchor } } };
         return { ok: false, error: '原文未找到（内容可能已被手工修改）' };
       }
       // 无锚点但原文多处出现 → 改哪一处说不清 → 拒绝，别赌第一处
       if (textMatchCount(c.before) > 1) {
         return { ok: false, error: '原文在正文里出现多处，无法确定改哪一处，已拒绝（请手动修改）' };
       }
-      if (window.__edReplaceText(c.before, c.after, { occurrence: c.meta && c.meta.occurrence, context: c.context })) return { ok: true, meta: {} };
+      if (window.__edReplaceText(c.before, c.after, { occurrence: c.meta && c.meta.occurrence, context: c.context })) {
+        return { ok: true, meta: {}, inv: { find: c.after, repl: c.before, opts: { occurrence: c.meta && c.meta.occurrence, context: c.context } } };
+      }
       return { ok: false, error: '原文未找到（内容可能已被手工修改）' };
     }
     if (c.kind === 'hide') {
       var found = findEntry(c);
-      if (found) { hidePair(found.pair, true); touch(); return { ok: true, meta: { target: 'entry', title: found.pair.title } }; }
+      if (found) { hidePair(found.pair, true); touch(); return { ok: true, meta: { target: 'entry', title: found.pair.title }, inv: { unhide: true } }; }
       var sec = sectionByTitle(c.section);
-      if (sec) { sec.classList.add('ed-sec-hidden'); touch(); return { ok: true, meta: { target: 'section', title: c.section } }; }
+      if (sec) { sec.classList.add('ed-sec-hidden'); touch(); return { ok: true, meta: { target: 'section', title: c.section }, inv: { unhide: true } }; }
       return { ok: false, error: '找不到要隐藏的章节/条目' };
     }
     if (c.kind === 'reorder') {
@@ -217,6 +229,8 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       // 条目节点挂在所属章节下（非 .sheet 直接子节点）：insertBefore 的 ref 必须是同一 parent 的子节点，
       // 用 sheet 必抛 NotFoundError，且异常会穿透到 busy 复位之后把面板永久锁死
       var host = f2.pair.head.parentNode;
+      // 还原锚点：移动前这组节点的后继（落账失败时按它放回原位）
+      var restoreAt = { host: host, next: moveNodes[moveNodes.length - 1].nextSibling, nodes: moveNodes.slice() };
       if (isDown) {
         var afterNodes = anchorPair.ul ? [anchorPair.head, anchorPair.ul] : [anchorPair.head];
         var ref = afterNodes[afterNodes.length - 1].nextElementSibling;
@@ -225,7 +239,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
         moveNodes.slice().reverse().forEach(function (nd) { host.insertBefore(nd, before); });
       }
       touch();
-      return { ok: true, meta: { target: 'reorder', origIndex: cur, title: f2.pair.title } };
+      return { ok: true, meta: { target: 'reorder', origIndex: cur, title: f2.pair.title }, inv: { restoreAt: restoreAt } };
     }
     if (c.kind === 'add') {
       var sec2 = sectionByTitle(c.section);
@@ -235,17 +249,29 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       node.textContent = c.after;
       (ul || sec2).appendChild(node);
       touch();
-      return { ok: true, meta: { target: 'add', title: c.section }, node: node };
+      return { ok: true, meta: { target: 'add', title: c.section }, node: node, inv: { node: node, added: node.textContent } };
     }
     return { ok: false, error: '未知修改类型：' + c.kind };
   }
   function revertChange(c) {
-    if (c.kind === 'replace') return window.__edReplaceText(c.after, c.before, { context: c.context }) ? { ok: true } : { ok: false, error: '撤销失败：改后文本已变化' };
+    if (c.kind === 'replace') {
+      // 与 applyChange 同口径：锚点里确实有改后文本时只在锚点内换
+      // （正文可能有多处相同文本 → 全局首个匹配会改错段）
+      var anchor = c.zid ? anchorElOf(c) : null;
+      if (anchor && anchor.textContent.indexOf(c.after) >= 0) {
+        return window.__edReplaceText(c.after, c.before, { root: anchor })
+          ? { ok: true, inv: { find: c.after, repl: c.before, opts: { root: anchor } } }
+          : { ok: false, error: '撤销失败：改后文本已变化' };
+      }
+      return window.__edReplaceText(c.after, c.before, { context: c.context })
+        ? { ok: true, inv: { find: c.after, repl: c.before, opts: { context: c.context } } }
+        : { ok: false, error: '撤销失败：改后文本已变化' };
+    }
     if (c.kind === 'hide') {
       var found = findEntry(c);
-      if (found) { hidePair(found.pair, false); touch(); return { ok: true }; }
+      if (found) { hidePair(found.pair, false); touch(); return { ok: true, inv: { unhide: true } }; }
       var sec = sectionByTitle(c.section);
-      if (sec) { sec.classList.remove('ed-sec-hidden'); touch(); return { ok: true }; }
+      if (sec) { sec.classList.remove('ed-sec-hidden'); touch(); return { ok: true, inv: { unhide: true } }; }
       return { ok: false, error: '撤销失败：目标不存在' };
     }
     if (c.kind === 'reorder') {
@@ -259,18 +285,27 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       var refNode = refPair && refPair.head !== f2.pair.head ? refPair.head : null;
       // 同 applyChange 的 reorder 分支：条目在章节内，用 sheet 会抛异常或把条目搬出章节（静默结构损坏）
       var host2 = f2.pair.head.parentNode;
+      var restoreAt2 = { host: host2, next: moveNodes[moveNodes.length - 1].nextSibling, nodes: moveNodes.slice() };
       if (target >= pairs.length) { moveNodes.forEach(function (nd) { host2.appendChild(nd); }); }
       else if (refNode) { moveNodes.slice().reverse().forEach(function (nd) { host2.insertBefore(nd, refNode); }); }
       touch();
-      return { ok: true };
+      return { ok: true, inv: { restoreAt: restoreAt2 } };
     }
     if (c.kind === 'add') {
       // 优先按已落账 newZid 精确定位（anchorElOf 同逻辑）：正文可能本就有相同段落，按文本反查会误删用户原文
       var zidEl = anchorElOf(c);
-      if (zidEl) { zidEl.remove(); touch(); return { ok: true }; }
+      if (zidEl) {
+        var rmParent = zidEl.parentNode, rmNext = zidEl.nextSibling;
+        zidEl.remove(); touch();
+        return { ok: true, inv: { reinsert: { node: zidEl, parent: rmParent, next: rmNext } } };
+      }
       var hit = null;   // 兜底：无 zid（未落账的旧候选）才回退文本匹配
       sheet.querySelectorAll('li,p').forEach(function (el) { if (!hit && el.childNodes.length === 1 && el.textContent.trim() === c.after.trim()) hit = el; });
-      if (hit) { hit.remove(); touch(); return { ok: true }; }
+      if (hit) {
+        var rmParent2 = hit.parentNode, rmNext2 = hit.nextSibling;
+        hit.remove(); touch();
+        return { ok: true, inv: { reinsert: { node: hit, parent: rmParent2, next: rmNext2 } } };
+      }
       return { ok: false, error: '撤销失败：找不到插入的内容' };
     }
     return { ok: false, error: '未知类型' };
@@ -318,78 +353,186 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     if (csave) csave.removeAttribute('disabled');
     return '<!doctype html>\n' + clone.outerHTML;
   }
-  // 拿最新 rev（不重绘）：用户在正文里改字后自动保存会让面板缓存的 rev 过期
-  // → 接受建议必 409「baseRev 落后」，而 DOM 里的改写留在页面没落盘（2026-10-22 审查 [中] 实测）
-  function freshRev() {
-    return fetch('/job/changes?id=' + DOC_ID).then(function (r) { return r.json(); })
-      .then(function (d) { return (d && d.rev) || docRev; })
-      .catch(function () { return docRev; });
+  // ===== 岗位操作的提交身份与结果三态（2026-10-28 可靠性收口）=====
+  // 服务端一致性合同（server.mjs saveJsonProtocol）：
+  //   · 同 requestId + 同请求体 → 只回执、零重写（deduped）
+  //   · 同 requestId + 不同请求体 → 400（同 ID 必须重发完全相同的内容）
+  //   · 新操作必须新身份：按操作内容派生永久 ID 会让「接受→撤回→再次接受」命中旧回执
+  // 一次逻辑提交 = {requestId, body}：body 在提交瞬间冻结；重试原样重发（同一身份、同一请求体）。
+  var pendingSubs = {};   // changeId → 结果未知的提交（供同身份重试）
+
+  function newOperationId() { return 'op-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10); }
+
+  // 内容指纹：只看正文（.sheet），不看瞬态元素（保存状态、面板）。
+  // 否则「自动保存把 #saveState 从 dirty 变 saved」会被误判成「正文变了」→ 正常的重试会被错判成需核对。
+  function contentFingerprint() {
+    var el = document.querySelector('.sheet');
+    return el ? el.innerHTML : '';
   }
+  // 提交体冻结：html/ops/baseRev/baseMtime 在提交瞬间固定，之后重试原样重发。
+  function freezeSubmit(ops, label) {
+    return {
+      requestId: 'sub-' + (ops[0] && ops[0].operationId ? ops[0].operationId : ('op' + Date.now())) + '-' + ops.length,
+      body: { baseRev: docRev, baseMtime: Number(window.__edDocMtime || 0), html: buildPageHtml(), ops: ops },
+      content: contentFingerprint(),
+      changeIds: ops.map(function (o) { return o.changeId; }),
+      label: label
+    };
+  }
+  // 明确拒绝 = 服务端在写入前就拒了（4xx 与 503 锁占用）；其余（5xx / 网络异常 / 响应体不可读）= 结果未知。
+  function isDefiniteReject(d) {
+    var s = Number(d && d._status);
+    return (s >= 400 && s < 500) || s === 503;
+  }
+  function markPending(sub) { (sub.changeIds || []).forEach(function (cid) { pendingSubs[cid] = sub; }); }
+  function clearPending(sub) { (sub.changeIds || []).forEach(function (cid) { if (pendingSubs[cid] === sub) delete pendingSubs[cid]; }); }
+
   // 岗位操作的提交（AUD-03）
   // 并发基线用「本地正文所基于的磁盘 mtime」，不再取服务器最新 rev 给旧整页背书：
   //   取最新 rev 时，本地 DOM 若落后于磁盘（另一标签页已改），这页的旧整页 html 会把别人的改动覆盖掉
   //   （实测：另一页把 P2 改成 OTHER-NEW，旧页接受 P1 后带最新 rev 提交，服务端返回 200，P2 回到 OTHER-OLD）。
   //   mtime 是磁盘正文的精确信号：磁盘被谁动过 → 不匹配 → 409，旧整页不会被提交。
-  // onFail：落账失败时的回滚（精确还原本次改的那一段，不整片回滚 → 保留用户在途输入）。
-  function postSaveOps(ops, label, onFail) {
-    var baseMtime = Number(window.__edDocMtime || 0);
+  // 结果三态：
+  //   成功       → 更新 mtime/rev，清掉待重试的提交
+  //   明确拒绝   → 服务端保证没有提交 → 精确还原本次改动（保留用户在途输入）
+  //   结果未知   → 服务端可能已提交 → 不断言「未落账」、绝不回滚（否则页面与磁盘分歧）
+  function postSaveOps(sub) {
+    var label = sub.label;
     api('/save?id=' + DOC_ID, {
-      requestId: 'op-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10),
-      baseRev: docRev, baseMtime: baseMtime,
-      html: buildPageHtml(), ops: ops
+      requestId: sub.requestId,
+      baseRev: sub.body.baseRev,
+      baseMtime: sub.body.baseMtime,
+      html: sub.body.html,
+      ops: sub.body.ops
     }).then(function (d) {
-      if (d.ok) {
+      if (d && d.ok) {
+        clearPending(sub);
         if (d.receipt && d.receipt.mtime) window.__edDocMtime = d.receipt.mtime;   // 同步旧路径冲突基线
         if (typeof d.rev === 'number') docRev = d.rev;                       // 已确认 rev（下次提交用）
-      } else {
-        note(d.error || (label + '失败') + '（本次改动未落账，已还原本页改动）', 'warn');
-        if (onFail) { try { onFail(); } catch (e) {} }
+        refresh();   // 按服务器最新状态重渲染
+        return;
       }
-      refresh();   // 成败都按服务器最新状态重渲染（409/400 的 DOM 差异由后续保存收敛）
+      if (isDefiniteReject(d)) {
+        clearPending(sub);
+        var restored = true;
+        if (sub.onFail) { try { restored = sub.onFail('rejected') !== false; } catch (e) { restored = false; } }
+        note(((d && d.error) || (label + '失败'))
+          + (restored ? '（本次改动未落账，已还原本页改动）' : '（本次改动未落账，且无法自动还原，请手动检查该段）'), 'warn');
+        refresh();
+        return;
+      }
+      // 结果未知：服务端可能已提交 → 保留本次改动与用户的在途输入，不回滚
+      markPending(sub);
+      note(((d && d.error) || (label + '结果未知'))
+        + '：请求可能已落账，已保留你的输入；核对正文后可重试（重试复用同一提交身份，不会重复应用）', 'warn');
+      refresh();
     }).catch(function (e) {
-      note((e && e.message ? e.message : String(e)) + '（本次改动未落账，已还原本页改动）', 'warn');
-      if (onFail) { try { onFail(); } catch (e2) {} }
+      // 网络异常同样属于「结果未知」：不能断言未落账，也不能回滚
+      markPending(sub);
+      note((e && e.message ? e.message : String(e))
+        + '：请求结果未知（可能已落账），已保留你的输入；核对正文后可重试', 'warn');
       refresh();
     });
   }
-  // 精确回滚本次改的那一段（replace/add/hide 各有各的还原方式）；
-  // 还原不了就返回 false —— 由调用方提示用户手动处理，绝不整片回滚（会吞掉用户在途输入）。
-  function rollbackApplied(c, anchorEl, r) {
+  // 精确回滚本次改的那一段（replace/add/hide/reorder 各有各的还原方式）。
+  // 只还原【我们改的那部分】：用反向替换而不是整段覆盖 → 用户在请求期间追加/续写的输入不受影响；
+  // 目标已被改到认不出时换不回来 → 返回 false，由调用方提示，绝不整片回滚（会吞掉用户在途输入）。
+  function rollbackApplied(c, anchorEl, r, inv) {
     try {
-      if (c.kind === 'replace' && anchorEl) {
-        window.__edReplaceText(anchorEl.textContent, c.before, { root: anchorEl });
-        return true;
+      if (!inv) return false;
+      if (inv.find != null) {
+        // 反向替换：把「我们写进去的文本」换回「原来的文本」
+        return window.__edReplaceText(inv.find, inv.repl, inv.opts || {}) !== false;
       }
-      if (c.kind === 'add' && r && r.node && r.node.parentNode) {
-        r.node.parentNode.removeChild(r.node);
-        return true;
+      if (inv.node) {
+        // 新增段落：内容未被用户改动才移除（用户改过就保留 —— 宁可留未落账的段，也不吞掉用户输入）
+        if (typeof inv.added === 'string' && normWs(inv.node.textContent) !== normWs(inv.added)) return false;
+        if (inv.node.parentNode) { inv.node.parentNode.removeChild(inv.node); touch(); return true; }
+        return false;
       }
-      if (c.kind === 'hide') {
+      if (inv.reinsert) {
+        // 撤回时删掉的段落：按原位置放回
+        var ri = inv.reinsert;
+        if (ri.parent && ri.parent.isConnected) {
+          ri.parent.insertBefore(ri.node, (ri.next && ri.next.parentNode === ri.parent) ? ri.next : null);
+          touch();
+          return true;
+        }
+        return false;
+      }
+      if (inv.restoreAt) {
+        // 排序：把条目放回移动前的位置
+        var ra = inv.restoreAt;
+        if (ra.host && ra.host.isConnected) {
+          ra.nodes.forEach(function (nd) { if (nd.parentNode === ra.host) ra.host.removeChild(nd); });
+          var ref = (ra.next && ra.next.parentNode === ra.host) ? ra.next : null;
+          ra.nodes.forEach(function (nd) { ra.host.insertBefore(nd, ref); });
+          touch();
+          return true;
+        }
+        return false;
+      }
+      if (inv.unhide) {
         var found = findEntry(c);
-        if (found) { hidePair(found.pair, false); return true; }
+        if (found) { hidePair(found.pair, false); touch(); return true; }
         var sec = sectionByTitle(c.section);
-        if (sec) { sec.classList.remove('ed-sec-hidden'); return true; }
+        if (sec) { sec.classList.remove('ed-sec-hidden'); touch(); return true; }
+        return false;
       }
     } catch (e) {}
     return false;
   }
+  // 结果未知 + 正文已被用户改过 → 冻结的请求体已过时（重发会覆盖在途输入）→ 先与服务端核对这次落没落账。
+  function reconcilePending(sub, c) {
+    api('/job/changes?id=' + DOC_ID).then(function (d) {
+      if (d && d.ok) { job = d.job; docRev = d.rev || docRev; }
+      var st = job && job.changes && job.changes.find(function (x) { return x && x.id === c.id; });
+      var landed = !!(st && (st.status === 'accepted' || st.status === 'reverted'));
+      clearPending(sub);
+      if (landed) {
+        note('此前的提交已落账（以服务端状态为准），本次未重复应用', 'ok');
+        render();
+        return;
+      }
+      // 未落账 → 精确还原本次改动（保留用户在途输入），候选仍留在面板待处理
+      var restored = true;
+      if (sub.onFail) { try { restored = sub.onFail('rejected') !== false; } catch (e) { restored = false; } }
+      note('此前的提交未落账' + (restored ? '，已还原本页改动（你的在途输入保留）' : '，且无法自动还原，请手动检查该段') + '，可重新接受', 'warn');
+      render();
+    }).catch(function () {
+      note('无法核对上一次提交的结果，请刷新页面确认后再试', 'warn');
+    });
+  }
   function accept(c, viaGate) {
     if (busy) return; busy = true;
+    // 同一逻辑提交的重试：上一次落账结果未知 → 原样重发（同一 requestId、同一请求体，服务端只回执不重放）。
+    // 放在所有门控之前：重试的是「已经应用到页面、结果未知」的那次提交，
+    // 此时正文已含该候选 → 一致性会判 needs-compare → 走确认门就变成了「再改一次」。
+    var pending = pendingSubs[c.id];
+    if (pending) {
+      busy = false;
+      if (contentFingerprint() === pending.content) { postSaveOps(pending); return; }
+      reconcilePending(pending, c);   // 正文已变 → 冻结的请求体过时，先核对服务端
+      return;
+    }
     var hits = c.consistency || [];
     if (hits.indexOf('anchor-gone') >= 0) { busy = false; note('目标已删除，不可接受', 'warn'); return; }
     if (hits.indexOf('locked-now') >= 0) { busy = false; note('该段已锁定，不可接受', 'warn'); return; }
     // needs-compare 确认门（设计 §4.2 决策 4）：先展示当前正文 vs 候选差异，确认后才应用
     if (hits.indexOf('needs-compare') >= 0 && !viaGate) { busy = false; renderGate(c); return; }
-    if (window.__edPushUndo) window.__edPushUndo('接受修改：' + (c.note || c.kind));
+    var undoId = window.__edPushUndo ? window.__edPushUndo('接受修改：' + (c.note || c.kind)) : null;
     var anchorEl = anchorElOf(c);
-    var origText = anchorEl ? normWs(anchorEl.textContent) : (c.before || '');
-    var op = { operationId: 'op-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10), changeId: c.id, action: 'accept', origText: origText };
+    var preText = anchorEl ? anchorEl.textContent : '';
+    var origText = anchorEl ? normWs(preText) : (c.before || '');
+    var op = { operationId: newOperationId(), changeId: c.id, action: 'accept', origText: origText };
     var r;
     if (c.kind === 'replace' && viaGate) {
       // 确认门通过：整段替换为候选 after（锚点=当前整段文本，与服务端 origText 校验一致）
       // anchorEl 可能已失效（zid 被移除）：解引用会抛 TypeError，且抛点在本函数 busy 复位之后 → 面板永久锁死
       // root=anchorEl：只在锚点节点里替换（正文里可能有同文段落 → 全文首个匹配会改错那段）
-      r = (anchorEl && window.__edReplaceText(anchorEl.textContent, c.after, { root: anchorEl })) ? { ok: true, meta: {} } : { ok: false, error: '原文锚点已不存在（正文可能已被修改），请重新载入' };
+      r = (anchorEl && window.__edReplaceText(preText, c.after, { root: anchorEl }))
+        ? { ok: true, meta: {}, inv: { find: c.after, repl: preText, opts: { root: anchorEl } } }
+        : { ok: false, error: '原文锚点已不存在（正文可能已被修改），请重新载入' };
     } else {
       r = applyChange(c);
     }
@@ -399,14 +542,31 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       op.newZid = nz;
     }
     busy = false;
-    if (!r.ok) { note(r.error, 'warn'); return; }
-    // 落账失败 → 精确还原本段（不整片回滚，保留用户在途输入），并明确提示未落账
-    postSaveOps([op], '接受', function () {
-      if (!rollbackApplied(c, anchorEl, r)) note('本次改动未能落账且无法自动还原，请手动检查该段', 'warn');
-    });
+    if (!r.ok) {
+      if (undoId != null && window.__edDropUndo) window.__edDropUndo(undoId);   // 失败不留空撤销记录
+      note(r.error, 'warn');
+      return;
+    }
+    // 冻结提交体（重试原样重发）；落账失败 → 精确还原本段（不整片回滚，保留用户在途输入）
+    var sub = freezeSubmit([op], '接受');
+    sub.onFail = function (kind) {
+      if (kind !== 'rejected') return true;   // 结果未知：绝不回滚（服务端可能已提交）
+      var ok = rollbackApplied(c, anchorEl, r, r.inv);
+      if (ok && undoId != null && window.__edDropUndo) window.__edDropUndo(undoId);
+      return ok;
+    };
+    postSaveOps(sub);
   }
   function revert(c) {
     if (busy) return; busy = true;
+    // 撤回的重试：与接受同口径（同一逻辑提交 → 同一身份）；放在确认门之前
+    var pending = pendingSubs[c.id];
+    if (pending) {
+      busy = false;
+      if (contentFingerprint() === pending.content) { postSaveOps(pending); return; }
+      reconcilePending(pending, c);
+      return;
+    }
     // 撤回前置（设计 §4.2）：该段已被手改 → 提示原因并要求确认，拒绝静默执行
     var preEl = anchorElOf(c);
     if (preEl && typeof c.appliedText === 'string' && normWs(preEl.textContent) !== normWs(c.appliedText)) {
@@ -414,30 +574,44 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       if (!window.confirm('该段已被修改，撤回会覆盖你的调整——确认撤回？')) { note('已取消撤回'); return; }
       busy = true;
     }
-    if (window.__edPushUndo) window.__edPushUndo('撤销修改：' + (c.note || c.kind));
+    var undoId = window.__edPushUndo ? window.__edPushUndo('撤销修改：' + (c.note || c.kind)) : null;
     var anchorEl = anchorElOf(c);
-    var op = { operationId: 'op-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10), changeId: c.id, action: 'revert', origText: anchorEl ? normWs(anchorEl.textContent) : '' };
-    var revertBefore = anchorEl ? normWs(anchorEl.textContent) : '';   // 撤回前的文字：落账失败时据此还原
+    var op = { operationId: newOperationId(), changeId: c.id, action: 'revert', origText: anchorEl ? normWs(anchorEl.textContent) : '' };
     var r = revertChange(c);
     if (!r.ok && c.kind === 'replace' && c.origText && anchorEl) {
-      r = window.__edReplaceText(anchorEl.textContent, c.origText) ? { ok: true } : r;   // 确认门整段接受过的：整段恢复接受时快照
+      var curText = anchorEl.textContent;
+      r = window.__edReplaceText(curText, c.origText) ? { ok: true, inv: { find: c.origText, repl: curText, opts: {} } } : r;   // 确认门整段接受过的：整段恢复接受时快照
     }
     busy = false;
-    if (!r.ok) { note(r.error, 'warn'); return; }
-    postSaveOps([op], '撤回', function () {
-      if (anchorEl && revertBefore) {
-        try { window.__edReplaceText(anchorEl.textContent, revertBefore, { root: anchorEl }); } catch (e) {}
-      }
-    });
+    if (!r.ok) {
+      if (undoId != null && window.__edDropUndo) window.__edDropUndo(undoId);
+      note(r.error, 'warn');
+      return;
+    }
+    var sub = freezeSubmit([op], '撤回');
+    sub.onFail = function (kind) {
+      if (kind !== 'rejected') return true;   // 结果未知：绝不回滚
+      var ok = rollbackApplied(c, anchorEl, r, r.inv);
+      if (ok && undoId != null && window.__edDropUndo) window.__edDropUndo(undoId);
+      return ok;
+    };
+    postSaveOps(sub);
   }
   function batchAccept(ids) {
     if (busy) return; busy = true;
-    if (window.__edPushUndo) window.__edPushUndo('批量接受 ' + ids.length + ' 条');
+    // 有未定的提交（同目标上一次落账结果未知）→ 先核对，不重复应用
+    var pend = ids.map(function (id) { return pendingSubs[id]; }).filter(Boolean);
+    if (pend.length) {
+      busy = false;
+      note('其中 ' + pend.length + ' 条上一次提交结果未知，请先核对该条再重试', 'warn');
+      return;
+    }
+    var undoId = window.__edPushUndo ? window.__edPushUndo('批量接受 ' + ids.length + ' 条') : null;
     var ops = [], fails = 0, failedUpdates = [], applied = [];
     ids.forEach(function (id) {
       var c = job.changes.find(function (x) { return x.id === id; });
       if (!c) return;
-      // 批量路径复用单条门控（与 accept 第 316-319 行同判定，设计 §4.2）：
+      // 批量路径复用单条门控（与 accept 同判定，设计 §4.2）：
       // 冲突/锁定/待比较一律排除出批量，否则会绕过确认门静默覆盖正文
       var hits = c.consistency || [];
       if (hits.indexOf('anchor-gone') >= 0 || hits.indexOf('locked-now') >= 0 || hits.indexOf('needs-compare') >= 0) {
@@ -449,14 +623,14 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       var origText = anchorEl ? normWs(anchorEl.textContent) : (c.before || '');
       var r = applyChange(c);
       if (r.ok) {
-        var op = { operationId: 'op-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10) + '-' + c.id, changeId: c.id, action: 'accept', origText: origText };
+        var op = { operationId: newOperationId(), changeId: c.id, action: 'accept', origText: origText };
         if (c.kind === 'add' && r.node) {
           var nz = randZid();
           r.node.setAttribute('data-zid', nz);
           op.newZid = nz;
         }
         ops.push(op);
-        applied.push({ c: c, anchorEl: anchorEl, r: r, beforeText: origText });
+        applied.push({ c: c, anchorEl: anchorEl, r: r });
       } else {
         fails++;
         failedUpdates.push({ id: c.id, status: 'pending', note: r.error });
@@ -466,12 +640,20 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     if (fails) note(fails + ' 条未能应用（原文可能已变化），其余已接受', 'warn');
     if (failedUpdates.length) setStatus(failedUpdates);
     if (ops.length) {
-      postSaveOps(ops, '批量接受', function () {
+      var sub = freezeSubmit(ops, '批量接受');
+      sub.onFail = function (kind) {
+        if (kind !== 'rejected') return true;   // 结果未知：绝不回滚
         // 整批未落账 → 逐条精确还原（不整片回滚，保留用户在途输入）
-        applied.forEach(function (it) { if (!rollbackApplied(it.c, it.anchorEl, it.r)) { /* 还原不了的提示 */ } });
-        note('本次批量接受未落账，已逐条还原本页改动', 'warn');
-      });
-    } else render();
+        var allOk = true;
+        applied.forEach(function (it) { if (!rollbackApplied(it.c, it.anchorEl, it.r, it.r.inv)) allOk = false; });
+        if (allOk && undoId != null && window.__edDropUndo) window.__edDropUndo(undoId);
+        return allOk;
+      };
+      postSaveOps(sub);
+    } else {
+      if (undoId != null && window.__edDropUndo) window.__edDropUndo(undoId);
+      render();
+    }
   }
 
   // ===== 渲染 =====
@@ -1314,7 +1496,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
 
   // 初始进入：读 reviewPos 恢复段与筛选（刷新后位置恢复）
   api('/job/changes?id=' + DOC_ID).then(function (d) {
-    if (!d.ok) { root.textContent = '加载失败：不是岗位草稿或读取错误。'; return; }
+    if (!d.ok) { root.textContent = d._network ? '加载失败：网络错误（切到其他 Tab 再切回可重试）。' : '加载失败：不是岗位草稿或读取错误。'; return; }
     job = d.job; doc = d.doc; docRev = d.rev || 0;
     applyReviewPos();
     render();
