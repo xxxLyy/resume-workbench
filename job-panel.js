@@ -383,6 +383,12 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     var csheet = clone.querySelector('.sheet');
     if (csheet) { csheet.style.zoom = ''; csheet.style.transform = ''; csheet.setAttribute('contenteditable', 'true'); }
     var cstate = clone.querySelector('#saveState');
+    // 与模板 doSave 同口径：写回**字面量**「已保存 ✓」，不是 SVG。
+    // 两条保存路径（模板 doSave / 本函数 buildPageHtml）必须产出同一份字节，
+    // 否则同一份文档两条路径存出不同 HTML → bodyHash/renderInputId 不同 → PDF 被误判「较旧」。
+    // emoji 用 \u 转义写（UI-7 断言：前端源码零 emoji 字面量）；运行时由注入层的
+    // MutationObserver 把 #saveState 的 emoji 换成 SVG（与 toast 同一套机制）→ 文件留字面量、UI 不见 emoji。
+    // （✓ 写成转义：UI-7 断言要求前端源码零 emoji 字面量）
     if (cstate) { cstate.dataset.state = 'saved'; cstate.textContent = '已保存 \u2713'; }
     var csave = clone.querySelector('#saveBtn');
     if (csave) csave.removeAttribute('disabled');
