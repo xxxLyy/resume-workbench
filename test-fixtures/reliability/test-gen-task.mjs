@@ -32,9 +32,11 @@ writeMeta({});
 // 假 LLM：可延迟；可切换为坏输出
 let llmDelay = 0;
 let llmMode = 'good';   // 'good' | 'broken'
+let lastLlmBody = '';   // 实际发到模型的那份请求体（验证「实际 prompt 输入」而不是只看构造函数）
 const llm = http.createServer(async (req, res) => {
   let body = '';
   for await (const c of req) body += c;
+  lastLlmBody = body;
   if (llmDelay) await new Promise((r) => setTimeout(r, llmDelay));
   const content = llmMode === 'broken'
     ? '这不是 JSON'
@@ -104,6 +106,10 @@ try {
     const ev = (d.job.evidence || [])[0];
     assert.ok(ev && ev.req === '要求一：队列服务', '证据未落账');
     assert.ok(ev.refs && ev.refs.length === 1 && ev.refs[0].zid === ZID, '证据来源未绑定段落 zid');
+    // 实际 prompt 输入（真正发出去的那份）：必须带真源段落的文本与 zid，模型才可能引用真源
+    assert.ok(lastLlmBody.indexOf('项目一：负责队列服务，把延迟从 80ms 降到 12ms') >= 0,
+      '实际 prompt 未包含真源段落文本（模型无法引用真源）');
+    assert.ok(lastLlmBody.indexOf(ZID) >= 0, '实际 prompt 未包含真源段落 zid');
     console.log('  ✅ T1-a 证据生成成功落账');
   }
 
