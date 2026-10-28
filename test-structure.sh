@@ -11,6 +11,12 @@ node --test test-fixtures/reliability/test-sources.mjs
 # ===== RES-01..05：资源槽池纯函数回归显式接入结构套件（零 I/O / 无模型 / 无服务）=====
 node ./test-fixtures/reliability/test-resources.mjs
 
+# ===== 资源凭证合同（2026-10-28 补丁轮）：伪造/跨池/已释放/被占用的凭证一律拒绝且零模型请求 =====
+node ./test-fixtures/reliability/test-lease.mjs
+
+# ===== 渲染信任边界 + 产物成对发布（AUD-05/AUD-07 + 回滚不完整时的恢复源保护）=====
+node ./test-fixtures/reliability/test-render-safe.mjs
+
 node --input-type=module << 'EOF'
 import { structureText } from './structure.mjs';
 

@@ -612,8 +612,15 @@ grep -q '页数目标：1 页' "$TEST_DIR/llm-last.json" || fail 'prompt 未消�
 # 转交修 a：/job/generate 同步等待的 dropped 409 读锁内已写 error（真超时如实说「任务超时」，不再恒称「已被取消或取代」）
 echo 3000 > "$TEST_DIR/llm-slow"
 curl -s -X POST "$B/job/generate?id=$JOBLOC" -H 'Content-Type: application/json' -d '{}' -o "$TEST_DIR/t5-gen409.json" -w '%{http_code}' > "$TEST_DIR/t5-gen409.code" & GC=$!
-sleep 0.8   # startGenTask 已写 running+taskId
-T4TG=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const t=((m[process.argv[2]].job||{}).genTasks||{}).changes||{};console.log(t.taskId||"")' "$RESUME_ROOT/docs-meta.json" "$JOBLOC")
+# 同步条件（2026-10-28 补丁轮）：轮询【服务端自己的状态】直到任务 running。
+#   旧写法是 sleep 0.8 后直接读文件改 startedAt —— startGenTask 的写回可能落在改写之后，
+#   把「已过期」标记覆盖掉（实测偶发：期望 409 得 200）。读服务端状态可消除这个竞争。
+T4TG=""
+for _i in $(seq 1 100); do
+  T4TG=$(curl -s "$B/job/changes?id=$JOBLOC" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const m=JSON.parse(s);const t=((m.job||{}).genTasks||{}).changes||{};console.log(t.taskId||"")}catch(e){console.log("")}})')
+  [ -n "$T4TG" ] && break
+  sleep 0.1
+done
 [ -n "$T4TG" ] || fail 'S4a-T5 转交修 a 夹具未进入 running'
 node -e 'const fs=require("fs");const f=process.argv[1],doc=process.argv[2];const m=JSON.parse(fs.readFileSync(f,"utf8"));const t=m[doc].job.genTasks.changes;m[doc].job.genTasks.changes={...t,startedAt:Date.now()-11*60*1000};fs.writeFileSync(f,JSON.stringify(m));' "$RESUME_ROOT/docs-meta.json" "$JOBLOC"
 wait $GC
