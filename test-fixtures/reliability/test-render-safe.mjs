@@ -7,7 +7,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { trustedRenderHtml, normalizeScriptForHash, scriptHash, RENDER_REMOVED_KINDS } from '../../render-safe.mjs';
-import { publishPair, readSidecarIdentity, makeIdentityValidator } from '../../render-publish.mjs';
+import { publishPair, readSidecarIdentity, makeIdentityValidator, recoverPair } from '../../render-publish.mjs';
 
 // 脚本开头切到项目根：可从任意目录直接运行。
 process.chdir(fileURLToPath(new URL('../../', import.meta.url)));
@@ -312,6 +312,33 @@ const kinds = (r) => r.removed.map((x) => x.kind);
   assert.equal(ok.ok, true, '标识一致必须通过');
   const bad = makeIdentityValidator({ expectedRenderInputId: 'other' })(pdf, side);
   assert.equal(bad.ok, false, '标识不一致必须拒绝');
+}
+
+// ===== T. 发布中断残留的恢复：退回上一次成对产物 + 清掉残留 =====
+{
+  const dir = path.join(tmpRoot, 't');
+  fs.mkdirSync(dir, { recursive: true });
+  const outPdf = path.join(dir, 'a.pdf');
+  const outSide = path.join(dir, 'a.pdf.env.json');
+  fs.writeFileSync(outPdf, 'OLD-PDF');
+  fs.writeFileSync(outSide, 'OLD-SIDE');
+  // 模拟「上次发布中途被杀」：备份件 + 暂存件残留
+  const bak = outPdf + '.bak-1-2';
+  fs.writeFileSync(bak, 'BACKUP-PDF');
+  const stale = outPdf + '.new-1-2';
+  fs.writeFileSync(stale, 'STALE-NEW');
+  const tmpPdf = path.join(tmpRoot, 't.tmp.pdf');
+  const tmpSide = path.join(tmpRoot, 't.tmp.pdf.env.json');
+  fs.writeFileSync(tmpPdf, 'NEW-PDF');
+  fs.writeFileSync(tmpSide, 'NEW-SIDE');
+  const r = publishPair({ tmpPdf, tmpSidecar: tmpSide, outPdf, outSidecar: outSide });
+  assert.equal(r.ok, true, '恢复后发布应成功：' + JSON.stringify(r));
+  assert.equal(fs.readFileSync(outPdf, 'utf8'), 'NEW-PDF', '本次发布应生效');
+  assert.equal(fs.readFileSync(outSide, 'utf8'), 'NEW-SIDE', '本次发布应生效');
+  assert.ok(!fs.existsSync(stale), '暂存残留必须被删除');
+  // 恢复失败时不得静默：recoverPair 的失败项必须被报出
+  const rec = recoverPair(path.join(dir, 'missing.pdf'), path.join(dir, 'missing.pdf.env.json'));
+  assert.ok(rec && Array.isArray(rec.restored) && Array.isArray(rec.failed), 'recoverPair 必须返回 restored/failed');
 }
 
 console.log('test-render-safe.mjs: 全部断言通过');

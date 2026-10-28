@@ -166,7 +166,53 @@ try {
     }
   }
 
-  console.log('PASS AUD-05/AUD-07: 未知脚本渲染零外联 + 渲染失败保持旧成对产物 + 临时输入所有权');
+  // ===== 子进程超时终止：忽略 SIGTERM 的渲染器必须被 KILL 收场（否则槽位永不释放）=====
+  {
+    const pdf = path.join(root, 'pdfs', 'doc1.pdf');
+    const side = pdf + '.env.json';
+    const oldPdf = fs.readFileSync(pdf);
+    const oldSide = fs.readFileSync(side);
+    // 假渲染器：无视 SIGTERM（只能靠 KILL 收场），且永不产出
+    const stubborn = path.join(root, 'stubborn-render.cjs');
+    fs.writeFileSync(stubborn, [
+      "#!/usr/bin/env node",
+      "process.on('SIGTERM', function () {});   // 无视 TERM：只能靠 KILL 收场",
+      "setInterval(function () {}, 1000);"
+    ].join('\n'));
+    fs.chmodSync(stubborn, 0o755);
+    const server3 = spawn(process.execPath, [path.join(APP_ROOT, 'server.mjs')], {
+      cwd: APP_ROOT,
+      env: { ...process.env, RESUME_ROOT: root, PORT: String(port), RESUME_RENDER_BIN: stubborn, RESUME_TEST_RENDER_TIMEOUT_MS: '1200' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    server3.stdout.on('data', (d) => { serverLog += d; });
+    server3.stderr.on('data', (d) => { serverLog += d; });
+    try {
+      for (let i = 0; i < 100; i++) {
+        try { const r = await fetch(base + '/'); if (r.ok) { await r.text(); break; } } catch {}
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const t0 = Date.now();
+      const r = await fetch(base + '/render?id=doc1', { method: 'POST' });
+      await r.text();
+      const spent = Date.now() - t0;
+      assert.ok(!r.ok, '超时的渲染应失败，实际 ' + r.status);
+      assert.ok(spent < 30000, '渲染超时未收敛（请求挂住）：' + spent + 'ms');
+      assert.ok(fs.readFileSync(pdf).equals(oldPdf), '渲染超时后旧 PDF 被替换');
+      assert.ok(fs.readFileSync(side).equals(oldSide), '渲染超时后旧旁车被替换');
+      // 服务仍可用（渲染槽已归还：请求能收敛就说明 finally 已释放）
+      const alive = await fetch(base + '/');
+      assert.ok(alive.ok, '渲染超时后服务不可用');
+      await alive.text();
+    } finally {
+      server3.kill('SIGTERM');
+      await new Promise((r) => setTimeout(r, 400));
+      try { server3.kill('SIGKILL'); } catch {}
+    }
+    console.log('  ✅ 子进程超时：忽略 SIGTERM 的渲染器被 KILL 收场，旧成对产物保留');
+  }
+
+  console.log('PASS AUD-05/AUD-07: 未知脚本渲染零外联 + 渲染失败保持旧成对产物 + 临时输入所有权 + 子进程超时终止');
 } finally {
   try { server.kill('SIGTERM'); } catch {}
   await new Promise((r) => setTimeout(r, 400));

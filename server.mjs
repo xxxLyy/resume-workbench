@@ -901,11 +901,13 @@ async function renderDoc({ src, out, env, lease }) {
       });
       // 超时终止：先 TERM，宽限期后 KILL。只发 TERM 时不响应的子进程会永远挂着
       // → close 不触发 → 这次渲染的槽位永不释放（RES-03）。
+      // RESUME_TEST_RENDER_TIMEOUT_MS 只是测试钩子（把 60s 缩短），生产默认 60s。
+      const timeoutMs = Math.max(200, Number(process.env.RESUME_TEST_RENDER_TIMEOUT_MS || 60000));
       let hardTimer = null;
       const timer = setTimeout(() => {
         try { child.kill('SIGTERM'); } catch {}
         hardTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 2000);
-      }, 60000);
+      }, timeoutMs);
       const done = (ok) => { clearTimeout(timer); if (hardTimer) clearTimeout(hardTimer); resolve(ok); };
       child.on('close', (code) => done(code === 0));
       child.on('error', () => done(false));
