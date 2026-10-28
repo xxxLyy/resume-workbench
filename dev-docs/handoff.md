@@ -800,13 +800,23 @@ safe-url.mjs / eval.mjs / template.mjs），报 15 条（0 高 / 4 中 / 11 低�
 
 ### 4. 最小回退顺序（可审阅、保护已有改动）
 
+本轮起止：`main@eaf3194` → `main@943d0bf`（5 个提交，按动机分）：
+
+| 提交 | 动机 |
+|---|---|
+| `92ae93b` | 岗位操作失败语义三态化 + 提交身份按操作实例派生 |
+| `b0ad73a` | 后台任务资源准入前置 + 渲染临时输入所有权收口 |
+| `cd2441c` | 区域回执基线只进不退 + Z6/Z7 行为验收 |
+| `61af20d` | 「确认可投递」点真实按钮 + AUD-15 写失败矩阵 + 来源真实 UI 验收 |
+| `943d0bf` | 文档：交付事实修正 + README 旧口径 |
+
 **禁止 `git reset --hard`、`git clean -fd`、`git checkout .`**：它们会连同用户在工作区里的其他改动一起丢掉。
 按下面顺序逐个回退，每步都能单独审阅：
 
-1. 本轮提交（按动机分提交）：先 `git log --oneline <本轮起点>..HEAD` 看清要退哪几个。
-2. 单个文件回退到补丁轮之前：`git checkout <补丁轮起点 commit> -- job-panel.js`（只动这一个文件，不碰其他）。
+1. 先看清要退哪几个：`git log --oneline eaf3194..HEAD`。
+2. 单个文件回退到补丁轮之前：`git checkout eaf3194 -- job-panel.js`（只动这一个文件，不碰其他）。
 3. 整提交回退（保留可审阅性）：`git revert --no-commit <commit>` → 看 diff → `git commit`。
-4. 测试夹具同步回退：`git checkout <补丁轮起点 commit> -- test-fixtures/reliability/test-job-ops.mjs test-fixtures/reliability/test-src-ui.mjs`。
+4. 测试夹具同步回退：`git checkout eaf3194 -- test-fixtures/reliability/test-job-ops.mjs test-fixtures/reliability/test-src-ui.mjs`。
 5. 回退后必须重跑 `RESUME_TEST_STRICT=1 npm run test:all`；回退只影响代码，不会回退磁盘上已落盘的数据。
 
 ### 5. 本轮纪律
