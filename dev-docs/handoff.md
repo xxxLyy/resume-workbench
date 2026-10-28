@@ -692,7 +692,10 @@ safe-url.mjs / eval.mjs / template.mjs），报 15 条（0 高 / 4 中 / 11 低�
 | PDF 上传入口（AUD-12） | 接回首页一直在调用却缺失的 `POST /upload`；PDF 魔数与体积闸门；临时文件自有所有权；导入 id 原子分配（同名并发各自成文档） | `server.mjs` / `importer.mjs` |
 | 导出页动作（AUD-13） | 「确认可投递」补目标 id（原先 body.id 不被 handler 使用，请求落到默认文档）；「应用本轮建议」真正提交页面展示的排版参数，并复核排版轮次与可读下限（可投递的审阅完成与 PDF 身份仍由既有派生量 exportChecks / deliverableNow 复核） | `server.mjs` |
 | 岗位创建去重（AUD-14） | 创建身份保留（锁文件 + 原子创建，小范围，不占共享根锁）；目标文件名原子分配；失败不留孤儿；`/eval/promote` 跨 await 后重读评估表 | `server.mjs` |
-| 写失败的页面行为（AUD-15） | 页面写入口统一走注入的 `__wv`（HTTP 状态 + 业务 ok + 网络异常都进失败分支）；失败不刷新、不清空输入、不显示已生效；设置页网络异常会回滚 UI | `server.mjs` |
+| 写失败的页面行为（AUD-15） | 服务端页面写入口统一走注入的 `__wv`（HTTP 状态 + 业务 ok + 网络异常都进失败分支）；失败不刷新、不清空输入、不显示已生效；设置页网络异常会回滚 UI | `server.mjs` |
+| 同类入口：AI 面板写失败 | 三处裸 fetch 统一走 `postJson`（检查 r.ok 与业务 ok，409 保留 stale/拒绝两种语义）；输入改为**成功后才清空**（失败时用户消息不丢）；改写失败清掉陈旧候选 | `ai-panel.js` |
+| 同类入口：岗位面板 | **本轮未收口**：曾把 `api()` 的网络异常收口为 `{ok:false}`、并把 `requestId` 改为按操作派生（幂等）；实测 S4a-T8「接受经 JSON 保存同事务落账」回归变红 → 两处均已回退保持原行为。原因未定位，列为剩余项 | `job-panel.js` |
+| 同类入口：区域面板 | 切换区域时清空候选与快照（上一个区域的候选不留在新区域） | `zone-panel.js` |
 | 诊断口径（AUD-16） | doctor 复用 `llm.loadProfiles` 的配置归一层（旧单配置不再被误报）；`--probe` 成功后重判 Chromium 选择 | `doctor.mjs` |
 | 前置资源界限（AUD-17） | JD 抓取与 `/ai/jd-text` 共用有界读取；差异矩阵分配前设规模界限；pdfinfo/tar 设超时；逐页提取加总预算 | `server.mjs` / `diff.mjs` |
 | 共享容量池（RES-01～05） | 每进程唯一 aiPool / renderPool（各 2 个）；容量跟随实际工作生命周期，HTTP 断连不腾槽；闸门租约一路透传到最底层 | `resource-slots.mjs` / `llm.mjs` / `server.mjs` |
@@ -717,7 +720,7 @@ safe-url.mjs / eval.mjs / template.mjs），报 15 条（0 高 / 4 中 / 11 低�
 | `test-fixtures/reliability/test-job-create.mjs` | AUD-14：同岗位并发只一份 / 不同岗位独立 / 重复得 existing / promote 交错不丢记录 |
 | `test-fixtures/reliability/test-gate.mjs` | SEC-2 行为验收：AI 与渲染各自实际并发 ≤2、超限 429（替代原源码关键词检查） |
 | `test-fixtures/reliability/test-gen-task.mjs` | TASK-04：成功落账 / 换批被拒 / 业务拒绝 / 取消与过期不落账 |
-| `test-fixtures/reliability/test-browser-behaviors.mjs` | AUD-02 / AUD-03 / AUD-04 的真实浏览器复现 |
+| `test-fixtures/reliability/test-browser-behaviors.mjs` | AUD-02 / AUD-03 / AUD-04 的真实浏览器复现 + AUD-15 的 AI 写失败（输入保留、失败可见、不显示假成功） |
 | `test-fixtures/reliability/test-browser-zones.mjs` | ZONE-05/06/07：保存前置零请求 / 迟到响应不污染 / 只合并未变目标 |
 | `test-fixtures/reliability/test-history-editor.mjs` | DEL-01/02：历史与当前主脚本在严格 CSP 下可保存，未知脚本被拒 |
 
@@ -737,6 +740,10 @@ safe-url.mjs / eval.mjs / template.mjs），报 15 条（0 高 / 4 中 / 11 低�
 - **评估历史列表与评估后台任务**不在本轮批准范围（SRC 只处理当前评估来源与旧记录读取视图）。
 - **跨进程共享 AI 容量**不做；容量是每进程独立的（单用户本地服务）。
 - **真实模型语义质量、真实移动端、供应商计费核对**需要真实条件，本轮全部用本地桩，不作结论。
+- **岗位面板的两处同类入口未收口**（`api()` 网络异常收口、`requestId` 按操作派生）：实测引入后既有 S4a-T8 接受链路回归变红，
+  已回退到原行为；本轮未定位到具体触发点，列为剩余项。
+- **AUD-15 的同类入口按统一封装收口**（服务端页面走 `__wv`，AI 面板走 `postJson`，岗位面板 `api()` 收口网络异常）；
+  浏览器行为实测抽样覆盖素材、设置、AI 对话三处，其余入口为同一封装，未逐个做浏览器断言。
 - **区域纯文本改写拍平内联格式、原生输入撤销与程序化撤销分别管理、旧 PDF 合法陈旧、
   headless iframe 预览限制、单用户本地明文 key** 等既有边界不变，未按缺陷处理。
 - **不复活 migrate-style**；不扩展服务端大拆分；不新增 npm 依赖；不重写锁框架。

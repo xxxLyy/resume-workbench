@@ -156,6 +156,34 @@
     addStatus(e.message || e, 'warn');
   }
 
+  // 统一写请求语义（AUD-15）：HTTP 状态与业务 ok 都要过；网络异常与业务拒绝都进失败分支，
+  // 由调用方给出提示并保留用户输入。409 保留原有两种语义：JSON 体 = 文档版本陈旧（stale），
+  // 文本体 = 服务端的其它拒绝。
+  async function postJson(url, body) {
+    var r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (r.status === 409) {
+      var ct = (r.headers.get('content-type') || '');
+      if (ct.includes('application/json')) {
+        var d409 = await r.json().catch(function () { return null; });
+        var e1 = new Error((d409 && d409.error) || '文档有未同步的修改');
+        e1.stale = true;
+        throw e1;
+      }
+      var t409 = await r.text();
+      var e2 = new Error(t409 || '服务拒绝');
+      e2.rejected = true;
+      throw e2;
+    }
+    var data = null;
+    try { data = await r.json(); } catch (e) { data = null; }
+    if (!r.ok || !data || data.ok !== true) {
+      var e3 = new Error((data && (data.error || data.msg)) || ('HTTP ' + r.status));
+      e3.rejected = true;
+      throw e3;
+    }
+    return data;
+  }
+
   // ===== 对话抽屉 =====
   // 嵌入模式：面板常驻右栏，setDrawer 转为「显示右栏 + 切 Tab」；兜底模式维持抽屉开关
   function setDrawer(open) {
@@ -179,23 +207,19 @@
     if (!msg || sending) return;  // 防连点/Enter 重入：并发请求会打乱 history 顺序
     sending = true;
     $('ai-send').disabled = true;
-    input.value = '';
     addMsg(msg, true);
     try {
       var mt = await flushFirst();
-      var r = await fetch('/ai/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: DOC_ID, message: msg, history: history, baseMtime: mt }) });
-      if (r.status === 409 && (r.headers.get('content-type') || '').includes('application/json')) {
-        addStatus('文档有未同步的修改，已自动保存，请重发这条消息', 'warn');
-        return;
-      }
-      if (r.status === 409) { addMsg(await r.text(), false); return; }
-      var data = await r.json();
+      var data = await postJson('/ai/chat', { id: DOC_ID, message: msg, history: history, baseMtime: mt });
+      input.value = '';        // 成功后才清空：失败时用户输入保留（AUD-15）
       history.push({ role: 'user', content: msg }, { role: 'assistant', content: JSON.stringify(data) });
       if (data.reply) { addMsg(data.reply, false); return; }
       if (!data.changes || !data.changes.length) { addMsg('（AI 没有给出修改）', false); return; }
       data.changes.forEach(function (c) { renderChange(c); });
-    } catch (e) { aiError(e); }
+    } catch (e) {
+      if (e && e.stale) addStatus('文档有未同步的修改，已自动保存，请重发这条消息', 'warn');
+      else aiError(e);
+    }
     finally { sending = false; $('ai-send').disabled = false; }
   }
   $('ai-send').onclick = sendChat;
@@ -339,12 +363,12 @@
     out.textContent = '体检中（整篇分析约几十秒）…';
     try {
       var mt = await flushFirst();
-      var r = await fetch('/ai/review', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: DOC_ID, mode: mode, baseMtime: mt }) });
-      if (r.status === 409 && (r.headers.get('content-type') || '').includes('application/json')) { __status(out, 'warn', '文档有未同步修改，已自动保存，请重试'); return; }
-      if (r.status === 409) { out.textContent = await r.text(); return; }
-      renderReport(out, await r.json());
-    } catch (e) { __status(out, 'warn', e.message || e); }
+      var data = await postJson('/ai/review', { id: DOC_ID, mode: mode, baseMtime: mt });
+      renderReport(out, data);
+    } catch (e) {
+      if (e && e.stale) __status(out, 'warn', '文档有未同步修改，已自动保存，请重试');
+      else __status(out, 'warn', e.message || e);
+    }
     finally { reviewing = false; btn.disabled = false; }
   }
   $('ai-review-full').onclick = function () { runReview('full'); };
@@ -424,18 +448,20 @@
     // 生成开始即冻结选区原文：请求/预览/应用三处必须用同一份快照，
     // 否则等待期间的新选区会让「原文」与「替换目标」错配，改到别的段落
     pendingBefore = selText;
+    pendingAfter = null;              // 每次生成前清掉上一次候选（失败也不留陈旧态）
+    $('ai-actions').style.display = 'none';
     try {
-      var r = await fetch('/ai/rewrite', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: DOC_ID, text: pendingBefore, instruction: inst }) });
-      if (r.status === 409) { $('ai-preview').textContent = await r.text(); return; }
-      var data = await r.json();
+      var data = await postJson('/ai/rewrite', { id: DOC_ID, text: pendingBefore, instruction: inst });
       pendingAfter = data.revised;
       $('ai-preview').innerHTML = '';
       var b = document.createElement('div'); b.className = 'ai-before'; b.textContent = pendingBefore;
       var a = document.createElement('div'); a.className = 'ai-after'; a.textContent = pendingAfter;
       $('ai-preview').append(b, a);
       $('ai-actions').style.display = 'block';
-    } catch (e) { __status($('ai-preview'), 'warn', e.message || e); }
+    } catch (e) {
+      pendingAfter = null; pendingBefore = '';   // 失败不留可点的陈旧候选
+      __status($('ai-preview'), 'warn', e.message || e);
+    }
     finally { $('ai-gen').disabled = false; }
   };
   $('ai-apply').onclick = function () {

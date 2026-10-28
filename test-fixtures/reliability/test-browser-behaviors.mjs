@@ -129,6 +129,26 @@ try {
     console.log('  ✅ AUD-02 保存失败 → 零 AI 请求');
   }
 
+  // ===== AUD-15：AI 写请求失败 → 用户输入保留、给出失败提示、不显示假成功 =====
+  {
+    await page.route('**/ai/chat*', (route) => route.fulfill({
+      status: 500, contentType: 'application/json', body: JSON.stringify({ ok: false, error: '注入的失败' })
+    }));
+    await page.evaluate(() => {
+      var el = document.getElementById('ai-msg');
+      el.value = '这条输入不应因为失败而丢失';
+      document.getElementById('ai-send').click();
+    });
+    await page.waitForTimeout(1500);
+    const kept = await page.evaluate(() => (document.getElementById('ai-msg') || {}).value || '');
+    if (kept.indexOf('这条输入不应因为失败而丢失') < 0) fail('AI 写请求失败后用户输入被清空（应保留）');
+    const panel = await page.evaluate(() => (document.getElementById('ai-log') || {}).textContent || '');
+    assert.ok(/注入的失败/.test(panel), '失败原因应可见，实际：' + panel.slice(-160));
+    assert.ok(!/AI 没有给出修改/.test(panel), '失败不得被显示成「AI 没有给出修改」这类假成功/假失败文案');
+    await page.unroute('**/ai/chat*');
+    console.log('  ✅ AUD-15 AI 写失败 → 保留输入 + 失败可见');
+  }
+
   // ===== AUD-04：卡片撤销不得改到另一段，且只消费一次 =====
   {
     await send('测试保存失败时的行为');

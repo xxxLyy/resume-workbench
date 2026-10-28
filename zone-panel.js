@@ -162,6 +162,8 @@
   // 改写候选经 ed-zone-preview 事件进 renderPreview（T6 起事件是正式消费通道），接受走 S2 统一撤销链路。
   function openAi(zoneKey) {
     invalidateRequest();          // 切换区域 → 旧请求全部失效（ZONE-05）
+    preview = [];                 // 上一个区域的候选不得留在新区域
+    previewSnapshot = null;
     state.aiZone = zoneKey;
     state.aiDegraded = false;
     state.lastAnalysis = null;
