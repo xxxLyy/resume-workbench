@@ -2711,7 +2711,7 @@ async function handler(req, res) {
       let ex = findEx(frozen.renderInputId);
       if (ex && fs.existsSync(histPathOf(id, frozen.renderInputId))) return respondReuse(ex);
       if (!fs.existsSync(histPathOf(id, frozen.renderInputId))) {
-        const r = await renderCurrent(id);   // 便利文件 pdfs/<id>.pdf + lastRenderInputId 记账（当前文档渲染唯一入口）
+        const r = await renderCurrent(id, { lease: leaseOf(req) });   // 便利文件 pdfs/<id>.pdf + lastRenderInputId 记账（当前文档渲染唯一入口）
         if (!r.ok) return sendJson(500, { ok: false, error: '渲染失败，未写入导出记录（详见服务日志）' });
         frozen = r.frozen;
         const hf = histPathOf(id, frozen.renderInputId);
@@ -2722,7 +2722,8 @@ async function handler(req, res) {
           // linkSync EEXIST → 并发请求已产出同身份产物 → 复用，绝不覆盖。
           fs.mkdirSync(path.dirname(hf), { recursive: true });
           const srcTmp = path.join(os.tmpdir(), `resume-export-frozen-${id}-${Date.now()}-${process.pid}.html`);
-          const tmp = `${hf}.${process.pid}.${Date.now()}.tmp`;
+          // 临时路径必须唯一：并发两个 /export 同 pid 同毫秒会算出同一个 tmp → 发布阶段互相覆盖
+          const tmp = `${hf}.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}.tmp`;
           const side = tmp + '.env.json';
           atomicWrite(srcTmp, frozen.html);
           let hok = false;
@@ -2730,7 +2731,8 @@ async function handler(req, res) {
             const hr = await renderDoc({
               src: srcTmp,
               out: tmp,
-              env: { RESUME_RENDER_INPUT_ID: frozen.renderInputId, RESUME_RENDER_REPRODUCIBLE: frozen.reproducible ? '1' : '0' }
+              env: { RESUME_RENDER_INPUT_ID: frozen.renderInputId, RESUME_RENDER_REPRODUCIBLE: frozen.reproducible ? '1' : '0' },
+              lease: leaseOf(req)          // 透传闸门租约：否则一次请求占两个渲染槽
             });
             hok = hr.ok;
             let sideRid = null;
@@ -2828,7 +2830,7 @@ async function handler(req, res) {
         .replace(/li\{margin-top:[\d.]+mm;margin-bottom:[\d.]+mm\}/g, 'li{margin-top:' + v.paraGap + 'mm;margin-bottom:' + v.paraGap + 'mm}')
         : css;
       updateMeta(root, id, (m) => ({ ...(m || {}), typo: cssFull, layoutRounds: rounds }));
-      const r = await renderCurrent(id);
+      const r = await renderCurrent(id, { lease: leaseOf(req) });
       if (!r.ok) return sendJson(500, { ok: false, error: '重渲染失败（详见服务日志），参数已保存，可重试' });
       const rst = currentRenderState(id);
       let pages = 0;
@@ -2885,7 +2887,7 @@ async function handler(req, res) {
       const hash = contentHash(fs.readFileSync(frozenFile, 'utf8'));
       fs.mkdirSync(path.join(root, 'pdfs', 'archive'), { recursive: true });
       const out = archivePath(now);
-      const archiveR = await renderDoc({ src: frozenFile, out });
+      const archiveR = await renderDoc({ src: frozenFile, out, lease: leaseOf(req) });
       const archiveOk = archiveR.ok;  // 从冻结内容生成，绝不复用旧 PDF、绝不重冻当前正文
       const apps = loadApps();
       apps.push({
@@ -2950,7 +2952,7 @@ async function handler(req, res) {
       if (!app) return sendJson(404, { ok: false, error: 'app not found' });
       const frozen = path.join(snapDir(app.docId), String(app.snapTs || '').replace(/[^0-9-]/g, '') + '.html');
       if (!app.snapTs || !fs.existsSync(frozen)) return sendJson(409, { ok: false, error: '原始内容快照已缺失，无法还原当时版本（不允许用当前文档冒充）' });
-      const archR2 = await renderDoc({ src: frozen, out: archivePath(app.id) });
+      const archR2 = await renderDoc({ src: frozen, out: archivePath(app.id), lease: leaseOf(req) });
       const ok = archR2.ok;
       app.archive = ok && fs.existsSync(archivePath(app.id))
         ? { status: 'ok', generatedAt: timestamp(), hash: app.contentHash || '' }
@@ -3235,7 +3237,7 @@ async function handler(req, res) {
         if (e instanceof LockHeld) return sendJson(409, { ok: false, retry: true, error: '该文档正在被处理，请稍后重试' });
         throw e;
       }
-      await renderCurrent(id);   // 当前文档渲染一律走组装入口（回滚后的正文+meta）
+      await renderCurrent(id, { lease: leaseOf(req) });   // 当前文档渲染一律走组装入口（回滚后的正文+meta）
       return redirect(`/edit?id=${id}`);
     }
     // ===== 差异对比（统一提取；隐藏内容默认不参与，需显式 hidden=1）=====
@@ -3815,7 +3817,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         if (m && m.schemaVersion !== undefined) reg.schemaVersion = m.schemaVersion;
         return { ...(m || {}), ...reg };
       });
-      await renderCurrent(id);   // 当前文档渲染一律走组装入口
+      await renderCurrent(id, { lease: leaseOf(req) });   // 当前文档渲染一律走组装入口
       return redirect(`/edit?id=${id}`);
       });
     }
@@ -4388,7 +4390,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       if (!fs.existsSync(snapFile)) return send(404, 'snapshot not found', 'text/plain');
       const out = path.join(root, 'pdfs', 'history', id + '@' + ts + '.pdf');
       if (!fs.existsSync(out)) {
-        const snapR = await renderDoc({ src: snapFile, out });
+        const snapR = await renderDoc({ src: snapFile, out, lease: leaseOf(req) });
         const ok = snapR.ok;
         if (!ok || !fs.existsSync(out)) return send(500, '历史版本渲染失败，请重试（详见服务日志）', 'text/plain');
       }
@@ -4409,7 +4411,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       let rst = currentRenderState(id);
       if (rst.stale) {
         console.error(`[render] /pdf 自动重渲 id=${id} state=${rst.state} renderInputId=${rst.frozen.renderInputId} docMtime=${rst.docMtime}（mtime 仅日志）`);
-        await renderCurrent(id);
+        await renderCurrent(id, { lease: leaseOf(req) });
         rst = currentRenderState(id);   // 复判：渲染期间文档可能又被保存（仍按标识，不用 mtime）
       }
       if (!rst.pdfExists) return send(500, '渲染失败：PDF 未生成，请到导出页重试（详见服务日志）', 'text/plain');
@@ -4439,7 +4441,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       let renderError = null;
       if (rst.stale) {
         console.error(`[render] /export 自动重渲 id=${id} state=${rst.state} renderInputId=${rst.frozen.renderInputId} docMtime=${rst.docMtime}（mtime 仅日志）`);
-        const r = await renderCurrent(id);   // 组装渲染（当前 HTML+当前 meta），绝不直渲磁盘 HTML
+        const r = await renderCurrent(id, { lease: leaseOf(req) });   // 组装渲染（当前 HTML+当前 meta），绝不直渲磁盘 HTML
         rst = currentRenderState(id);
         if (!r.ok || !rst.pdfExists) renderError = '渲染失败（详见服务日志）';
       }

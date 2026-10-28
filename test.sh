@@ -2167,3 +2167,16 @@ else
     fail "历史主脚本回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
   fi
 fi
+
+# ===== 16e. 写失败的页面行为（AUD-15/AUD-13：写失败不刷新/不误报成功；确认可投递带目标 id）=====
+if node test-fixtures/reliability/test-page-writes.mjs; then
+  echo '✅ 页面写失败回归（素材/设置写失败不刷新不回滚误报；确认可投递带目标 id）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 页面写失败回归未执行：Chromium 不可用'
+  else
+    fail "页面写失败回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi

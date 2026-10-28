@@ -784,7 +784,7 @@ try {
   if (!home1.includes('PDF 未生成')) fail('none 态首页徽章应「PDF 未生成」');
   const rid1 = freezeHtml(fs.readFileSync(docFile, 'utf8'), {}).renderInputId;
   const r1 = await fetch(B + '/pdf?id=sc1');
-  if (r1.status !== 200) { const t = await r1.text().catch(() => ''); fail('/pdf 应 200，实际 ' + r1.status + '：' + t.slice(0, 200)); }
+  if (r1.status !== 200) { const t = await r1.text().catch(() => ''); fail('/pdf 应 200，实际 ' + r1.status + '：' + t.slice(0, 200) + ' | 服务端日志：' + serr.slice(-1200)); }
   if (r1.headers.get('X-PDF-Stale') !== '0') fail('渲染成功后 X-PDF-Stale 应为 0');
   if (!(r1.headers.get('Content-Disposition') || '').includes("filename*=UTF-8''")) fail('中文文件名应走 RFC 5987 filename*（非 ASCII 直写头会 500）: ' + r1.headers.get('Content-Disposition'));
   if (!fs.existsSync(path.join(ROOT, 'pdfs', 'sc1.pdf'))) fail('/pdf 未生成 PDF');
@@ -2009,7 +2009,7 @@ const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','
   '/job-panel.js','/job/brief','/job/changes','/job/create','/job/generate','/job/gen-cancel','/job/gen-start','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',
   '/materials','/new','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings','/eval/create','/eval/promote',
   '/snapshot/baseline','/snapshot/note','/snapshot/pdf','/snapshot/view','/snapshots','/stats','/tag',
-  '/zones','/zones/init','/zone-panel.js'].sort();
+  '/zones','/zones/init','/zone-panel.js','/upload'].sort();   // 2026-10-28 AUD-12：接回首页一直在调用却缺失的 PDF 上传入口（登记非放宽）
 const got = [...new Set([...sm.matchAll(/url\.pathname === '([^']+)'/g)].map((m) => m[1]))].sort();
 const missing = ROUTES_FROZEN.filter((r) => !got.includes(r));
 const extra = got.filter((r) => !ROUTES_FROZEN.includes(r));
@@ -4874,3 +4874,6 @@ node ./test-fixtures/reliability/test-render-boundary.mjs
 # ===== TASK-04：后台生成任务的真实生命周期（隔离服务 + 本机假 LLM）=====
 # 明确接入现有测试入口：成功落账 / 证据换批被拒 / 业务拒绝不被 done 覆盖 / 取消与过期不落账。
 node ./test-fixtures/reliability/test-gen-task.mjs
+
+# ===== AUD-17：重活前置有界（差异矩阵分配前有界 / JD 远程读取有界且不误伤正常输入）=====
+node ./test-fixtures/reliability/test-limits.mjs

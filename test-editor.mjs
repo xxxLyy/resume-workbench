@@ -8,6 +8,8 @@ import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
+// 受信渲染输入（AUD-05）只剥离脚本与注释等非正文内容 → 比对正文即可确认「仍来自冻结产物」
+const stripNonBody = (h) => String(h || '').replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<!--[\s\S]*?-->/g, '').trim();
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveChromium, invalidateCache, readCache } from './chromium.mjs';
@@ -38,7 +40,8 @@ function seedRoot(rootDir, docs, meta) {
   fs.writeFileSync(path.join(rootDir, 'materials.json'), '[]');
   for (const [id, html] of Object.entries(docs)) fs.writeFileSync(path.join(rootDir, 'docs', id + '.html'), html);
   const fr = path.join(rootDir, 'fake-render.sh');   // root-agnostic 假渲染器（读 env RESUME_ROOT），仅供 /rollback 触发的渲染
-  fs.writeFileSync(fr, '#!/bin/bash\nshift\nif [ "$1" = "--src" ]; then src="$2"; out="$4"; else src="$RESUME_ROOT/docs/$1.html"; out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\nprintf "%%PDF-1.4 fake\\n" > "$out"\n');
+  // 旁车 <out>.env.json 与 PDF 成对（AUD-07：发布要求两者齐备且身份一致）
+  fs.writeFileSync(fr, '#!/bin/bash\nshift\nif [ "$1" = "--src" ]; then src="$2"; out="$4"; else src="$RESUME_ROOT/docs/$1.html"; out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\nprintf "%%PDF-1.4 fake\\n" > "$out"\necho \'{"renderInputId":"\'"$RESUME_RENDER_INPUT_ID"\'","reproducible":true,"dpi":150}\' > "$out.env.json"\n');
   fs.chmodSync(fr, 0o755);
   return fr;
 }
@@ -65,7 +68,7 @@ async function spawnServer(rootDir, extraEnv) {
       try { await fetch(base + '/'); ready = true; break; } catch {}
       await sleep(80);
     }
-    if (ready) return { child, base, pid: child.pid };
+    if (ready) return { child, base, pid: child.pid, stderr: () => stderr };
     try { child.kill('SIGKILL'); } catch {}
     if (/端口不可用|EADDRINUSE/.test(stderr)) continue;   // 端口被占 → 换端口重试
     throw new Error('测试服务启动失败: ' + stderr.slice(0, 600));
@@ -379,6 +382,8 @@ await runTxTests();
 async function runS1T4Tests() {
   const T4_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ed-t4-'));
   const md5 = (b) => createHash('md5').update(b).digest('hex');
+  // 受信渲染输入（AUD-05）只剥离脚本与注释等非正文内容 → 比对正文即可确认「仍来自冻结产物」
+  const stripNonBody = (h) => String(h || '').replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<!--[\s\S]*?-->/g, '').trim();
   const servers = [];
   try {
     const ROOT7 = path.join(T4_TMP, 'r7');
@@ -389,7 +394,7 @@ async function runS1T4Tests() {
     fs.writeFileSync(path.join(ROOT7, 'docs', 't4.html'), txDoc('t4', 'T4-SEED', ''));
     // 假渲染器：记录本次渲染输入（.last-src.html）与调用次数（.render-count），供「组装渲染/不重渲/复用」断言
     const fr7 = path.join(ROOT7, 'fake-render.sh');
-    fs.writeFileSync(fr7, '#!/bin/bash\nshift\nsrc=""; out=""\nif [ "$1" = "--src" ]; then src="$2"; out="$4"; else src="$RESUME_ROOT/docs/$1.html"; out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\ncp "$src" "$RESUME_ROOT/.last-src.html"\nn=$(cat "$RESUME_ROOT/.render-count" 2>/dev/null || echo 0); echo $((n+1)) > "$RESUME_ROOT/.render-count"\nprintf "%%PDF-1.4 fake\\n" > "$out"\n');
+    fs.writeFileSync(fr7, '#!/bin/bash\nshift\nsrc=""; out=""\nif [ "$1" = "--src" ]; then src="$2"; out="$4"; else src="$RESUME_ROOT/docs/$1.html"; out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\ncp "$src" "$RESUME_ROOT/.last-src.html"\nn=$(cat "$RESUME_ROOT/.render-count" 2>/dev/null || echo 0); echo $((n+1)) > "$RESUME_ROOT/.render-count"\nprintf "%%PDF-1.4 fake\\n" > "$out"\necho \'{"renderInputId":"\'"$RESUME_RENDER_INPUT_ID"\'","reproducible":true,"dpi":150}\' > "$out.env.json"\n');
     fs.chmodSync(fr7, 0o755);
     const srv7 = await spawnServer(ROOT7, { RESUME_RENDER_BIN: fr7 });
     servers.push(srv7.child);
@@ -429,7 +434,7 @@ async function runS1T4Tests() {
       if (r.status !== 200) bad('② /pdf 应 200', String(r.status));
       else if (!pdfNow) bad('② /pdf 未重渲出 PDF');
       else if (renderCount() !== c0 + 1) bad('② /pdf 应恰好触发一次组装渲染', String(renderCount() - c0));
-      else if (md5(src) !== md5(expected.html)) bad('② 渲染输入应与 freeze 冻结产物 md5 相同（组装渲染）');
+      else if (md5(stripNonBody(src)) !== md5(stripNonBody(expected.html))) bad('② 受信渲染输入的正文应与 freeze 冻结产物一致（组装渲染）');
       else if (!src.includes('<style id="typo-custom">' + TYPO + '</style>')) bad('② 渲染输入应含 typo 效果');
       else if (src === readDoc7()) bad('② 不得直接渲染磁盘 HTML（磁盘无 typo）');
       else if (m.lastRenderInputId !== expected.renderInputId || !m.lastRenderAt) bad('② 成功渲染应记 lastRenderInputId/lastRenderAt', JSON.stringify(m));
@@ -525,6 +530,8 @@ await runS1T4Tests();
 async function runS1HotfixTests() {
   const HF_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ed-hf-'));
   const md5 = (b) => createHash('md5').update(b).digest('hex');
+  // 受信渲染输入（AUD-05）只剥离脚本与注释等非正文内容 → 比对正文即可确认「仍来自冻结产物」
+  const stripNonBody = (h) => String(h || '').replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<!--[\s\S]*?-->/g, '').trim();
   const servers = [];
   try {
     const ROOT8 = path.join(HF_TMP, 'r8');
@@ -543,7 +550,7 @@ async function runS1HotfixTests() {
     fs.writeFileSync(path.join(ROOT8, 'docs', 'mig0.html'), txDoc('mig0', 'MIG0-V1', ''));
     // 假渲染器：记录渲染输入（.last-src.html），供「冻结产物含内联 typo / 冻结 --src 不读 meta」断言
     const fr8 = path.join(ROOT8, 'fake-render.sh');
-    fs.writeFileSync(fr8, '#!/bin/bash\nshift\nsrc=""; out=""\nif [ "$1" = "--src" ]; then src="$2"; out="$4"; else src="$RESUME_ROOT/docs/$1.html"; out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\ncp "$src" "$RESUME_ROOT/.last-src.html"\nprintf "%%PDF-1.4 fake\\n" > "$out"\n');
+    fs.writeFileSync(fr8, '#!/bin/bash\nshift\nsrc=""; out=""\nif [ "$1" = "--src" ]; then src="$2"; out="$4"; else src="$RESUME_ROOT/docs/$1.html"; out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\ncp "$src" "$RESUME_ROOT/.last-src.html"\nprintf "%%PDF-1.4 fake\\n" > "$out"\necho \'{"renderInputId":"\'"$RESUME_RENDER_INPUT_ID"\'","reproducible":true,"dpi":150}\' > "$out.env.json"\n');
     fs.chmodSync(fr8, 0o755);
     const srv8 = await spawnServer(ROOT8, { RESUME_RENDER_BIN: fr8 });
     servers.push(srv8.child);
@@ -568,7 +575,7 @@ async function runS1HotfixTests() {
       if (!r.ok) bad('HF② /render 应成功', JSON.stringify(r));
       else if (!expected.html.includes('<style id="typo-custom">' + LEG_TYPO + '</style>')) bad('HF② freezeHtml(legacy) 应保留内联 typo');
       else if (!lastSrc().includes('<style id="typo-custom">' + LEG_TYPO + '</style>')) bad('HF② 渲染输入应含内联 typo（legacy 排版不丢）');
-      else if (md5(lastSrc()) !== md5(expected.html)) bad('HF② 渲染输入应与 freezeHtml 冻结产物 md5 相同');
+      else if (md5(stripNonBody(lastSrc())) !== md5(stripNonBody(expected.html))) bad('HF② 受信渲染输入的正文应与 freezeHtml 冻结产物一致');
       else ok('HF② legacy renderCurrent：冻结产物含内联排版（渲染输入 = freeze 产物）');
     }
     // ③ legacy：首次 /save 把内联值抽入 meta（typo 变为已定义），落盘不再含内联；此后 /edit 与冻结都走 meta
@@ -585,7 +592,7 @@ async function runS1HotfixTests() {
         const r2 = await (await post('/render?id=leg', '')).json();
         const expected2 = freezeHtml(disk, m);
         if (blocks(ed2) !== 1 || !ed2.includes('<style id="typo-custom">' + LEG_TYPO + '</style>')) bad('HF③ 迁移后 /edit 应注入 meta.typo', String(blocks(ed2)));
-        else if (!r2.ok || md5(lastSrc()) !== md5(expected2.html) || !lastSrc().includes(LEG_TYPO)) bad('HF③ 二次冻结应使用 meta（渲染输入 = freeze 产物）');
+        else if (!r2.ok || md5(stripNonBody(lastSrc())) !== md5(stripNonBody(expected2.html)) || !lastSrc().includes(LEG_TYPO)) bad('HF③ 二次冻结应使用 meta（渲染输入 = freeze 产物）');
         else ok('HF③ legacy 首次 /save 内联入 meta（迁移完成）；此后 /edit 与冻结走 meta');
       }
     }
@@ -725,7 +732,7 @@ async function runS1T7Tests() {
       else if (cExp !== 503) bad('T7⑤ 他人持锁时 GET /export 应 503', String(cExp));
       else if (wroteDuringLock) bad('T7⑤ 持锁期间不得写 meta/PDF（与迁移门禁并发会写脏）');
       else if (cEdit !== 200) bad('T7⑤ 纯读 GET /edit 不应被锁阻断', String(cEdit));
-      else if (cAfter !== 200 || !wroteAfter) bad('T7⑤ 释放锁后 /pdf 应恢复渲染并回写标识', cAfter + '/' + wroteAfter);
+      else if (cAfter !== 200 || !wroteAfter) bad('T7⑤ 释放锁后 /pdf 应恢复渲染并回写标识', cAfter + '/' + wroteAfter + ' | 服务端日志：' + (srv9 && srv9.stderr ? srv9.stderr().slice(-1500) : ''));
       else ok('T7⑤ 迁移互斥代码化：他人持锁时 GET /pdf、/export 503 且零写；纯读 /edit 200；释放后恢复渲染');
     }
   } finally {
@@ -740,6 +747,8 @@ await runS1T7Tests();
 async function runS1T8Tests() {
   const T8_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ed-t8-'));
   const md5 = (b) => createHash('md5').update(b).digest('hex');
+  // 受信渲染输入（AUD-05）只剥离脚本与注释等非正文内容 → 比对正文即可确认「仍来自冻结产物」
+  const stripNonBody = (h) => String(h || '').replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<!--[\s\S]*?-->/g, '').trim();
   const md5File = (f) => md5(fs.readFileSync(f));
   const servers = [];
   try {
@@ -771,7 +780,7 @@ async function runS1T8Tests() {
       const m = readMeta10();
       const ex = (m.t8 || {}).exports || [];
       const files = histFiles('t8');
-      if (!ra.body || !ra.body.ok || !rb.body || !rb.body.ok) bad('T8① 并发 POST /export 应都成功', JSON.stringify([ra, rb]).slice(0, 300));
+      if (!ra.body || !ra.body.ok || !rb.body || !rb.body.ok) bad('T8① 并发 POST /export 应都成功', JSON.stringify([ra, rb]).slice(0, 300) + ' | 服务端日志：' + (srv10.stderr ? srv10.stderr().slice(-1200) : ''));
       else if (!ra.body.exportId || !String(ra.body.url || '').includes('/history-pdf?exportId=')) bad('T8① 响应应含 exportId + /history-pdf 下载 URL', JSON.stringify(ra.body));
       else if (ex.length !== 1) bad('T8① 并发双 POST 应仅 1 条 exports 记录（幂等键 renderInputId）', String(ex.length));
       else if (files.length !== 1) bad('T8① 应仅 1 个 history 不可变文件', files.join(','));
@@ -859,7 +868,7 @@ async function runS1T8Tests() {
         if (!app || app.snapTs !== e1.snapTs) bad('T8④ 投递应绑定导出的冻结快照（snapTs 一致，不新冻）', JSON.stringify(app && app.snapTs));
         if (snapCountAfter !== snapCountBefore) bad('T8④ 绑定 exportId 不得再新冻快照', snapCountBefore + '→' + snapCountAfter);
         if (!archMd5Before) bad('T8④ 存档 PDF 应从冻结快照生成');
-        else if (archSrc !== fs.readFileSync(snapFile, 'utf8')) bad('T8④ 存档渲染输入应为该导出的冻结快照字节');
+        else if (stripNonBody(archSrc) !== stripNonBody(fs.readFileSync(snapFile, 'utf8'))) bad('T8④ 存档渲染输入的正文应为该导出的冻结快照字节');
         if ((m.t8.exports || []).length !== 1) bad('T8④ 改正文/投递不得新增 exports 记录', String((m.t8.exports || []).length));
         if (archMd5Before && md5File(archFile) !== archMd5Before) bad('T8④ 改正文后存档 PDF 不得变化（不重冻后来正文）');
         if (md5File(snapFile) !== snapMd5Before) bad('T8④ 冻结快照不可变');
