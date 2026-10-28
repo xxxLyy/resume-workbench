@@ -144,10 +144,17 @@ export function recoverPair(outPdf, outSidecar) {
  *          | {ok: false, reason: 'validate'|'missing-tmp'|'rename'|'rollback', detail: string}}
  */
 export function publishPair({ tmpPdf, tmpSidecar, outPdf, outSidecar, validate } = {}) {
-  const stamp = `${process.pid}-${Date.now()}`;
+  // 戳必须唯一：同一进程同一毫秒的两次发布（并发渲染同一目标）会算出同一个戳 →
+  // .new-/.bak- 兄弟文件互相覆盖，恢复路径就认错了哪一份是「上次中断的残留」。
+  const stamp = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 
   // 0. 先清理上次中断的残留（fail-closed：退回上一次成对产物）
-  try { recoverPair(outPdf, outSidecar); } catch { /* 清理失败不阻断本次发布 */ }
+  try {
+    const rec = recoverPair(outPdf, outSidecar);
+    if (rec && rec.failed && rec.failed.length) {
+      console.error(`[publish] 上次发布残留清理不完整：${rec.failed.join('; ')}`);
+    }
+  } catch (e) { console.error(`[publish] 残留清理异常：${(e && e.message) || e}`); }
 
   // 1. 临时文件必须在
   for (const [label, p] of [['tmpPdf', tmpPdf], ['tmpSidecar', tmpSidecar]]) {

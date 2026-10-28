@@ -172,7 +172,58 @@ try {
     console.log('  ✅ T2-b 过期任务的结果不落账');
   }
 
-  console.log('PASS TASK-04: 成功落账 + 换批拒绝 + 业务拒绝 + 取消不落账 + 过期不落账');
+  // ===== T3：资源准入（RES-02/04）：AI 槽占满 → gen-start 必须拒绝，且不得留下 running 假任务 =====
+  // 反例（旧实现）：gen-start 先登记 running，runner 才去等槽；等满 5s 抛 ResourceBusy 被 catch(()=>{}) 吞掉
+  //   → meta 里留下永远 running 的假任务，页面一直转圈。
+  {
+    llmMode = 'good'; llmDelay = 2500;
+    const chat = (msg) => fetch(base + '/ai/chat?id=' + DOC, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg })
+    });
+    const p1 = chat('占位一').catch(() => null);
+    const p2 = chat('占位二').catch(() => null);
+    await new Promise((r) => setTimeout(r, 500));            // 两个同步请求都已借到槽
+    const started = await post('/job/gen-start?id=' + DOC + '&kind=evidence', {});
+    assert.ok(started.status !== 200, 'AI 槽占满时 gen-start 不得返回 200/running，实际 ' + started.status + ' ' + started.text.slice(0, 160));
+    const d = await jobState();
+    const t = (d.job.genTasks || {}).evidence;
+    assert.ok(!t || t.status !== 'running', '被拒的 gen-start 不得留下 running 假任务，实际 ' + JSON.stringify(t));
+    await Promise.all([p1, p2]);
+    llmDelay = 0;
+    console.log('  ✅ T3 资源准入：槽满即拒绝且不留 running 假任务');
+  }
+
+  // ===== T4：断连 → 真实工作结束前不腾槽（RES-03）=====
+  {
+    llmMode = 'good'; llmDelay = 2500;
+    const ac = new AbortController();
+    const chatAborted = (msg) => fetch(base + '/ai/chat?id=' + DOC, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: msg }), signal: ac.signal
+    }).catch(() => null);
+    const p = chatAborted('断连测试一');
+    const p2 = chatAborted('断连测试二');                    // 占满两个槽
+    await new Promise((r) => setTimeout(r, 500));
+    ac.abort();                                               // 客户端断连
+    await new Promise((r) => setTimeout(r, 200));
+    const started = await post('/job/gen-start?id=' + DOC + '&kind=interview', {});
+    assert.ok(started.status !== 200, '断连后真实工作仍在跑，gen-start 应被拒，实际 ' + started.status + ' ' + started.text.slice(0, 160));
+    await Promise.all([p, p2]);
+    llmDelay = 0;
+    let freed = false;
+    for (let i = 0; i < 60; i++) {
+      const r = await fetch(base + '/ai/chat?id=' + DOC, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: '释放检查' })
+      });
+      await r.text();
+      if (r.status !== 429) { freed = true; break; }
+      await new Promise((x) => setTimeout(x, 300));
+    }
+    assert.ok(freed, '真实工作结束后 AI 槽应释放（断连不等于释放）');
+    console.log('  ✅ T4 断连不早释放：真实工作结束后槽位才归还');
+  }
+
+  console.log('PASS TASK-04: 成功落账 + 换批拒绝 + 业务拒绝 + 取消不落账 + 过期不落账 + 资源准入 + 断连不腾槽');
 } finally {
   try { server.kill('SIGTERM'); } catch {}
   await new Promise((r) => setTimeout(r, 400));

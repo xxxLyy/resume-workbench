@@ -871,30 +871,44 @@ async function renderDoc({ src, out, env, lease }) {
   const stage = out + '.stage-' + stamp;
   const stageSide = stage + '.env.json';
   let removed = [];
+  // 临时渲染输入的所有权（2026-10-28）：只清理【自己创建】的文件。
+  // 原实现在 try 内声明 renderSrc、finally 无条件 rmSync(renderSrc)：
+  //   净化失败时 renderSrc 仍指向调用方的源文件 → 失败路径会把别人的输入删掉；
+  //   且 try 内声明使 finally 访问可能落在 TDZ，异常又被空 catch 吞掉 → 临时文件泄漏且无人知晓。
+  let renderSrc = src;         // 默认指向调用方的文件：我们不拥有它，绝不删
+  let ownRenderSrc = null;     // 自己创建的临时输入（写成功或写失败都由我们负责清理）
   try {
     // 受信渲染输入（AUD-05）：冻结的 render.mjs 用 page.setContent 渲染，**没有 CSP** ——
     // 文档里的未知脚本会在渲染时执行并外联（编辑页有 CSP，渲染页没有）。
     // 所有渲染路径（当前/快照/不可变导出/投递存档/补生成）都经过本函数 → 在这里统一净化。
-    let renderSrc = src;
+    let safe;
     try {
-      const safe = trustedRenderHtml(fs.readFileSync(src, 'utf8'), { knownScriptHashes: knownEditorScriptHashes() });
-      removed = safe.removed || [];
-      renderSrc = path.join(os.tmpdir(), `resume-render-src-${stamp}.html`);
-      fs.writeFileSync(renderSrc, safe.html, { mode: 0o600 });
+      safe = trustedRenderHtml(fs.readFileSync(src, 'utf8'), { knownScriptHashes: knownEditorScriptHashes() });
     } catch (e) {
       // 净化失败（含超限）→ 不渲染：宁可不产出，也不渲染未净化的内容
       console.error(`[render] 渲染输入净化失败：${(e && e.message) || e}`);
       return { ok: false, removed };
     }
+    removed = safe.removed || [];
+    ownRenderSrc = path.join(os.tmpdir(), `resume-render-src-${stamp}.html`);
+    renderSrc = ownRenderSrc;
+    fs.writeFileSync(renderSrc, safe.html, { mode: 0o600 });
     const args = [path.join(APP_ROOT, 'render.mjs'), '--src', renderSrc, '--out', stage];
     const attempt = () => new Promise((resolve) => {
       const child = spawn(process.env.RESUME_RENDER_BIN || 'node', args, {
         stdio: 'inherit',
         env: { ...process.env, RESUME_ROOT: root, ...(env || {}) }
       });
-      const timer = setTimeout(() => child.kill(), 60000);
-      child.on('close', (code) => { clearTimeout(timer); resolve(code === 0); });
-      child.on('error', () => { clearTimeout(timer); resolve(false); });
+      // 超时终止：先 TERM，宽限期后 KILL。只发 TERM 时不响应的子进程会永远挂着
+      // → close 不触发 → 这次渲染的槽位永不释放（RES-03）。
+      let hardTimer = null;
+      const timer = setTimeout(() => {
+        try { child.kill('SIGTERM'); } catch {}
+        hardTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 2000);
+      }, 60000);
+      const done = (ok) => { clearTimeout(timer); if (hardTimer) clearTimeout(hardTimer); resolve(ok); };
+      child.on('close', (code) => done(code === 0));
+      child.on('error', () => done(false));
     });
     let ok = false;
     try { ok = await attempt(); } catch { ok = false; }
@@ -913,7 +927,11 @@ async function renderDoc({ src, out, env, lease }) {
     }
     return { ok: true, removed, published: pub };
   } finally {
-    try { fs.rmSync(renderSrc, { force: true }); } catch {}
+    // 只清理自己拥有的临时文件；清理失败要留下痕迹（空 catch 会把泄漏变成无人知晓）
+    if (ownRenderSrc) {
+      try { fs.rmSync(ownRenderSrc, { force: true }); }
+      catch (e) { console.error(`[render] 临时渲染输入清理失败：${ownRenderSrc}（${(e && e.message) || e}）`); }
+    }
     try { fs.rmSync(stage, { force: true }); } catch {}
     try { fs.rmSync(stageSide, { force: true }); } catch {}
     if (ownLease) { try { ownLease.release(); } catch {} }
@@ -2539,9 +2557,21 @@ async function handler(req, res) {
         scope = scopeRaw;
       }
       if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型：草稿仍可手动编辑，配置后可生成建议' });
+      // 资源准入（RES-02/04）：后台任务与同步 AI 请求共用同一个 aiPool。
+      // 先借一个槽（拿不到立刻拒），再登记任务 → 被拒时不会在 meta 里留下「永远 running」的假任务。
+      // 此前是「先登记 running、再在 runner 里等槽」，等满 5s 抛 ResourceBusy 后异常被吞 → 任务永久假运行。
+      let lease;
+      try { lease = aiPool.borrow(); }
+      catch (e) { return sendJson((e && e.httpCode) || 429, { ok: false, error: (e && e.message) || 'AI 排队已满，请稍候' }); }
       const { taskId, reject } = startGenTask(id, kind, scope);
-      if (reject) return sendJson(reject.status, { ok: false, error: reject.error });
-      runGenTask(id, kind, taskId, scope).catch(() => {});   // 异步落账；异常不外抛（任务态由回调链路收敛）
+      if (reject) { try { lease.release(); } catch {} return sendJson(reject.status, { ok: false, error: reject.error }); }
+      // 槽位透传（RES-02）：后台任务不再二次获取；释放 = 这次后台工作真正结束（最外层 finally）
+      runGenTask(id, kind, taskId, scope, { lease })
+        .catch((e) => {
+          // 任何异常都要收敛任务态：否则 meta 里会留下永远 running 的假任务
+          try { finishGenTask(id, kind, taskId, null, '任务失败：' + ((e && e.message) || e)); } catch {}
+        })
+        .finally(() => { try { lease.release(); } catch {} });
       return sendJson(200, { ok: true, taskId, status: 'running' });
     }
     // gen-cancel：taskId 匹配当前 running 才置 cancelled（防误取消刚接棒的新任务）；在途结果被回调校验丢弃。
@@ -2580,7 +2610,14 @@ async function handler(req, res) {
       if (!fs.existsSync(docPath(id))) return sendJson(404, { ok: false, error: 'doc not found' });
       const { taskId, reject } = startGenTask(id, 'changes');
       if (reject) return sendJson(reject.status, { ok: false, error: reject.error });
-      const r = await runGenTask(id, 'changes', taskId);
+      let r;
+      try {
+        r = await runGenTask(id, 'changes', taskId);
+      } catch (e) {
+        // 拿不到 AI 槽（等满 5s）等异常：任务态必须收敛，不能留下永远 running 的假任务
+        try { finishGenTask(id, 'changes', taskId, null, '任务失败：' + ((e && e.message) || e)); } catch {}
+        return sendJson((e && e.httpCode) || 500, { ok: false, error: (e && e.message) || '任务失败' });
+      }
       // S4a-T5 转交修 a：dropped 读锁内已写的真实原因（finishGenTask 过期路径已落 error=任务超时），
       // 真超时不再恒称「已被取消或取代」；error 为空（真被取消/取代）才用兜底文案。
       if (r.dropped) {

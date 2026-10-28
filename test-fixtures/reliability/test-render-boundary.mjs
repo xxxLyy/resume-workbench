@@ -66,6 +66,13 @@ try {
     await new Promise((r) => setTimeout(r, 100));
   }
 
+  // 临时渲染输入（resume-render-src-*）在渲染前后数量必须一致：
+  // 反例（旧实现）：renderSrc 在 try 内声明，finally 里访问不到 → ReferenceError 被空 catch 吞掉
+  //   → 每次成功渲染都泄漏一个临时文件，且无人知晓。
+  const tmpPrefix = 'resume-render-src-';
+  const countTmp = () => fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith(tmpPrefix)).length;
+  const tmpBefore = countTmp();
+
   // ===== AUD-05：真实渲染时未知脚本不得执行/外联 =====
   {
     const r = await fetch(base + '/render?id=doc1', { method: 'POST' });
@@ -79,6 +86,28 @@ try {
     // 如实记录：meta 应留下净化痕迹
     const meta = JSON.parse(fs.readFileSync(path.join(root, 'docs-meta.json'), 'utf8'));
     if (!meta.doc1 || meta.doc1.lastRenderSanitized !== true) fail('净化发生时应如实记录 lastRenderSanitized');
+    assert.equal(countTmp(), tmpBefore, '成功渲染后不得留下临时渲染输入文件（finally 访问失败被空 catch 吞掉 → 泄漏）');
+  }
+
+  // ===== 渲染临时输入的所有权：失败路径不得删掉【调用方】的输入文件，且不留临时文件 =====
+  // 反例（旧实现）：renderDoc 的 finally 无条件 rmSync(renderSrc)；
+  //   净化失败时 renderSrc 仍指向调用方的源文件 → /snapshot/pdf 的快照文件会被删掉（用户数据丢失）。
+  {
+    const snapDirP = path.join(root, 'snapshots', 'doc1');
+    fs.mkdirSync(snapDirP, { recursive: true });
+    const ts = '2026-10-28-120000';
+    const snapFile = path.join(snapDirP, ts + '.html');
+    // 超过 4MB 上限 → 净化必然抛错（渲染输入超限）
+    fs.writeFileSync(snapFile, '<!doctype html><html><body>' + 'x'.repeat(4 * 1024 * 1024 + 1024) + '</body></html>');
+    const before = countTmp();
+    const r = await fetch(base + '/snapshot/pdf?id=doc1&ts=' + ts);
+    await r.text();
+    assert.ok(!r.ok || r.status !== 200, '超限渲染应失败，实际 ' + r.status);
+    assert.ok(fs.existsSync(snapFile), '渲染输入超限后不得删除调用方的快照文件（数据丢失）');
+    await new Promise((x) => setTimeout(x, 300));
+    assert.equal(countTmp(), before, '渲染失败后不得留下临时渲染输入文件');
+    fs.rmSync(snapFile, { force: true });
+    console.log('  ✅ 渲染临时输入：失败路径只清理自己拥有的文件');
   }
 
   // ===== AUD-07：旁车写失败 → 旧 PDF 与旧旁车都保留，不得出现混合产物 =====
@@ -137,7 +166,7 @@ try {
     }
   }
 
-  console.log('PASS AUD-05/AUD-07: 未知脚本渲染零外联 + 渲染失败保持旧成对产物');
+  console.log('PASS AUD-05/AUD-07: 未知脚本渲染零外联 + 渲染失败保持旧成对产物 + 临时输入所有权');
 } finally {
   try { server.kill('SIGTERM'); } catch {}
   await new Promise((r) => setTimeout(r, 400));
