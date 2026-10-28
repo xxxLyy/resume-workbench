@@ -2201,6 +2201,19 @@ else
   fi
 fi
 
+# ===== 16f2. 成功回执合并保护在途输入 + 补查回执衔接普通保存（2026-10-28 补丁轮三）=====
+if node test-fixtures/reliability/test-job-merge.mjs; then
+  echo '✅ 岗位合并回归（回执合并保护在途输入 / 补查命中后基线更新 / 版本不倒退）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 岗位合并回归未执行：Chromium 不可用'
+  else
+    fail "岗位合并回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi
+
 # ===== 16g. 来源语义的真实读视图与真实 UI（SRC-03/05/07：旧 anchored 降级 + 真标签 + 真回跳）=====
 if node test-fixtures/reliability/test-src-ui.mjs; then
   echo '✅ 来源 UI 回归（读时降级零回写 / 真实标签与定位·回跳按钮）'

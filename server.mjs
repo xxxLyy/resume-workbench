@@ -2020,7 +2020,8 @@ async function saveJsonProtocol(req, id, url) {
             base.job = reviewConsistency(re.job, newHtml, { zones: base.zones, mats: loadMats() });
             const rec = {
               requestId: body.requestId, contentHash: reqHash,
-              receipt: { mtime: fs.statSync(docPath(id)).mtimeMs, hash: newHash, rev: base.rev, appliedOps: pre.applied.map((a) => a.operationId) }
+              // 回执带上 requestId：客户端要能校验「这条回执确实属于本次提交」
+              receipt: { requestId: body.requestId, mtime: fs.statSync(docPath(id)).mtimeMs, hash: newHash, rev: base.rev, appliedOps: pre.applied.map((a) => a.operationId) }
             };
             base.job.saveReceipts = [...(Array.isArray(base.job.saveReceipts) ? base.job.saveReceipts : []), rec].slice(-50);
             receipt = rec.receipt;
@@ -4791,7 +4792,11 @@ function tryListen(i) {
       }
     }).finally(() => {
       const l = req.__resLease;
-      if (l) { req.__resLease = null; try { l.release(); } catch {} }
+      if (l) {
+        req.__resLease = null;
+        try { l.release(); }
+        catch (e) { console.error('[slot] 归还闸门租约失败（凭证可能仍在使用中）：', (e && e.message) || e); }
+      }
     });
   });
   s.on('error', (e) => {
