@@ -2180,3 +2180,29 @@ else
     fail "页面写失败回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
   fi
 fi
+
+# ===== 16f. 岗位操作的失败语义与幂等语义（409 保留在途输入 / 结果未知不回滚 / 重试复用身份）=====
+if node test-fixtures/reliability/test-job-ops.mjs; then
+  echo '✅ 岗位操作回归（明确拒绝保留在途输入 / 结果未知不回滚 / 重试复用同一身份 / 新操作新身份）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 岗位操作回归未执行：Chromium 不可用'
+  else
+    fail "岗位操作回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi
+
+# ===== 16g. 来源语义的真实读视图与真实 UI（SRC-03/05/07：旧 anchored 降级 + 真标签 + 真回跳）=====
+if node test-fixtures/reliability/test-src-ui.mjs; then
+  echo '✅ 来源 UI 回归（读时降级零回写 / 真实标签与定位·回跳按钮）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 来源 UI 回归未执行：Chromium 不可用'
+  else
+    fail "来源 UI 回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi
