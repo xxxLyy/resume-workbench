@@ -3150,7 +3150,9 @@ try {
     const S3_DOC = 'ed-fixture-zone';
     const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } });   // S4a-T9：≥1440 三栏全开
     const page = await ctx.newPage();
-    await page.route('**/ai/zone-analyze*', (route) => route.fulfill({ status: 409, contentType: 'text/plain', body: 'no llm' }));
+    // 真实服务端返回 409 + {code:'LLM_NOT_CONFIGURED'}；降级只对 LLM_NOT_CONFIGURED 生效，
+    // 其它 409（文档版本陈旧）保留模型功能可用状态。
+    await page.route('**/ai/zone-analyze*', (route) => route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ ok: false, code: 'LLM_NOT_CONFIGURED', error: '未配置大模型' }) }));
     await page.goto(`${base}/edit?id=${S3_DOC}`, { waitUntil: 'networkidle' });
     await page.click('#ed-rtabs button[data-pane="zone"]');
     await page.waitForTimeout(300);
@@ -3212,14 +3214,25 @@ try {
     await page.click('#ed-rtabs button[data-pane="zone"]');
     await page.waitForTimeout(300);
     // 经正式事件入口注入一条假候选（ed-zone-preview 通道；接受链路是本块被测对象，不依赖 LLM）
-    await page.evaluate(function () {
-      window.__zpPreview = [{ zid: document.querySelector('.sheet li[data-zid]').getAttribute('data-zid'),
-        before: '旧', candidate: '浏览器测试改写候选', level: 'normal' }];
+    // 候选必须带真实基线（operationId/before/beforeHash/zone）：接受链路走服务端的
+    // 安全子集事务（磁盘正文 + 提交原文 + 归属 + 锁定 + 事实护栏 五项齐备才应用），
+    // 缺基线的第三方事件不再能绕过检查（计划 I3：旧夹具的 before:'旧' 必须改为真实基线）。
+    await page.evaluate(async function () {
+      var el = document.querySelector('.sheet li[data-zid]');
+      var zid = el.getAttribute('data-zid');
+      var before = (el.textContent || '').trim();
+      var d = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(before));
+      var hex = Array.from(new Uint8Array(d)).map(function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+      window.__zpPreview = [{
+        zid: zid, before: before, beforeHash: hex.slice(0, 16),
+        operationId: 'op-s3d-1', zone: 'work', baselineVersion: 'zone-v1',
+        candidate: '浏览器测试改写候选', level: 'normal'
+      }];
       window.dispatchEvent(new Event('ed-zone-preview'));
     });
     await page.waitForTimeout(150);
     await page.click('#zp-accept');
-    await page.waitForTimeout(250);
+    await page.waitForTimeout(2500);   // 接受走服务端安全子集事务（保存 → 提交 → 回执合并）
     const applied = await page.evaluate(() => document.querySelector('.sheet li[data-zid]').textContent);
     if (applied.includes('浏览器测试改写候选')) ok('S3D 接受后正文替换'); else bad('S3D 接受后正文替换', String(applied).slice(0, 60));
     const toastTxt = await page.evaluate(() => Array.from(document.querySelectorAll('.toast')).map((x) => x.textContent).join('|'));

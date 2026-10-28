@@ -759,7 +759,8 @@ const docFile = path.join(ROOT, 'docs', 'sc1.html');
 const mkHtml = (body) => '<!doctype html><html><head><meta charset="utf-8"><style>.s{color:#111}</style></head><body><h1>夹具</h1><div class="sheet">' + body + "</div><script>var DOC_ID = 'sc1';</script></body></html>";
 fs.writeFileSync(docFile, mkHtml('SC-V1'));
 const fr = path.join(tmpB, 'fake-render.sh');
-fs.writeFileSync(fr, '#!/bin/bash\nshift\nn=$(cat "$RESUME_ROOT/.render-count" 2>/dev/null || echo 0); echo $((n+1)) > "$RESUME_ROOT/.render-count"\nif [ "$1" = "--src" ]; then out="$4"; else out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\nprintf "%%PDF-1.4 fake\\n" > "$out"\n');
+// 旁车 <out>.env.json 与 PDF 成对（AUD-07：发布要求两者齐备且身份一致）
+  fs.writeFileSync(fr, '#!/bin/bash\nshift\nn=$(cat "$RESUME_ROOT/.render-count" 2>/dev/null || echo 0); echo $((n+1)) > "$RESUME_ROOT/.render-count"\nif [ "$1" = "--src" ]; then out="$4"; else out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\nprintf "%%PDF-1.4 fake\\n" > "$out"\necho \'{"renderInputId":"\'"$RESUME_RENDER_INPUT_ID"\'","reproducible":true,"dpi":150}\' > "$out.env.json"\n');
 fs.chmodSync(fr, 0o755);
 const freePort = () => new Promise((resolve, reject) => { const s = http.createServer(); s.once('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
 const port = await freePort();
@@ -967,7 +968,8 @@ try {
   const rootSrv = seedRoot('root-srv');
   writeLLMConfig(rootSrv);
   const fr = path.join(tmp, 'fake-render.sh');
-  fs.writeFileSync(fr, '#!/bin/bash\nshift\nif [ "$1" = "--src" ]; then src="$2"; out="$4"; else src="$RESUME_ROOT/docs/$1.html"; out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\nprintf "%%PDF-1.4 fake\\n" > "$out"\n');
+  // 旁车 <out>.env.json 与 PDF 成对（AUD-07：发布要求两者齐备且身份一致）
+  fs.writeFileSync(fr, '#!/bin/bash\nshift\nif [ "$1" = "--src" ]; then src="$2"; out="$4"; else src="$RESUME_ROOT/docs/$1.html"; out="$RESUME_ROOT/pdfs/$1.pdf"; fi\nmkdir -p "$(dirname "$out")"\nprintf "%%PDF-1.4 fake\\n" > "$out"\necho \'{"renderInputId":"\'"$RESUME_RENDER_INPUT_ID"\'","reproducible":true,"dpi":150}\' > "$out.env.json"\n');
   fs.chmodSync(fr, 0o755);
   // 降级夹具文档（/restructure 入口条件：含"以下为 PDF 提取的原文"）
   const deg = assembleTemplate('classic')
