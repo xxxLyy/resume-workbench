@@ -1,0 +1,259 @@
+
+(function () {
+  var DOC_ID = '{{DOC_ID}}';
+  var sheet = document.querySelector('.sheet');
+  sheet.contentEditable = 'true';
+
+  // 顶栏文档名（读 h1，随编辑同步）
+  var nameEl = document.getElementById('docName');
+  function syncName() {
+    var h = sheet.querySelector('h1');
+    nameEl.textContent = (h && h.textContent.trim()) || DOC_ID;
+    nameEl.title = '文档 id: ' + DOC_ID;
+  }
+  syncName();
+
+  // ===== A4 分页参考线（估算，无上限；实际页数以导出渲染为准）=====
+  var MM = 3.7795275591;
+  var SHEET_H = 297 * MM;
+  function updatePageLines() {
+    sheet.querySelectorAll('.page-line').forEach(function (el) { el.remove(); });
+    var needed = Math.max(1, Math.ceil(sheet.scrollHeight / SHEET_H));
+    for (var i = 1; i <= needed; i++) {
+      var line = document.createElement('div');
+      line.className = 'page-line';
+      line.style.top = (297 * i) + 'mm';
+      line.contentEditable = 'false';
+      line.innerHTML = '<span>第' + i + '页末 (A4)</span>';
+      sheet.appendChild(line);
+    }
+  }
+  updatePageLines();
+
+  // ===== 保存状态机：编辑修订 / 已提交修订 / 已确认修订 三态分离 =====
+  // 规则：请求成功只确认它实际提交的修订；期间的新编辑保持未保存并排队；本地缓存按修订清理。
+  var editRev = 0;      // 每次输入 +1
+  var savedRev = 0;     // 服务端已确认写盘的修订
+  var saving = false;
+  var queued = false;
+  var stateEl = document.getElementById('saveState');
+  function setState(s) {
+    stateEl.dataset.state = s;
+    stateEl.textContent = { saved: '已保存 ✓', dirty: '未保存 ●', saving: '保存中…', error: '保存失败 · 点击重试' }[s];
+  }
+  setState('saved');
+  function isDirty() { return editRev > savedRev; }
+  function diskMtime() { return Number(window.__edDocMtime || 0); }
+
+  var STORE_KEY = 'resume-autosave:' + DOC_ID;
+  function typoEl() { return document.getElementById('typo-custom'); }
+  // 排版设置读写（供外壳排版面板与恢复缓存共用；排版与正文一起持久化）
+  window.__edGetTypo = function () { var el = typoEl(); return el ? el.textContent : ''; };
+  window.__edSetTypo = function (css) {
+    var el = typoEl();
+    if (!el) { el = document.createElement('style'); el.id = 'typo-custom'; document.head.appendChild(el); }
+    el.textContent = css || '';
+    window.dispatchEvent(new CustomEvent('ed-typo'));
+  };
+  // 供外壳/审阅面板声明"内容被程序修改"（走同一 revision 通道）
+  window.__edTouch = function () { markDirty(); };
+  window.__edDocId = DOC_ID;
+
+  var lineTimer, autoTimer;
+  function writeCache() {
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify({ v: 2, rev: editRev, body: sheet.innerHTML, typo: window.__edGetTypo(), docId: DOC_ID }));
+    } catch (e) {}
+  }
+  function clearCache(upToRev) {
+    try {
+      var raw = localStorage.getItem(STORE_KEY);
+      if (!raw) return;
+      var c = null;
+      try { c = JSON.parse(raw); } catch (e) { c = null; }
+      if (c && c.v === 2 && typeof c.rev === 'number' && c.rev > upToRev) return;  // 缓存里还有更新的修订，别清
+      localStorage.removeItem(STORE_KEY);
+    } catch (e) {}
+  }
+  function markDirty() {
+    editRev++;
+    setState('dirty');
+    syncName();
+    clearTimeout(lineTimer);
+    lineTimer = setTimeout(function () { updatePageLines(); writeCache(); }, 300);
+    clearTimeout(autoTimer);
+    autoTimer = setTimeout(function () { if (isDirty() && !saving) doSave(true); }, 3000);
+  }
+  sheet.addEventListener('input', markDirty);
+
+  // 排版变化同样刷新参考线并进入保存队列
+  window.addEventListener('ed-typo', function () { updatePageLines(); markDirty(); });
+
+  // ===== 本地恢复（正文 + 排版一起）=====
+  var cached = null;
+  try { cached = JSON.parse(localStorage.getItem(STORE_KEY) || 'null'); } catch (e) { cached = null; }
+  if (!cached) {
+    // 兼容旧格式（仅 innerHTML 字符串）
+    var legacy = null;
+    try { legacy = localStorage.getItem(STORE_KEY); } catch (e) {}
+    if (legacy && legacy.indexOf('{') !== 0 && legacy !== sheet.innerHTML) cached = { v: 1, rev: 1, body: legacy, typo: '' };
+  }
+  if (cached && cached.body && cached.body !== sheet.innerHTML) {
+    var bar = document.createElement('div');
+    bar.className = 'recovery-bar';
+    var msg = document.createElement('span');
+    msg.textContent = '⚠️ 浏览器里有一份未写入服务器的修改（含排版）';
+    bar.appendChild(msg);
+    var btnYes = document.createElement('button');
+    btnYes.textContent = '恢复这份修改';
+    btnYes.onclick = function () {
+      sheet.innerHTML = cached.body;
+      if (cached.typo) window.__edSetTypo(cached.typo);
+      updatePageLines();
+      editRev = (cached.rev || 1);
+      savedRev = 0;
+      setState('dirty');
+      toast('已恢复正文与排版，请点"保存"写入服务器');
+      bar.remove();
+    };
+    var btnNo = document.createElement('button');
+    btnNo.textContent = '丢弃';
+    btnNo.className = 'secondary';
+    btnNo.onclick = function () {
+      try { localStorage.removeItem(STORE_KEY); } catch (e) {}
+      bar.remove();
+    };
+    bar.appendChild(btnYes);
+    bar.appendChild(btnNo);
+    document.body.appendChild(bar);
+  }
+
+  // ===== 多标签冲突提示（保存时服务端 409）=====
+  function showConflict() {
+    if (document.querySelector('.conflict-bar')) return;
+    var bar = document.createElement('div');
+    bar.className = 'recovery-bar conflict-bar';
+    bar.style.background = '#b91c1c';
+    var msg = document.createElement('span');
+    msg.textContent = '⚠️ 其他窗口已保存过这份文档，你的修改尚未写入。直接保存会覆盖对方内容。';
+    var btnForce = document.createElement('button');
+    btnForce.textContent = '以我的为准覆盖';
+    btnForce.onclick = function () { bar.remove(); doSave(false, true); };
+    var btnReload = document.createElement('button');
+    btnReload.textContent = '加载服务器版本（放弃本地改动）';
+    btnReload.className = 'secondary';
+    btnReload.onclick = function () {
+      try { localStorage.removeItem(STORE_KEY); } catch (e) {}
+      location.reload();
+    };
+    var btnLater = document.createElement('button');
+    btnLater.textContent = '继续编辑';
+    btnLater.className = 'secondary';
+    btnLater.onclick = function () { bar.remove(); };
+    bar.append(msg, btnForce, btnReload, btnLater);
+    document.body.appendChild(bar);
+  }
+
+  // 粘贴强制纯文本
+  sheet.addEventListener('paste', function (e) {
+    e.preventDefault();
+    var t = (e.clipboardData || window.clipboardData).getData('text/plain');
+    document.execCommand('insertText', false, t);
+  });
+
+  function toast(msg) {
+    var t = document.createElement('div');
+    t.className = 'toast';
+    t.textContent = msg;
+    document.body.appendChild(t);
+    requestAnimationFrame(function () { t.style.opacity = '1'; });
+    setTimeout(function () {
+      t.style.opacity = '0';
+      setTimeout(function () { t.remove(); }, 400);
+    }, 2500);
+  }
+
+  async function doSave(autosave, force) {
+    if (saving) { queued = true; return false; }   // 保存中再次触发 → 排队
+    var submittingRev = editRev;                    // 本次提交所代表的编辑修订
+    var clone = document.documentElement.cloneNode(true);
+    clone.querySelectorAll('.page-line, .toast, .recovery-bar, [data-ai-panel], [data-ed-shell], [data-ed-inj], [data-job-panel]').forEach(function (el) { el.remove(); });
+    var cbody = clone.querySelector('body');
+    if (cbody) { cbody.classList.remove('ed-on', 'ed-preview'); cbody.style.cssText = ''; }
+    var csheet = clone.querySelector('.sheet');
+    if (csheet) { csheet.style.zoom = ''; csheet.style.transform = ''; csheet.setAttribute('contenteditable', 'true'); }
+    var cstate = clone.querySelector('#saveState');
+    if (cstate) { cstate.dataset.state = isDirty() ? 'dirty' : 'saved'; cstate.textContent = isDirty() ? '未保存 ●' : '已保存 ✓'; }
+    var csave = clone.querySelector('#saveBtn');
+    if (csave) csave.removeAttribute('disabled');
+    saving = true;
+    setState('saving');
+    document.getElementById('saveBtn').disabled = true;
+    try {
+      var qs = '/save?id=' + DOC_ID + (autosave ? '&autosave=1' : '') + (force ? '&force=1' : '')
+        + (diskMtime() ? '&baseMtime=' + diskMtime() : '');
+      var r = await fetch(qs, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/html; charset=utf-8' },
+        body: '<!doctype html>\n' + clone.outerHTML
+      });
+      if (r.status === 409) {
+        var cd = await r.json().catch(function () { return null; });
+        if (cd && cd.conflict) { setState('dirty'); showConflict(); return false; }
+        throw new Error('服务器返回 409');
+      }
+      if (!r.ok) throw new Error('服务器返回 ' + r.status);
+      var data = await r.json();
+      if (!data.ok) throw new Error('保存失败');
+      window.__edDocMtime = data.mtime || window.__edDocMtime;
+      savedRev = Math.max(savedRev, submittingRev);   // 只确认已提交的修订
+      if (isDirty()) {
+        setState('dirty');                            // 期间的新编辑仍未保存 → 排队续存
+        clearTimeout(autoTimer);
+        autoTimer = setTimeout(function () { if (isDirty() && !saving) doSave(true); }, 600);
+        if (!autosave) toast('✅ 已保存（保存期间的修改会自动续存）');
+      } else {
+        setState('saved');
+        clearCache(savedRev);
+        var rbar = document.querySelector('.recovery-bar:not(.conflict-bar)');
+        if (rbar) rbar.remove();
+        if (!autosave) toast('✅ 已保存（PDF 不自动重渲，导出时生成）');
+      }
+      return true;
+    } catch (e) {
+      setState('error');
+      writeCache();                                    // 失败不丢内容
+      if (!autosave) toast('⚠️ 保存失败：内容已存浏览器本地，点顶部红色状态重试');
+      return false;
+    } finally {
+      saving = false;
+      document.getElementById('saveBtn').disabled = false;
+      if (queued) {
+        queued = false;
+        if (isDirty()) setTimeout(function () { if (isDirty() && !saving) doSave(true); }, 300);
+      }
+    }
+  }
+
+  // 供 AI/审阅面板：确保当前内容落盘后再读磁盘版本
+  window.__edFlushSave = function () { return doSave(true); };
+  window.__edSaveManual = function () { return doSave(false); };
+  window.__edIsDirty = isDirty;
+
+  stateEl.addEventListener('click', function () { if (stateEl.dataset.state === 'error' || isDirty()) doSave(false); });
+  document.getElementById('saveBtn').addEventListener('click', function () { doSave(false); });
+  document.addEventListener('keydown', function (e) {
+    if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); doSave(false); }
+  });
+  window.addEventListener('beforeunload', function (e) { if (isDirty()) { e.preventDefault(); e.returnValue = ''; } });
+
+  document.getElementById('pdfBtn').addEventListener('click', async function () {
+    if (isDirty()) {
+      toast('正在保存后导出…');
+      var ok = await doSave(true);
+      if (!ok) { toast('保存失败，已停留在编辑页（内容已本地留存）'); return; }
+    }
+    location.href = '/export?id=' + DOC_ID;
+  });
+  document.getElementById('histBtn').addEventListener('click', function () { location.href = '/snapshots?id=' + DOC_ID; });
+})();

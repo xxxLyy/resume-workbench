@@ -2152,3 +2152,16 @@ else
     fail "区域浏览器回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
   fi
 fi
+
+# ===== 16d. 历史主脚本在严格 CSP 下的真实保存（DEL-01/02：脱敏夹具 + 未知脚本保持拒绝）=====
+if node test-fixtures/reliability/test-history-editor.mjs; then
+  echo '✅ 历史主脚本回归（当前版/历史版 输入→保存→隔离盘→刷新 + 未知脚本被 CSP 拒绝）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 历史主脚本回归未执行：Chromium 不可用'
+  else
+    fail "历史主脚本回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi
