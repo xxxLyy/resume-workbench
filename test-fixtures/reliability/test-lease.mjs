@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { chatMsgs } from '../../llm.mjs';
-import { aiPool, renderPool, ResourceLeaseError } from '../../resource-slots.mjs';
+import { aiPool, renderPool, ResourceLeaseError, createSlotPool } from '../../resource-slots.mjs';
 
 const fail = (m) => { console.error('❌ ' + m); process.exit(1); };
 
@@ -123,6 +123,48 @@ process.on('exit', cleanup);
   console.log('  ✅ 渲染池同合同（校验 + 不并发）');
 }
 
-console.log('PASS 资源凭证合同: 伪造/跨池/已释放/被占用一律拒绝且零工作 + 合法凭证放行');
+// ===== ⑧ 使用期间不得释放容量 =====
+{
+  // 8-a 容量 1 的池：借出 → 占用 → 释放必须被拒 → 第二个凭证拿不到槽
+  const one = createSlotPool({ size: 1, name: 'one' });
+  const l = one.borrow();
+  one.claim(l);
+  let threw = null;
+  try { l.release(); } catch (e) { threw = e; }
+  assert.ok(threw, '执行期间 release 必须被拒');
+  assert.ok(threw instanceof ResourceLeaseError, '必须是凭证错误，实际：' + (threw && threw.message));
+  assert.equal(one.stats().active, 1, '被拒的 release 不得让容量虚增');
+  assert.equal(l.released, false, '被拒的 release 不得把凭证标记为已释放');
+  // 容量仍是 1 → 第二个凭证拿不到（必须排队，不是立刻拿到）
+  let second = null;
+  try { second = one.borrow(); } catch (e) { second = null; }
+  assert.equal(second, null, '被拒的 release 之后第二个凭证仍能拿到槽（容量已被虚增）');
+  // 执行结束：unclaim → release 成功 → 槽位归还
+  one.unclaim(l);
+  l.release();
+  assert.equal(one.stats().active, 0, 'unclaim 后 release 应真正腾出槽位');
+  l.release();                                   // 重复释放仍幂等
+  assert.equal(one.stats().active, 0, '重复释放不得重复腾槽');
+  console.log('  ✅ ⑧ 使用期间 release 被拒（容量与等待者状态不变），结束后释放成功');
+}
+
+// ===== ⑨ 共享池上同样成立 =====
+{
+  const l = aiPool.borrow();
+  aiPool.claim(l);
+  const before = aiPool.stats();
+  assert.throws(() => l.release(), (e) => e instanceof ResourceLeaseError);
+  const after = aiPool.stats();
+  assert.equal(after.active, before.active, '共享池上被拒的 release 不得改变容量');
+  assert.equal(after.waiting, before.waiting, '共享池上被拒的 release 不得改变等待者状态');
+  aiPool.unclaim(l);
+  l.release();
+  assert.equal(aiPool.stats().active, before.active - 1, 'unclaim 后 release 应真正腾出槽位');
+  l.release();
+  assert.equal(aiPool.stats().active, before.active - 1, '重复释放不得重复腾槽');
+  console.log('  ✅ ⑨ 共享池：使用期间 release 被拒、结束后释放成功、重复释放幂等');
+}
+
+console.log('PASS 资源凭证合同: 伪造/跨池/已释放/被占用一律拒绝且零工作 + 合法凭证放行 + 使用期间不得释放容量');
 cleanup();
 process.exit(0);

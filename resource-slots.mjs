@@ -89,6 +89,13 @@ export function createSlotPool({ size, name, waitMs = 5000 } = {}) {
     if (!lease || typeof lease !== 'object' || !owned.has(lease)) {
       throw new ResourceLeaseError(`槽位不属于池 ${poolName}：不能释放他人或外池的 lease`);
     }
+    // 使用期间不得释放容量（2026-10-28 补丁轮三）：
+    //   执行器 claim 之后，槽位代表的是「真实工作还在跑」；此时释放会让容量虚增，
+    //   第二个凭证就能拿到槽 —— 真实并发就突破了上限。
+    //   拒绝时容量与等待队列都不变（先判后改）；执行结束先 unclaim 再 release。
+    if (lease.inUse) {
+      throw new ResourceLeaseError(`槽位 ${poolName} 的凭证正在被使用：执行结束（unclaim）前不得释放容量`);
+    }
     if (lease.released) return; // 幂等：重复释放不抛错、不重复腾槽
     lease.released = true;
     active -= 1;
