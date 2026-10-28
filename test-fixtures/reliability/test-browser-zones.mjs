@@ -52,7 +52,11 @@ const llm = http.createServer(async (req, res) => {
     if (msgs.indexOf('区域改写器') >= 0) {
       rewriteCalls++;
       // 候选必须保留原文全部数字（否则事实护栏判 conflict → 不可接受，这本身是正确行为）
-      content = JSON.stringify({ rewrites: [{ zid: P1, candidate: '项目一：负责消息队列服务，把延迟从 80ms 降到 12ms' }] });
+      // 按提示里的 zid 选目标：项目区→P3，工作区→P1
+      const isProj = msgs.indexOf('(' + P3 + ')') >= 0;
+      content = JSON.stringify({ rewrites: [isProj
+        ? { zid: P3, candidate: '项目三：负责容量规划与成本优化，支撑三年增长' }
+        : { zid: P1, candidate: '项目一：负责消息队列服务，把延迟从 80ms 降到 12ms' }] });
     } else if (msgs.indexOf('区域分析顾问') >= 0) {
       analyzeSeq++;
       var zm = /【区域：([^】]+)】/.exec(msgs);
@@ -216,7 +220,106 @@ try {
     console.log('  ✅ Z5 zoneOps 提交只合并未变目标 + 等待期间输入保留 + 一次应用一次撤销');
   }
 
-  console.log('PASS 区域浏览器回归: Z1 保存前置 + Z4 请求 epoch + Z5 安全子集提交与局部合并');
+  // ===== 测试基线复位：把磁盘正文与页面正文同步回原文，并同步客户端基线 =====
+  // 自动保存被桩掉（__edIsDirty 恒 false），磁盘不会跟着 DOM 走 → 每个用例前显式复位。
+  const syncDisk = async (zid, want) => {
+    const p = path.join(root, 'docs', DOC + '.html');
+    let h = fs.readFileSync(p, 'utf8');
+    // 按 zid 定位磁盘正文里的那一段并替换（不能按 DOM 当前文本替换：磁盘与 DOM 可能已经不一致）
+    const re = new RegExp('(data-zid="' + zid + '"[^>]*>)([\\s\\S]*?)(</)');
+    if (!re.test(h)) fail('磁盘正文里找不到 zid=' + zid);
+    h = h.replace(re, (m, a, txt, c) => a + want + c);
+    fs.writeFileSync(p, h);
+    await page.evaluate((a) => {
+      var el = document.querySelector('.sheet [data-zid="' + a.z + '"]');
+      el.textContent = a.w;
+      if (window.__edMarkProgrammatic) window.__edMarkProgrammatic();
+    }, { z: zid, w: want });
+    const m = fs.statSync(p).mtimeMs;
+    await page.evaluate((mm) => { window.__edDocMtime = mm; }, m);
+  };
+  const makeCandidate = async (zone, instr) => {
+    await clickZone(zone);
+    await page.waitForTimeout(400);
+    await page.evaluate((v) => {
+      var ta = document.getElementById('zp-instr');
+      if (ta) { ta.value = v; ta.dispatchEvent(new Event('input', { bubbles: true })); }
+      var btn = document.getElementById('zp-rewrite');
+      if (btn) btn.click();
+    }, instr);
+    try { await page.waitForSelector('#zp-accept', { state: 'attached', timeout: 20000 }); }
+    catch (e) {
+      const dbg = await page.evaluate(() => ({
+        out: ((document.getElementById('zp-ai-out') || {}).textContent || '').slice(-300),
+        prev: ((document.getElementById('zp-preview') || {}).textContent || '').slice(-200),
+        instr: ((document.getElementById('zp-instr') || {}).value || ''),
+        mtime: Number(window.__edDocMtime || 0)
+      }));
+      fail('改写候选未生成（zone=' + zone + ' rewriteCalls=' + rewriteCalls + '）：' + JSON.stringify(dbg) + ' 服务日志=' + serverLog.slice(-400));
+    }
+  };
+
+  // ===== Z6：目标段在请求期间继续编辑 → 输入必须保留（候选不得覆盖用户输入）=====
+  {
+    await syncDisk(P3, T3);
+    await page.route('**/save*', async (route) => {
+      const response = await route.fetch();      // 服务端实际保存（磁盘会拿到候选）
+      await new Promise((r) => setTimeout(r, 900));
+      await route.fulfill({ response });
+    });
+    await makeCandidate('project', '更精简');
+    await page.evaluate(() => { var b = document.getElementById('zp-accept'); if (b) b.click(); });
+    await page.waitForTimeout(350);
+    // 保存在途：用户继续编辑【目标段本身】
+    await page.evaluate((zid) => {
+      var el = document.querySelector('.sheet [data-zid="' + zid + '"]');
+      el.textContent = '项目三：我在请求期间改的目标段';
+      if (window.__edMarkProgrammatic) window.__edMarkProgrammatic();
+    }, P3);
+    await page.waitForTimeout(2200);
+    await page.unroute('**/save*');
+    const p3 = await page.$eval('.sheet [data-zid="' + P3 + '"]', (el) => el.textContent);
+    assert.ok(p3.includes('我在请求期间改的目标段'), '目标段在请求期间的输入被覆盖，实际：' + p3);
+    assert.ok(!p3.includes('容量规划与成本优化'), '目标段被区域候选覆盖（未保留用户输入），实际：' + p3);
+    const preview = await page.evaluate(() => ((document.getElementById('zp-preview') || {}).textContent || ''));
+    assert.ok(/已保留本地内容/.test(preview), '面板应说明目标段在等待期间的编辑被保留，实际：' + preview.slice(-160));
+    console.log('  ✅ Z6 目标段在请求期间继续编辑 → 输入保留、候选不覆盖');
+  }
+
+  // ===== Z7：较新保存先确认、旧回执后到 → 版本（基线）不能倒退 =====
+  {
+    await syncDisk(P3, T3);
+    let zoneRoute = null;
+    await page.route('**/save*', async (route) => {
+      const ct = route.request().headers()['content-type'] || '';
+      if (!ct.includes('application/json')) return route.continue();   // 普通保存放行
+      zoneRoute = route;                                            // 区域保存：先挂起
+    });
+    await makeCandidate('project', '更精简');
+    await page.evaluate(() => { var b = document.getElementById('zp-accept'); if (b) b.click(); });
+    await page.waitForTimeout(700);
+    assert.ok(zoneRoute, '区域保存请求未发出');
+    // 服务端已处理（磁盘已推进），但响应被挂起
+    const st1 = await (await fetch(base + '/job/changes?id=' + DOC)).json();
+    const diskMtime = Number(st1.doc.mtime) || 0;
+    // 更新的保存先确认：把客户端基线同步到当前磁盘版本后做一次普通保存
+    await page.evaluate((m) => { window.__edDocMtime = m; }, diskMtime);
+    await page.evaluate(() => window.__edSaveManual());
+    await page.waitForTimeout(900);
+    const newerBaseline = await page.evaluate(() => Number(window.__edDocMtime || 0));
+    assert.ok(newerBaseline > diskMtime, '更新的保存未推进基线，实际：' + newerBaseline + ' vs ' + diskMtime);
+    // 旧回执此刻才到 → 基线不得被旧回执拉回去
+    const resp = await zoneRoute.fetch();
+    const body = await resp.json();
+    await zoneRoute.fulfill({ response: resp, body: JSON.stringify(body) });
+    await page.unroute('**/save*');
+    await page.waitForTimeout(900);
+    const baselineAfter = await page.evaluate(() => Number(window.__edDocMtime || 0));
+    assert.ok(baselineAfter >= newerBaseline, '旧回执把版本拉回去了（基线倒退）：' + baselineAfter + ' < ' + newerBaseline);
+    console.log('  ✅ Z7 较新保存先确认、旧回执后到 → 版本不倒退');
+  }
+
+  console.log('PASS 区域浏览器回归: Z1 保存前置 + Z4 请求 epoch + Z5 安全子集提交与局部合并 + Z6 目标段在途输入 + Z7 版本不倒退');
 } finally {
   try { if (browser) await browser.close(); } catch {}
   try { server.kill('SIGTERM'); } catch {}

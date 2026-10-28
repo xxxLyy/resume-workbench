@@ -463,7 +463,9 @@
       if (window.__edMarkProgrammatic) window.__edMarkProgrammatic();
     }
     adoptedZoneReceipts[sent.requestId] = true;
-    if (receipt.mtime) window.__edDocMtime = receipt.mtime;
+    // 基线只进不退：回执的 mtime 可能比本地已确认的版本旧（期间别的窗口保存过）
+    // → 直接赋值会让基线倒退，后续保存拿旧基线必然 409。
+    if (receipt.mtime && Number(receipt.mtime) > Number(window.__edDocMtime || 0)) window.__edDocMtime = receipt.mtime;
     if (prev) {
       prev.textContent = ready.length
         ? ('已应用 ' + ready.length + ' 段' + (changed.length ? '（' + changed.length + ' 段在等待期间继续编辑，已保留本地内容）' : '') + (changedCount ? '；' + changedCount + ' 段在提交前已变化，未应用' : ''))
