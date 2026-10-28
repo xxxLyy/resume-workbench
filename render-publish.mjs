@@ -115,7 +115,8 @@ function restoreBackup(bakPath, target) {
  */
 export function recoverPair(outPdf, outSidecar) {
   const restored = [];
-  const failed = [];
+  const failed = [];   // 清理类失败（删不掉的旧残留）：不影响本次发布
+  const fatal = [];    // 还原失败：唯一恢复源还在，不能继续发布（否则新件会盖掉它）
   for (const target of [outPdf, outSidecar]) {
     if (!target) continue;
     const baks = siblings(target, BAK);
@@ -124,7 +125,7 @@ export function recoverPair(outPdf, outSidecar) {
       const newest = baks[baks.length - 1];
       const r = restoreBackup(newest, target);
       if (r.ok) restored.push(newest);
-      else failed.push(r.detail);
+      else fatal.push(r.detail);
       for (const b of baks.slice(0, -1)) {
         try { fs.rmSync(b, { force: true }); } catch (e) { failed.push(`无法删除旧备份 ${b}: ${e.message}`); }
       }
@@ -133,7 +134,7 @@ export function recoverPair(outPdf, outSidecar) {
       try { fs.rmSync(tmp, { force: true }); } catch (e) { failed.push(`无法删除暂存 ${tmp}: ${e.message}`); }
     }
   }
-  return { restored, failed };
+  return { restored, failed, fatal };
 }
 
 /**
@@ -149,12 +150,17 @@ export function publishPair({ tmpPdf, tmpSidecar, outPdf, outSidecar, validate }
   const stamp = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 
   // 0. 先清理上次中断的残留（fail-closed：退回上一次成对产物）
-  try {
-    const rec = recoverPair(outPdf, outSidecar);
-    if (rec && rec.failed && rec.failed.length) {
-      console.error(`[publish] 上次发布残留清理不完整：${rec.failed.join('; ')}`);
-    }
-  } catch (e) { console.error(`[publish] 残留清理异常：${(e && e.message) || e}`); }
+  //    还原失败（fatal）时必须中止本次发布：备份是唯一的恢复源，
+  //    继续发布会用新件盖掉它 → 旧产物与恢复备份双双丢失（2026-10-28 补丁轮实证）。
+  let rec = { restored: [], failed: [], fatal: [] };
+  try { rec = recoverPair(outPdf, outSidecar); }
+  catch (e) { return { ok: false, reason: 'recover', detail: `上次发布残留清理异常：${(e && e.message) || e}`, recoverable: true }; }
+  if (rec.fatal && rec.fatal.length) {
+    return { ok: false, reason: 'recover', detail: `上次发布残留还原失败，已中止本次发布（恢复源保留）：${rec.fatal.join('; ')}`, recoverable: true };
+  }
+  if (rec.failed && rec.failed.length) {
+    console.error(`[publish] 上次发布残留清理不完整：${rec.failed.join('; ')}`);
+  }
 
   // 1. 临时文件必须在
   for (const [label, p] of [['tmpPdf', tmpPdf], ['tmpSidecar', tmpSidecar]]) {
@@ -225,12 +231,21 @@ export function publishPair({ tmpPdf, tmpSidecar, outPdf, outSidecar, validate }
         try { fs.rmSync(outPdf, { force: true }); } catch (e2) { rbErrors.push(`无法撤回新 PDF: ${e2.message}`); }
       }
     }
-    // 删除暂存残留与备份
-    for (const p of [stagePdf, stageSide, bakPdf, bakSide]) {
-      try { fs.rmSync(p, { force: true }); } catch { /* 尽力清理 */ }
+    // 回滚不完整 → 备份是**唯一的恢复源**，必须留着（此前无条件删 → 旧旁车与恢复备份双双丢失）。
+    const rollbackComplete = rbErrors.length === 0;
+    const retained = [];
+    if (!rollbackComplete) {
+      for (const p of [bakPdf, bakSide]) { if (fs.existsSync(p)) retained.push(p); }
     }
-    if (rbErrors.length) {
-      return { ok: false, reason: 'rollback', detail: `发布失败(${e.message})且回滚不完整: ${rbErrors.join('; ')}` };
+    // 暂存件永远清掉（新件，不是恢复源）；备份只在回滚完整时清掉
+    for (const p of [stagePdf, stageSide, ...(rollbackComplete ? [bakPdf, bakSide] : [])]) {
+      try { fs.rmSync(p, { force: true }); } catch (e2) { rbErrors.push(`无法清理 ${p}: ${e2.message}`); }
+    }
+    if (!rollbackComplete) {
+      return {
+        ok: false, reason: 'rollback', recoverable: true, retained,
+        detail: `发布失败(${e.message})且回滚不完整: ${rbErrors.join('; ')}` + (retained.length ? `（恢复源已保留：${retained.join('、')}）` : '')
+      };
     }
     return { ok: false, reason: 'rename', detail: `发布失败已回滚: ${e.message}` };
   }

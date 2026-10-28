@@ -341,4 +341,115 @@ const kinds = (r) => r.removed.map((x) => x.kind);
   assert.ok(rec && Array.isArray(rec.restored) && Array.isArray(rec.failed), 'recoverPair 必须返回 restored/failed');
 }
 
+// ===== U. 发布回滚不完整：必须保留恢复源 + 可诊断状态（2026-10-28 补丁轮）=====
+// 注入：发布 PDF 的 rename 失败（旁车已换新）+ 旁车回滚的 rename 也失败。
+// 旧行为：回滚不完整时仍无条件删掉 .bak- → 旧旁车与恢复备份双双丢失。
+{
+  const dir = path.join(tmpRoot, 'u');
+  fs.mkdirSync(dir, { recursive: true });
+  const outPdf = path.join(dir, 'a.pdf');
+  const outSide = path.join(dir, 'a.pdf.env.json');
+  fs.writeFileSync(outPdf, 'OLD-PDF');
+  fs.writeFileSync(outSide, 'OLD-SIDE');
+  const tmpPdf = path.join(tmpRoot, 'u.tmp.pdf');
+  const tmpSide = path.join(tmpRoot, 'u.tmp.pdf.env.json');
+  fs.writeFileSync(tmpPdf, 'NEW-PDF');
+  fs.writeFileSync(tmpSide, 'NEW-SIDE');
+  // 注入：目标为 .pdf 的 rename 失败；回滚旁车时的 rename 也失败
+  const origRename = fs.renameSync;
+  fs.renameSync = function (a, b) {
+    const src = String(a), dst = String(b);
+    // 发布阶段的 PDF rename（源是 .new- 暂存件）
+    if (dst.endsWith('.pdf') && src.includes('.new-')) {
+      const e = new Error('注入：发布 PDF 的 rename 失败'); e.code = 'EIO'; throw e;
+    }
+    // 回滚阶段的旁车 rename（源是 .bak- 备份件）
+    if (dst.endsWith('.env.json') && src.includes('.bak-')) {
+      const e = new Error('注入：旁车回滚的 rename 失败'); e.code = 'EIO'; throw e;
+    }
+    return origRename.apply(fs, arguments);
+  };
+  let r;
+  try {
+    r = publishPair({ tmpPdf, tmpSidecar: tmpSide, outPdf, outSidecar: outSide });
+  } finally {
+    fs.renameSync = origRename;   // 还原注入
+  }
+  assert.equal(r.ok, false, '注入失败时发布必须失败');
+  assert.equal(r.reason, 'rollback', '回滚不完整必须报 rollback，实际：' + JSON.stringify(r));
+  assert.ok(r.recoverable === true, '回滚不完整必须标记可恢复：' + JSON.stringify(r));
+  assert.ok(Array.isArray(r.retained) && r.retained.length >= 1, '回滚不完整必须报告保留的恢复源：' + JSON.stringify(r));
+  for (const p of r.retained) assert.ok(fs.existsSync(p), '恢复源必须真的留在磁盘上：' + p);
+  assert.ok(r.detail.includes('恢复源'), '回滚不完整的说明里要点名恢复源：' + r.detail);
+  // 暂存件（新件）清掉了，恢复源（备份）留着
+  const leftNew = fs.readdirSync(dir).filter((f) => f.includes('.new-'));
+  assert.equal(leftNew.length, 0, '暂存件应被清理：' + JSON.stringify(leftNew));
+  const leftBak = fs.readdirSync(dir).filter((f) => f.includes('.bak-'));
+  assert.ok(leftBak.length >= 1, '回滚不完整时备份（恢复源）必须留在盘上：' + JSON.stringify(leftBak));
+  // 再次恢复：保留的备份能把旧旁车还原回来
+  const rec = recoverPair(outPdf, outSide);
+  assert.ok(rec.restored.length >= 1, '再次恢复应还原旧产物，实际：' + JSON.stringify(rec));
+  assert.equal(fs.readFileSync(outSide, 'utf8'), 'OLD-SIDE', '再次恢复后旧旁车应回来');
+  assert.equal(fs.readFileSync(outPdf, 'utf8'), 'OLD-PDF', '再次恢复后旧 PDF 应回来');
+}
+
+// ===== V. 上次发布残留还原失败 → 必须中止本次发布（不能只记日志后继续覆盖）=====
+{
+  const dir = path.join(tmpRoot, 'v');
+  fs.mkdirSync(dir, { recursive: true });
+  const outPdf = path.join(dir, 'a.pdf');
+  const outSide = path.join(dir, 'a.pdf.env.json');
+  fs.writeFileSync(outPdf, 'OLD-PDF');
+  fs.writeFileSync(outSide, 'OLD-SIDE');
+  // 模拟上次发布中断的残留：备份件在，但还原会失败（注入 rename 失败）
+  const bak = outSide + '.bak-1-2';
+  fs.writeFileSync(bak, 'OLD-SIDE-BACKUP');
+  const tmpPdf = path.join(tmpRoot, 'v.tmp.pdf');
+  const tmpSide = path.join(tmpRoot, 'v.tmp.pdf.env.json');
+  fs.writeFileSync(tmpPdf, 'NEW-PDF');
+  fs.writeFileSync(tmpSide, 'NEW-SIDE');
+  const origRename = fs.renameSync;
+  fs.renameSync = function (a, b) {
+    if (String(a).includes('.bak-')) {
+      const e = new Error('注入：恢复时的 rename 失败'); e.code = 'EIO'; throw e;
+    }
+    return origRename.apply(fs, arguments);
+  };
+  let r;
+  try {
+    r = publishPair({ tmpPdf, tmpSidecar: tmpSide, outPdf, outSidecar: outSide });
+  } finally {
+    fs.renameSync = origRename;
+  }
+  assert.equal(r.ok, false, '残留还原失败时必须中止发布');
+  assert.equal(r.reason, 'recover', '必须报 recover，实际：' + JSON.stringify(r));
+  assert.equal(fs.readFileSync(outPdf, 'utf8'), 'OLD-PDF', '中止发布时旧 PDF 不得被覆盖');
+  assert.ok(fs.existsSync(bak), '恢复源不得被清掉');
+  assert.equal(fs.readFileSync(bak, 'utf8'), 'OLD-SIDE-BACKUP', '恢复源里必须还留着旧旁车（可再次恢复）');
+  const sideNow = fs.existsSync(outSide) ? fs.readFileSync(outSide, 'utf8') : '';
+  assert.ok(sideNow === 'OLD-SIDE' || sideNow === '', '中止发布时旧旁车不得被新件覆盖，实际：' + sideNow);
+}
+
+// ===== W. 并发同一目标：两次发布各自成对，不出现新 PDF 配旧旁车 =====
+{
+  const dir = path.join(tmpRoot, 'w');
+  fs.mkdirSync(dir, { recursive: true });
+  const outPdf = path.join(dir, 'a.pdf');
+  const outSide = path.join(dir, 'a.pdf.env.json');
+  const mk = (tag) => {
+    const p = path.join(tmpRoot, 'w.' + tag + '.pdf');
+    const s = path.join(tmpRoot, 'w.' + tag + '.pdf.env.json');
+    fs.writeFileSync(p, 'PDF-' + tag);
+    fs.writeFileSync(s, 'SIDE-' + tag);
+    return { p, s };
+  };
+  const t1 = mk('1'), t2 = mk('2');
+  const r1 = publishPair({ tmpPdf: t1.p, tmpSidecar: t1.s, outPdf, outSidecar: outSide });
+  const r2 = publishPair({ tmpPdf: t2.p, tmpSidecar: t2.s, outPdf, outSidecar: outSide });
+  assert.ok(r1.ok && r2.ok, '两次发布都应成功');
+  const pdf = fs.readFileSync(outPdf, 'utf8');
+  const side = fs.readFileSync(outSide, 'utf8');
+  assert.equal(pdf.replace('PDF-', ''), side.replace('SIDE-', ''), '并发发布后 PDF 与旁车必须同源，实际：' + pdf + ' / ' + side);
+}
+
 console.log('test-render-safe.mjs: 全部断言通过');
