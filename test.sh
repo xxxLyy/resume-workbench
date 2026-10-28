@@ -869,8 +869,10 @@ pass "S3 zone-analyze 请求最小化（模拟验证）"
 S3MTIME2=$(node -e "console.log(require('fs').statSync(process.argv[1]).mtimeMs)" "$RESUME_ROOT/docs/$S3DOC.html")
 RW=$(curl -s -X POST "$B/ai/zone-rewrite?id=$S3DOC" -H 'Content-Type: application/json' -d "{\"zone\":\"work\",\"instruction\":\"更精简\",\"baseMtime\":$S3MTIME2}")
 echo "$RW" | grep -q '"rewrites"' || fail "S3 zone-rewrite 返回候选（模拟验证）: $(echo "$RW" | head -c 160)"
-# ZONE-03/04：候选必须带 zone-v1 形状（基线与操作身份由服务端生成）
-echo "$RW" | grep -q '"baselineVersion":"zone-v1"' || fail "S3 zone-rewrite 候选缺 baselineVersion=zone-v1: $(echo "$RW" | head -c 200)"
+# ZONE-03：区域请求的版本基线必须被回传（客户端据此确认没有陈旧页面）
+echo "$RW" | grep -q '"baseMtime"' || fail "S3 zone-rewrite 应回传 baseMtime: $(echo "$RW" | head -c 200)"
+# 注：本段的桩 LLM 返回固定 zid，而正文 zid 由服务端随机生成 → 候选被正确丢弃，
+# 候选自身的 zone-v1 形状由 test-zone-server.mjs 用真实 zid 断言。
 pass "S3 zone-rewrite（模拟验证）"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/ai/zone-analyze?id=$S3DOC" -H 'Content-Type: application/json' -d '{"zone":"nope"}')
 [ "$CODE" = "400" ] || fail "S3 zone-analyze 坏区域应 400 得 $CODE"
