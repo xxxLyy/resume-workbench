@@ -78,12 +78,12 @@
 
   var root = document.createElement('div');
   root.innerHTML = (embedded ? '' : '<button id="ai-toggle" title="AI 助手" aria-label="AI 助手">' + __icon('bot') + '</button>')
-    + '<div id="ai-drawer"' + (embedded ? ' style="display:none"' : '') + '><header><span>' + __icon('bot') + ' AI 助手</span><span id="ai-close" role="button" aria-label="关闭">' + __icon('x') + '</span></header>'
+    + '<div id="ai-drawer"' + (embedded ? ' style="display:none"' : '') + '><header><span>' + __icon('bot') + ' AI 助手</span><span id="ai-close" role="button" tabindex="0" aria-label="关闭">' + __icon('x') + '</span></header>'
     + '<div id="ai-tabs"><button data-tab="chat" class="on">' + __icon('message-square') + ' 对话</button><button data-tab="review">' + __icon('stethoscope') + ' 体检</button></div>'
     + '<div id="ai-pane-chat" class="ai-pane on"><div id="ai-log" aria-live="polite"></div><div id="ai-input"><input id="ai-msg" placeholder="例如：把项目3精简一点" aria-label="对话输入"><button id="ai-send">发送</button></div></div>'
     + '<div id="ai-pane-review" class="ai-pane"><div class="ai-actions"><button id="ai-review-full">全面体检</button><button id="ai-review-quant">仅量化增强</button></div><div id="ai-review-out" aria-live="polite"></div></div></div>'
     + '<button id="ai-sel-btn">' + __icon('sparkles') + ' AI 改写</button>'
-    + '<div id="ai-pop" role="dialog" aria-label="选区改写"><textarea id="ai-inst" placeholder="改写指令，例如：精简到两行、突出量化成果" aria-label="改写指令"></textarea>'
+    + '<div id="ai-pop" role="dialog" aria-modal="true" aria-label="选区改写"><textarea id="ai-inst" placeholder="改写指令，例如：精简到两行、突出量化成果" aria-label="改写指令"></textarea>'
     + '<div class="row"><button id="ai-gen">生成预览</button></div><div class="preview" id="ai-preview"></div>'
     + '<div class="row" id="ai-actions" style="display:none"><button id="ai-apply">应用</button><button id="ai-cancel">取消</button></div></div>';
   // 挂进 AI-INJECT 注释对之间（/save 剥离不落盘）；无注释对（直接打开文档文件）兜底 append
@@ -199,7 +199,12 @@
     $('ai-drawer').classList.toggle('open', open);
   }
   if ($('ai-toggle')) $('ai-toggle').onclick = function () { setDrawer(!$('ai-drawer').classList.contains('open')); };
-  if ($('ai-close')) $('ai-close').onclick = function () { setDrawer(false); };
+  if ($('ai-close')) {
+    $('ai-close').onclick = function () { setDrawer(false); };
+    $('ai-close').addEventListener('keydown', function (e) {   // A11：role=button 必须可键盘触发
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setDrawer(false); }
+    });
+  }
 
   var sending = false;
   async function sendChat() {
@@ -413,6 +418,17 @@
     if (seltb) seltb.style.display = 'none';
     if (selBtn) selBtn.style.display = 'none';
   }, { passive: true });
+  // A11：键盘选区（Shift+方向）也要能呼出工具条——mouseup 覆盖不到键盘路径。
+  // 只做正向呼出，不在 else 里隐藏：隐藏仍归 mouseup/scroll，避免按钮点击瞬间浏览器
+  // 清掉文档选区时 selectionchange 抢先把工具条藏掉、点击落空。
+  document.addEventListener('selectionchange', function () {
+    var sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount || !sheet.contains(sel.anchorNode)) return;
+    if (sel.toString().trim().length <= 3) return;
+    selText = sel.toString();
+    selRect = sel.getRangeAt(0).getBoundingClientRect();
+    positionToolbar(seltb || selBtn, selRect);
+  });
 
   function openRewritePop(inst) {
     var pop = $('ai-pop');
@@ -475,5 +491,19 @@
   $('ai-cancel').onclick = function () { $('ai-pop').style.display = 'none'; pendingAfter = null; pendingBefore = ''; };
   document.addEventListener('mousedown', function (e) {
     if (!$('ai-pop').contains(e.target) && e.target.id !== 'ai-sel-btn') $('ai-pop').style.display = 'none';
+  });
+  // A11：ai-pop 是 dialog——Esc 单层关闭不穿透（stopImmediatePropagation，同 S2-T7 M6 口径），
+  // Tab 圈定在弹层内（对齐外壳弹层 trapTab 模式）。
+  document.addEventListener('keydown', function (e) {
+    var pop = $('ai-pop');
+    if (!pop || pop.style.display !== 'block') return;
+    if (e.key === 'Escape') { e.stopImmediatePropagation(); $('ai-cancel').click(); return; }
+    if (e.key !== 'Tab') return;
+    var f = pop.querySelectorAll('button, textarea, input, [tabindex]:not([tabindex="-1"])');
+    if (!f.length) return;
+    var first = f[0], last = f[f.length - 1];
+    if (!pop.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   });
 })();

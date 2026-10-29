@@ -139,7 +139,7 @@
     order.forEach(function (k) {
       if (!ZONE_HUES[k]) return;
       var name = (ZONES.filter(function (z) { return z[0] === k; })[0] || ['', '?'])[1];
-      html += '<div class="zp-row" data-zone="' + k + '"><span class="zp-dot" style="background:' + ZONE_HUES[k] + '"></span>'
+      html += '<div class="zp-row" role="button" tabindex="0" aria-label="定位并打开' + name + '区域" data-zone="' + k + '"><span class="zp-dot" style="background:' + ZONE_HUES[k] + '"></span>'
         + '<span class="zp-n">' + name + (state.zoneRounds[k] ? ' · 轮次' + state.zoneRounds[k] : '') + '</span>'
         + '<span class="zp-c">' + (c[k].ok ? __icon('check') + c[k].ok : '') + (c[k].pend ? ' ' + __icon('circle-alert') + c[k].pend : '') + '</span></div>'
         // 空 zone 空态（D5）：无任何段落的区域行给一行说明（正文添加后自动进入待确认）
@@ -149,9 +149,13 @@
     root.querySelector('#zp-color').addEventListener('click', toggleColor);
     if (root.querySelector('#zp-pend')) root.querySelector('#zp-pend').addEventListener('click', confirmNextPending);
     Array.prototype.forEach.call(root.querySelectorAll('.zp-row'), function (row) {
-      row.addEventListener('click', function () {
+      var act = function () {
         locate(row.getAttribute('data-zone'));
         openAi(row.getAttribute('data-zone'));
+      };
+      row.addEventListener('click', act);
+      row.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); act(); }   // A10：键盘可达（对齐素材卡模式）
       });
     });
     // 保留已展开的 AI 区（render() 由 load() 回调触发重绘时不把意见卡打回）
@@ -553,6 +557,8 @@
     mask.setAttribute('data-zone-panel', '1');          // 运行时标记（extract 第二道防线同款）
     var card = document.createElement('div');
     card.className = 'zp-card';
+    card.setAttribute('role', 'dialog');   // A10：对齐同仓其余三个弹层的 dialog 语义
+    card.setAttribute('aria-modal', 'true');
     card.setAttribute('data-zid', zid);
     var head = document.createElement('div');
     head.textContent = '段落：' + preview + '…';
@@ -624,7 +630,14 @@
     var ne = { zone: zoneKey, status: confirmed ? 'confirmed' : 'pending' };
     if (typeof next[zid].locked === 'boolean') ne.locked = next[zid].locked;
     next[zid] = ne;
-    api('/zones?id=' + encodeURIComponent(DOC_ID), { zones: next }).then(load).catch(function () {});
+    api('/zones?id=' + encodeURIComponent(DOC_ID), { zones: next }).then(load).catch(function () {
+      // A10：吞错收口——改绑失败必须可见，否则用户误以为已成功（此前是空 catch）
+      var m = root.querySelector('.zp-msg');
+      if (!m) { m = document.createElement('div'); m.className = 'zp-msg'; root.appendChild(m); }
+      m.setAttribute('role', 'status');
+      m.style.color = 'var(--ed-warn)';
+      m.textContent = '改绑未保存：服务端写入失败，请重试或刷新后核对';
+    });
   }
 
   load();
