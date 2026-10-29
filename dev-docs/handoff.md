@@ -919,3 +919,55 @@ safe-url.mjs / eval.mjs / template.mjs），报 15 条（0 高 / 4 中 / 11 低�
 2. 单文件回退：`git checkout 2531194 -- job-panel.js`（只动这一个文件）。
 3. 整提交回退：`git revert --no-commit <commit>` → 看 diff → `git commit`。
 4. 回退后必须重跑 `RESUME_TEST_STRICT=1 npm run test:all`。
+
+## UI/UX 调研与 A 层落地轮（2026-10-30）：方案定稿 + A1–A15 全量实施（起点 `main@7430f03`）
+
+本轮 = 前置的动态工作流调研（四路界面走查 + 三路网络调研 + ui-ux-pro-max 规范对照 → 方案定稿）+ 主会话按方案 A 层全量实施 + B2 核实。方案全文：`dev-docs/2026-10-29-ui-ux-research-and-plan.md`（A/B/C 三层 + 快赢清单；B 层需用户决策，本轮未动）。冻结件 `template.html` / `themes/` / `render.mjs` 零改动。
+
+### 1. 逐项落地与验收（全部先红后绿或实查核验）
+
+| 项 | 内容 | 验收 |
+|---|---|---|
+| A1 | 应用页 `--warning/--success/--danger` 三值换 `#A25711/#15803D/#B91C1C`（复算 on 各自 soft 底 5.18/4.79/5.91 全过 AA）；saving pill 不动全局 accent 家族（47 处引用实测），新增局部 `--ed-accent-strong #9A3412`（6.18:1） | UI-2 断言期望值**同提交**更新，先红后绿 |
+| A2 | 6 处「首页的『大模型设置』」误导文案（方案点 5 处，实查第 6 处 `:3871` 变体）改「侧栏『设置』」；岗位表单错误旁补「去设置 →」链接 | 隔离实例无 LLM 生成返回新文案 |
+| A3 | `infos` 空时岗位表单整体替换引导卡（复用 POST /new 与 #up 锚点）；brief IIFE 与 jobForm 绑定加空态守卫；`invalid from` 改中文 | 零文档首页两张引导卡正常、建文档后表单恢复 |
+| A4 | 列表三种空态文案+动作；搜索无匹配行 `.search-empty` 与 `.list-empty` 排除出过滤选择器（方案点名的残留坑） | 隔离实例实测 |
+| A5 | 导出页检查卡「风格建议」重复列表删除；记录投递成功补「去投递看板跟踪 →」；tkCompany/tkRole/tkChannel 补 aria-label | test-structure 绿（:2515 断言是对生成函数，不受渲染去重影响） |
+| A6 | 设置页激活卡 `.card-active`（边框+底色）+「使用中」徽章（复用 badge ok）；删除钮 danger；input 去 size 定宽改 width:100% | 结构套件绿 |
+| A7 | ⋯ 菜单删除动作加左边框分隔 | confirm 保留 |
+| A8 | 全站动态反馈补读屏语义：shellToast/undoToast role=status；glyphObs 给模板运行时插入的 .toast/.recovery-bar（含 409 冲突条）动态补 role（不改冻结件）；.jp-msg、#zp-ai-out/#zp-preview、#ai-log/#ai-review-out、#jobMsg/#evalMsg/#upmsg/#tkMsg 全部落位 | 逐文件 grep 核验；落盘 HTML 不含新增属性（UI-6 既有断言把关） |
+| A9 | 审阅面板 render() 重建前采集在途输入与焦点、重建后仅结构未变时回填；visibilitychange 不可见暂停轮询、可见且 running 立即 refresh —— 收口 handoff:611 存量登记 | test.sh 全绿；**T5 浏览器夹具在此期间抓出 A3 守卫的顶层 return 语法错误**（node --check 查不到页面内联脚本的实证） |
+| A10 | 区域行 role=button/tabindex/aria-label + Enter/Space；bindOne 空 catch 改面板可见失败提示；openPicker 补 dialog 语义 | S3C/S3D 浏览器断言绿 |
+| A11 | selectionchange 正向呼出选区工具条（键盘选区可用；不在 else 里隐藏——按钮点击瞬间选区被清时 selectionchange 抢先藏条会让点击落空）；ai-pop aria-modal + Esc 单层关闭 + Tab 圈定；#ai-close 键盘触发 | 结构+浏览器套件绿 |
+| A12 | 9 处 10/10.5/11.5px 字号→11/12px（grep 0 命中）；3 处 20px 钮→24px；chips 22px 保底=登记取舍。**符号钮 aria-label 经实查 editor-shell 已带（`b.setAttribute('aria-label', ...)`）——handoff:612 登记与现状不符（同 PANEL-2 模式），据此更新口径** | 验收 grep 0 命中 |
+| A13 | 4 处 scrollIntoView smooth 套 reduced-motion 守卫；应用页 button transform 并入既有 reduced-motion 规则 | grep 核验 |
+| A14 | 删 `--muted-2`（0 引用）与 Geist 字族名（无加载源）；**S2-B2 加 rgba 家族扫描**（语义色残留必须为 0；其余按家族前缀白名单：暖阴影/黑白遮罩 + warn/panel/accent 派生 3 家族） | 先红后绿 |
+| A15 | 右栏开关图标 settings→columns-3（44 图标内）；jobpop 补「完整定制要求请到首页表单填写」 | — |
+| B2 | **核实完毕：矛盾不成立**。隔离实例 + 真实 Chromium 截图 + DOM 扫描：工具栏 0 emoji、页面 0 报错——MutationObserver 覆盖生效，handoff「0 可见 emoji」口径正确，截图实测报告该条为误报。未做任何修复 | `/tmp/b2-toolbar.png` 留档 |
+
+### 2. 方案判定修正（实施中发现，已按实况执行）
+
+- **ai-panel 分页线两行不是死代码**：方案称「已被 .ed-on 高特异性遮蔽」——屏幕上成立，但 shell 覆盖在 `@media screen` 内且 template.html **没有** .page-line CSS，这两行是打印上下文的唯一着色来源。未删除，改为把外来红对齐 `--ed-warn` 色相 rgb(162,87,17)（同形 alpha 保留）。
+- A12 的符号钮可访问名与 PANEL-2 的「曾修后回归」叙事同源：handoff:609/612 两处登记均与现状不符，**现状以代码为准**。
+
+### 3. 顺带修复（超出方案、单独提交）
+
+- **editor-shell.js NUL 字节**：`:581` zid 碰撞重试分隔符被历史编辑事故写入 NUL（本意是空格），整文件被 BSD grep/文本工具按二进制静默处理。恢复空格；已持久化 zid 不受影响。
+- A3 空态守卫的顶层 `return` 语法错误（T5 浏览器夹具抓出，单独提交）。
+
+### 4. 套件与进程归属
+
+- `RESUME_TEST_STRICT=1 npm run test:all` → **EXIT=0**（572 断言；唯一 ❌ 行是段 X 的 Chromium 探测契约预期输出）。
+- T9①（跨进程并发 POST /export）在 10-30 01:52 那轮出现过一次 500「渲染失败」，复跑即绿、基线也绿，判定为**偶发时序**（机器负载敏感），留给后续观察——若再现在，查 T9 双服务的 updateMeta 锁竞争窗口。
+- 7766 已重启至本轮代码（`kill` 旧 PID，KeepAlive 拉起）：首页/真实文档 /edit/设置页真实浏览器只读点验 0 报错，A1 token 实测生效，工具栏 0 emoji；**真实数据 mtime 前后比对全部未变**。
+
+### 5. 起止提交与回退
+
+起点 `main@7430f03`，本轮 A 层提交（按动机分）：`cb121d4`(A1+断言) → `ba86ee7`(NUL) → `47345a7`(A2/A3/A4) → `a443087`(A5/A6/A7) → `453941a`(A8) → `4f65447`(return 修复) → `a56930e`(A9) → `9fcc790`(A10/A11) → `fd40146`(A12-A15)。
+
+**禁止 `git reset --hard` / `git clean -fd`**。逐提交 `git revert --no-commit <c>` 或单文件 `git checkout 7430f03 -- <file>`；回退后必须重跑全量四套件。A1 回退须连带回退 UI-2 期望值（同提交绑定）。
+
+### 6. 剩余事项
+
+- **B 线（漏洞审查+修复）**：动态工作流停在主套餐周限额（10-31 15:54 重置），一次性自动化将于 10-31 16:31 翻 `RUN_B` 开关恢复；已确认缺陷含 /snapshot/view 缺 CSP（高危，三路独立发现）等，其修复与本轮 A 层改动共存于后续提交。
+- B 层产品决策（B1 双 accent 规则、B4 评估历史、B6 S5 排序翻转建议等）见方案 §B 层，待用户拍板。
