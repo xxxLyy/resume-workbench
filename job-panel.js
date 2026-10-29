@@ -1071,6 +1071,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     else renderChanges();
     var msg = document.createElement('div');
     msg.className = 'jp-msg';
+    msg.setAttribute('role', 'status');   // A8：面板提示读屏可感知（render 重建后随新节点带上）
     root.appendChild(msg);
     applyNote();          // 提示跨渲染存活（见 note() 注释）
   }

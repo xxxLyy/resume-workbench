@@ -360,7 +360,12 @@
       var r = recs[i];
       if (r.type !== 'childList') continue;
       if (r.target && r.target.id === 'saveState') iconifyGlyph(r.target);
-      for (var j = 0; j < r.addedNodes.length; j++) sweepGlyphs(r.addedNodes[j]);
+      for (var j = 0; j < r.addedNodes.length; j++) {
+        var an = r.addedNodes[j];
+        sweepGlyphs(an);
+        // A8：模板运行时插入的 toast 与恢复/冲突条补读屏语义（不改冻结件，瞬态 UI 不落盘）
+        if (an && an.nodeType === 1 && an.classList && (an.classList.contains('toast') || an.classList.contains('recovery-bar')) && !an.getAttribute('role')) an.setAttribute('role', 'status');
+      }
     }
   });
   glyphObs.observe(document.body, { childList: true, subtree: true });
@@ -993,6 +998,7 @@
   function shellToast(msg) {                   // template.html 的 toast() 在其 IIFE 私有作用域，注入脚本取不到
     var t = document.createElement('div');
     t.className = 'toast';
+    t.setAttribute('role', 'status');   // A8：读屏可感知
     t.textContent = msg;
     mount(t);
     requestAnimationFrame(function () { t.style.opacity = '1'; });
@@ -1568,6 +1574,7 @@
   function undoToast(msg, opId) {
     var t = document.createElement('div');
     t.className = 'toast';
+    t.setAttribute('role', 'status');   // A8：读屏可感知
     t.style.pointerEvents = 'auto';
     var span = document.createElement('span');
     span.textContent = msg + '　';

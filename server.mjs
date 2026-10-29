@@ -1544,7 +1544,7 @@ function listPage(showArchived = false) {
               <button type="button" class="secondary" data-pages="2" aria-pressed="true">2 页（默认）</button></span></label>
           </div>
         </details>
-        <div style="grid-column:1/-1"><button type="submit">生成岗位草稿</button><button type="button" class="secondary" id="evalBtn">${icon('compass', 13)} 先评估这个岗位</button><span id="jobMsg" style="font-size:12px;color:var(--mut)"></span><span id="evalMsg" style="font-size:12px;color:var(--mut)"></span></div>
+        <div style="grid-column:1/-1"><button type="submit">生成岗位草稿</button><button type="button" class="secondary" id="evalBtn">${icon('compass', 13)} 先评估这个岗位</button><span id="jobMsg" role="status" style="font-size:12px;color:var(--mut)"></span><span id="evalMsg" role="status" style="font-size:12px;color:var(--mut)"></span></div>
         <div style="grid-column:1/-1;font-size:12px;color:var(--mut)">${icon('lightbulb', 13)} 「先评估」先用大模型判断这个岗位值不值得投（max 思考，通常需要 1–5 分钟），评估通过后再一键转成岗位适配草稿。</div>
       </form>`}
       <div id="evalResult"></div>
@@ -1558,7 +1558,7 @@ function listPage(showArchived = false) {
       <details class="import-box" style="flex:1;min-width:220px"><summary style="cursor:pointer;font-weight:700">${icon('file-text', 13)} 导入 PDF</summary>
         <form id="up" style="margin-top:8px">
           <span style="color:var(--mut)">选择 PDF 文件导入为新文档</span><input type="file" id="upfile" accept="application/pdf">
-          <button>导入</button><span id="upmsg"></span>
+          <button>导入</button><span id="upmsg" role="status"></span>
         </form>
       </details>
     </div>
@@ -4706,7 +4706,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         <input id="tkRole" placeholder="岗位" aria-label="岗位" value="${escAttr(meta.role || '')}" required>
         <input id="tkChannel" placeholder="渠道（可选）" aria-label="投递渠道" size="12">
         <input id="tkDate" type="date" aria-label="投递日期">
-        <button ${pdfCurrent && !pendingConflicts.length ? '' : 'disabled title="先解决上方问题"'}>记录已投递</button><span id="tkMsg" style="font-size:12px"></span>
+        <button ${pdfCurrent && !pendingConflicts.length ? '' : 'disabled title="先解决上方问题"'}>记录已投递</button><span id="tkMsg" role="status" style="font-size:12px"></span>
       </form>
     </div>
     ${pdfStat ? `<iframe src="/pdf?id=${id}" title="PDF 预览" style="width:100%;height:70vh;margin-top:12px;border:1px solid var(--line);border-radius:var(--radius-lg)"></iframe><p style="color:var(--mut);font-size:12px">预览为「最新版」便利文件；下载请用上方的导出记录（不可变产物）。</p>` : ''}

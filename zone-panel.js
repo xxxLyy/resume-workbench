@@ -205,6 +205,7 @@
     box.appendChild(head);
     var out = document.createElement('div');
     out.id = 'zp-ai-out';
+    out.setAttribute('aria-live', 'polite');   // A8：AI 分析结果读屏可感知
     out.textContent = '分析中…';
     box.appendChild(out);
     var acts = document.createElement('div');
@@ -233,7 +234,8 @@
     box.appendChild(rwBtn);
     var prev = document.getElementById('zp-preview');
     if (prev) box.appendChild(prev);   // 认领事件通道已建的预览容器（保持单实例，避免双 id）
-    else { prev = document.createElement('div'); prev.id = 'zp-preview'; box.appendChild(prev); }
+    else { prev = document.createElement('div'); prev.id = 'zp-preview'; prev.setAttribute('aria-live', 'polite'); box.appendChild(prev); }
+    prev.setAttribute('aria-live', 'polite');   // A8：两条路径（新建/认领）都保证语义
     root.appendChild(box);
     if (state.lastAnalysis && state.lastAnalysis.zone === zoneKey) showAnalysis(state.lastAnalysis.data);
     setBusy(state.aiDegraded);
