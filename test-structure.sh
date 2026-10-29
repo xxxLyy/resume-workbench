@@ -4063,7 +4063,7 @@ for (const [k, v] of Object.entries({
   '--background': '#ffffff', '--foreground': '#0a0a0a', '--muted': '#737373',
   '--card': '#ffffff', '--card-2': '#fafafa', '--border': '#e5e5e5',
   '--accent': '#18181b', '--accent-fg': '#ffffff',
-  '--success': '#16a34a', '--warning': '#d97706', '--danger': '#dc2626',
+  '--success': '#15803D', '--warning': '#A25711', '--danger': '#B91C1C',
 })) {
   assert(srv.includes(k) && srv.includes(v), `token ${k} 应存在且值为 ${v}`);
 }
