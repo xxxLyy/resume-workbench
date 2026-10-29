@@ -35,7 +35,7 @@
     + '.zp-row:hover{background:var(--ed-bg)}'
     + '.zp-dot{width:10px;height:10px;border-radius:3px;flex:none}'
     + '.zp-row .zp-n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
-    + '.zp-c{font-size:10px;color:var(--ed-mut)}'
+    + '.zp-c{font-size:11px;color:var(--ed-mut)}'
     + '.zp-c.warn{color:var(--ed-warn)}'
     + '.zp-empty{font-size:11px;color:var(--ed-mut);padding:2px 2px 4px 16px}'
     + '.zp-modal{position:fixed;inset:0;background:rgba(60,45,25,.24);display:flex;align-items:center;justify-content:center;z-index:105}'
@@ -493,7 +493,7 @@
       if (z && z.zone === zoneKey) { hit = el; return true; }
       return false;
     });
-    if (hit) { hit.scrollIntoView({ block: 'center', behavior: 'smooth' }); flash(hit); }
+    if (hit) { hit.scrollIntoView({ block: 'center', behavior: (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) ? 'auto' : 'smooth' }); flash(hit); }   // A13
   }
   function flash(el) {
     if (!window.CSS || !CSS.highlights) return;

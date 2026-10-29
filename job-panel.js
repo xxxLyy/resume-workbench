@@ -37,7 +37,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     + '.jp-item .jp-ops{margin-top:4px;display:flex;gap:4px;flex-wrap:wrap}'
     + '.jp-item .jp-ops button{min-height:24px;padding:0 8px;border-radius:6px;font-size:11px;cursor:pointer;border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink)}'
     + '.jp-item .jp-ops button.jp-accept{background:var(--ed-accent);border-color:var(--ed-accent);color:var(--ed-accent-ink)}'
-    + '.jp-st{font-size:10px;border-radius:999px;padding:1px 7px;background:var(--ed-bg);color:var(--ed-mut);margin-left:6px}'
+    + '.jp-st{font-size:11px;border-radius:999px;padding:1px 7px;background:var(--ed-bg);color:var(--ed-mut);margin-left:6px}'
     + '.jp-st.accepted{background:var(--ed-ok-soft);color:var(--ed-ok)}'
     + '.jp-st.rejected{background:var(--ed-bg);color:var(--ed-mut)}'
     + '.jp-st.conflict{background:var(--ed-err-soft);color:var(--ed-err)}'
@@ -56,15 +56,15 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     + '.jp-st.sourced,.jp-st.thin{background:var(--ed-warn-soft);color:var(--ed-warn)}'
     // S4a-T7 证据表完整 UI（原型 02b）：事实依据行 / note 两级流程 / zid 定位
     + '.jp-ref{color:var(--ed-mut);font-size:11px;margin:3px 0;display:flex;gap:5px;align-items:baseline;flex-wrap:wrap}'
-    + '.jp-ref .jp-fact{background:var(--ed-ok-soft);color:var(--ed-ok);font-size:10px;border-radius:4px;padding:0 6px;flex:none}'
-    + '.jp-ref .jp-refbtn{min-height:20px;padding:0 6px;border-radius:5px;font-size:10px;cursor:pointer;border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink);flex:none}'
+    + '.jp-ref .jp-fact{background:var(--ed-ok-soft);color:var(--ed-ok);font-size:11px;border-radius:4px;padding:0 6px;flex:none}'
+    + '.jp-ref .jp-refbtn{min-height:24px;padding:0 6px;border-radius:5px;font-size:11px;cursor:pointer;border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink);flex:none}'
     + '.jp-note{margin-top:6px;border:1px dashed var(--ed-line);border-radius:6px;padding:6px 8px}'
-    + '.jp-note textarea{width:100%;box-sizing:border-box;border:1px solid var(--ed-line);border-radius:5px;font-size:11.5px;padding:5px 6px;min-height:40px;background:var(--ed-panel);color:var(--ed-ink)}'
+    + '.jp-note textarea{width:100%;box-sizing:border-box;border:1px solid var(--ed-line);border-radius:5px;font-size:12px;padding:5px 6px;min-height:40px;background:var(--ed-panel);color:var(--ed-ink)}'
     + '.jp-item li .jp-refbtn{margin-left:6px;vertical-align:baseline}'
     + '.jp-note .jp-note-ops{display:flex;gap:4px;margin-top:4px;align-items:center;flex-wrap:wrap}'
     + '.jp-note .jp-note-ops button{min-height:22px;padding:0 8px;border-radius:6px;font-size:11px;cursor:pointer;border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink)}'
     + '.jp-note .jp-note-ops button.jp-pri{background:var(--ed-accent);border-color:var(--ed-accent);color:var(--ed-accent-ink)}'
-    + '.jp-note .jp-note-hint{font-size:10.5px;color:var(--ed-mut)}'
+    + '.jp-note .jp-note-hint{font-size:11px;color:var(--ed-mut)}'
     + '.jp-gate{margin-top:6px;border:1px solid var(--ed-warn);border-radius:6px;padding:6px 8px;background:var(--ed-warn-soft)}'
     // S4a-T9：筛选 / footbar / 拒绝 chips / ≥1440 并排对照
     + '.jp-filter{display:flex;gap:2px}'
@@ -895,7 +895,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     var prev = root.querySelector('.jp-item.jp-active');
     if (prev) prev.classList.remove('jp-active');
     el.classList.add('jp-active');
-    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    el.scrollIntoView({ block: 'center', behavior: (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) ? 'auto' : 'smooth' });   // A13
   }
   function stepItem(dir) {
     var list = pendingList();
@@ -955,7 +955,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       var n;
       while ((n = walker.nextNode())) {
         if (n.data.indexOf(t) >= 0) {
-          (n.parentElement || sheet).scrollIntoView({ block: 'center', behavior: 'smooth' });
+          (n.parentElement || sheet).scrollIntoView({ block: 'center', behavior: (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) ? 'auto' : 'smooth' });   // A13
           return;
         }
       }

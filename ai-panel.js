@@ -65,10 +65,10 @@
     + '#ai-pop .row{margin-top:6px;text-align:right}'
     + '@media print{#ai-toggle,#ai-drawer,#ai-sel-btn,#ai-pop{display:none!important}}'
     + '#ai-drawer button:focus-visible,#ai-drawer input:focus-visible,#ai-pop button:focus-visible,#ai-pop textarea:focus-visible,#ai-toggle:focus-visible,#ai-sel-btn:focus-visible,#ed-right button:focus-visible,#ed-right textarea:focus-visible,#ed-right input:focus-visible{outline:2px solid var(--ed-accent);outline-offset:1px}'
-    // 经典文档样式补丁：经典模板文档的 D2/D4/D9 改进（工具栏加高/分页线淡化/焦点环），
-    // serve 注入覆盖、/save 随面板剥离；template.html 经典版已内含同款值，此处为幂等覆盖
-    + '.page-line{border-top-color:rgba(231,76,60,.32)}'
-    + '.page-line span{top:1.5mm;font-size:9px;color:rgba(231,76,60,.7)}';
+    // 经典文档样式补丁：分页线基座（打印上下文的唯一着色来源——shell 的覆盖在 @media screen 内）。
+    // 旧值是外来红家族（S2-B2 黑名单口径），A14 对齐 --ed-warn 色相（与屏幕覆盖一致）
+    + '.page-line{border-top-color:rgba(162,87,17,.32)}'
+    + '.page-line span{top:1.5mm;font-size:9px;color:rgba(162,87,17,.7)}';
   document.head.appendChild(css);
 
   // 嵌入模式：外壳右栏存在时，AI 面板内容嵌入其中（抽屉模式仅作无外壳兜底，如直接打开文档文件）
@@ -243,7 +243,7 @@
         var sel = window.getSelection();
         sel.removeAllRanges();
         sel.addRange(range);
-        (node.parentElement || sheet).scrollIntoView({ block: 'center', behavior: 'smooth' });
+        (node.parentElement || sheet).scrollIntoView({ block: 'center', behavior: (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) ? 'auto' : 'smooth' });   // A13
         return true;
       }
     }

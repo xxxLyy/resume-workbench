@@ -2156,6 +2156,19 @@ for (const f of Object.keys(FILES)) {
     if (COLD.test(ln)) fail(`${f}:${i + 1} 冷色/靛蓝残留: ${ln.trim().slice(0, 90)}`);
   });
 }
+// A14：rgba 形态扫描——语义色残留（外来红 rgba(231,76,60,·) / 旧 warn 棕 rgba(166,90,18,·)）必须为 0；
+// 其余 rgba 仅允许已登记的家族前缀（新增家族在此登记，不逐行硬编码）：
+//   rgba(60,45,25,·)=暖阴影家族  rgba(0,0,0,·)/rgba(255,255,255,·)=黑白遮罩
+//   rgba(162,87,17,·)=--ed-warn #A25711 透明度派生  rgba(255,252,245,·)=--ed-panel #FFFCF5 派生
+//   rgba(194,65,12,·)=--ed-accent #C2410C 派生
+const RGBA_OK = ['rgba(60,45,25,', 'rgba(0,0,0,', 'rgba(255,255,255,', 'rgba(162,87,17,', 'rgba(255,252,245,', 'rgba(194,65,12,'];
+const RGBA_RE = /rgba\(\d+,\d+,\d+,/g;
+for (const f of Object.keys(FILES)) {
+  const src = fs.readFileSync(f, 'utf8');
+  if (src.includes('rgba(231,76,60,') || src.includes('rgba(166,90,18,')) fail(`${f} 语义色 rgba 残留（外来红/旧 warn 棕）`);
+  const hits = src.match(RGBA_RE) || [];
+  for (const h of hits) if (!RGBA_OK.includes(h)) fail(`${f} 未登记的 rgba 家族: ${h}…)` + '（新家族请在 RGBA_OK 登记，勿绕过）');
+}
 console.log('✅ S2-B2 编辑器与面板设计变量统一');
 EOF
 

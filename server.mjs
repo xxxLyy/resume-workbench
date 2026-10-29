@@ -1140,7 +1140,7 @@ function page(title, inner, active = '', wide = false) {
 /* 浅色克制设计系统（2026-10-21 UI 重设计，设计文档 dev-docs/2026-10-21-ui-redesign-design.md）：
    主行动用近黑不用蓝；彩色只承载状态；零阴影靠 1px 边框 + 背景差表达层级。
    旧名（--bg/--panel/--ink/...）保留为别名，既有 CSS 几百处零改动即生效。 */
-/*A-VARS*/:root{--background:#ffffff;--foreground:#0a0a0a;--muted:#737373;--muted-2:#a1a1aa;--card:#ffffff;--card-2:#fafafa;--border:#e5e5e5;--accent:#18181b;--accent-fg:#ffffff;--success:#15803D;--success-bg:#f0fdf4;--warning:#A25711;--warning-bg:#fffbeb;--danger:#B91C1C;--danger-bg:#fef2f2;--radius:4px;--radius-lg:6px;--shadow:none;--font:"Geist",-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;--font-mono:"Geist Mono",ui-monospace,Menlo,monospace;--bg:var(--background);--panel:var(--card);--ink:var(--foreground);--fg:var(--foreground);--mut:var(--muted);--line:var(--border);--accent-ink:var(--accent-fg);--accent-soft:var(--card-2);--ok:var(--success);--ok-soft:var(--success-bg);--warn:var(--warning);--warn-soft:var(--warning-bg);--err:var(--danger);--err-soft:var(--danger-bg);--ai:var(--foreground);--ai-soft:var(--card-2);--serif:var(--font);--sans:var(--font);--shadow-up:0 10px 24px rgba(0,0,0,.10)}
+/*A-VARS*/:root{--background:#ffffff;--foreground:#0a0a0a;--muted:#737373;--card:#ffffff;--card-2:#fafafa;--border:#e5e5e5;--accent:#18181b;--accent-fg:#ffffff;--success:#15803D;--success-bg:#f0fdf4;--warning:#A25711;--warning-bg:#fffbeb;--danger:#B91C1C;--danger-bg:#fef2f2;--radius:4px;--radius-lg:6px;--shadow:none;--font:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;--font-mono:ui-monospace,Menlo,monospace;--bg:var(--background);--panel:var(--card);--ink:var(--foreground);--fg:var(--foreground);--mut:var(--muted);--line:var(--border);--accent-ink:var(--accent-fg);--accent-soft:var(--card-2);--ok:var(--success);--ok-soft:var(--success-bg);--warn:var(--warning);--warn-soft:var(--warning-bg);--err:var(--danger);--err-soft:var(--danger-bg);--ai:var(--foreground);--ai-soft:var(--card-2);--serif:var(--font);--sans:var(--font);--shadow-up:0 10px 24px rgba(0,0,0,.10)}
 *{box-sizing:border-box}
 /* 批次B：body 不再限宽（max-width:1100px 会把「侧栏+内容」压扁）——
    页面总宽改由 .home / .topnav 自身定宽居中（各 1400px），body 只留左右 20px 内边距。 */
@@ -1244,7 +1244,7 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .doc-card{transition:transform .25s,box-shadow .25s}
 .doc-card:hover{transform:perspective(900px) rotateX(2deg) rotateY(-2px) translateY(-3px);box-shadow:var(--shadow-up)}}
 .doc-card:focus-within{outline:2px solid var(--accent);outline-offset:2px}
-@media(prefers-reduced-motion:reduce){.doc-card{transition:none!important}.doc-card:hover{transform:none!important}}
+@media(prefers-reduced-motion:reduce){.doc-card{transition:none!important}.doc-card:hover{transform:none!important}button{transition:none!important}button:hover,button:active{transform:none!important}}
 </style></head><body${wide ? ' class="wide"' : ''}>
 <script>${STATUS_SCRIPT}</script>
 <nav class="topnav"><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><span class="links">${nav('docs', '/', '文档', 'file-text')}${nav('materials', '/materials', '素材库', 'box')}${nav('apps', '/applications', '投递看板', 'columns-3')}${nav('stats', '/stats', '复盘', 'chart-bar')}${nav('settings', '/settings', '设置', 'settings')}</span></nav>

@@ -77,7 +77,7 @@
     // 左栏
     + '#ed-left{grid-row:2/4;grid-column:1;overflow-y:auto;background:var(--ed-panel);border-right:1px solid var(--ed-line);padding:16px 12px;min-width:0}'
     + '#ed-left.ed-hidden{display:none}'
-    + '.ed-label{font-family:var(--ed-serif);font-size:10px;letter-spacing:1px;color:var(--ed-mut);margin:2px 0 10px;text-transform:uppercase}'
+    + '.ed-label{font-family:var(--ed-serif);font-size:11px;letter-spacing:1px;color:var(--ed-mut);margin:2px 0 10px;text-transform:uppercase}'
     + '.ed-jobtitle{font-size:13px;font-weight:700;color:var(--ed-ink);margin:-4px 0 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
     + '.ed-nav{display:flex;align-items:center;gap:4px;width:100%;text-align:left;padding:8px 10px;margin:2px 0;border:none;border-radius:7px;font-size:12px;color:var(--ed-mut);background:transparent;cursor:pointer;min-height:32px}'
     + '.ed-nav:hover{background:var(--ed-bg)}'
@@ -103,7 +103,7 @@
     + '.ed-nav-menu button{text-align:left;border:none;background:transparent;padding:4px 8px;font-size:11px;color:var(--ed-ink);cursor:pointer;border-radius:5px;min-height:24px}'
     + '.ed-nav-menu button:hover:not([disabled]){background:var(--ed-bg)}'
     + '.ed-nav-entry .ed-nav-ops{display:inline-flex;gap:2px;flex:none}'
-    + '.ed-nav-entry .ed-nav-ops button{min-width:20px;min-height:20px;padding:0;border:none;background:transparent;color:var(--ed-mut);cursor:pointer;border-radius:4px;font-size:10px;line-height:1}'
+    + '.ed-nav-entry .ed-nav-ops button{min-width:24px;min-height:24px;padding:0;border:none;background:transparent;color:var(--ed-mut);cursor:pointer;border-radius:4px;font-size:11px;line-height:1}'
     + '.ed-nav-entry .ed-nav-ops button:hover{background:var(--ed-line);color:var(--ed-ink)}'
     + '.ed-nav.ed-sec-off .ed-nav-name{text-decoration:line-through;color:var(--ed-mut)}'
     + '.ed-divider{height:1px;background:var(--ed-line);margin:16px -4px}'
@@ -112,8 +112,8 @@
     + '.ed-mat{border:1px solid var(--ed-line);border-radius:9px;padding:10px;font-size:12px;margin-top:10px;cursor:pointer;transition:box-shadow .15s,transform .15s;background:var(--ed-panel)}'
     + '.ed-mat:hover{box-shadow:0 3px 9px rgba(60,45,25,.10);transform:translateY(-1px)}'
     + '.ed-mat:focus-visible{outline:2px solid var(--ed-accent);outline-offset:1px}'
-    + '.ed-mat small{display:block;margin-top:4px;font-size:10px;color:var(--ed-mut)}'
-    + '.ed-mat .ed-mat-unconf{margin-left:6px;font-size:10px;font-weight:600;color:var(--ed-warn);background:var(--ed-warn-soft);border-radius:999px;padding:1px 6px}'
+    + '.ed-mat small{display:block;margin-top:4px;font-size:11px;color:var(--ed-mut)}'
+    + '.ed-mat .ed-mat-unconf{margin-left:6px;font-size:11px;font-weight:600;color:var(--ed-warn);background:var(--ed-warn-soft);border-radius:999px;padding:1px 6px}'
     + '.ed-matpop-warn{font-size:12px;color:var(--ed-warn);background:var(--ed-warn-soft);border-radius:7px;padding:6px 8px;margin-bottom:6px}'
     + '.ed-mat-search{width:100%;box-sizing:border-box;border:1px solid var(--ed-line);border-radius:7px;padding:6px 8px;font-size:12px;margin-top:4px}'
     + '.ed-compat{font-size:11px;color:var(--ed-mut);line-height:1.6;padding:8px 10px;background:var(--ed-bg);border-radius:7px}'
@@ -159,7 +159,7 @@
     // 「↩ 撤销」（唯一定向撤销入口）不可点；非 .sheet 规则，不声明任何文字属性
     + '#ed-status{grid-row:4;grid-column:1/-1;position:relative;z-index:5;display:flex;gap:16px;align-items:center;padding:5px 16px;font-size:11px;color:var(--ed-mut);background:var(--ed-panel);border-top:1px solid var(--ed-line);min-height:28px}'
     + '#ed-status .ed-st-right{margin-left:auto}'
-    + '#ed-status .ed-undobtn{border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink);border-radius:999px;font-size:11px;min-height:20px;padding:0 10px;cursor:pointer}'
+    + '#ed-status .ed-undobtn{border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink);border-radius:999px;font-size:11px;min-height:24px;padding:0 10px;cursor:pointer}'
     + '#ed-status .ed-undobtn:hover{background:var(--ed-bg)}'
     // 折叠开关（顶栏注入的图标按钮）
     + '.ed-iconbtn{min-width:28px;min-height:28px;padding:0 6px;display:inline-flex;align-items:center;justify-content:center}'
@@ -225,8 +225,8 @@
     + '.ed-on .recovery-bar{background:var(--ed-warn);color:var(--ed-accent-ink)}'
     + '.ed-on .recovery-bar button{background:var(--ed-panel);color:var(--ed-warn)}'
     + '.ed-on .recovery-bar button.secondary{background:var(--ed-warn);color:var(--ed-accent-ink);border:1px solid var(--ed-accent-ink)}'
-    + '.ed-on .page-line{border-top-color:rgba(166,90,18,.34)}'
-    + '.ed-on .page-line span{color:rgba(166,90,18,.78);background:rgba(255,252,245,.88)}'
+    + '.ed-on .page-line{border-top-color:rgba(162,87,17,.34)}'
+    + '.ed-on .page-line span{color:rgba(162,87,17,.78);background:rgba(255,252,245,.88)}'
     + '.ed-on .sheet{caret-color:var(--ed-accent)}'
     + '.ed-on .sheet p:hover,.ed-on .sheet li:hover,.ed-on .sheet h1:hover,.ed-on .sheet .entry-head:hover,.ed-on .sheet .contact:hover{outline-color:rgba(194,65,12,.45)}'
     + '.ed-on button:focus-visible,.ed-on input:focus-visible,.ed-on textarea:focus-visible,.ed-on a:focus-visible{outline-color:var(--ed-accent)}'
@@ -403,7 +403,7 @@
     rtBtn.setAttribute('data-ed-inj', '1');
     rtBtn.setAttribute('aria-label', '辅助面板');
     rtBtn.title = '审阅 / 区域 / AI 助手 / 排版';
-    rtBtn.innerHTML = __icon('settings') || '审';   // 同上
+    rtBtn.innerHTML = __icon('columns-3') || '审';   // A15：右栏开关不再与「设置」页图标撞车（44 图标内的 columns-3）
     toolbar.appendChild(rtBtn);
   }
   // 岗位草稿入口（不依赖模型：直接创建独立草稿，模型配置后可在审阅面板生成建议）
@@ -1497,7 +1497,7 @@
     h.innerHTML = __icon('target') + ' 针对岗位生成简历草稿';
     var note = document.createElement('div');
     note.className = 'ed-jp-note';
-    note.textContent = '基于当前文档创建独立草稿（不修改母版）。未配置模型也可先创建；配置后可在右侧「审阅」面板生成并审阅建议。';
+    note.textContent = '基于当前文档创建独立草稿（不修改母版）。未配置模型也可先创建；配置后可在右侧「审阅」面板生成并审阅建议。完整定制要求（重点/保留/不强调/幅度/页数）请到首页「针对岗位生成」表单填写。';
     jobpop.append(h, note);
     var inCompany = document.createElement('input');
     inCompany.required = true;
