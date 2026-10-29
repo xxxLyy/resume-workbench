@@ -1192,6 +1192,7 @@ input,textarea{border:1px solid var(--line);border-radius:var(--radius);padding:
 select{border:1px solid var(--line);border-radius:var(--radius);padding:7px 10px;background:var(--panel);color:var(--ink);font-size:13px}
 button:focus-visible,input:focus-visible,a:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 16px}
+.card-active{border-color:var(--accent);background:var(--card-2)}
 .badge{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:2px 9px;font-size:11px;font-weight:500;background:var(--card-2);color:var(--mut);margin-right:6px}
 .badge svg{width:11px;height:11px;stroke-width:2.4;flex:none}
 .chip{border:1px solid var(--line);border-radius:999px;padding:3px 11px;font-size:12px;background:var(--panel);cursor:pointer}
@@ -1461,7 +1462,7 @@ function listPage(showArchived = false) {
            必须 JSON.stringify 成 JS 字面量后再按 HTML 属性转义。tag 本身由 company·role 派生，不经 /tag 的 '" 清洗。 -->
       <form method="post" action="/tag" style="display:inline" onsubmit="event.preventDefault();const t=prompt('标签（≤20字，留空清除）',${jsStr(tag)});if(t!==null){__wv('/tag', {id:${jsStr(id)},tag:t}).then(function(){location.reload();}).catch(function(){})}"><button class="secondary" aria-label="标签" title="标签">${icon('tag', 13)}</button></form> ·
       <form method="post" action="/duplicate?id=${id}" style="display:inline" onsubmit="event.preventDefault();const t=prompt('新文档 id（小写字母数字横线）');if(t){this.action='/duplicate?id=${id}&to='+t;this.submit()}"><button>复制</button></form> ·
-      <form method="post" action="/delete?id=${id}" style="display:inline" onsubmit="return confirm('确认删除 ${id}？快照会保留')"><button class="danger">删除</button></form>
+      <form method="post" action="/delete?id=${id}" style="display:inline;margin-left:12px;padding-left:12px;border-left:1px solid var(--line)" onsubmit="return confirm('确认删除 ${id}？快照会保留')"><button class="danger">删除</button></form>
       </div></details>
     </li>`;
   };
@@ -3662,7 +3663,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       var state = DATA;
       function escAttr(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
       function inp(i, f, label, val, extra) {
-        return '<p>' + label + '<br><input ' + (extra || 'size="46"') + ' value="' + escAttr(val) + '" oninput="state.profiles[' + i + '].' + f + '=this.value"></p>';
+        return '<p>' + label + '<br><input ' + ((extra || '') + ' style="width:100%"') + ' value="' + escAttr(val) + '" oninput="state.profiles[' + i + '].' + f + '=this.value"></p>';
       }
       // 模型按钮组：pickModel 之后 render() 会重建卡片，按钮组必须跟着重建，
       // 否则切换一次模型后按钮就消失了，还得重新点「测试连接」（2026-10-19 实测）。
@@ -3680,13 +3681,13 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         box.innerHTML = '';
         state.profiles.forEach(function (p, i) {
           var card = document.createElement('div');
-          card.className = 'card';
+          card.className = 'card' + (i === state.active ? ' card-active' : '');   // A6：激活卡一眼可辨（决定所有 AI 请求打到哪个模型的状态）
           card.innerHTML =
-            '<p><label><input type="radio" name="act" value="' + i + '"' + (i === state.active ? ' checked' : '') + ' onchange="setActive(' + i + ', this)"> 启用</label> <b>配置 ' + (i + 1) + '</b> <button type="button" class="secondary" onclick="delCard(' + i + ')">删除</button></p>'
+            '<p><label><input type="radio" name="act" value="' + i + '"' + (i === state.active ? ' checked' : '') + ' onchange="setActive(' + i + ', this)"> 启用</label> <b>配置 ' + (i + 1) + '</b>' + (i === state.active ? ' <span class="badge ok">使用中</span>' : '') + ' <button type="button" class="danger" onclick="delCard(' + i + ')">删除</button></p>'
             + inp(i, 'name', '名称', p.name, 'size="12"')
             + inp(i, 'baseURL', 'Base URL', p.baseURL)
-            + inp(i, 'apiKey', 'API Key', p.apiKey, 'size="46" type="password"')
-            + inp(i, 'model', '模型（可手填；点「测试连接」成功后下方出现可点的模型按钮）', p.model, 'size="46"')
+            + inp(i, 'apiKey', 'API Key', p.apiKey, 'type="password"')
+            + inp(i, 'model', '模型（可手填；点「测试连接」成功后下方出现可点的模型按钮）', p.model, '')
             + '<div id="models-' + i + '" style="margin:-6px 0 8px">' + modelButtonsHtml(p, i) + '</div>'
             + '<p>思考程度 reasoning_effort（留空=不传该参数；部分厂商不认这个字段，硬传会 400）<br>'
             + '<select onchange="state.profiles[' + i + '].reasoningEffort=this.value">'
@@ -4690,7 +4691,6 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         return parts.length ? parts.join('；') + '（不阻塞导出）' : '无';
       })()}</div>
       <div style="font-size:13px;margin:6px 0">整体审阅完成：${expChecks.reviewComplete ? icon('circle-check', 13) + ' 是（可进入投递）' : '否（仍有待处理/稍后处理/待核对项——不阻塞导出）'}</div>
-      ${suggestions ? `<div style="font-size:13px;margin:6px 0">风格建议：<ul style="margin:4px 0">${suggestions}</ul></div>` : ''}
     </div>
     ${suggestions ? `<div class="card" style="margin-top:12px"><b>超过两页的可读处理建议</b><ol style="font-size:13px">${suggestions}</ol><p style="font-size:12px;color:var(--mut)">不需要靠缩小字号硬塞：优先去重、精简、隐藏低相关项目；也可以保留更多页。</p></div>` : ''}
     <div class="card" style="margin-top:12px">
@@ -4702,9 +4702,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       <p style="font-size:12px;color:var(--mut)">只做记录，不会自动发送任何文件。记录时先创建不可变导出（同内容复用既有记录），存档 PDF 绑定该导出的冻结快照。${deliveredCnt ? `该文档已有 ${deliveredCnt} 条投递记录（关联按 exportId 派生）。` : ''}</p>
       <form id="trackForm">
         <!-- value 是属性上下文：company/role 原样落库（用户可控）→ escAttr（不转义 " 就能闭合属性注入事件处理器） -->
-        <input id="tkCompany" placeholder="公司" value="${escAttr(meta.company || '')}" required>
-        <input id="tkRole" placeholder="岗位" value="${escAttr(meta.role || '')}" required>
-        <input id="tkChannel" placeholder="渠道（可选）" size="12">
+        <input id="tkCompany" placeholder="公司" aria-label="公司" value="${escAttr(meta.company || '')}" required>
+        <input id="tkRole" placeholder="岗位" aria-label="岗位" value="${escAttr(meta.role || '')}" required>
+        <input id="tkChannel" placeholder="渠道（可选）" aria-label="投递渠道" size="12">
         <input id="tkDate" type="date" aria-label="投递日期">
         <button ${pdfCurrent && !pendingConflicts.length ? '' : 'disabled title="先解决上方问题"'}>记录已投递</button><span id="tkMsg" style="font-size:12px"></span>
       </form>
@@ -4749,6 +4749,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
           var d = await r.json().catch(function () { return null; });
           if (d && d.ok) {
             __status(msg, 'ok', '已记录（未自动发送；存档绑定本次导出快照）');
+            msg.appendChild(Object.assign(document.createElement('a'), { href: '/applications', textContent: ' 去投递看板跟踪 →' }));   // A5：投递收尾不隐式
             if (d.warning) alert(d.warning);
           } else __status(msg, 'err', (d && d.error) || '失败');
         } catch (err) { __status(msg, 'err', err.message); }
