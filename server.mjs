@@ -1643,8 +1643,8 @@ function listPage(showArchived = false) {
           var p = loadPresets(); delete p[sel.value]; savePresets(p); refreshPresets();
         });
       })();
-      var jobFormEl = document.getElementById('jobForm'); if (!jobFormEl) return;   // A3 空态：无母版时表单不渲染
-      jobFormEl.addEventListener('submit', async function (e) {
+      var jobFormEl = document.getElementById('jobForm');   // A3 空态：无母版时表单不渲染，绑定随之跳过（顶层不能 return，用 if 包裹）
+      if (jobFormEl) jobFormEl.addEventListener('submit', async function (e) {
         e.preventDefault();
         var msg = document.getElementById('jobMsg');
         msg.textContent = ' 创建中…';
