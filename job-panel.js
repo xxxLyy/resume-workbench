@@ -1058,12 +1058,41 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     if (pollTimer) return;
     pollTimer = setTimeout(function () { pollTimer = null; refresh(); }, 2500);
   }
+  // A9：标签页不可见时暂停轮询（服务端每次 GET 都要重解析全文），重新可见时立即同步一次
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) {
+      if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    } else if (anyRunning((job && job.genTasks) || {})) refresh();
+  });
+
+  // A9：轮询每 2.5s 全量重建面板会吞掉在途输入与焦点。重建前采集，重建后按「结构未变」回填——
+  // 任务完成等结构变化场景不回填（以服务端新状态为准）。
+  function capturePanelInputs() {
+    var els = root.querySelectorAll('textarea, input:not([type=checkbox]):not([type=radio]):not([type=submit]):not([type=button])');
+    var vals = [];
+    for (var i = 0; i < els.length; i++) vals.push(els[i].value);
+    var ae = document.activeElement, fi = -1;
+    if (ae && ae.nodeType === 1 && root.contains(ae)) {
+      for (var j = 0; j < els.length; j++) if (els[j] === ae) { fi = j; break; }
+    }
+    return { vals: vals, fi: fi };
+  }
+  function restorePanelInputs(cap) {
+    if (!cap) return;
+    var els = root.querySelectorAll('textarea, input:not([type=checkbox]):not([type=radio]):not([type=submit]):not([type=button])');
+    if (els.length !== cap.vals.length) return;
+    for (var i = 0; i < els.length; i++) {
+      if (els[i].value !== cap.vals[i] && document.activeElement !== els[i]) els[i].value = cap.vals[i];
+    }
+    if (cap.fi >= 0 && els[cap.fi] && document.activeElement !== els[cap.fi]) { try { els[cap.fi].focus(); } catch (e) {} }
+  }
 
   function render() {
     if (!job) {
       root.innerHTML = '<div class="jp-empty">本文件不是岗位草稿。</div>';
       return;
     }
+    var capInputs = capturePanelInputs();   // A9：重建前采集在途输入与焦点
     root.innerHTML = '';
     root.appendChild(secBar());
     if (curSec === 'evidence') renderEvidence();
@@ -1074,6 +1103,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     msg.setAttribute('role', 'status');   // A8：面板提示读屏可感知（render 重建后随新节点带上）
     root.appendChild(msg);
     applyNote();          // 提示跨渲染存活（见 note() 注释）
+    restorePanelInputs(capInputs);   // A9：回填在途输入并恢复焦点（结构未变时）
   }
 
   // ===== 段一「要求与证据」完整 UI（S4a-T7，照原型 02b：五态徽章/事实依据可读化/zid 定位/note 两级流程）=====
