@@ -1479,6 +1479,7 @@ function listPage(showArchived = false) {
   const cards = keys.length === 1 && keys[0] === '未标记'
     ? byTag.get('未标记').join('\n')
     : keys.map((k) => `<li class="group-head">${escHtml(k)}</li>\n${byTag.get(k).join('\n')}`).join('\n');
+  const doclistEmpty = cards.trim() === '';   // A4：无文档，或文档都在归档态被隐藏
   // 「继续上次任务」回退链数据源：最近 mtime 排序（浏览器端再按 localStorage['resume-last-active-doc'] 优先）
   const byMtime = [...infos].sort((a, b) => b.mtimeMs - a.mtimeMs);
   const fallbackId = byMtime.length ? byMtime[0].id : '';
@@ -1514,7 +1515,10 @@ function listPage(showArchived = false) {
     <details class="card" id="jobCard">
       <summary style="cursor:pointer;font-weight:700">${icon('target', 13)} 针对岗位生成简历</summary>
       <p style="font-size:13px;line-height:1.6;color:var(--mut);margin:6px 0">拿到 JD → 生成独立岗位草稿（不改母版）→ 审阅修改清单 → 导出两页 PDF。不配置模型也可手动生成草稿。</p>
-      <form id="jobForm" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;align-items:end">
+      ${infos.length === 0 ? `<div class="card" style="border-style:dashed"><b>还没有母版简历</b>
+        <p style="font-size:13px;color:var(--mut);margin:6px 0 10px">「针对岗位生成」需要一份母版简历：先新建一份，或在页面上方上传 PDF 导入，再回到这里针对岗位生成可投递的两页版本。</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><form method="post" action="/new" style="display:inline"><button class="cta" type="submit">＋ 新建空白简历</button></form><a class="cta-alt" href="#up">${icon('file-text', 13)} 上传 PDF 导入</a></div>
+      </div>` : `<form id="jobForm" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;align-items:end">
         <label style="font-size:12px">公司<input id="jobCompany" required style="width:100%"></label>
         <label style="font-size:12px">岗位<input id="jobRole" required style="width:100%"></label>
         <label style="font-size:12px">母版简历<select id="jobFrom" style="width:100%">${infos.map((d) => `<option value="${escAttr(d.id)}">${d.title}（${d.id}）</option>`).join('')}</select></label>
@@ -1541,7 +1545,7 @@ function listPage(showArchived = false) {
         </details>
         <div style="grid-column:1/-1"><button type="submit">生成岗位草稿</button><button type="button" class="secondary" id="evalBtn">${icon('compass', 13)} 先评估这个岗位</button><span id="jobMsg" style="font-size:12px;color:var(--mut)"></span><span id="evalMsg" style="font-size:12px;color:var(--mut)"></span></div>
         <div style="grid-column:1/-1;font-size:12px;color:var(--mut)">${icon('lightbulb', 13)} 「先评估」先用大模型判断这个岗位值不值得投（max 思考，通常需要 1–5 分钟），评估通过后再一键转成岗位适配草稿。</div>
-      </form>
+      </form>`}
       <div id="evalResult"></div>
     </details>
     ${drafts.length ? `<div class="card" style="margin-top:12px"><b>继续处理岗位草稿</b>
@@ -1563,7 +1567,10 @@ function listPage(showArchived = false) {
       <button class="secondary" id="viewToggle">▤ 切换</button>
       <a class="secondary" style="border:1px solid var(--line);border-radius:var(--radius);padding:7px 12px;background:var(--panel);color:var(--ink);font-weight:600;font-size:13px" href="${showArchived ? '/' : '/?archived=1'}">${showArchived ? icon('archive', 13) + ' 隐藏已归档' : icon('archive', 13) + ' 显示已归档'}</a>
     </div>
-    <ul class="doclist" id="doclist">${cards}</ul>
+    <ul class="doclist" id="doclist">${cards}${doclistEmpty ? (docInfoMap.size
+      ? `<li class="list-empty">没有可显示的文档——可能都已归档。<a href="/?archived=1">查看已归档</a></li>`
+      : `<li class="list-empty">还没有简历文档。可在页面上方 <a href="#up">上传 PDF 导入</a>，或回到顶部点「＋ 新建第一份简历」。</li>`)
+      : ''}<li class="search-empty" style="display:none">没有匹配「<span class="q"></span>」的文档。<button type="button" class="secondary" id="clearSearch">清除搜索</button></li></ul>
     <script>
       document.getElementById('up').addEventListener('submit', async function (e) {
         e.preventDefault();
@@ -1576,6 +1583,7 @@ function listPage(showArchived = false) {
       });
       // S4a-T5 要求卡：chips 切换 / 幅度与页数段选 / 预设（localStorage，不进 meta）
       (function () {
+        if (!document.getElementById('briefFocusChips')) return;   // A3 空态：无母版时不渲染岗位表单，预设逻辑一并跳过
         var lines = function (id) { return document.getElementById(id).value.split(/[\\n]+/).map(function (s) { return s.trim(); }).filter(Boolean); };
         document.getElementById('briefFocusChips').addEventListener('click', function (e) {
           var b = e.target.closest('.chip'); if (!b) return;
@@ -1634,7 +1642,8 @@ function listPage(showArchived = false) {
           var p = loadPresets(); delete p[sel.value]; savePresets(p); refreshPresets();
         });
       })();
-      document.getElementById('jobForm').addEventListener('submit', async function (e) {
+      var jobFormEl = document.getElementById('jobForm'); if (!jobFormEl) return;   // A3 空态：无母版时表单不渲染
+      jobFormEl.addEventListener('submit', async function (e) {
         e.preventDefault();
         var msg = document.getElementById('jobMsg');
         msg.textContent = ' 创建中…';
@@ -1653,7 +1662,10 @@ function listPage(showArchived = false) {
           if (r.redirected) { location.href = r.url; return; }
           if (d && d.existing) { if (confirm('已存在同一母版+岗位的草稿（' + d.existing + '）。打开它？')) location.href = '/edit?id=' + d.existing; return; }
           if (d && d.ok && d.id) { location.href = '/edit?id=' + d.id; return; }
-          __status(msg, 'err', (d && d.error) || (await r.text()));
+          var jobErr = (d && d.error) || (await r.text());
+          if (jobErr.indexOf('invalid from') >= 0) jobErr = '请先选择母版简历';   // A3 兜底：服务端校验直出英文会让首用路径断链
+          __status(msg, 'err', jobErr);
+          if (jobErr.indexOf('未配置大模型') >= 0) msg.appendChild(Object.assign(document.createElement('a'), { href: '/settings', textContent: ' 去设置 →' }));   // A2：真实入口可点击
         } catch (err) { __status(msg, 'err', err.message); }
       });
       // ===== 岗位评估 UI：/eval/create → 报告卡片 → /eval/promote =====
@@ -1746,9 +1758,21 @@ function listPage(showArchived = false) {
       })();
       document.getElementById('searchBox').addEventListener('input', function () {
         var q = this.value.toLowerCase();
-        document.querySelectorAll('#doclist > li').forEach(function (li) {
-          li.style.display = !q || li.textContent.toLowerCase().includes(q) ? '' : 'none';
+        var any = false;   // A4：空态行（list-empty/search-empty）不参与过滤，否则关键词清空后无匹配行残留
+        document.querySelectorAll('#doclist > li:not(.search-empty):not(.list-empty)').forEach(function (li) {
+          var hit = !q || li.textContent.toLowerCase().includes(q);
+          li.style.display = hit ? '' : 'none';
+          if (hit) any = true;
         });
+        var nm = document.querySelector('#doclist > li.search-empty');
+        if (nm) {
+          var show = q && !any;
+          nm.style.display = show ? '' : 'none';
+          if (show) nm.querySelector('.q').textContent = this.value;
+        }
+      });
+      document.getElementById('clearSearch').addEventListener('click', function () {
+        var sb = document.getElementById('searchBox'); sb.value = ''; sb.dispatchEvent(new Event('input'));
       });
       document.getElementById('viewToggle').onclick = function () {
         document.getElementById('doclist').classList.toggle('list-view');
@@ -2313,7 +2337,7 @@ async function handler(req, res) {
     // 超时/失败语义直接沿用 chat() 的 profile 级 timeoutMs（默认 120s）+ withRetry 的 POST 不重试，
     // 失败一律 502 回到调用方，不写半条记录。
     if (req.method === 'POST' && url.pathname === '/eval/create') {
-      if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型，请先到首页的"大模型设置"' });
+      if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型：请到侧栏「设置」完成模型配置' });
       const body = await readBodyAuto(req);
       const from = String(body.from || '');
       if (!VALID_ID.test(from)) return sendJson(400, { ok: false, error: 'invalid from' });
@@ -3841,7 +3865,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     }
     // ===== AI（统一正文提取；不再包含工具栏/占位符/隐藏内容）=====
     if (req.method === 'POST' && url.pathname === '/ai/rewrite') {
-      if (!hasLLM(root)) return send(409, '未配置大模型，请先到首页的"大模型设置"', 'text/plain');
+      if (!hasLLM(root)) return send(409, '未配置大模型：请到侧栏「设置」完成模型配置', 'text/plain');
       const body = JSON.parse(await readBody(req));
       if (!body.text || !body.instruction) return send(400, 'text 和 instruction 必填', 'text/plain');
       const p = buildRewrite(body.text, body.instruction);
@@ -3849,7 +3873,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       return sendJson(200, { ok: true, revised });
     }
     if (req.method === 'POST' && url.pathname === '/ai/chat') {
-      if (!hasLLM(root)) return send(409, '未配置大模型，请先到首页的"大模型设置"', 'text/plain');
+      if (!hasLLM(root)) return send(409, '未配置大模型：请到侧栏「设置」完成模型配置', 'text/plain');
       const body = JSON.parse(await readBody(req));
       if (!body.message) return send(400, 'message 必填', 'text/plain');
       if (body.id && !VALID_ID.test(body.id)) return send(400, 'invalid id', 'text/plain');
@@ -3868,7 +3892,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       return sendJson(200, { ok: true, ...(parsed || { reply: raw }) });
     }
     if (req.method === 'POST' && url.pathname === '/restructure') {
-      if (!hasLLM(root)) return send(409, '未配置大模型，请先到"大模型设置"', 'text/plain');
+      if (!hasLLM(root)) return send(409, '未配置大模型：请到侧栏「设置」完成模型配置', 'text/plain');
       if (!fs.existsSync(docPath(id))) return send(404, 'doc not found', 'text/plain');
       // 文档锁 + 冲突检测（2026-10-22 审查 [中]）：结构化要跑几秒 LLM，
       // 这期间用户可能又保存了一次 → 结构化结果会把用户的编辑整篇覆盖（实测用户的编辑消失）。
@@ -3908,7 +3932,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       });
     }
     if (req.method === 'POST' && url.pathname === '/ai/review') {
-      if (!hasLLM(root)) return send(409, '未配置大模型，请先到首页的"大模型设置"', 'text/plain');
+      if (!hasLLM(root)) return send(409, '未配置大模型：请到侧栏「设置」完成模型配置', 'text/plain');
       const body = JSON.parse(await readBody(req));
       if (body.id && !VALID_ID.test(body.id)) return send(400, 'invalid id', 'text/plain');
       if (body.mode !== 'full' && body.mode !== 'quant') return send(400, "mode 仅支持 'full'|'quant'", 'text/plain');
@@ -3923,7 +3947,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       return sendJson(200, parsed ? { ok: true, report: parsed } : { ok: true, reply: raw });
     }
     if (req.method === 'POST' && url.pathname === '/ai/match') {
-      if (!hasLLM(root)) return send(409, '未配置大模型，请先到首页的"大模型设置"', 'text/plain');
+      if (!hasLLM(root)) return send(409, '未配置大模型：请到侧栏「设置」完成模型配置', 'text/plain');
       const body = JSON.parse(await readBody(req));
       if (body.id && !VALID_ID.test(body.id)) return send(400, 'invalid id', 'text/plain');
       if (typeof body.jd !== 'string' || !body.jd.trim()) return send(400, 'jd 必填', 'text/plain');
