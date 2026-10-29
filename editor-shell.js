@@ -578,7 +578,7 @@
         // 绑在不存在 zid 上的区域，AI 区域级改写找不到节点）。这违反 handoff §6「保证两次加载
         // 生成相同 zid、初绑 meta 不失配」。粘贴/克隆自带随机 zid 不重复，走不到这里（审查 B3）。
         var k = 1, cand;
-        do { k++; cand = edHashZid((el.textContent || '') + ' ' + k); } while (seen[cand]);
+        do { k++; cand = edHashZid((el.textContent || '') + ' ' + k); } while (seen[cand]);
         z = cand;
       }
       el.setAttribute('data-zid', z);
