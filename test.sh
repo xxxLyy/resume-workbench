@@ -2320,3 +2320,16 @@ else
     fail "chips 存活回归未通过 (exit $RC)"
   fi
 fi
+
+# ===== 16k. AI 选区改写锚点应用（BL-P3-01）：同文两处选哪改哪 / 无法定位即拒绝 / 唯一命中照常 =====
+if node test-fixtures/reliability/test-ai-apply-occurrence.mjs; then
+  echo '✅ 选区改写锚点：同文两处应用落点正确（选哪改哪）、多处命中无法定位即拒绝（两段均不动）、唯一命中照常应用'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 选区改写锚点回归未执行：Chromium 不可用'
+  else
+    fail "选区改写锚点回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi

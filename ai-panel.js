@@ -387,7 +387,28 @@
     wording: '改善措辞：修正语病与口语化表达，保持原意与专业度',
     evidence: '补充证据：指出此处缺少哪些指标或事实，给出待补充占位提示，不编造任何数字'
   };
-  var selText = '', selRect = null;
+  var selText = '', selRect = null, selOcc = null;
+  // 选区锚点：selText 在正文多处出现时算出用户选中的是第几处（occurrence，从 0 起），
+  // 应用时传给 __edReplaceText——缺了它默认改全文第一处同名文本（选哪改哪说不清）。
+  // 返回 null = 无法唯一定位（应用侧据此拒绝，与聊天路径「多处命中即拒」同口径）。
+  function computeSelOcc(text, range) {
+    var count = (sheet.textContent || '').split(text).length - 1;
+    if (count <= 1) return 0;   // 唯一命中：occurrence=0 即该处，传不传等价
+    if (!range) return null;
+    // 与 __edReplaceText 同款文本流：把选区起点折算成流内偏移，落在哪处就是第几处
+    var walker = document.createTreeWalker(sheet, NodeFilter.SHOW_TEXT);
+    var nodes = [], stream = '', n;
+    while ((n = walker.nextNode())) { nodes.push({ node: n, start: stream.length }); stream += n.data; }
+    var selStart = null;
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].node === range.startContainer) { selStart = nodes[i].start + range.startOffset; break; }
+    }
+    if (selStart == null) return null;   // 选区起点不在文本节点上（如直接框在元素上）
+    if (stream.slice(selStart, selStart + text.length) !== text) return null;   // 选区与正文对不上（正文已变等）
+    var occ = 0, idx = stream.indexOf(text);
+    while (idx >= 0 && idx < selStart) { occ++; idx = stream.indexOf(text, idx + text.length); }
+    return idx === selStart ? occ : null;
+  }
   var seltb = embedded ? document.getElementById('ed-seltb') : null;
   var selBtn = $('ai-sel-btn');
   if (embedded && selBtn) selBtn.remove();  // 嵌入模式用 ed-seltb，旧单钮移除
@@ -406,6 +427,7 @@
     var sel = window.getSelection();
     if (!sel.isCollapsed && sheet.contains(sel.anchorNode) && sel.toString().trim().length > 3) {
       selText = sel.toString();
+      selOcc = computeSelOcc(selText, sel.getRangeAt(0));
       selRect = sel.getRangeAt(0).getBoundingClientRect();
       positionToolbar(seltb || selBtn, selRect);
     } else {
@@ -426,6 +448,7 @@
     if (!sel || sel.isCollapsed || !sel.rangeCount || !sheet.contains(sel.anchorNode)) return;
     if (sel.toString().trim().length <= 3) return;
     selText = sel.toString();
+    selOcc = computeSelOcc(selText, sel.getRangeAt(0));
     selRect = sel.getRangeAt(0).getBoundingClientRect();
     positionToolbar(seltb || selBtn, selRect);
   });
@@ -456,7 +479,7 @@
     };
   }
 
-  var pendingAfter = null, pendingBefore = '';
+  var pendingAfter = null, pendingBefore = '', pendingOcc = null;
   $('ai-gen').onclick = async function () {
     var inst = $('ai-inst').value.trim();
     if (!inst) return;
@@ -464,6 +487,7 @@
     // 生成开始即冻结选区原文：请求/预览/应用三处必须用同一份快照，
     // 否则等待期间的新选区会让「原文」与「替换目标」错配，改到别的段落
     pendingBefore = selText;
+    pendingOcc = selOcc;              // 选区锚点随快照一起冻结（请求/预览/应用三处同一份定位）
     pendingAfter = null;              // 每次生成前清掉上一次候选（失败也不留陈旧态）
     $('ai-actions').style.display = 'none';
     try {
@@ -475,20 +499,26 @@
       $('ai-preview').append(b, a);
       $('ai-actions').style.display = 'block';
     } catch (e) {
-      pendingAfter = null; pendingBefore = '';   // 失败不留可点的陈旧候选
+      pendingAfter = null; pendingBefore = ''; pendingOcc = null;   // 失败不留可点的陈旧候选
       __status($('ai-preview'), 'warn', e.message || e);
     }
     finally { $('ai-gen').disabled = false; }
   };
   $('ai-apply').onclick = function () {
     if (pendingAfter) {
+      // 多处命中且没有选区锚点 → 改哪一处说不清 → 拒绝（与聊天路径「多处命中即拒」同口径）。
+      // 之前应用不传锚点，__edReplaceText 默认 chosen=0（全文首个匹配）——用户选第二处、第一处被改。
+      if ((sheet.textContent || '').split(pendingBefore).length - 1 > 1 && typeof pendingOcc !== 'number') {
+        __status($('ai-preview'), 'warn', '原文在正文里出现多处，无法确定改哪一处，已拒绝（请手动修改）');
+        return;
+      }
       var popOpId = window.__edPushUndo ? window.__edPushUndo('AI 改写') : null;
-      if (window.__edReplaceText(pendingBefore, pendingAfter)) $('ai-pop').style.display = 'none';
+      if (window.__edReplaceText(pendingBefore, pendingAfter, typeof pendingOcc === 'number' ? { occurrence: pendingOcc } : undefined)) $('ai-pop').style.display = 'none';
       else if (popOpId != null && window.__edDropUndo) window.__edDropUndo(popOpId);   // 失败不留空撤销记录
       else __status($('ai-preview'), 'warn', '原文未找到（可能已被修改），未应用');
     }
   };
-  $('ai-cancel').onclick = function () { $('ai-pop').style.display = 'none'; pendingAfter = null; pendingBefore = ''; };
+  $('ai-cancel').onclick = function () { $('ai-pop').style.display = 'none'; pendingAfter = null; pendingBefore = ''; pendingOcc = null; };
   document.addEventListener('mousedown', function (e) {
     if (!$('ai-pop').contains(e.target) && e.target.id !== 'ai-sel-btn') $('ai-pop').style.display = 'none';
   });
