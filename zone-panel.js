@@ -72,8 +72,25 @@
       headers: body ? { 'Content-Type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined
     }).then(function (r) {
-      return r.json().catch(function () { return { ok: false, error: 'HTTP ' + r.status }; }).then(function (d) { d._status = r.status; return d; });
+      return r.json().catch(function () { return { ok: false, error: 'HTTP ' + r.status }; }).then(function (d) {
+        d._status = r.status;
+        // BL-P3-02：HTTP 非 2xx 一律按失败语义 resolve（此前 4xx/5xx 的响应体会原样透传，
+        // 调用方只看 ok 就会把服务端拒绝当成功）。响应体若伪造 ok:true 也在此纠正。
+        if (r.status < 200 || r.status >= 300) {
+          d.ok = false;
+          if (!d.error) d.error = 'HTTP ' + r.status;
+        }
+        return d;
+      });
     });
+  }
+  // BL-P3-02：失败提示统一出口（复用 A10 的 .zp-msg 节点形态；render() 重绘时自然清除）
+  function zoneFailMsg(text) {
+    var m = root.querySelector('.zp-msg');
+    if (!m) { m = document.createElement('div'); m.className = 'zp-msg'; root.appendChild(m); }
+    m.setAttribute('role', 'status');
+    m.style.color = 'var(--ed-warn)';
+    m.textContent = text;
   }
 
   var state = { zones: {}, zoneOrder: null, zoneRounds: {}, colorOn: false, aiZone: null, aiDegraded: false, lastAnalysis: null };
@@ -112,12 +129,17 @@
 
   function load() {
     return api('/job/changes?id=' + encodeURIComponent(DOC_ID)).then(function (d) {
-      if (!d || !d.ok) return;                        // 错误响应保持上次渲染（防「待确认分类 N」误显示为「绑定完成」）
+      if (!d || !d.ok) {                        // 错误响应保持上次渲染（防「待确认分类 N」误显示为「绑定完成」）
+        zoneFailMsg('分类状态加载失败：' + ((d && d.error) || '服务端未确认') + '（仍显示上一次的状态）');   // BL-P3-02：加载失败可见
+        return;
+      }
       state.zones = d.zones || {};
       state.zoneOrder = d.zoneOrder;
       state.zoneRounds = d.zoneRounds || {};          // T5 前服务端无此字段，兜底空
       render();
       paint();
+    }).catch(function () {
+      zoneFailMsg('分类状态加载失败：网络异常（仍显示上一次的状态）');   // BL-P3-02：网络层失败也可见（顺带收口 load() 裸调用的未处理 rejection）
     });
   }
   function counts() {
@@ -619,24 +641,26 @@
     cancel.focus();                                       // F2：初始聚焦取消按钮
   }
   function bindOne(zid, zoneKey, confirmed) {
-    // 整条回写契约（T2 quality Note 3）：/zones 是整体替换，必须带上已有 locked 字段，漏传会静默丢锁
-    var next = {};
-    Object.keys(state.zones).forEach(function (k) {
-      var o = state.zones[k];
-      var e = { zone: o.zone, status: o.status };
-      if (typeof o.locked === 'boolean') e.locked = o.locked;
-      next[k] = e;
-    });
-    var ne = { zone: zoneKey, status: confirmed ? 'confirmed' : 'pending' };
-    if (typeof next[zid].locked === 'boolean') ne.locked = next[zid].locked;
-    next[zid] = ne;
-    api('/zones?id=' + encodeURIComponent(DOC_ID), { zones: next }).then(load).catch(function () {
+    // 条目级回写（BL-P3-03）：/zones 是按条目整体替换（payload 条目未带 locked 即丢锁），
+    // 用 load() 时刻的旧快照整表回写，会把面板加载后别处设置的 locked 静默抹掉。
+    // 因此先取服务端当前状态为底，只回写目标条目：zone/status 是本次 bind 字段，
+    // locked 从服务端当前条目原样保留；其余条目不进 payload，即不可能被抹。
+    api('/job/changes?id=' + encodeURIComponent(DOC_ID)).then(function (d) {
+      if (!d || !d.ok) throw new Error('无法读取当前区域状态');
+      var cur = (d.zones || {})[zid];
+      var ne = { zone: zoneKey, status: confirmed ? 'confirmed' : 'pending' };
+      if (cur && typeof cur.locked === 'boolean') ne.locked = cur.locked;   // merge：bind 字段之外保留 locked
+      var zones = {};
+      zones[zid] = ne;
+      return api('/zones?id=' + encodeURIComponent(DOC_ID), { zones: zones });
+    }).then(function (d) {
+      // BL-P3-02：服务端拒绝（非 2xx / ok:false）不得再被 .then(load) 静默吞掉——
+      // 失败时跳过 load()（状态保持原样），把原因透给用户
+      if (!d || !d.ok) throw new Error((d && d.error) || '服务端写入失败');
+      return load();
+    }).catch(function (e) {
       // A10：吞错收口——改绑失败必须可见，否则用户误以为已成功（此前是空 catch）
-      var m = root.querySelector('.zp-msg');
-      if (!m) { m = document.createElement('div'); m.className = 'zp-msg'; root.appendChild(m); }
-      m.setAttribute('role', 'status');
-      m.style.color = 'var(--ed-warn)';
-      m.textContent = '改绑未保存：服务端写入失败，请重试或刷新后核对';
+      zoneFailMsg('改绑未保存：' + ((e && e.message) || '服务端写入失败') + '，请重试或刷新后核对');
     });
   }
 

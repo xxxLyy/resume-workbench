@@ -2346,3 +2346,16 @@ else
     fail "应用失败提示回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
   fi
 fi
+
+# ===== 16m. 区域改绑条目级回写（BL-P3-03）：payload 只含目标条目 / 别处锁定不抹 / 目标锁定保留 =====
+if node test-fixtures/reliability/test-zone-locked-keep.mjs; then
+  echo '✅ 区域改绑条目级回写：payload 只含目标条目；别处 locked（P3）与目标自身 locked（P4）均保留；改绑本身生效'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 区域改绑锁定保留回归未执行：Chromium 不可用'
+  else
+    fail "区域改绑锁定保留回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi
