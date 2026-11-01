@@ -2333,3 +2333,16 @@ else
     fail "选区改写锚点回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
   fi
 fi
+
+# ===== 16l. AI 应用失败提示可达（BL-P3-05）：else-if 链改独立分支 / 正文不误改 / 弹层不关 =====
+if node test-fixtures/reliability/test-ai-apply-error.mjs; then
+  echo '✅ 应用失败提示可达：正文未被误改、弹层未关闭、#ai-preview 出现「未应用」警告、无页面异常'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 应用失败提示回归未执行：Chromium 不可用'
+  else
+    fail "应用失败提示回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi

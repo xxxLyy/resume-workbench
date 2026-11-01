@@ -513,9 +513,14 @@
         return;
       }
       var popOpId = window.__edPushUndo ? window.__edPushUndo('AI 改写') : null;
-      if (window.__edReplaceText(pendingBefore, pendingAfter, typeof pendingOcc === 'number' ? { occurrence: pendingOcc } : undefined)) $('ai-pop').style.display = 'none';
-      else if (popOpId != null && window.__edDropUndo) window.__edDropUndo(popOpId);   // 失败不留空撤销记录
-      else __status($('ai-preview'), 'warn', '原文未找到（可能已被修改），未应用');
+      if (window.__edReplaceText(pendingBefore, pendingAfter, typeof pendingOcc === 'number' ? { occurrence: pendingOcc } : undefined)) {
+        $('ai-pop').style.display = 'none';
+      } else {
+        // 失败判定独立分支（BL-P3-05）：__edDropUndo 在外壳恒存在，此前挂在 else-if 链上
+        // 使失败恒命中回收分支、『原文未找到…未应用』提示永不执行——回收与提示都要做
+        if (popOpId != null && window.__edDropUndo) window.__edDropUndo(popOpId);   // 失败不留空撤销记录
+        __status($('ai-preview'), 'warn', '原文未找到（可能已被修改），未应用');
+      }
     }
   };
   $('ai-cancel').onclick = function () { $('ai-pop').style.display = 'none'; pendingAfter = null; pendingBefore = ''; pendingOcc = null; };
