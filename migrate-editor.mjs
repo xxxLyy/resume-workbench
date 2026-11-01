@@ -59,9 +59,11 @@ try {
     // docId 来自文件名（外部可污染）→ 进 JS 单引号串必须转义（' 与 \）
     const jsId = id.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const newScript = script[0].replaceAll('{{DOC_ID}}', () => jsId);
+    // 替换源是模板片段 → 必须函数形态（BL-P6-04，B 线批 2）：字符串形态下模板里一旦出现
+    // $& / $` / $' / $$ 会被当替换模式解释，把模板片段拼坏旧文档（同上一行 replaceAll 的纪律）
     const out = html
-      .replace(/<div class="edit-toolbar"[^>]*>[\s\S]*?<\/div>/, toolbar[0])
-      .replace(/<script>\s*\(function \(\) \{[\s\S]*?<\/script>/, newScript);
+      .replace(/<div class="edit-toolbar"[^>]*>[\s\S]*?<\/div>/, () => toolbar[0])
+      .replace(/<script>\s*\(function \(\) \{[\s\S]*?<\/script>/, () => newScript);
     atomicWrite(p, out);   // 原子写：tmp + rename，避免中途中断留下半份正文
     console.log('migrated:', f);
   }

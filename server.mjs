@@ -3963,6 +3963,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         sec('评估（新增 ' + (ev.add || []).length + ' / 冲突 ' + (ev.conflict || []).length + '）',
           (ev.conflict || []).slice(0, 8).map(function (x) { return '以备份为准覆盖：' + x; }));
         lines.push('<div style="margin-top:6px;color:var(--mut)">快照 ' + (prev.snapshots || 0) + ' 个 · PDF ' + (prev.pdfs || 0) + ' 个 · 评估记录 新增 ' + (ev.add || []).length + ' / 冲突 ' + (ev.conflict || []).length + ' · 预计恢复点数 ' + (prev.total || 0) + '</div>');
+        if (prev.skippedCount) lines.push('<div style="margin-top:4px;color:var(--warn)">跳过 ' + prev.skippedCount + ' 个无法识别的条目（不恢复；多为渲染/保存过程的临时残留）</div>');
         return lines.join('');
       }
       document.getElementById('restoreForm').addEventListener('submit', async function (e) {
@@ -4362,6 +4363,11 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       // 备份包是外部输入 → 恶意 id 即存储型 XSS
       // （实测：文档文件名 id="a'+alert(1)+'b" → 首页点「删除」真的弹出 alert(1)）。
       // 写入侧一律用 VALID_ID 闸门（/new、/save 的全局闸门），恢复侧必须同一把尺。
+      // 未知形状 → 跳过不恢复并逐条上报（BL-P1-03，B 线批 2）：/backup 整目录打包，渲染发布链/
+      // 重构/快照元数据留下的非隐藏临时件会进包，旧口径撞上任何一个就整包拒 → 用户此后打出的
+      // 每个备份都无法恢复且 /backup 仍 200 零提示。安全边界不变：穿越/白名单外根/已知形状里
+      // 的非法 id 仍然整包拒（下方 ①-⑤ 各分支）。
+      const skipped = [];
       for (const e of entries) {
         const p = e.replace(/^\.\//, '');
         // ① 目录条目：每一段都要过 VALID_ID（docs/ snapshots/<id>/ pdfs/ pdfs/archive/ …）
@@ -4411,11 +4417,23 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         }
         // ⑤ 四个 JSON（运行时产物，可能不存在）
         if (/^(docs-meta|applications|materials|evaluations)\.json$/.test(p)) continue;
-        // ⑥ 其余形状一律拒（目录/文件混淆、pdfs 嵌套、任意路径形态）
+        // ⑥ 其余形状分两类：
+        //    a) 已知内容目录（docs / pdfs / snapshots/<合法id>）直属的未知形状文件 → 多为渲染
+        //       发布链/重构/快照元数据的临时残留（BL-P1-03，B 线批 2）→ 跳过不恢复并逐条上报，
+        //       不再整包拒（旧口径会让用户此后打出的每个备份都无法恢复且 /backup 仍 200 零提示）；
+        //    b) 更深嵌套/未知目录结构（如 pdfs/sub/x.pdf）→ 结构非法，仍整包拒（XSS-3 边界）。
+        const dir = p.slice(0, p.lastIndexOf('/'));
+        const knownContentDir = dir === 'docs' || dir === 'pdfs'
+          || (/^snapshots\/[^/]+$/.test(dir) && VALID_ID.test(dir.slice('snapshots/'.length)));
+        if (knownContentDir) { skipped.push({ name: p.slice(0, 80), reason: 'unknown-shape' }); continue; }
         return fail('备份包含不允许的条目形状：' + p.slice(0, 60));
       }
       try { execFileSync('tar', ['xzf', tmpTar, '-C', stage], { stdio: 'pipe', timeout: 120000 }); }
       catch { return fail('解包失败，备份包可能损坏'); }
+      // 跳过项从 stage 剔除：后续 symlink 检查与 merge/replace 复制都只见「允许恢复」的内容
+      for (const s of skipped) {
+        try { fs.rmSync(path.join(stage, s.name), { recursive: true, force: true }); } catch {}
+      }
       // 防 symlink：条目路径校验只查字符串，查不出「合法路径 + 符号链接指向别处」。
       // 实测 pdfs/leak.pdf -> /任意本地文件 经 copyMissing 的 copyFile 会把目标内容读进 root/pdfs/。
       let stageEntries = [];
@@ -4500,7 +4518,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         evals: compareJson('evaluations.json'),
         meta: metaPreview,
         snapshots: entries.filter((l) => l.startsWith('snapshots/') && l.endsWith('.html')).length,
-        pdfs: entries.filter((l) => l.startsWith('pdfs/') && l.endsWith('.pdf')).length
+        pdfs: entries.filter((l) => l.startsWith('pdfs/') && l.endsWith('.pdf')).length,
+        skipped: skipped.slice(0, 20),
+        skippedCount: skipped.length
       };
       preview.total = preview.docs.add.length + preview.docs.conflict.length + preview.apps.add.length + preview.apps.conflict.length + preview.mats.add.length + preview.mats.conflict.length + preview.evals.add.length + preview.evals.conflict.length;
       if (url.searchParams.get('apply') !== '1') {

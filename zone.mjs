@@ -1,15 +1,35 @@
 // zone.mjs — 区域绑定数据层（纯函数，零网络）：zid 规范 / 初绑启发式 / meta↔正文同步 / 区域文本提取
 // 纪律：zid 只落在段落单位上（p/li/h1-4/.entry-head/.contact），section 与 section-title 不打；
 // 区域归属只存 docs-meta.json 的 zones map，正文只带非视觉属性 data-zid。
-// 假设：属性值含 > 时开标签匹配退化（与 extract.mjs 同假设）——读取层只降级，写回层同样不处理该形状。
+// 属性值含 '>' 与 data-zid 松散形态（单引号/空格/无引号）均按浏览器口径处理（B 线批 2，
+// BL-P5-01/P5-05）：开标签末端引号感知扫描；松散形态识别 + 归一替换（不追加）。
 import { sectionsOf, matchingClose, closeIndex, docToText } from './extract.mjs';
 import { factGuard } from './job.mjs';
 
 export const ZONE_KEYS = ['personal', 'education', 'work', 'project', 'skill', 'award', 'summary', 'other'];
 const UNIT_NAMES = new Set(['p', 'li', 'h1', 'h2', 'h3', 'h4', 'div']);
 const ZID_SRC = 'z[0-9a-f]{8}';
-const ZID_ATTR = new RegExp(`\\sdata-zid="(${ZID_SRC})"`);   // 属性区内的合法 zid
-const ZID_ANY_ATTR = /\sdata-zid="[^"]*"/g;                  // 任意值的 data-zid 属性（坏值摘除用）
+// data-zid 属性形态（BL-P5-05）：等号两侧容空格、值容单/双/无引号；捕获组 1 = zid 本值。
+// 只认「双引号紧凑」形态时，松散形态的合法 zid 被当缺失打新值、摘除正则又摘不掉旧值
+// → 同一元素双 data-zid → zoneEditUnits 抛错 → 该文档区域保存通道永久 400。
+const ZID_ATTR = new RegExp(`\\sdata-zid\\s*=\\s*["']?(${ZID_SRC})["']?`);
+const ZID_STRICT_ATTR = new RegExp(`\\sdata-zid="(${ZID_SRC})"`);   // 规范形态（归一目标）
+const ZID_ANY_ATTR = /\sdata-zid\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/g;   // 任意形态/任意值的 data-zid（摘除用）
+
+// 开标签末端（引号感知，BL-P5-01）：跳过 "…"/'…' 属性值区间后找 '>'。
+// 朴素 indexOf('>') 在属性值含 '>' 时（<p title="a>b">）把标签截断在引号内，
+// normalizeZids 按截断片段重写开标签 → 每次保存都把正文改坏。引号未闭合 → -1（按残片处理，不猜）。
+function tagEnd(s, from) {
+  const n = s.length;
+  let q = 0;
+  for (let k = from; k < n; k++) {
+    const c = s[k];
+    if (q) { if (c === q) q = 0; continue; }
+    if (c === '"' || c === "'") { q = c; continue; }
+    if (c === '>') return k;
+  }
+  return -1;
+}
 
 // 段落单位扫描（线性）。
 // 旧写法是正则 /<(p|li|h[1-4]|div)((?:\s[^>]*)?)>/gi —— `[^>]*` 后接必有的 '>'，
@@ -34,9 +54,9 @@ function unitTags(s) {
     }
     const tag = s.slice(ns, j);
     if (!UNIT_NAMES.has(tag.toLowerCase())) { i = lt + 1; continue; }
-    if (j > lastGt) { i = lt + 1; continue; }               // 后面再没有 '>' → 不是标签
-    const gt = s.indexOf('>', j);
-    if (gt < 0) { i = lt + 1; continue; }                    // 没有 '>' → 不是标签
+    if (j > lastGt) { i = lt + 1; continue; }               // 后面再没有 '>' → 不是标签（引号感知的末端只会更靠后，判定仍成立）
+    const gt = tagEnd(s, j);
+    if (gt < 0) { i = lt + 1; continue; }                    // 引号未闭合/没有 '>' → 不是标签
     const attrs = s.slice(j, gt);
     if (attrs && !/^\s/.test(attrs)) { i = lt + 1; continue; }
     out.push({ raw: s.slice(lt, gt + 1), tag, attrs, index: lt });
@@ -64,7 +84,16 @@ export function normalizeZids(html, gen = newZid) {
   for (const u of units) {
     if (!isUnit(u.tag, u.attrs)) continue;
     const m = ZID_ATTR.exec(u.attrs);
-    if (m && !seen.has(m[1])) { seen.add(m[1]); continue; }
+    if (m && !seen.has(m[1])) {
+      seen.add(m[1]);
+      // 已是规范形态（双引号紧凑）→ 原样保留；合法 zid 但形态松散（单引号/空格/无引号）
+      // → 摘旧写新（同值、规范形态），防下游严格匹配踩空（BL-P5-05）
+      if (ZID_STRICT_ATTR.test(u.attrs)) continue;
+      const rep = `<${u.tag}${u.attrs.replace(ZID_ANY_ATTR, '')} data-zid="${m[1]}">`;
+      out += s.slice(last, u.index) + rep;
+      last = u.index + u.raw.length;
+      continue;
+    }
     const zid = gen();
     seen.add(zid);
     // 坏值（有 data-zid 属性但不合法）当作缺失：摘旧打新，不产生双 data-zid

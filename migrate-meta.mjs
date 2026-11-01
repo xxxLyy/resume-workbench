@@ -30,7 +30,7 @@ import path from 'node:path';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { freezeHtml, normalizeToCurrent, splitDoc } from './freeze.mjs';
-import { beginTx, commitTx, recoverPending, withDocLock, updateMeta, rootLock, atomicWrite, LockHeld } from './tx.mjs';
+import { beginTx, commitTx, recoverPending, withDocLock, updateMeta, rootLock, atomicWrite, LockHeld, startLockHeartbeat } from './tx.mjs';
 import { comparePdfs, assertCheckers, DEFAULT_DPI, DEFAULT_THRESHOLD } from './tools/pixel-diff.mjs';
 import { migrateMats } from './zone.mjs';
 import { resolveChromium } from './chromium.mjs';
@@ -392,7 +392,7 @@ async function migrateDoc(root, docId, chk, backupDir, lockInfo) {
 // ===== 素材事实层迁移（S3-T7，幂等）=====
 // 无待迁文档时也可能有旧形状素材 → 独立探测；有变化先快照再原子写（沿用全量副本模式）。
 // 幂等判据：migrateMats 后 JSON.stringify 逐条比对（旧形状 confirmed/缺 facts 必变；已迁移原样返回必不变）。
-function migrateMaterials(root, report) {
+export function migrateMaterials(root, report) {
   const f = path.join(root, 'materials.json');
   if (!fs.existsSync(f)) return;
   let raw;
@@ -400,6 +400,12 @@ function migrateMaterials(root, report) {
   let mats;
   try { mats = JSON.parse(raw); } catch {
     const e = new Error('数据文件损坏，素材迁移已跳过（不覆盖）：materials.json（请先人工修复后重跑）');
+    e.code = 'CORRUPT'; throw e;
+  }
+  // 根值形状闸门（BL-P6-03，B 线批 2）：服务端读侧对非数组降级为 []，但迁移是「写」——
+  // 根值是对象/字符串/null 时若照跑 migrateMats，会把它当空数组把整个文件改写成 []（素材全丢还报成功）。
+  if (!Array.isArray(mats)) {
+    const e = new Error('数据文件根值形状异常（应为数组），素材迁移已跳过（不覆盖）：materials.json（请先人工修复后重跑）');
     e.code = 'CORRUPT'; throw e;
   }
   const migrated = migrateMats(mats);
@@ -441,9 +447,14 @@ export async function runMigration(root, opts = {}) {
     report.backup = backupRel;
 
     // 整轮持锁（timeoutMs 0：被占即抛 LockHeld；server 见锁写请求 503）。
-    // staleMs 放大到 24h：默认 30min 会让「渲染慢 × 文档多」的整轮被 server 判陈旧并放行写请求，
-    // 两侧同时写同一文档；崩溃残留仍由 lockIsStale 的 !pidAlive 分支接管，不影响重启恢复
+    // ⚠️ staleMs 24h 只作用于本进程自己的陈旧判定，改变不了 server（isHeld/acquire 默认 30min）
+    // 的口径——整轮超 30min 后 server 仍会判陈旧破锁放行写请求（复核 13130 已实证）。
+    // 正解 = 持锁期间心跳（startLockHeartbeat 周期 touch 刷新 startedAt，默认 10min ≪ 30min）；
+    // 崩溃残留仍由 lockIsStale 的 !pidAlive 分支接管，不影响重启恢复。
+    // 已知窄边界（登记不修）：assertLockOwnership 与 atomicWrite 之间若 server 已抢锁写入，
+    // 该窗口内的用户保存会被迁移覆盖且无 tx 记录可恢复。
     const lockInfo = rootLock.acquire(root, { staleMs: 24 * 3600 * 1000, timeoutMs: 0 });
+    const stopHeartbeat = startLockHeartbeat(root, Number(process.env.RESUME_TEST_MIGRATE_HB_MS || 10 * 60 * 1000));
     try {
       // 中断恢复：有 tx 记录 → 先恢复（legacy-safe 默认恢复）再重做；恢复失败 → 保留记录待人工，STOP 整轮
       const recovered = recoverPending(root);
@@ -471,6 +482,7 @@ export async function runMigration(root, opts = {}) {
       report.ok = !report.stopped;
       return report;
     } finally {
+      stopHeartbeat();
       // 只在自己仍持有时删锁（I-3c）：所有权已失 → 该锁文件是别人的，unlink 等于替他人解锁、放第三方进临界区
       if (lockOwnedBy(root, lockInfo)) rootLock.release(root);
       else console.error('[migrate] ⚠️ .migrate.lock 所有权已丧失（现持有者非本进程本次），不删除他人锁文件');

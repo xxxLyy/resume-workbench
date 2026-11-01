@@ -152,7 +152,26 @@ export const rootLock = {
     if (!fs.existsSync(lp)) return false;
     return !lockIsStale(lp, readLock(lp), staleMs);
   },
+  // 心跳（BL-P6-02，B 线批 2）：只刷新「自己持有」的锁的 startedAt。
+  // staleMs 是调用方参数、改变不了 server 侧的判定口径（server 用默认 30min）——
+  // 长迁移防 server 抢锁的正解是持锁期间周期 touch，而不是给自己 acquire 传大 staleMs。
+  // atomicWrite 保证读侧要么旧值要么新值，两种都是完整 JSON，无半写窗口。
+  touch(root) {
+    const lp = path.join(root, MIGRATE_LOCK);
+    const info = readLock(lp);
+    if (!info || info.pid !== process.pid || info.host !== HOST) return false;
+    atomicWrite(lp, JSON.stringify({ pid: process.pid, host: HOST, startedAt: Date.now() }));
+    return true;
+  },
 };
+
+// 迁移锁心跳定时器：周期 touch（默认 10min，远小于 server 默认 staleMs 30min），返回停止函数。
+// runMigration 持锁期间启用、finally 里停止；测试可用短周期验证实际推进。
+export function startLockHeartbeat(root, intervalMs = 10 * 60 * 1000) {
+  const t = setInterval(() => { try { rootLock.touch(root); } catch {} }, intervalMs);
+  if (typeof t.unref === 'function') t.unref();
+  return () => clearInterval(t);
+}
 
 // ===== docs-meta.json 唯一原子写入者（同步）=====
 // 锁内读最新（损坏抛 CORRUPT，停写不覆盖）。
@@ -225,7 +244,14 @@ export function beginTx(root, docId, phase, oldSnapTs) {
     try {
       const all = JSON.parse(fs.readFileSync(mp, 'utf8')) || {};
       oldMeta = (all && typeof all === 'object' && Object.prototype.hasOwnProperty.call(all, docId)) ? clone(all[docId]) : null;
-    } catch { oldMeta = null; }
+    } catch (err) {
+      // meta 损坏 ≠ 事务前无条目（BL-P5-04，B 线批 2）：吞成 null 会被恢复端当「无条目」
+      // 删掉该文档整条 meta（rev/job/zones/tag）。中止事务（此刻尚未写任何载荷/标记），
+      // 把损坏上抛 → /save 拒绝并提示，人工介入修 meta，而不是静默预约一次删除。
+      const e = new Error('docs-meta.json 损坏，保存事务中止（未写入任何事务载荷）：' + (err && err.message || err));
+      e.code = 'META_CORRUPT';
+      throw e;
+    }
   }
   const rec = { txId, docId, phase: phase || 'save', oldSnapTs: oldSnapTs || '', startedAt: Date.now(), host: HOST, pid: process.pid };
   const beginGapMs = Number(process.env.RESUME_TEST_TX_META_GAP_MS || 0);

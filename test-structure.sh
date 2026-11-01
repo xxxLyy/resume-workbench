@@ -9,6 +9,15 @@ unset RESUME_CHROMIUM
 node ./test-fixtures/reliability/test-snapview-csp.mjs
 node ./test-fixtures/reliability/test-edit-csp-frames.mjs
 
+# ===== B 线批 2 · 数据完整性：zone 扫描/双 zid、tx 吞损坏、migrate 三件、备份恢复形状 =====
+node ./test-fixtures/reliability/test-zone-quote-scan.mjs
+node ./test-fixtures/reliability/test-zone-double-zid.mjs
+node ./test-fixtures/reliability/test-tx-corrupt-meta.mjs
+node ./test-fixtures/reliability/test-migrate-materials-shape.mjs
+node ./test-fixtures/reliability/test-migrate-lock-heartbeat.mjs
+node ./test-fixtures/reliability/test-migrate-replace-escape.mjs
+node ./test-fixtures/reliability/test-backup-restore-shapes.mjs
+
 # ===== SRC-07 I3：来源包纯函数回归显式接入结构套件（零 I/O / 无模型 / 无服务）=====
 node --test test-fixtures/reliability/test-sources.mjs
 
