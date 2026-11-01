@@ -21,6 +21,9 @@ node ./test-fixtures/reliability/test-backup-restore-shapes.mjs
 # ===== BL-P6-01：logrotate 备份写失败（.1 为目录/不可写）必须放弃截断，主日志原样保留 =====
 node ./test-fixtures/reliability/test-logrotate-fail-path.mjs
 
+# ===== BL-P1-05：Chromium 探测等待方先看锁再看缓存（缓存已就绪不误抛「另一个进程正在探测」）=====
+node ./test-fixtures/reliability/test-chromium-wait-race.mjs
+
 # ===== BL-P4-07：gen-result 头部契约第 4 条与超时实现对齐（grep 断言；注释级修复、行为零变化）=====
 grep -qF '4) next=null 表示放弃写入（迟到/被替代/已取消），不是「删除文档元数据」；超时例外：写入 error 状态并推进 next。' gen-result.mjs && echo '✅ BL-P4-07 gen-result 头部契约与超时实现对齐'
 

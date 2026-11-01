@@ -104,13 +104,19 @@ export async function resolveChromium({ tmpDir = os.tmpdir(), force = false, wai
     if (cacheValid(c)) return c.bin;
   }
   if (!acquireLock()) {
-    // 已有进程在探测：只轮询缓存，不再对候选发探针。
+    // 已有进程在探测：只轮询，不再对候选发探针。
+    // 观察顺序（BL-P1-05）：先看锁、后读缓存。持锁方是「先写缓存、finally 再放锁」，
+    // 旧序「先读缓存后看锁」在持锁方恰好落在这两次观察之间完成时，会拿到
+    // 「这轮缓存没读到 + 锁已消失」而误 break 抛「另一个进程正在探测」——尽管缓存此刻
+    // 已可用。锁仍在说明持锁方尚未定稿（写缓存先于放锁，读缓存只会读到旧值）；
+    // 锁已消失则写缓存必然已发生，此刻读到的就是最终结果。
     const deadline = Date.now() + waitMs;
     while (Date.now() < deadline) {
       await new Promise(r => setTimeout(r, 500));
-      const c = readCache();
+      if (fs.existsSync(lockPath())) continue;   // 锁还在 → 持锁方未定稿，继续等
+      const c = readCache();                     // 锁已放 → 缓存已定稿，直接用
       if (cacheValid(c)) return c.bin;
-      if (!fs.existsSync(lockPath())) break;
+      break;                                     // 锁没了且无有效缓存 → 持锁方探测失败，等亦无益
     }
     throw new Error('另一个进程正在探测 Chromium，稍后重试');
   }
