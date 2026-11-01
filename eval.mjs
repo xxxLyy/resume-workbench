@@ -71,7 +71,9 @@ export function parseEvalReport(raw, { docText = '' } = {}) {
     let status = legacySourced ? 'missing' : m.status;
     let evidence = str(m.evidence);
     const needle = evidence.replace(/\s+/g, '');
-    const matchesResume = !!(hay && needle && hay.includes(needle));
+    // 长度下限与 evidence.mjs:556 同款：normSpace 后 <6 码元等于没锚，
+    // 「的」「负责」这类虚词不该替 covered 背书（用户照「已有证据」判断自己有没有这段经历）
+    const matchesResume = !!(hay && needle && [...needle].length >= 6 && hay.includes(needle));
     if (status === 'missing') evidence = '';
     else if (!matchesResume) {
       // 引文对不上母版 → 清空；不能继续声称 covered（用户会照它判断自己有没有这段经历）

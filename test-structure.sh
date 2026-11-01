@@ -33,6 +33,9 @@ node ./test-fixtures/reliability/test-slots-withlease.mjs
 # ===== BL-P4-01：薪资矛盾组合回落（text 非空 + source「JD 未提供」→ 回落空文本）=====
 node ./test-fixtures/reliability/test-eval-salary-fallback.mjs
 
+# ===== BL-P4-02：评估引文最小长度（<6 码元虚词不得替 covered 背书，与 evidence 护栏同口径）=====
+node ./test-fixtures/reliability/test-eval-quote-minlen.mjs
+
 # ===== SRC-07 I3：来源包纯函数回归显式接入结构套件（零 I/O / 无模型 / 无服务）=====
 node --test test-fixtures/reliability/test-sources.mjs
 
