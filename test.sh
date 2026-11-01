@@ -2226,3 +2226,29 @@ else
     fail "来源 UI 回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
   fi
 fi
+
+# ===== 16h. 快照预览保存通道关死（BL-P7-02，B 线批 1）：⌘S/Ctrl+S 零 /save 请求 + 磁盘正文不变 =====
+if node test-fixtures/reliability/test-preview-save-channel.mjs; then
+  echo '✅ 快照预览保存通道回归（内联脚本不执行 / ⌘S 零保存请求 / 磁盘未覆盖）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 快照预览保存通道回归未执行：Chromium 不可用'
+  else
+    fail "快照预览保存通道回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi
+
+# ===== 16i. 净化器标签模型对齐浏览器（BL-P1-01，B 线批 1）：svg foreign content / noscript raw-text =====
+if node test-fixtures/reliability/test-sanitizer-svg.mjs; then
+  echo '✅ 净化器标签模型回归（svg 内 style/textarea/title 按标记解析 / noscript 字面收尾 / 零执行）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 净化器标签模型回归未执行：Chromium 不可用'
+  else
+    fail "净化器标签模型回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi

@@ -2334,7 +2334,10 @@ async function handler(req, res) {
       if (!html.includes(JOB_MARK)) html = html.replace('</body>', jobBlock(id) + '</body>');
       if (!html.includes(ZONE_MARK)) html = html.replace('</body>', zoneBlock(id) + '</body>');
       // CSP：文档正文是外部输入（恢复的备份可带 <script>）→ 只放行已知的编辑器主脚本（sha256）
-      // 与服务端注入块（nonce）；其余内联脚本一律被挡（2026-10-22 审查 [高]）
+      // 与服务端注入块（nonce）；其余内联脚本一律被挡（2026-10-22 审查 [高]）。
+      // frame-src/object-src 显式关死（BL-P7-03，2026-11-01 B 线批 1）：/edit 无任何合法
+      // iframe/embed 需求（PDF 预览 iframe 在 /export 页），不显式关死则回落 default-src
+      // 'self' → 正文可内嵌同源页（如 /settings 的明文 Key）被同源脚本读出。
       const csp = [
         "default-src 'self'",
         "script-src 'self' 'nonce-" + cspNonce + "' " + allowedEditorScriptHashes(html).join(' '),
@@ -2342,6 +2345,8 @@ async function handler(req, res) {
         "img-src 'self' data: blob: https:",
         "font-src 'self' data:",
         "connect-src 'self'",
+        "frame-src 'none'",
+        "object-src 'none'",
         "frame-ancestors 'none'",
         "base-uri 'none'",
         "form-action 'self'"
@@ -3418,7 +3423,21 @@ async function handler(req, res) {
       let html = fs.readFileSync(snapFile, 'utf8');
       const banner = `<div style="position:sticky;top:0;z-index:1000;background:var(--warn-soft);color:var(--warn);padding:8px 16px;font-size:13px;text-align:center;border-bottom:2px solid var(--warn)">${icon('text-quote', 13)} 历史快照只读预览（${ts}）</div><style>.edit-toolbar,.page-line{display:none!important}</style>`;
       html = html.replace('contenteditable="true"', '').replace("sheet.contentEditable = 'true'", '');
-      return send(200, html.replace('<body>', '<body>' + banner));
+      // CSP：快照正文是外部输入（恢复的备份/旧文档可带 <script>），而预览不需要任何脚本、
+      // 网络请求或框架 → default-src 'none' 一刀切，只放行样式（横幅/正文观感）与图片/字体。
+      // 这同时把模板残留的编辑器脚本（含 ⌘S doSave 保存通道）整体判死：脚本不执行、
+      // connect-src 也禁——「预览页按保存把历史版本写回当前文档」的通道在两层被关死
+      // （BL-P1-02≡BL-P7-01 + BL-P7-02，2026-11-01 B 线批 1）。
+      const previewCsp = [
+        "default-src 'none'",
+        "style-src 'unsafe-inline'",
+        "img-src 'self' data: blob: https:",
+        "font-src 'self' data:",
+        "base-uri 'none'",
+        "form-action 'none'",
+        "frame-ancestors 'none'"
+      ].join('; ');
+      return send(200, html.replace('<body>', '<body>' + banner), 'text/html; charset=utf-8', { 'Content-Security-Policy': previewCsp });
     }
     if (req.method === 'GET' && url.pathname === '/snapshots') {
       const dir = snapDir(id);

@@ -5,6 +5,10 @@ cd "$(dirname "$0")"
 # 本套件断言的是未覆盖 RESUME_CHROMIUM 时的探测契约（段 X cacheValid 最后一条），外部导出该变量会误红，统一取消；段 Y 内部自设自删，不受影响。
 unset RESUME_CHROMIUM
 
+# ===== 预览/编辑页 CSP 锁定（BL-P1-02≡BL-P7-01 / BL-P7-03，B 线批 1）：HTTP 头契约 =====
+node ./test-fixtures/reliability/test-snapview-csp.mjs
+node ./test-fixtures/reliability/test-edit-csp-frames.mjs
+
 # ===== SRC-07 I3：来源包纯函数回归显式接入结构套件（零 I/O / 无模型 / 无服务）=====
 node --test test-fixtures/reliability/test-sources.mjs
 
