@@ -45,10 +45,18 @@ export function buildEvalPrompt({ docText, jd, company, role }) {
 export function parseEvalReport(raw, { docText = '' } = {}) {
   const fail = (reason) => ({ ok: false, report: null, dropped: 0, reason });
   let data;
+  const cleaned = String(raw).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
   try {
-    const cleaned = String(raw).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
     data = JSON.parse(cleaned);
-  } catch { return fail('模型输出不是合法 JSON'); }
+  } catch {
+    // 模型常在 JSON 前后带一句自然语言（如「好的，以下是报告：」）——整份作废太亏。
+    // 截取首个 { 到最后一个 } 再试一次，仍败才 ok:false（纯文本/畸形在这里二次失败，不瞎猜）
+    const a = cleaned.indexOf('{');
+    const b = cleaned.lastIndexOf('}');
+    if (a < 0 || b < a) return fail('模型输出不是合法 JSON');
+    try { data = JSON.parse(cleaned.slice(a, b + 1)); }
+    catch { return fail('模型输出不是合法 JSON'); }
+  }
   if (!data || typeof data !== 'object' || Array.isArray(data)) return fail('模型输出不是 JSON 对象');
 
   // score 是这个功能的全部结论：非数字或越界一律整份作废。猜一个分数交出去，

@@ -36,6 +36,9 @@ node ./test-fixtures/reliability/test-eval-salary-fallback.mjs
 # ===== BL-P4-02：评估引文最小长度（<6 码元虚词不得替 covered 背书，与 evidence 护栏同口径）=====
 node ./test-fixtures/reliability/test-eval-quote-minlen.mjs
 
+# ===== BL-P4-05：模型输出 JSON 前后缀自然语言容错（截取首个{到最后}重试，不再整份作废）=====
+node ./test-fixtures/reliability/test-eval-json-prefix.mjs
+
 # ===== SRC-07 I3：来源包纯函数回归显式接入结构套件（零 I/O / 无模型 / 无服务）=====
 node --test test-fixtures/reliability/test-sources.mjs
 
