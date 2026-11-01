@@ -92,6 +92,8 @@ FIELDS（editor-shell.js） → typoCss(v) → #typo-custom（落盘进 <head>�
 - 层级靠**字号 + 字重**表达，字距只作微调。
 - `h1{font-size:26px;…}` 曾是死规则（全站 `h1` 都在 `.mainarea` 内，被 `.mainarea>h1` 覆盖）——**已删**，别再写「页题 26px」的假设。
 - 字距地板：不低于 `-0.04em`（craft-floor）。当前 `-0.01em` 是应用页近黑工作台的克制档。
+- 二级标题档（h2；不属上表三档，也不是第四档）：`.mainarea h2`（`server.mjs`）= 16px / 700 / `margin:16px 0 8px`。此前全站无 h2 样式，落浏览器默认 1.5em（14px 正文下 21px，比页题 20px 还大）——**已收**为显式 16px 档（`test-structure.sh` E1 断言钉值，新增 h2 须先归档进本节）。
+- **可见差异（已登记）**：全站唯一 h2 在「文档已损坏」页——21px / 高 ≈33.6px / 上下 margin ≈17.4px → 16px / 高 ≈25.6px / 上下 margin 16px/8px。
 
 ### 4.3 卡片标题口径
 
@@ -119,7 +121,7 @@ FIELDS（editor-shell.js） → typoCss(v) → #typo-custom（落盘进 <head>�
 ### 5.3 胶囊（badge / chip）
 
 - 两枚胶囊同款：字号 12px、上下内边距 3px、左右 11px。等高还差一条：`.chip` 是 `button`，会被全局 `button{min-height:32px}` 撑到 32px——**已收** `.chip{min-height:26px}`（`server.mjs`），胶囊高度回到自身盒模型，与 `.badge`（≈25.2px）高差 ≤1px。
-- **可见差异（已登记）**：全站胶囊高度 32px→26px（缩 6px）。这是「两枚胶囊同档」的代价，非误改；26px 仍高于 WCAG 2.2 的 24px 最小目标尺寸。
+- **可见差异（已登记）**：全站胶囊高度 32px→26px（缩 6px）。这是「两枚胶囊同档」的代价，非误改——同档的验收线是两枚胶囊高差 ≤2px，不碰 chip 则 32px 对 ≈25.2px 差 6.8px 过不了线，收 26px 后差 0.8px 达线（过 2px 线的登记取舍）；26px 仍高于 WCAG 2.2 的 24px 最小目标尺寸。
 - `.badge` 自带 `margin-right`（徽章后分隔的唯一机制）；放进 `gap` 容器时**必须**给 `.badge{margin-right:0}`，否则双倍计距。
 
 ---
