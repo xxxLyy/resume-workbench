@@ -3513,20 +3513,22 @@ const base = {
 //    设计文档 §5.3：逐条匹配状态枚举校验，畸形块丢弃并计数。
 //    status 缺失同样丢弃而不是回落 'missing'——模型没分类，我们不知道这条是 covered 还是 missing，
 //    猜一个会凭空改掉用户的匹配视图；丢掉只损失一条，猜错会误导判断。
+//    「合法条」样例引文须 ≥6 码元真子串才算命中（BL-P4-02，与 evidence.mjs:556 同口径），
+//    短引文会被清空并降 partial——保真断言只对过了长度门的引文成立。
 const m = parseEvalReport(JSON.stringify({
   ...base,
   matches: [
-    { req: '要求A', status: 'covered', evidence: '原文A', weight: 'must', weightFrom: 'JD 原文' },
+    { req: '要求A', status: 'covered', evidence: '原文A后端存储改造', weight: 'must', weightFrom: 'JD 原文' },
     { req: '要求B', status: '全覆盖了吧', evidence: '原文B', weight: 'must' },
     { req: '   ', status: 'covered', evidence: '原文C' },
     { req: '要求D' },
     null
   ]
-}), { docText: '原文A' });
+}), { docText: '原文A后端存储改造经历' });
 assert(m.ok === true, 'matches 畸形不应让整份作废');
 assert(m.report.matches.length === 1, '只留 1 条合法，实际 ' + m.report.matches.length);
 assert(m.dropped === 4, 'dropped 应为 4（status 枚举外 / req 空 / status 缺失 / 非对象），实际 ' + m.dropped);
-assert(m.report.matches[0].evidence === '原文A' && m.report.matches[0].weight === 'must', '合法条保真');
+assert(m.report.matches[0].evidence === '原文A后端存储改造' && m.report.matches[0].weight === 'must', '合法条保真');
 
 // ② status 合法但其余字段缺失/枚举外 → 填空串（保留该条，不丢）
 const d = parseEvalReport(JSON.stringify({ ...base, matches: [{ req: '要求E', status: 'missing', weight: '超级重要', weightFrom: '我自己想的' }] }));
@@ -5034,6 +5036,55 @@ fs.writeFileSync(path.join(root, 'docs-meta.json'), '{}');
 
 fs.rmSync(root, { recursive: true, force: true });
 console.log('✅ TX-GUARD 事务层护栏（docId 闸门 / 孤儿与 .tmp 回收 / 提交失败上报）');
+EOF
+
+# —— E1：排版不变量进结构断言（DESIGN.md §4.2 标题三档 / §5.3 chip·badge 同档，B 线批 7）——
+# 逐字钉值（UI-2 模式）：登记值取自 DESIGN.md 档位表，钉 server.mjs（应用页 CSS）与
+# editor-shell.js（注入层）里的现行登记字面值，漂移即红。登记 ≠ 放宽：改档位须与 DESIGN.md 同提交。
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const assert = (c, m) => { if (!c) { console.error('❌ E1 ' + m); process.exit(1); } };
+const srv = readFileSync('./server.mjs', 'utf8');
+const ed = readFileSync('./editor-shell.js', 'utf8');
+// 抠出「行首选择器」的整条单行规则——钉值必须落在该规则内，不允许「值在文件别处」的假绿
+const rule = (sel) => {
+  const i = srv.indexOf('\n' + sel + '{');
+  assert(i >= 0, 'server.mjs 应有行首规则: ' + sel);
+  return srv.slice(i + sel.length + 2, srv.indexOf('}', i));
+};
+
+// ① 标题三档（DESIGN.md §4.2：只此三档，不得新增第四档；层级靠字号+字重，字距只作微调）
+const brand = rule('.topnav .brand');
+assert(brand.includes('font-size:16px') && brand.includes('font-weight:800') && brand.includes('letter-spacing:.4px'),
+  '品牌档应钉 16px/800/+.4px（DESIGN.md §4.2），实际: ' + brand);
+const h1 = rule('.mainarea>h1,.page-head>h1');
+assert(h1 === 'font-size:20px;font-weight:700;letter-spacing:-.01em',
+  '页题档应整条钉死 20px/700/-.01em（DESIGN.md §4.2；已删的 26px 死规则不得复活），实际: ' + h1);
+const hero = rule('.hero-title');
+assert(hero.includes('font-size:34px') && hero.includes('font-weight:800') && hero.includes('letter-spacing:.8px'),
+  'hero 档应钉 34px/800/+.8px（DESIGN.md §4.2），实际: ' + hero);
+// h2 二级档：此前落浏览器默认 1.5em（14px 正文下 ≈21px，比页题还大），收为 16px/700（登记取舍 21px→16px）
+const h2 = rule('.mainarea h2');
+assert(h2.startsWith('font-size:16px;font-weight:700'),
+  'h2 二级档应钉 16px/700（DESIGN.md 登记取舍 21px→16px），实际: ' + h2);
+assert((srv.match(/<h2/g) || []).length === 1, '全站唯一 h2 应在损坏页（新增 h2 必须先归档进 DESIGN.md 档位表）');
+
+// ② chip/badge 同档（DESIGN.md §5.3）：同款字号 12px + 内边距 3px 11px；
+//    chip 的 min-height:26px 是登记值（对抗全局 button{min-height:32px} 的撑高），两枚胶囊高差 ≤1px
+const chip = rule('.chip');
+assert(chip.includes('padding:3px 11px;font-size:12px') && chip.includes('min-height:26px'),
+  '.chip 应钉 12px + 3px 11px + min-height:26px（DESIGN.md §5.3 登记值），实际: ' + chip);
+const badge = rule('.badge');
+assert(badge.includes('padding:3px 11px;font-size:12px'),
+  '.badge 应与 .chip 同款 12px + 3px 11px（同档前提，高差才 ≤1px），实际: ' + badge);
+assert(!badge.includes('min-height'), '.badge 高度由盒模型决定（≈25.2px），不得挂 min-height');
+const btn = rule('button');
+assert(btn.includes('min-height:32px'), '全局 button{min-height:32px} 是 §5.3 chip 收口的对抗前提，不得静默改动');
+
+// ③ 注入层落点（DESIGN.md §5.3：badge 进 gap 容器必须 margin-right:0，否则双倍计距）
+assert(ed.includes('.ed-on .edit-toolbar .badge{margin:0}'),
+  '编辑器工具栏 badge 已进 gap 容器，必须保留 margin:0（DESIGN.md §5.3 双倍计距守卫）');
+console.log('✅ E1 排版不变量（标题三档 + chip/badge 同档）逐字钉值');
 EOF
 
 # ===== V1/V2：可靠性加固「验证基础包」的本轮回归（无真实模型 / 无真实服务 / 无私有数据）=====
