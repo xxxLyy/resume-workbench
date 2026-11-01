@@ -2385,3 +2385,27 @@ else
     fail "区域降级提示保留回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
   fi
 fi
+
+# ===== 16k. B 线批 4 补挂：区域改写 skipped 可见（BL-P3-04）/ 候选容器跨重绘保留（BL-P3-06）=====
+if node test-fixtures/reliability/test-zone-skipped-shown.mjs; then
+  echo '✅ 区域改写 skipped 明细可见（生成侧+应用侧逐条显示）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ skipped 可见性回归未执行：Chromium 不可用'
+  else
+    fail "skipped 可见性回归未通过 (exit $RC)"
+  fi
+fi
+if node test-fixtures/reliability/test-zone-preview-keep.mjs; then
+  echo '✅ 区域候选容器跨重绘保留'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 候选保留回归未执行：Chromium 不可用'
+  else
+    fail "候选保留回归未通过 (exit $RC)"
+  fi
+fi

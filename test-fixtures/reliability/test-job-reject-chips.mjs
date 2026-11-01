@@ -31,6 +31,9 @@ try {
     const st = await h.serverState();
     return (st.job.changes.find((x) => x.id === 'c2') || {}).status === 'skipped';
   }, 8000, 'c2 状态写回');
+  // 服务端是「先落盘、后回包」，而 render() 跑在 setStatus 的回包回调里（job-panel.js setStatus）：
+  // 只等服务端状态会在面板尚未重建时就去查焦点（焦点此刻还在刚点的按钮上）。再等 DOM 反映重建完成。
+  await h.page.waitForFunction(() => /稍后处理/.test((document.querySelector('#ed-pane-review [data-change="c2"] .jp-st') || {}).textContent || ''), null, { timeout: 8000 });
 
   // chips 应仍在（重开），输入值保留，焦点在
   const input2 = h.page.locator('#ed-pane-review [data-change="c1"] .jp-chips input');

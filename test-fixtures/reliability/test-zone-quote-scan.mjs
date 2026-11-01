@@ -10,7 +10,9 @@ import { normalizeZids, zidsOf, zoneEditUnits } from '../../zone.mjs';
 const src = '<p title="a>b">正文一</p>';
 const out1 = normalizeZids(src);
 assert.ok(out1.includes('title="a>b"'), '属性值被截断/改写：' + out1);
-assert.ok(!out1.includes('b">'), '属性值泄漏成可见文本：' + out1);
+// 泄漏判定不能裸查子串 'b">'：归一输出本身含 data-zid="z…b">（zid 末位随机，1/16 是 b），
+// 裸查会把正确输出误判成泄漏（假红）。改锚定全文形态：title 完整 + 恰一个规范 zid + 正文无夹带。
+assert.ok(/^<p title="a>b" data-zid="z[0-9a-f]{8}">正文一<\/p>$/.test(out1), '属性值泄漏成可见文本/归一形态异常：' + out1);
 assert.ok(/<p\b[\s\S]*?data-zid="z[0-9a-f]{8}"/.test(out1), 'zid 未打上：' + out1);
 assert.equal((out1.match(/data-zid=/g) || []).length, 1, 'data-zid 数量不是 1：' + out1);
 

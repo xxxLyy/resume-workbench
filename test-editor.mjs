@@ -284,7 +284,8 @@ async function runTxTests() {
         else if (!markers5.length) bad('⑧ I-2 meta 恢复失败时不得 commitTx（记录须留给启动恢复）');
         else {
           fs.writeFileSync(metaFile5, JSON.stringify(ERR_META));   // 修好数据文件后重启 → 启动恢复应能据记录完整还原
-          const srv5b = await spawnServer(ROOT5, { RESUME_RENDER_BIN: fr5 });
+          // 带 gap 钩子：⑧b 要在 rename#1 之后的窗口里写坏 meta（同 ⑧）；本段的启动恢复断言只读文件，不受影响
+          const srv5b = await spawnServer(ROOT5, { RESUME_RENDER_BIN: fr5, RESUME_TEST_SAVE_GAP_MS: '1200' });
           servers.push(srv5b.child);
           const m5 = readMeta5();
           if (txMarkers5().length) bad('⑧ 重启后启动恢复应清理 tx 记录', txMarkers5().join(','));
@@ -296,8 +297,13 @@ async function runTxTests() {
             const B5b = srv5b.base;
             const save5 = (body) => fetch(B5b + '/save?id=err-a', { method: 'POST', headers: { 'Content-Type': 'text/html; charset=utf-8' }, body })
               .then((r) => r.text().then((t) => ({ status: r.status, text: t }), () => ({ status: r.status })));
-            fs.writeFileSync(metaFile5, '{ "err-a": ');        // 再制造一次"rename#2 + meta 恢复"双失败 → 记录保留
-            const rf = await save5(txDoc('err-a', 'ERR-V3', ''));
+            // 再制造一次"rename#2 + meta 恢复"双失败 → 记录保留。必须在 rename#1 之后的 gap 窗口里写坏 meta（与 ⑧ 同法）：
+            // beginTx 会在事务开始前校验 meta（BL-P5-04，712b8d9）——保存前就写坏只会让 beginTx 直接拒绝（500 但零记录），
+            // 构造不出"双失败留记录"这个前置。
+            const rfP = save5(txDoc('err-a', 'ERR-V3', ''));
+            if (!await waitDoc5('ERR-V3', 6000)) bad('⑧b 前置失败：rename#1 未落盘（未命中 gap）');
+            fs.writeFileSync(metaFile5, '{ "err-a": ');
+            const rf = await rfP;
             const kept = txMarkers5().length;
             fs.writeFileSync(metaFile5, JSON.stringify(m5));   // 修好数据文件 → 同文档再次保存成功
             const rs = await save5(txDoc('err-a', 'ERR-V4', ''));
@@ -1325,15 +1331,18 @@ try {
     const st = await page.evaluate(() => fetch('/job/changes?id=' + window.__edDocId).then((r) => r.json()));
     const accepted = st.job.changes.find((c) => c.id === 'bt1');
     if (!accepted || accepted.status !== 'accepted') bad('审阅状态未回写服务端'); else ok('审阅状态回写并持久化');
-    // 隐藏条目（important：需逐条确认）
+    // 隐藏条目（important：需逐条确认）。落点按 zid（BL-P2-03，426f234：findEntry zid 优先于标题子串匹配）：
+    // bt2.zid=za7b8c9d0 锚定的是「项目A」条目头，entry 文案「项目B」只是无 zid 时的退化路径 → 隐藏的必须是 zid 锚点，项目B 不受影响
     await page.click('#ed-pane-review [data-change="bt2"] button.jp-accept');
     await page.waitForTimeout(300);
-    const hiddenOk = await page.evaluate(() => {
-      const heads = Array.from(document.querySelectorAll('.sheet .entry-head'));
-      const b = heads.find((h) => h.textContent.includes('项目B'));
-      return !!(b && b.classList.contains('ed-entry-hidden'));
+    const hidden = await page.evaluate(() => {
+      const anchor = document.querySelector('.sheet .entry-head[data-zid="za7b8c9d0"]');
+      const byTitle = Array.from(document.querySelectorAll('.sheet .entry-head')).find((h) => h.textContent.includes('项目B'));
+      return { anchorHidden: !!(anchor && anchor.classList.contains('ed-entry-hidden')), titleHidden: !!(byTitle && byTitle.classList.contains('ed-entry-hidden')) };
     });
-    if (!hiddenOk) bad('隐藏条目未生效'); else ok('条目级隐藏生效（内容保留可恢复）');
+    if (!hidden.anchorHidden) bad('隐藏条目未生效', 'zid 锚点条目头未带 ed-entry-hidden');
+    else if (hidden.titleHidden) bad('隐藏落错条目', '按标题匹配到的项目B 被隐藏（应按 zid 锚点落点）');
+    else ok('条目级隐藏生效（按 zid 锚点落点，内容保留可恢复）');
     const disk5 = fs.readFileSync(path.join(dataRoot, 'docs', JOB_DOC + '.html'), 'utf8');
     if (!disk5.includes('ed-entry-hidden')) bad('隐藏类未落盘（PDF 将不隐藏）'); else ok('隐藏类随保存落盘');
     await page.reload();
