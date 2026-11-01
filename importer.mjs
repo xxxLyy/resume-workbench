@@ -63,8 +63,9 @@ export async function importPdfText(root, pdfPath, name) {
     if (hasLLM(root)) {
       html = await structureText(root, text);   // 失败返回 null 则降级
       if (!html) html = buildRawDoc(root, text, name, 'failed', id);
+      else html = html.replaceAll('{{DOC_ID}}', () => esc(id));   // 与降级路径 :52-53 同契约：落盘字节带真实 docId（函数替换防 $& 解释）
     } else {
-      html = buildRawDoc(root, text, loadConfig(root) ? 'partial' : null, id);
+      html = buildRawDoc(root, text, name, loadConfig(root) ? 'partial' : null, id);   // 实参顺序：name→degradeReason→docId（错位会把 docId 喂进 degradeReason、docId 槽缺参落空串）
     }
     atomicWrite(path.join(root, 'docs', id + '.html'), html);   // 导入的简历正文同样收紧（0o600）
     // 新建即登记样式来源（meta 唯一写入者 updateMeta）：theme/styleHash/typo/schemaVersion

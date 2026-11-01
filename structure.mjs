@@ -23,7 +23,8 @@ const skillLines = (arr) => (arr || []).map((line) => {
     : `        <p>${esc(line)}</p>`;
 }).join('\n');
 
-// 注意：模板中的 {{DOC_ID}} 由 server /edit 在 serve 时注入，本函数不替换
+// 注意：本函数不替换 {{DOC_ID}}——由调用方（importer）在落盘前函数化替换为真实 docId
+//（快照/导出/直读磁盘的字节里不得留占位符，serve 时的注入不覆盖这条）
 // replaceAll + 函数替换：防止 LLM 输出含 $& 等模式时被 replace 特殊解释
 function buildDoc(root, data) {
   const tpl = assembleTemplate('classic');   // 主题唯一源装配（与数据根无关，永远来自 APP_ROOT）
