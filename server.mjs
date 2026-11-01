@@ -3779,7 +3779,12 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const docText = fs.existsSync(docPath(app.docId)) ? docToText(fs.readFileSync(docPath(app.docId), 'utf8')) : '';
       const sys = '你是面试准备教练。根据 JD 和简历给出 3-5 条具体准备建议（可能问什么、怎么答、注意什么），中文简洁。';
       const user = `【JD】\n${app.jd || '（无 JD）'}\n\n【简历】\n${docText}`;
-      const text = await chat(root, sys, user, { lease: leaseOf(req) });
+      // BL-P4-03：模型调用异常此前一路冒到顶层错误出口 → 500 text/plain（客户端只在 JSON 体里找
+      // error，用户只见『HTTP 500』、超时/网络真因全丢）。以下 7 个 /ai/* 路由统一就地兜住，
+      // 与 /eval/create 对同一 chat() 的 catch 同款：502 + {ok:false, error:'模型调用失败：…'} JSON。
+      let text;
+      try { text = await chat(root, sys, user, { lease: leaseOf(req) }); }
+      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
       return sendJson(200, { ok: true, text });
     }
     // ===== JD 链接读取 =====
@@ -4034,7 +4039,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const body = JSON.parse(await readBody(req));
       if (!body.text || !body.instruction) return send(400, 'text 和 instruction 必填', 'text/plain');
       const p = buildRewrite(body.text, body.instruction);
-      const revised = await chat(root, p.sys, p.user, { lease: leaseOf(req) });
+      let revised;
+      try { revised = await chat(root, p.sys, p.user, { lease: leaseOf(req) }); }
+      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
       return sendJson(200, { ok: true, revised });
     }
     if (req.method === 'POST' && url.pathname === '/ai/chat') {
@@ -4052,7 +4059,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         if (m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string') msgs.push({ role: m.role, content: m.content });
       }
       msgs.push({ role: 'user', content: body.message });
-      const raw = await chatMsgs(root, msgs, { lease: leaseOf(req) });
+      let raw;
+      try { raw = await chatMsgs(root, msgs, { lease: leaseOf(req) }); }
+      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
       const parsed = parseChanges(raw);
       return sendJson(200, { ok: true, ...(parsed || { reply: raw }) });
     }
@@ -4107,7 +4116,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       if (stale) return sendJson(409, stale);
       const docText = docToText(fs.readFileSync(docPath(docId), 'utf8'), { includeHidden: false });
       const p = buildReview(docText, body.mode);
-      const raw = await chat(root, p.sys, p.user, { lease: leaseOf(req) });
+      let raw;
+      try { raw = await chat(root, p.sys, p.user, { lease: leaseOf(req) }); }
+      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
       const parsed = parseReport(raw);
       return sendJson(200, parsed ? { ok: true, report: parsed } : { ok: true, reply: raw });
     }
@@ -4122,7 +4133,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       if (stale) return sendJson(409, stale);
       const docText = docToText(fs.readFileSync(docPath(docId), 'utf8'), { includeHidden: false });
       const p = buildMatch(docText, body.jd);
-      const raw = await chat(root, p.sys, p.user, { lease: leaseOf(req) });
+      let raw;
+      try { raw = await chat(root, p.sys, p.user, { lease: leaseOf(req) }); }
+      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
       const parsed = parseReport(raw);
       return sendJson(200, parsed ? { ok: true, report: parsed } : { ok: true, reply: raw });
     }
@@ -4141,7 +4154,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const p = buildZoneAnalyzePrompt({ zoneName: ZONE_LABELS[body.zone], zoneText, digest: digestOf(html), rounds });
       // S3-T6：chips 追问文本（可选字符串）拼进 user prompt；压单行 + 截断，防经换行伪造 prompt 段落结构
       if (typeof body.extra === 'string' && body.extra.trim()) p.user += '\n\n【追问】' + body.extra.trim().replace(/\s+/g, ' ').slice(0, 200);
-      const raw = await chat(root, p.sys, p.user, { lease: leaseOf(req) });
+      let raw;
+      try { raw = await chat(root, p.sys, p.user, { lease: leaseOf(req) }); }
+      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
       const parsed = parseZoneAnalysis(raw);
       if (parsed) {
         updateMeta(root, id, (m) => { const b = { ...(m || {}) }; b.zoneRounds = { ...(b.zoneRounds || {}) }; b.zoneRounds[body.zone] = (b.zoneRounds[body.zone] || 0) + 1; return b; });
@@ -4165,7 +4180,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const free = all.filter((x) => !locked.has(x.zid));       // locked 段落跳过（段级保留标记）
       if (!free.length) return sendJson(200, { ok: true, rewrites: [], skipped: [...locked], baseMtime: body.baseMtime });
       const p = buildZoneRewritePrompt({ zoneName: ZONE_LABELS[body.zone], paras: free, instruction });
-      const raw = await chat(root, p.sys, p.user, { lease: leaseOf(req) });
+      let raw;
+      try { raw = await chat(root, p.sys, p.user, { lease: leaseOf(req) }); }
+      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
       const parsed = parseZoneRewrites(raw, free);
       if (!parsed) return sendJson(200, { ok: false, error: '改写失败，稍后再试' });
       // 基线与操作身份由服务端生成（模型不得自报）：before/beforeHash 取本次实际发送的单位文本

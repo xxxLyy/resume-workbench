@@ -24,6 +24,9 @@ grep -qF '4) next=null 表示放弃写入（迟到/被替代/已取消），不�
 # ===== BL-P4-04：资源槽池 unclaim 补凭证归属三条件（本池/未释放/被占用）回归 =====
 node ./test-fixtures/reliability/test-slots-unclaim-guard.mjs
 
+# ===== BL-P4-03：7 个 /ai/* 路由模型调用异常捕获为 502 可读 JSON（隔离服务 + 本机回环，不再 500 text/plain）=====
+node ./test-fixtures/reliability/test-ai-routes-error.mjs
+
 # ===== SRC-07 I3：来源包纯函数回归显式接入结构套件（零 I/O / 无模型 / 无服务）=====
 node --test test-fixtures/reliability/test-sources.mjs
 
