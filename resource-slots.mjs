@@ -70,9 +70,17 @@ export function createSlotPool({ size, name, waitMs = 5000 } = {}) {
     lease.inUse = true;
     return lease;
   }
-  // unclaim — 归还执行器占用（不释放槽位；槽位由 release 归还）
+  // unclaim — 归还执行器占用（不释放槽位；槽位由 release 归还）。
+  // 与 claim / releaseLease 同一份合同（BL-P4-04）：①本池签发（对象身份）②未释放
+  // ③当前被占用。任一不满足 → 返回 false、状态分文不动；合法归还 → 返回 true。
+  // 跨池的、伪造的、已释放的、未占用的凭证 unclaim 一律幂等无效；不抛错。
   function unclaim(lease) {
-    if (lease && typeof lease === 'object' && lease.inUse) lease.inUse = false;
+    if (!lease || typeof lease !== 'object' || !owned.has(lease)) return false;
+    if (lease.name !== poolName) return false;
+    if (lease.released) return false;
+    if (!lease.inUse) return false;
+    lease.inUse = false;
+    return true;
   }
 
   // 把空槽交给队首等待者。同步交接：槽位不空窗，等待方的 await 在微任务里继续。
