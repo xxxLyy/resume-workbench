@@ -320,6 +320,9 @@ export function dropSupersededTx(root, docId) {
  *      里面是整篇简历正文的副本，会随每次保存继续堆积。
  *   ② atomicWrite 崩溃残留的 .tmp 文件：备份打包会把它们收进 tar，
  *      恢复侧按条目形状校验会整包拒掉（用户的备份从此不可用，2026-10-22 审查实测）。
+ * 豁免 <id>.html.tmp：这是 importer 在途导入占位（BL-P6-06，整个结构化窗口都要存在——并发同名
+ * 防撞闸靠它，importer.mjs「宁滥勿删」政策），不是无主残留；误删会让结构化期间的窗口失去
+ * 占位保护。SIGKILL 残留同形态，按同一政策惰性不回收（对文档列表不可见、恢复侧按未知形状跳过）。
  */
 function cleanupOrphanArtifacts(root, txDirPath) {
   try {
@@ -339,6 +342,7 @@ function cleanupOrphanArtifacts(root, txDirPath) {
     try { files = fs.readdirSync(d); } catch { continue; }
     for (const f of files) {
       if (!f.endsWith('.tmp')) continue;
+      if (f.endsWith('.html.tmp')) continue;   // 在途导入占位（BL-P6-06），见上方豁免说明
       try { fs.unlinkSync(path.join(d, f)); } catch {}
     }
   }

@@ -17,6 +17,8 @@ node ./test-fixtures/reliability/test-migrate-materials-shape.mjs
 node ./test-fixtures/reliability/test-migrate-lock-heartbeat.mjs
 node ./test-fixtures/reliability/test-migrate-replace-escape.mjs
 node ./test-fixtures/reliability/test-backup-restore-shapes.mjs
+# ===== BL-P6-06 配套：启动清扫豁免在途导入占位 <id>.html.tmp（崩溃残留清扫合同不回退）=====
+node ./test-fixtures/reliability/test-sweep-import-placeholder.mjs
 
 # ===== BL-P6-01：logrotate 备份写失败（.1 为目录/不可写）必须放弃截断，主日志原样保留 =====
 node ./test-fixtures/reliability/test-logrotate-fail-path.mjs
