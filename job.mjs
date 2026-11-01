@@ -151,11 +151,27 @@ function numbersOf(text) {
 }
 
 // 日期 token → 「年-月-日」归一（月份/日缺省为 0）：2019.06 / 2019年6月 / 2019年06月 同值。
+// 分隔符两侧容空格（BL-P5-03，B 线批 6）：与 DATE_TOKEN_RE 的 `\s*[.\-/年]\s*` 容忍度对齐——
+// 否则「2024 . 1」被摘出为日期 token 却只归一出年份，与「2024.1」不同值 → 误判「日期未原值保留」。
 function dateParts(s) {
-  const m = /^(19|20)\d{2}(?:[.\-/年]\s*(\d{1,2})(?:[.\-/月]\s*(\d{1,2}))?)?/.exec(String(s).trim());
+  const m = /^(19|20)\d{2}(?:\s*[.\-/年]\s*(\d{1,2})(?:\s*[.\-/月]\s*(\d{1,2}))?)?/.exec(String(s).trim());
   if (!m) return null;
   return [Number(m[0].slice(0, 4)), m[1] ? Number(m[1]) : 0, m[2] ? Number(m[2]) : 0].join('-');
 }
+
+// 阿拉伯 ↔ 中文小数词等价（BL-P5-02，B 线批 6）：NUM_RE 刻意不把无单位的单字数词当数字
+//（防「负责百度搜索」把百当 100），代价是「3年」→「三年」会被判数字丢失、反向被判引入。
+// 这里只对 0–99 的整数做等价豁免：丢失的 n 在改后文里有中文写法、或引入的 n 在原文里有中文写法 → 不报。
+// 政策沿用护栏自述「漏报优于误报」：「统一」里的「一」会放过真丢的 1，接受。
+const CN_SMALL = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+function cnSpellings(n) {
+  if (!Number.isInteger(n) || n < 0 || n > 99) return [];
+  if (n < 10) return n === 2 ? ['二', '两'] : [CN_SMALL[n]];
+  const t = Math.floor(n / 10), o = n % 10;
+  const tens = t === 1 ? '十' : CN_SMALL[t] + '十';
+  return [tens + (o ? CN_SMALL[o] : '')];
+}
+function cnHas(text, n) { return cnSpellings(Number(n)).some((w) => String(text).includes(w)); }
 
 export function factGuard(c, opts = {}) {
   const notes = [];
@@ -164,7 +180,7 @@ export function factGuard(c, opts = {}) {
     // 日期先摘掉再扫数字：否则 '2019.06' 是一个数字 token、'2019年6月' 是两个（2019 + 6），
     // 同一个日期的两种写法会被判成「引入新数字 + 丢失原数字」→ 直接卡住导出（实测误报）。
     const beforeNums = new Set(numbersOf(c.before));
-    const added = [...new Set(numbersOf(c.after))].filter((n) => !beforeNums.has(n));
+    const added = [...new Set(numbersOf(c.after))].filter((n) => !beforeNums.has(n) && !cnHas(c.before, n));
     if (added.length) notes.push('改写引入原文没有的数字：' + added.join('、') + '（请核对来源）');
     if (checkLoss) {
       // 日期按「年-月-日」比，不按字面：2019.06 / 2019年6月 / 2019年06月 是同一个日期，
@@ -175,9 +191,9 @@ export function factGuard(c, opts = {}) {
         return p ? !afterDates.has(p) : !String(c.after).includes(d);
       });
       if (lostDates.length) notes.push('原文日期未原值保留：' + lostDates.join('、'));
-      // S4B-1：原文数字未在改写后原值保留（经 normNum 归一化，避免 12万/120000 误报）
+      // S4B-1：原文数字未在改写后原值保留（经 normNum 归一化，避免 12万/120000 误报；0–99 阿拉伯↔中文互认）
       const afterSet = new Set(numbersOf(c.after));
-      const lostNums = [...new Set(numbersOf(c.before))].filter((n) => !afterSet.has(n));
+      const lostNums = [...new Set(numbersOf(c.before))].filter((n) => !afterSet.has(n) && !cnHas(c.after, n));
       if (lostNums.length) notes.push('原文数字未原值保留：' + lostNums.join('、'));
     }
   }
