@@ -2252,3 +2252,71 @@ else
     fail "净化器标签模型回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
   fi
 fi
+
+# ===== 16j. B 线批 3 · 落账流六件（先红后绿，共享 lib-job-boot.mjs 启动库）=====
+if node test-fixtures/reliability/test-job-withdraw-anchor.mjs; then
+  echo '✅ 落账流：同步撤回精确复原（同段交叉反例/自动保存不固化/合并正确）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 撤回精确性回归未执行：Chromium 不可用'
+  else
+    fail "撤回精确性回归未通过 (exit $RC)"
+  fi
+fi
+if node test-fixtures/reliability/test-job-withdraw-fail.mjs; then
+  echo '✅ 落账流：撤回失败被察觉、提示如实'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 撤回失败可见性回归未执行：Chromium 不可用'
+  else
+    fail "撤回失败可见性回归未通过 (exit $RC)"
+  fi
+fi
+if node test-fixtures/reliability/test-job-fuzzy-target.mjs; then
+  echo '✅ 落账流：hide/reorder zid 优先落点'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ zid 落点回归未执行：Chromium 不可用'
+  else
+    fail "zid 落点回归未通过 (exit $RC)"
+  fi
+fi
+if node test-fixtures/reliability/test-job-batch-accept.mjs; then
+  echo '✅ 落账流：批量 origText 按批前快照'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 批量 origText 回归未执行：Chromium 不可用'
+  else
+    fail "批量 origText 回归未通过 (exit $RC)"
+  fi
+fi
+if node test-fixtures/reliability/test-job-inline-marks.mjs; then
+  echo '✅ 落账流：确认门/撤回保行内标记（innerHTML 快照）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 行内标记保真回归未执行：Chromium 不可用'
+  else
+    fail "行内标记保真回归未通过 (exit $RC)"
+  fi
+fi
+if node test-fixtures/reliability/test-job-reject-chips.mjs; then
+  echo '✅ 落账流：拒绝原因 chips 跨重建存活（值+焦点）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ chips 存活回归未执行：Chromium 不可用'
+  else
+    fail "chips 存活回归未通过 (exit $RC)"
+  fi
+fi

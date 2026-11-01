@@ -152,6 +152,10 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     return out;
   }
   function findEntry(c) {
+    // zid 优先（BL-P2-03，B 线批 3）：候选自带服务端解析好的精确锚点 → 直接定位其所属条目；
+    // 标题双向子串匹配只作无 zid 的退化路径（同名/子标题场景模糊匹配会隐藏/移动错条目）
+    var byZid = entryByZid(c && c.zid);
+    if (byZid) return byZid;
     var sec = sectionByTitle(c.section);
     var title = String(c.entry || '').trim();
     if (sec && title) {
@@ -165,6 +169,26 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     var g = globals.find(function (x) { return title && x.pair.title && (x.pair.title.indexOf(title) >= 0 || title.indexOf(x.pair.title) >= 0); });
     if (g) return { sec: g.sec, pair: g.pair, all: entryPairs(g.sec) };
     return null;
+  }
+  // zid → 所属条目对：zid 元素是条目头本身、或在条目头的祖先链/后继 UL 里。
+  // 注意 pair 与 all 必须来自**同一次** entryPairs 调用（reorder 的 indexOf 依赖对象身份）
+  function entryByZid(zid) {
+    if (!zid) return null;
+    var el = sheet.querySelector('[data-zid="' + zid + '"]');
+    if (!el) return null;
+    var head = null;
+    if (el.classList.contains('entry-head')) head = el;
+    else if (el.closest && el.closest('.entry-head')) head = el.closest('.entry-head');
+    else {
+      var up = el.parentElement;
+      if (up && up.tagName === 'UL' && up.previousElementSibling && up.previousElementSibling.classList.contains('entry-head')) head = up.previousElementSibling;
+    }
+    if (!head || !head.closest) return null;
+    var sec = head.closest('.section');
+    if (!sec) return null;
+    var pairs = entryPairs(sec);
+    var pair = pairs.find(function (pp) { return pp.head === head; }) || null;
+    return pair ? { sec: sec, pair: pair, all: pairs } : null;
   }
   function hidePair(pair, on) {
     pair.head.classList.toggle('ed-entry-hidden', on);
@@ -197,6 +221,16 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     for (var i = 0; i < 8; i++) s += hex.charAt(Math.floor(Math.random() * 16));
     return 'z' + s;
   }
+  // 包含指定文本（调用方保证全文唯一）的最近段落/容器元素：
+  // 无 zid 候选的正向替换与撤回快照都圈定在其内（BL-P2-01）
+  function blockContaining(text) {
+    if (!text) return null;
+    var hit = null;
+    sheet.querySelectorAll('p,li,h1,h2,h3,h4,td,th,.entry-head,.contact,.section').forEach(function (b) {
+      if (!hit && b.textContent.indexOf(text) >= 0) hit = b;
+    });
+    return hit;
+  }
 
   // ===== 应用/撤销一条修改 =====
   // 一次改动有两个方向：apply（正向）与 undo（严格反向）。方向写反的后果（2026-10-28 补丁轮实测）：
@@ -206,6 +240,15 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
   function runInv(d, c) {
     if (!d) return false;
     try {
+      // 段落级快照恢复（BL-P2-01/P2-05，B 线批 3）：撤回 = 精确回到正向改动前的字节，
+      // 不做任何文本匹配——首个匹配回退在同段 before/after 交叉时会把原文改乱，
+      // 文本节点流替换会把行内标记掏成空壳。
+      if (d.kind === 'html') {
+        if (!d.el || !d.el.isConnected) return false;
+        d.el.innerHTML = d.html;
+        touch();
+        return true;
+      }
       if (d.kind === 'replace') return window.__edReplaceText(d.find, d.repl, d.opts || {}) !== false;
       if (d.kind === 'hide') {
         var found = findEntry(c), sec = sectionByTitle(c.section);
@@ -238,17 +281,27 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
   }
   function applyChange(c) {
     if (c.kind === 'replace') {
-      // 有 zid 锚点（局部重生成回传）→ 只在锚点节点里找，绝不按全文首个匹配盲改
+      // 有 zid 锚点（局部重生成回传）→ 只在锚点节点里找，绝不按全文首个匹配盲改；
+      // 撤回 = 恢复锚点 innerHTML 快照（位置精确 + 行内标记保真）
       var anchor = c.zid ? anchorElOf(c) : null;
       if (anchor) {
+        var snap = anchor.innerHTML;
         if (window.__edReplaceText(c.before, c.after, { root: anchor })) {
-          return { ok: true, meta: {}, inv: { kind: 'replace', find: c.after, repl: c.before, opts: { root: anchor } } };
+          return { ok: true, meta: {}, inv: { kind: 'html', el: anchor, html: snap } };
         }
         return { ok: false, error: '原文未找到（内容可能已被手工修改）' };
       }
       // 无锚点但原文多处出现 → 改哪一处说不清 → 拒绝，别赌第一处
       if (textMatchCount(c.before) > 1) {
         return { ok: false, error: '原文在正文里出现多处，无法确定改哪一处，已拒绝（请手动修改）' };
+      }
+      // 无 zid 且全文唯一 → 圈定包含它的段落元素：正向与撤回都只动这一段（BL-P2-01）
+      var blk = blockContaining(c.before);
+      if (blk) {
+        var snap2 = blk.innerHTML;
+        if (window.__edReplaceText(c.before, c.after, { root: blk })) {
+          return { ok: true, meta: {}, inv: { kind: 'html', el: blk, html: snap2 } };
+        }
       }
       if (window.__edReplaceText(c.before, c.after, { occurrence: c.meta && c.meta.occurrence, context: c.context })) {
         return { ok: true, meta: {}, inv: { kind: 'replace', find: c.after, repl: c.before, opts: { occurrence: c.meta && c.meta.occurrence, context: c.context } } };
@@ -463,7 +516,11 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       }
       if (isDefiniteReject(d)) {
         clearPending(sub);
-        note(((d && d.error) || (label + '失败')) + '（本次改动未落账，页面保持原样）', 'warn');
+        // 撤回失败时正文里仍留着本次改动（BL-P2-02）：不得再宣称「页面保持原样」，
+        // 如实告知改动会随下一次保存落盘，并给出撤销出口
+        note(((d && d.error) || (label + '失败')) + (sub.withdrawFailed
+          ? '（本次改动未落账，且页面未能恢复原样：改动仍留在正文，将随下一次保存写入磁盘——可按撤销回退后重试）'
+          : '（本次改动未落账，页面保持原样）'), 'warn');
         if (h.onRejected) h.onRejected(d);
         refresh();
         return;
@@ -580,8 +637,10 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     var r;
     if (a.action === 'accept' && c.kind === 'replace' && a.viaGate) {
       var anchorEl = anchorElOf(c);
-      var pre = anchorEl ? anchorEl.textContent : '';
-      r = (anchorEl && window.__edReplaceText(pre, c.after, { root: anchorEl })) ? { ok: true } : { ok: false, error: '锚点已不存在' };
+      if (!anchorEl) return { ok: false, reason: '锚点已不存在' };
+      anchorEl.textContent = c.after;   // 整段干净替换（无空壳标记）
+      touch();
+      r = { ok: true };
     } else if (a.action === 'accept') {
       r = applyChange(c);
     } else {
@@ -664,12 +723,17 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     var op = { operationId: newOperationId(), changeId: c.id, action: 'accept', origText: origText };
     var r;
     if (c.kind === 'replace' && viaGate) {
-      // 确认门通过：整段替换为候选 after（锚点=当前整段文本，与服务端 origText 校验一致）
+      // 确认门通过：整段干净替换为候选 after（锚点=当前整段，与服务端 origText 校验一致）
       // anchorEl 可能已失效（zid 被移除）：解引用会抛 TypeError，且抛点在本函数 busy 复位之后 → 面板永久锁死
-      // root=anchorEl：只在锚点节点里替换（正文里可能有同文段落 → 全文首个匹配会改错那段）
-      r = (anchorEl && window.__edReplaceText(preText, c.after, { root: anchorEl }))
-        ? { ok: true, meta: {}, inv: { kind: 'replace', find: c.after, repl: preText, opts: { root: anchorEl } } }
-        : { ok: false, error: '原文锚点已不存在（正文可能已被修改），请重新载入' };
+      // 整段 textContent 干净替换（不产生 <b></b> 空壳）；撤回 = 恢复 innerHTML 快照（行内标记完整回来）
+      if (anchorEl) {
+        var gateSnap = anchorEl.innerHTML;
+        anchorEl.textContent = c.after;
+        touch();
+        r = { ok: true, meta: {}, inv: { kind: 'html', el: anchorEl, html: gateSnap } };
+      } else {
+        r = { ok: false, error: '原文锚点已不存在（正文可能已被修改），请重新载入' };
+      }
     } else {
       r = applyChange(c);
     }
@@ -683,8 +747,9 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     var sub = freezeSubmit([op], '接受');
     sub.appliers = [{ c: c, action: 'accept', viaGate: !!viaGate, nz: nz }];
     sub.undoLabel = '接受修改：' + (c.note || c.kind);
-    // 同步撤回本次改动：落账确认前正文里不留它 —— 普通自动/手动保存因此不会把未落账的候选写进磁盘
-    runInv(r.inv, c);
+    // 同步撤回本次改动：落账确认前正文里不留它 —— 普通自动/手动保存因此不会把未落账的候选写进磁盘。
+    // 撤回失败必须被察觉（BL-P2-02）：提交照发（冻结体与服务端一致），拒绝提示按实况改口。
+    sub.withdrawFailed = !runInv(r.inv, c);
     sub.content = contentFingerprint();   // 此刻正文里已无本次改动 → 之后据此判断能否原样重发
     sub.guards = sub.appliers.map(guardOf);   // 目标快照：回执到达时逐目标核对（用户在等待期间改过 → 不覆盖）
     busy = false;
@@ -710,15 +775,15 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     var r = revertChange(c);
     if (!r.ok && c.kind === 'replace' && c.origText && anchorEl) {
       var curText = anchorEl.textContent;
-      r = window.__edReplaceText(curText, c.origText)
-        ? { ok: true, inv: { kind: 'replace', find: c.origText, repl: curText, opts: {} } }
-        : r;   // 确认门整段接受过的：整段恢复接受时快照
+      r = window.__edReplaceText(curText, c.origText, { root: anchorEl })
+        ? { ok: true, inv: { kind: 'replace', find: c.origText, repl: curText, opts: { root: anchorEl } } }
+        : r;   // 确认门整段接受过的：整段恢复接受时快照（圈定锚点，不按全文首个匹配）
     }
     if (!r.ok) { busy = false; note(r.error, 'warn'); return; }
     var sub = freezeSubmit([op], '撤回');
     sub.appliers = [{ c: c, action: 'revert', viaGate: false, nz: null }];
     sub.undoLabel = '撤销修改：' + (c.note || c.kind);
-    runInv(r.inv, c);        // 同步撤回：页面保持原样，直到落账确认
+    sub.withdrawFailed = !runInv(r.inv, c);   // 同步撤回：页面保持原样，直到落账确认（失败必须被察觉）
     sub.content = contentFingerprint();
     sub.guards = sub.appliers.map(guardOf);
     busy = false;
@@ -733,6 +798,9 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     var pend = ids.map(function (id) { return pendingSubs[id]; }).filter(Boolean);
     if (pend.length) { busy = false; note('其中 ' + pend.length + ' 条上一次提交结果未知，请先核对该条再重试', 'warn'); return; }
     var ops = [], fails = 0, failedUpdates = [], applied = [];
+    // 同 zid 多条候选共享「批内首次遇到时的锚点文本」（= 磁盘文本）：
+    // 服务端按磁盘文本校验 origText（BL-P2-04），逐条现读会在第一条应用后读到改后文本 → 必然 400
+    var origSnap = {};
     ids.forEach(function (id) {
       var c = job.changes.find(function (x) { return x.id === id; });
       if (!c) return;
@@ -745,7 +813,11 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
         return;
       }
       var anchorEl = anchorElOf(c);
-      var origText = anchorEl ? normWs(anchorEl.textContent) : (c.before || '');
+      var origText;
+      if (anchorEl) {
+        if (!Object.prototype.hasOwnProperty.call(origSnap, c.zid)) origSnap[c.zid] = normWs(anchorEl.textContent);
+        origText = origSnap[c.zid];
+      } else origText = (c.before || '');
       var r = applyChange(c);
       if (r.ok) {
         var op = { operationId: newOperationId(), changeId: c.id, action: 'accept', origText: origText };
@@ -769,7 +841,9 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       var sub = freezeSubmit(ops, '批量接受');
       sub.appliers = applied.map(function (it) { return { c: it.c, action: 'accept', viaGate: false, nz: it.nz }; });
       sub.undoLabel = '批量接受 ' + ops.length + ' 条';
-      applied.forEach(function (it) { runInv(it.r.inv, it.c); });   // 同步撤回：页面保持原样
+      var wokAll = true;
+      applied.forEach(function (it) { if (!runInv(it.r.inv, it.c)) wokAll = false; });   // 同步撤回：页面保持原样
+      sub.withdrawFailed = !wokAll;
       sub.content = contentFingerprint();
       sub.guards = sub.appliers.map(guardOf);
       postSaveOps(sub, {
@@ -818,12 +892,18 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
   }
   // ===== S4a-T9：审阅操作升级 =====
   // 拒绝原因 chips（决策 5）：不必填；进 job.feedback（下次生成 prompt），显式「记住偏好」存 localStorage
-  function renderRejectChips(c, div) {
+  // chips 的开启状态登记进面板状态（BL-P2-06，B 线批 3）：render() 整体重建面板时在
+  // A9 回填之前重开 chips，输入框回到 DOM → A9 的按位回填自然接住已输入的值与焦点
+  // （旧实现 chips 随重建消失、元素数量变化又让 A9 整体放弃 → 用户输入被丢）。
+  var chipsOpen = null;   // { id }：当前开着 chips 的候选 id
+  function renderRejectChips(c, div, opts) {
     var old = div.querySelector('.jp-chips');
-    if (old) { old.remove(); return; }
+    if (old) { old.remove(); chipsOpen = null; return; }
+    chipsOpen = { id: c.id };
     var chips = document.createElement('div');
     chips.className = 'jp-chips';
     var pick = function (reason) {
+      chipsOpen = null;
       var updates = [{ id: c.id, status: 'rejected', note: reason }];
       api('/job/changes?id=' + DOC_ID, { updates: updates, feedback: reason }).then(function (d) {
         if (d.ok) job = d.job; else note(d.error || '状态保存失败', 'warn');
@@ -866,7 +946,9 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     });
     chips.appendChild(remember);
     div.appendChild(chips);
-    custom.focus();
+    // 面板重建后的重开不抢焦点：A9 回填「已聚焦的输入不覆值」，这里先 focus 会让值回填被跳过；
+    // 焦点由 A9 按采集时的焦点位统一恢复
+    if (!opts || !opts.restoreFocus) custom.focus();
   }
   // 「保留当前版本」：resolvedText=当前段落文本 + resolvedRefs=依赖 ref 指纹快照 → 退出待核对；再变重新核对
   function keepCurrent(c) {
@@ -1087,23 +1169,38 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     if (cap.fi >= 0 && els[cap.fi] && document.activeElement !== els[cap.fi]) { try { els[cap.fi].focus(); } catch (e) {} }
   }
 
+  // BL-P2-06：面板重建后按登记状态重开 chips（候选仍在待处理才重开；否则清掉登记）
+  function reopenChips() {
+    if (!chipsOpen || !job || !job.changes) return;
+    var c = job.changes.find(function (x) { return x.id === chipsOpen.id; });
+    var div = root.querySelector('[data-change="' + chipsOpen.id + '"]');
+    if (!div || !c || c.status !== 'pending') { chipsOpen = null; return; }
+    renderRejectChips(c, div, { restoreFocus: true });   // 不抢焦点：值与焦点交给 A9 按位恢复
+  }
+
   function render() {
     if (!job) {
       root.innerHTML = '<div class="jp-empty">本文件不是岗位草稿。</div>';
       return;
-    }
-    var capInputs = capturePanelInputs();   // A9：重建前采集在途输入与焦点
+    }    var capInputs = capturePanelInputs();   // A9：重建前采集在途输入与焦点
     root.innerHTML = '';
     root.appendChild(secBar());
     if (curSec === 'evidence') renderEvidence();
     else if (curSec === 'export') renderExport();
     else renderChanges();
+    reopenChips();          // BL-P2-06：chips 先回 DOM，A9 才能按位回填值与焦点
     var msg = document.createElement('div');
     msg.className = 'jp-msg';
     msg.setAttribute('role', 'status');   // A8：面板提示读屏可感知（render 重建后随新节点带上）
     root.appendChild(msg);
     applyNote();          // 提示跨渲染存活（见 note() 注释）
     restorePanelInputs(capInputs);   // A9：回填在途输入并恢复焦点（结构未变时）
+    // 采集时焦点在按钮上（不在输入列表 → fi=-1）而 chips 开着 → 焦点回 chips 输入框
+    //（用户的输入上下文在 chips，重建后不应丢到 body 上）
+    if (chipsOpen && capInputs.fi < 0) {
+      var ci = root.querySelector('.jp-chips input');
+      if (ci && document.activeElement !== ci) { try { ci.focus(); } catch (e) {} }
+    }
   }
 
   // ===== 段一「要求与证据」完整 UI（S4a-T7，照原型 02b：五态徽章/事实依据可读化/zid 定位/note 两级流程）=====
