@@ -2372,3 +2372,16 @@ else
     fail "api 失败可见性回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
   fi
 fi
+
+# ===== 16o. 区域降级提示保留（BL-P3-07）：重绘后「未配置大模型…」说明仍在 / 按钮保持禁用 =====
+if node test-fixtures/reliability/test-zone-degrade-keep.mjs; then
+  echo '✅ 区域降级提示保留：重绘后「未配置大模型…」说明仍在，按钮保持禁用（有解释的降级态）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 区域降级提示保留回归未执行：Chromium 不可用'
+  else
+    fail "区域降级提示保留回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi

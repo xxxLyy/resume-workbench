@@ -93,7 +93,7 @@
     m.textContent = text;
   }
 
-  var state = { zones: {}, zoneOrder: null, zoneRounds: {}, colorOn: false, aiZone: null, aiDegraded: false, lastAnalysis: null };
+  var state = { zones: {}, zoneOrder: null, zoneRounds: {}, colorOn: false, aiZone: null, aiDegraded: false, aiDegradedMsg: null, lastAnalysis: null };
   // ===== ZONE-05：请求身份（epoch）=====
   // 只有「区域键」当守卫不够：A→B→A 时旧 A 的响应会因区域键相同而写进新界面。
   // epoch 随每次新请求/切换递增；旧响应一律不得渲染、不得改 busy。
@@ -167,6 +167,12 @@
         // 空 zone 空态（D5）：无任何段落的区域行给一行说明（正文添加后自动进入待确认）
         + (!c[k].ok && !c[k].pend ? '<div class="zp-empty">' + name + '区域暂无内容——正文添加相关段落后会自动进入待确认</div>' : '');
     });
+    // 保留已生成的改写候选（BL-P3-06）：整覆前先把 #zp-preview 连内容摘下（remove 只断开父引用，
+    // 节点与候选卡片/接受按钮原样保留），重绘后先归还面板根——必须无条件挂回：
+    // renderAi 靠 getElementById 认领，摘下的游离节点它看不见；挂回后开卡即被搬进新卡
+    // （appendChild = 移动，不会双实例），未开卡时留在根（与 renderPreview 自建落点一致）。
+    var keepPreview = document.getElementById('zp-preview');
+    if (keepPreview) keepPreview.remove();
     root.innerHTML = html;
     root.querySelector('#zp-color').addEventListener('click', toggleColor);
     if (root.querySelector('#zp-pend')) root.querySelector('#zp-pend').addEventListener('click', confirmNextPending);
@@ -180,6 +186,7 @@
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); act(); }   // A10：键盘可达（对齐素材卡模式）
       });
     });
+    if (keepPreview) root.appendChild(keepPreview);
     // 保留已展开的 AI 区（render() 由 load() 回调触发重绘时不把意见卡打回）
     if (state.aiZone) renderAi();
   }
@@ -192,6 +199,7 @@
     previewSnapshot = null;
     state.aiZone = zoneKey;
     state.aiDegraded = false;
+    state.aiDegradedMsg = null;   // BL-P3-07：新区域新一轮，旧降级原因一并清掉
     state.lastAnalysis = null;
     renderAi();
     analyze(zoneKey, '');
@@ -205,15 +213,25 @@
     // （#zp-analyze 也在 .zp-chips 内 → 必须同带 aiDegraded 判定，否则降级态会被本行重新点亮）
     Array.prototype.forEach.call(document.querySelectorAll('#zp-ai .zp-chips button'), function (b) { b.disabled = busy || state.aiDegraded; });
   }
+  // BL-P3-07：降级提示的创建/重建唯一出口（幂等，按 #zp-degr 去重）。
+  // 提示原来只插一次进 AI 框，renderAi() 重建框时连提示一起被 old.remove() 删掉，
+  // 而 state.aiDegraded 仍 true → 重绘后只剩永久禁用的按钮，无解释。
+  // 现在原因记进 state，renderAi 每次重建后按 state 重插（见 renderAi 尾部）。
+  function showDegrNote() {
+    var box = aiBox();
+    if (!box) return;
+    var old = document.getElementById('zp-degr');
+    if (old) old.remove();
+    var note = document.createElement('p');
+    note.id = 'zp-degr';
+    note.className = 'zp-degr';
+    note.textContent = (state.aiDegradedMsg || '未配置大模型') + '，绑定/确认/锁定不受影响';
+    box.insertBefore(note, box.firstChild);
+  }
   function degrade(msg) {
     state.aiDegraded = true;
-    var box = aiBox();
-    if (box) {
-      var note = document.createElement('p');
-      note.className = 'zp-degr';
-      note.textContent = (msg || '未配置大模型') + '，绑定/确认/锁定不受影响';
-      box.insertBefore(note, box.firstChild);
-    }
+    state.aiDegradedMsg = msg || '未配置大模型';
+    showDegrNote();
     setBusy(false);
   }
   function renderAi() {
@@ -263,6 +281,7 @@
     else { prev = document.createElement('div'); prev.id = 'zp-preview'; prev.setAttribute('aria-live', 'polite'); box.appendChild(prev); }
     prev.setAttribute('aria-live', 'polite');   // A8：两条路径（新建/认领）都保证语义
     root.appendChild(box);
+    if (state.aiDegraded) showDegrNote();   // BL-P3-07：重绘后按 state 重建降级提示（原因不再随旧框被删）
     if (state.lastAnalysis && state.lastAnalysis.zone === zoneKey) showAnalysis(state.lastAnalysis.data);
     setBusy(state.aiDegraded);
   }
@@ -345,7 +364,7 @@
       if (d._status === 409 && d.code === 'LLM_NOT_CONFIGURED') { degrade('未配置大模型'); if (prev) prev.textContent = ''; return; }
       if (d._status === 409) { if (prev) prev.textContent = d.error || '文档已变化，请先同步内容'; return; }
       if (!d.ok) { if (prev) prev.textContent = d.error || '改写失败，稍后再试'; return; }
-      window.dispatchEvent(new CustomEvent('ed-zone-preview', { detail: { doc: DOC_ID, zone: zoneKey, rewrites: d.rewrites || [] } }));
+      window.dispatchEvent(new CustomEvent('ed-zone-preview', { detail: { doc: DOC_ID, zone: zoneKey, rewrites: d.rewrites || [], skipped: d.skipped || [] } }));
     }).catch(function (e) {
       if (!isCurrent(token)) return;
       setBusy(false);
@@ -353,7 +372,23 @@
     });
   }
   // 改写候选预览（S3-T6）：非 conflict 候选整体接受（一条撤销 op）；conflict 项只展示 ⚠ 理由，不计入可接受集合
-  function renderPreview(rewrites) {
+  // BL-P3-04：跳过明细逐条可见（此前只消费 rewrites/applied，「接受 2 段」变「已应用 1 段」无解释）。
+  // 两种形态：生成侧 d.skipped = zid 数组（服务端只因锁定跳过，server.mjs zone-rewrite）；
+  // 应用侧 receipt.skipped = {zid, reason}（zone-ops：gone/changed/rebound/locked/conflict）。
+  var SKIP_REASONS = { locked: '锁定', rebound: '改绑', conflict: '事实冲突', changed: '原文已变化', gone: '段落不存在' };
+  function appendSkipLines(prev, list, defaultReason) {
+    (list || []).forEach(function (it) {
+      var zid = (it && typeof it === 'object') ? it.zid : it;
+      var reason = (it && typeof it === 'object' && it.reason) ? it.reason : defaultReason;
+      var el = zid ? sheet.querySelector('[data-zid="' + zid + '"]') : null;
+      var line = document.createElement('div');
+      line.className = 'zp-c';
+      line.textContent = '跳过：' + (el ? (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24) : (zid || '?'))
+        + '（' + (SKIP_REASONS[reason] || reason || '锁定') + '）';
+      prev.appendChild(line);
+    });
+  }
+  function renderPreview(rewrites, skipped) {
     var prev = document.getElementById('zp-preview');
     if (!prev) {                    // 事件通道不依赖 AI 卡开合：容器缺失时自建在面板根（renderAi 开卡时认领）
       prev = document.createElement('div');
@@ -368,7 +403,7 @@
       var el = sheet.querySelector('[data-zid="' + it.zid + '"]');
       if (el) previewSnapshot[it.zid] = el.innerHTML;
     });
-    if (!(rewrites || []).length) { prev.textContent = '（无可应用的改写候选）'; return; }
+    if (!(rewrites || []).length) { prev.textContent = '（无可应用的改写候选）'; appendSkipLines(prev, skipped, 'locked'); return; }
     rewrites.forEach(function (r) {
       var card = document.createElement('div');
       card.className = 'zp-cand' + (r.level === 'conflict' ? ' conflict' : '');
@@ -387,6 +422,7 @@
       }
       prev.appendChild(card);
     });
+    appendSkipLines(prev, skipped, 'locked');   // BL-P3-04：生成侧被锁定的段逐条说明（不进候选也要可见）
     if (preview.length) {
       var acc = document.createElement('button');
       acc.type = 'button';
@@ -498,6 +534,7 @@
       prev.textContent = ready.length
         ? ('已应用 ' + ready.length + ' 段' + (changed.length ? '（' + changed.length + ' 段在等待期间继续编辑，已保留本地内容）' : '') + (changedCount ? '；' + changedCount + ' 段在提交前已变化，未应用' : ''))
         : ('没有可合并的段落' + (changed.length ? '（' + changed.length + ' 段在等待期间继续编辑，已保留本地内容）' : ''));
+      appendSkipLines(prev, receipt.skipped);   // BL-P3-04：应用侧 skipped（锁定/改绑/事实冲突等）逐条显示
     }
     if (opId != null && window.__edUndoToast) {
       window.__edUndoToast('已应用区域改写' + (changed.length ? '（' + changed.length + ' 段已保留本地内容）' : ''), opId);
@@ -669,6 +706,6 @@
   window.addEventListener('ed-zone-refresh', load);
   // S3-T6：ed-zone-preview 是 renderPreview 的正式消费入口（rewrite fetch 回调与外部注入都走它；detail 优先，回落 __zpPreview）
   window.addEventListener('ed-zone-preview', function (e) {
-    renderPreview((e && e.detail && e.detail.rewrites) || window.__zpPreview || []);
+    renderPreview((e && e.detail && e.detail.rewrites) || window.__zpPreview || [], (e && e.detail && e.detail.skipped) || []);
   });
 })();
