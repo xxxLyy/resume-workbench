@@ -18,6 +18,9 @@ node ./test-fixtures/reliability/test-migrate-lock-heartbeat.mjs
 node ./test-fixtures/reliability/test-migrate-replace-escape.mjs
 node ./test-fixtures/reliability/test-backup-restore-shapes.mjs
 
+# ===== BL-P4-07：gen-result 头部契约第 4 条与超时实现对齐（grep 断言；注释级修复、行为零变化）=====
+grep -qF '4) next=null 表示放弃写入（迟到/被替代/已取消），不是「删除文档元数据」；超时例外：写入 error 状态并推进 next。' gen-result.mjs && echo '✅ BL-P4-07 gen-result 头部契约与超时实现对齐'
+
 # ===== SRC-07 I3：来源包纯函数回归显式接入结构套件（零 I/O / 无模型 / 无服务）=====
 node --test test-fixtures/reliability/test-sources.mjs
 
