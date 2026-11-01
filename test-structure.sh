@@ -27,6 +27,9 @@ node ./test-fixtures/reliability/test-chromium-wait-race.mjs
 # ===== BL-P6-05：两条导入路径落盘字节统一带真实 docId（LLM 路径补替换 / 降级路径修参数错位）=====
 node ./test-fixtures/reliability/test-import-docid-bytes.mjs
 
+# ===== BL-P1-04：渲染尺寸口径与保存对齐（10MB 同源上限；超限错误带尺寸原因）=====
+node ./test-fixtures/reliability/test-render-size-limit.mjs
+
 # ===== BL-P4-07：gen-result 头部契约第 4 条与超时实现对齐（grep 断言；注释级修复、行为零变化）=====
 grep -qF '4) next=null 表示放弃写入（迟到/被替代/已取消），不是「删除文档元数据」；超时例外：写入 error 状态并推进 next。' gen-result.mjs && echo '✅ BL-P4-07 gen-result 头部契约与超时实现对齐'
 

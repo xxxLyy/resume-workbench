@@ -170,6 +170,13 @@ const saveEvals = (list) => writeJson('evals', list);
 // 两条防线：① Content-Length 已知超限 → 直接拒绝，不必下载；
 // ② 没有长度 → 流式累计并即时中断。不能等完整 body 收完再判大小（那等于没有上限）。
 const JD_PAGE_MAX_BYTES = 5 * 1024 * 1024;
+// 请求体/渲染输入共用上限（BL-P1-04）：readBody 的默认 body 上限与 renderDoc 调
+// trustedRenderHtml 的 maxHtmlBytes 必须同一常量来源。此前渲染侧取 render-safe.mjs 的
+// 4MB 默认 → 「保存接受 ≤10MB、渲染 4MB 硬拒」，大文档能存能编辑却永远出不了 PDF。
+// 超限时 renderDoc 返回带尺寸原因的 sizeError（客户端可见），不再只有「渲染失败（详见服务日志）」。
+const MAX_BODY_BYTES = 10 * 1024 * 1024;
+// MB 展示口径（BL-P1-04）：超限文案统一走这里（10 不显示成 10.0）
+const mbLabel = (n) => `${Number((Number(n) / (1024 * 1024)).toFixed(1))} MB`;
 // 恢复/撤销的受管项（AUD-09）：存在性台账只覆盖这些；config.json 刻意不在其中（恢复不碰配置）。
 const RESTORE_MANAGED_DIRS = ['docs', 'snapshots', 'pdfs'];
 const RESTORE_MANAGED_FILES = ['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json'];
@@ -886,10 +893,15 @@ async function renderDoc({ src, out, env, lease }) {
     // 所有渲染路径（当前/快照/不可变导出/投递存档/补生成）都经过本函数 → 在这里统一净化。
     let safe;
     try {
-      safe = trustedRenderHtml(fs.readFileSync(src, 'utf8'), { knownScriptHashes: knownEditorScriptHashes() });
+      // maxHtmlBytes 与保存入口同源（BL-P1-04）：readBody 默认上限 = MAX_BODY_BYTES。
+      safe = trustedRenderHtml(fs.readFileSync(src, 'utf8'), { knownScriptHashes: knownEditorScriptHashes(), maxHtmlBytes: MAX_BODY_BYTES });
     } catch (e) {
       // 净化失败（含超限）→ 不渲染：宁可不产出，也不渲染未净化的内容
       console.error(`[render] 渲染输入净化失败：${(e && e.message) || e}`);
+      // 超限（BL-P1-04）：尺寸原因必须客户端可见，不能只有「渲染失败（详见服务日志）」
+      if (e && e.code === 'RENDER_INPUT_TOO_LARGE') {
+        return { ok: false, removed: (e.removed || removed), sizeError: `文档 ${mbLabel(e.bytes)} 超过渲染上限 ${mbLabel(MAX_BODY_BYTES)}` };
+      }
       return { ok: false, removed };
     }
     removed = safe.removed || [];
@@ -971,6 +983,7 @@ async function renderCurrent(id, { lease } = {}) {
   const tmp = path.join(os.tmpdir(), `resume-frozen-${id}-${Date.now()}-${process.pid}.html`);
   atomicWrite(tmp, frozen.html);
   let ok = false;
+  let sizeError = null;   // BL-P1-04：超限时带尺寸原因透出，路由层用它替换「渲染失败（详见服务日志）」
   try {
     const rr = await renderDoc({
       src: tmp,
@@ -979,6 +992,7 @@ async function renderCurrent(id, { lease } = {}) {
       lease
     });
     ok = rr.ok && fs.existsSync(pdfPath(id));
+    sizeError = rr.sizeError || null;
     if (ok) {
       // 净化情况如实记录（AUD-05）：实际参与渲染的输入被改过就必须留痕，不能声称「与原文一致」
       updateMeta(root, id, (m) => ({ ...(m || {}), lastRenderInputId: frozen.renderInputId, lastRenderAt: new Date().toISOString(),
@@ -990,10 +1004,10 @@ async function renderCurrent(id, { lease } = {}) {
   } finally {
     try { fs.unlinkSync(tmp); } catch {}
   }
-  return { ok, frozen };
+  return { ok, frozen, sizeError };
 }
 
-function readBody(req, mode = 'text', maxSize = 10 * 1024 * 1024) {
+function readBody(req, mode = 'text', maxSize = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
@@ -2939,7 +2953,8 @@ async function handler(req, res) {
       if (!fs.existsSync(docPath(id))) return sendJson(404, { ok: false, error: 'doc not found' });
       const r = await renderCurrent(id, { lease: leaseOf(req) });
       const exists = fs.existsSync(pdfPath(id));
-      return sendJson(r.ok && exists ? 200 : 500, { ok: r.ok && exists, mtime: exists ? fs.statSync(pdfPath(id)).mtimeMs : 0, renderInputId: r.frozen.renderInputId, error: r.ok && exists ? null : '渲染失败（详见服务日志）' });
+      // 超限（BL-P1-04）：客户端可见「文档 X MB 超过渲染上限 Y MB」，其余失败仍走既有通用文案
+      return sendJson(r.ok && exists ? 200 : 500, { ok: r.ok && exists, mtime: exists ? fs.statSync(pdfPath(id)).mtimeMs : 0, renderInputId: r.frozen.renderInputId, error: r.ok && exists ? null : (r.sizeError || '渲染失败（详见服务日志）') });
     }
     // ===== 导出记录（S1-T8，spec §8 binding）：POST /export 是唯一记录者 =====
     // 不可变产物 pdfs/history/<id>@<完整 renderInputId>.pdf：存在即复用、绝不覆盖；幂等键 = renderInputId
