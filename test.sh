@@ -2359,3 +2359,16 @@ else
     fail "区域改绑锁定保留回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
   fi
 fi
+
+# ===== 16n. api() 业务失败可见（BL-P3-02）：桩 409 后面板出失败提示 / 状态与磁盘未变 =====
+if node test-fixtures/reliability/test-api-failure.mjs; then
+  echo '✅ api 失败可见性：409(ok:false) 与体伪造 ok:true 均按失败提示，待确认计数与磁盘未变'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ api 失败可见性回归未执行：Chromium 不可用'
+  else
+    fail "api 失败可见性回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi
