@@ -112,6 +112,9 @@ export function parseEvalReport(raw, { docText = '' } = {}) {
         const t = str(sal.text);
         const src = SALARY_SOURCE.includes(str(sal.source)) ? str(sal.source) : 'JD 未提供';
         if (!t) return { text: '', source: 'JD 未提供' };
+        // 注点点名的另一半：模型给了数字却声称「JD 未提供」→ 自相矛盾，回落为空。
+        // 判模型声明的原 source（非法 source 只归一标签、text 原样保留是既有契约，不扩大）
+        if (str(sal.source) === 'JD 未提供') return { text: '', source: 'JD 未提供' };
         return { text: t, source: src };
       })(),
       angle: str(data.angle),
