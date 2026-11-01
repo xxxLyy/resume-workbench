@@ -17,20 +17,30 @@ function slugify(name) {
 
 // 原子分配文档 id（AUD-12）：fs.openSync(path, 'wx') 是原子的「不存在才创建」——
 // 两个同名上传同时通过「不存在」检查 → 只保留一份文档（实测过：并发两个同名请求拿到同一个 id）。
-// 占位文件即最终文件名，后面写正文用 atomicWrite 覆盖；失败时删掉占位，不留空壳文档。
+// 占位文件用 .tmp 后缀（BL-P6-06）：结构化期间（真实 LLM 可达数分钟）0 字节占位若叫
+// <id>.html，会被 docIdsOnDisk 计入首页列表成为点不开的「文档已损坏」条目，且 SIGKILL 后
+// 永久残留；.tmp 形态对文档列表不可见，正文就绪后 rename 转正。
+// 碰撞双闸：<id>.html 已存在（上一轮同名导入已完成）→ 跳过该候选，防转正时覆盖既有文档；
+// <id>.html.tmp 已存在（并发在途或 SIGKILL 残留）→ 同样跳过。残留不可见且惰性，不做
+// reclaim——无法区分「死进程残留」与「活导入在途」，宁滥勿删（同名残留会在转正时被覆盖回收）。
 function allocateDocId(root, name) {
   const base = slugify(name);
   let id = base, n = 2;
   for (;;) {
-    const p = path.join(root, 'docs', id + '.html');
-    try {
-      const fd = fs.openSync(p, 'wx', 0o600);
-      fs.closeSync(fd);
-      return id;
-    } catch (e) {
-      if (e.code !== 'EEXIST') throw e;
-      id = `${base}-${n++}`;
+    const finalPath = path.join(root, 'docs', id + '.html');
+    const tmpPath = finalPath + '.tmp';
+    let finalTaken = false;
+    try { fs.statSync(finalPath); finalTaken = true; } catch {}
+    if (!finalTaken) {
+      try {
+        const fd = fs.openSync(tmpPath, 'wx', 0o600);
+        fs.closeSync(fd);
+        return { id, tmpPath };
+      } catch (e) {
+        if (e.code !== 'EEXIST') throw e;
+      }
     }
+    id = `${base}-${n++}`;
   }
 }
 
@@ -56,8 +66,11 @@ function buildRawDoc(root, text, name, degradeReason, docId) {
 export async function importPdfText(root, pdfPath, name) {
   const text = execFileSync('pdftotext', ['-layout', pdfPath, '-'], { maxBuffer: 32 * 1024 * 1024, timeout: 30000 }).toString('utf8');
   if (!text.trim()) throw new Error('PDF 提取不到文本（可能是扫描件）');
-  // 先原子占位再干活：结构化可能耗时几十秒，占位必须先落，否则并发同名会撞车
-  const id = allocateDocId(root, name);
+  // 先原子占位再干活：结构化可能耗时几十秒，占位必须先落，否则并发同名会撞车。
+  // 占位是 .tmp 形态（BL-P6-06）：结构化期间对文档列表不可见；正文原子写入 .tmp 后
+  // rename 转正——列表只在文档完整就绪后才可见，SIGKILL 残留也不再是可见的空壳条目。
+  const { id, tmpPath } = allocateDocId(root, name);
+  const finalPath = path.join(root, 'docs', id + '.html');
   try {
     let html;
     if (hasLLM(root)) {
@@ -67,11 +80,14 @@ export async function importPdfText(root, pdfPath, name) {
     } else {
       html = buildRawDoc(root, text, name, loadConfig(root) ? 'partial' : null, id);   // 实参顺序：name→degradeReason→docId（错位会把 docId 喂进 degradeReason、docId 槽缺参落空串）
     }
-    atomicWrite(path.join(root, 'docs', id + '.html'), html);   // 导入的简历正文同样收紧（0o600）
+    atomicWrite(tmpPath, html);   // 导入的简历正文同样收紧（0o600）；先写 .tmp 再转正
+    fs.renameSync(tmpPath, finalPath);
     // 新建即登记样式来源（meta 唯一写入者 updateMeta）：theme/styleHash/typo/schemaVersion
     updateMeta(root, id, (m) => ({ ...(m || {}), ...themeRegistration('classic') }));
   } catch (e) {
-    try { fs.rmSync(path.join(root, 'docs', id + '.html'), { force: true }); } catch {}   // 不留空壳文档
+    // 不留空壳文档：转正前失败清 .tmp，转正后失败（如 meta 写入抛错）清已转正文件
+    try { fs.rmSync(tmpPath, { force: true }); } catch {}
+    try { fs.rmSync(finalPath, { force: true }); } catch {}
     throw e;
   }
   return id;

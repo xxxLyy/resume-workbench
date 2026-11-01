@@ -30,6 +30,9 @@ node ./test-fixtures/reliability/test-import-docid-bytes.mjs
 # ===== BL-P1-04：渲染尺寸口径与保存对齐（10MB 同源上限；超限错误带尺寸原因）=====
 node ./test-fixtures/reliability/test-render-size-limit.mjs
 
+# ===== BL-P6-06：导入占位改 .tmp 后缀（结构化在途/SIGKILL 残留都不进首页列表）=====
+node ./test-fixtures/reliability/test-import-placeholder-file.mjs
+
 # ===== BL-P4-07：gen-result 头部契约第 4 条与超时实现对齐（grep 断言；注释级修复、行为零变化）=====
 grep -qF '4) next=null 表示放弃写入（迟到/被替代/已取消），不是「删除文档元数据」；超时例外：写入 error 状态并推进 next。' gen-result.mjs && echo '✅ BL-P4-07 gen-result 头部契约与超时实现对齐'
 
