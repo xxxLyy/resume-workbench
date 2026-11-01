@@ -5087,6 +5087,40 @@ assert(ed.includes('.ed-on .edit-toolbar .badge{margin:0}'),
 console.log('✅ E1 排版不变量（标题三档 + chip/badge 同档）逐字钉值');
 EOF
 
+# —— E3：导出文本层自检「电话可提取」（B8 补齐，B 线批 7）——
+# 既有姓名/邮箱两项无专门夹具（impeccable 轮以隔离实例+真 pdftotext 人工点验），本条按同款口径
+# 只挂轻量断言：① 钉导出检查卡第三行（与姓名/邮箱共用同一 rows 与同一 layerCheck，fail-honest /
+# 只报命中计数不回显原文因此一并继承）；② 把 server.mjs 里**真实的**电话期望正则抠出来跑行为两面——
+# 常见书写形态必须命中，18 位证件号等长数字串/日期/单号不得误命中。
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const assert = (c, m) => { if (!c) { console.error('❌ E3 ' + m); process.exit(1); } };
+const srv = readFileSync('./server.mjs', 'utf8');
+// ① 第三项已挂进导出检查卡（与姓名/邮箱同一 rows、同一 layerCheck 同款调用）
+assert(srv.includes("rows.push(layerCheck('电话可提取', phoneExpect, '电话'));"),
+  "导出检查卡应有第三项 rows.push(layerCheck('电话可提取', phoneExpect, '电话'))");
+assert(/const phoneExpect = \(lines\.join\('\\n'\)\.match\(/.test(srv),
+  "电话期望串应与邮箱同款取自可见文本 lines.join('\\n')（includeHidden:false）");
+// ② 抠出 server.mjs 里电话期望正则的字面量，逐字重建后跑两面
+const m = srv.match(/const phoneExpect = .*?\.match\((\/.+\/)\)/);
+assert(m, '应能定位 const phoneExpect = …match(/…/) 的正则字面量');
+const re = new RegExp(m[1].slice(1, -1));
+const hit = (t) => { const x = t.match(re); return x ? x[0] : null; };
+// 必须命中（常见书写形态，整段命中供 layerCheck 计数）
+for (const [t, want] of [
+  ['电话：13800138000', '13800138000'],
+  ['手机 138-0013-8000', '138-0013-8000'],
+  ['138 0013 8000', '138 0013 8000'],
+  ['+86 13800138000', '+86 13800138000'],
+  ['+8613800138000', '+8613800138000'],
+]) assert(hit(t) === want, '手机号形态应整段命中: ' + t + ' → ' + hit(t) + '（期望 ' + want + '）');
+// 不得误命中（长数字串/日期/单号/短号——命中即把无关数字当电话去 PDF 里找，误报「未在文本层找到」）
+for (const t of ['身份证 130105199001011234', '单号 10012345678932', '日期 20240101', '分机 8000']) {
+  assert(hit(t) === null, '非电话长串不得命中: ' + t + ' → ' + hit(t));
+}
+console.log('✅ E3 导出文本层自检第三项（电话可提取）+ 电话期望正则行为两面');
+EOF
+
 # ===== V1/V2：可靠性加固「验证基础包」的本轮回归（无真实模型 / 无真实服务 / 无私有数据）=====
 # 明确接入现有测试入口：这些用例随 test:all 一起跑，不再靠人工单独执行。
 node test-fixtures/reliability/test-harness.mjs exit

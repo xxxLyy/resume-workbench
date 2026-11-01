@@ -4813,15 +4813,17 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         rows.push(`${mark(totalChars >= 200)} 文本层字符量：${totalChars}`);
         
       }
-      // ===== 文本层自检：姓名 / 邮箱在 PDF 文本层里能不能被提取到 =====
-      // 期望串来自可见事实：姓名 = 文档 <h1> 原文（decodeName 同法）；邮箱 = 正文首个 email 匹配。
+      // ===== 文本层自检：姓名 / 邮箱 / 电话在 PDF 文本层里能不能被提取到 =====
+      // 期望串来自可见事实：姓名 = 文档 <h1> 原文（decodeName 同法）；邮箱 = 正文首个 email 匹配；
+      // 电话 = 正文首个 11 位手机号（容忍 +86 前缀与空格/连字符分隔；18 位证件号等长数字串不误命中）。
       // 两侧剥掉所有空白再比 substring —— PDF 文本层常在词间断行，直接比会误判为「提取不到」。
-      // 行文案只出 ✓/⚠ 与命中计数，**不回显邮箱原文**（邮箱是个人信息，导出页只报能不能提取）。
+      // 行文案只出 ✓/⚠ 与命中计数，**不回显邮箱/电话原文**（邮箱与电话是个人信息，导出页只报能不能提取）。
       // fail-honest：没有 PDF / 分页预算耗尽 / 文本层没取到 / 文档里根本没有该字段 → 一律「未校验」，绝不报通过。
       const squashWs = (t) => String(t == null ? '' : t).replace(/\s+/g, '');
       const nameRaw = (docHtml.match(/<h1[^>]*>([^<]*)<\/h1>/) || [])[1] || '';
       const nameExpect = nameRaw ? decodeName(nameRaw) : '';
       const emailExpect = (lines.join('\n').match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/) || [''])[0];
+      const phoneExpect = (lines.join('\n').match(/(?<!\d)(?:\+?86[- ]?)?1[3-9](?:[ -]?\d){9}(?!\d)/) || [''])[0];
       const layerCheck = (label, expect, what) => {
         if (!pdfStat) return `${mark(false)} ${label}：未校验（还没有 PDF）`;
         if (budgetCut) return `${mark(false)} ${label}：未校验（分页文本提取超出预算，结论不可靠）`;
@@ -4832,6 +4834,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       };
       rows.push(layerCheck('姓名可提取', nameExpect, '姓名'));
       rows.push(layerCheck('邮箱可提取', emailExpect, '邮箱'));
+      rows.push(layerCheck('电话可提取', phoneExpect, '电话'));
       const suggestions = pageSuggestions(lines, { projects }).map((s) => `<li>${escHtml(s.text)}</li>`).join('');
       // S4a-T10：排版诊断（渲染级，半自动 3 轮；结构性事实表述；下限内不再压缩；超页二出路）+ 导出检查三级（与审阅 Tab 同源 jobViewLive）
       const jobLive = jobViewLive(id, meta);
