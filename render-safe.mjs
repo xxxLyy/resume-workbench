@@ -40,7 +40,10 @@ const EVENT_ATTR_RE = /^on[a-z]/i;
 // 会执行脚本的 URL 属性
 const URL_ATTRS = new Set(['href', 'src', 'action', 'formaction', 'xlink:href', 'data', 'poster']);
 // raw-text 元素：内容按纯文本解析（里面的 < 不是标签）
-const RAW_TEXT_TAGS = new Set(['script', 'style', 'textarea', 'title']);
+// 浏览器口径（BL-P1-01，2026-11-01 B 线批 1）：<svg>/<math> 是 foreign content，其
+// <style>/<textarea>/<title> 不切 raw-text（内容按标记解析）；<noscript> 在脚本开启时
+// 才是 raw-text（收尾按字面 </noscript> 匹配，引号不参与）。
+const RAW_TEXT_TAGS = new Set(['script', 'style', 'textarea', 'title', 'noscript']);
 // 需要连内容一起剥掉的外联载体（embed/frame 是空元素，只去标签）
 const EMBED_CONTAINERS = new Set(['iframe', 'object', 'applet', 'frameset']);
 const EMBED_VOID = new Set(['embed', 'frame']);
@@ -214,6 +217,10 @@ export function trustedRenderHtml(html, options = {}) {
   const out = [];
   let i = 0;
   let hasUnknownScript = false;
+  // foreign content 深度（<svg>/<math>）：深度 > 0 时其 style/textarea/title 内容按标记解析。
+  // 不模拟浏览器 breakout 列表：breakout 后浏览器把后续 style 当 inert raw-text，本净化器
+  // 继续按标记扫只会多剥不会少剥（保守方向，安全）。
+  let foreignDepth = 0;
 
   while (i < src.length) {
     const lt = src.indexOf('<', i);
@@ -242,10 +249,12 @@ export function trustedRenderHtml(html, options = {}) {
 
     // 结束标签：没有对应开标签时原样保留（浏览器忽略孤立结束标签）
     if (tag.isEnd) {
+      if ((tag.name === 'svg' || tag.name === 'math') && foreignDepth > 0) foreignDepth--;
       out.push(src.slice(lt, tag.end));
       i = tag.end;
       continue;
     }
+    if ((tag.name === 'svg' || tag.name === 'math') && !tag.selfClosing) foreignDepth++;
 
     // ① 通用属性清洗：事件属性 + javascript:/vbscript: URL（对所有标签生效，包括 script/style）
     const cuts = [];
@@ -284,8 +293,12 @@ export function trustedRenderHtml(html, options = {}) {
       continue;
     }
 
-    // ③ <style>/<textarea>/<title>：raw-text 元素，原样保留（只清过属性）
-    if (RAW_TEXT_TAGS.has(tag.name)) {
+    // ③ raw-text 元素，原样保留（只清过属性）。两个例外对齐浏览器（BL-P1-01）：
+    // - foreign content（svg/math）内的 style/textarea/title 不是 raw-text → 落到普通路径，
+    //   内容按标记继续扫（内嵌 script 走 ② 剥除、on* 走 ① 剪掉）；
+    // - <noscript> 无论在哪层都按 raw-text（渲染 worker 脚本常开），字面 </noscript> 收尾
+    //   与浏览器一致 → 引号里的 </noscript> 之后的逃逸标记回到主循环正常清洗。
+    if (RAW_TEXT_TAGS.has(tag.name) && (tag.name === 'noscript' || foreignDepth === 0)) {
       const raw = rawTextContent(src, lower, tag.end, tag.name);
       out.push(openTag, raw.content, src.slice(raw.contentEnd, raw.elemEnd));
       i = raw.elemEnd;
