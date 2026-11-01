@@ -1825,6 +1825,11 @@ try {
   {
     const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     const page = await ctx.newPage();
+    // E3 夹具：带唯一标签的合成素材（弹层重点 chips = __MATS__ tags 客户端聚合，唯一标签让断言不受其他素材干扰）
+    const matsE3Path = path.join(dataRoot, 'materials.json');
+    const matsE3 = JSON.parse(fs.readFileSync(matsE3Path, 'utf8'));
+    matsE3.push({ id: 'm-e3', title: 'E3素材', factStatus: 'confirmed', tags: ['E3-定制重点', 'E3-次要标签'], facts: { company: '', role: '', dates: '', education: '', metrics: '', contribution: '', conditions: '', source: '' } });
+    fs.writeFileSync(matsE3Path, JSON.stringify(matsE3));
     await page.goto(base + '/edit?id=' + ED_DOC);
     await page.waitForSelector('#ed-navlist .ed-nav');
     const nested = await page.evaluate(() => document.querySelectorAll('#ed-navlist button button').length);
@@ -1845,6 +1850,82 @@ try {
     if (dlgFocus !== '公司') bad('岗位弹层未聚焦首字段'); else ok('岗位弹层焦点管理正确');
     const modal = await page.evaluate(() => document.getElementById('ed-jobpop').getAttribute('aria-modal'));
     if (modal !== 'true') bad('岗位弹层缺 aria-modal'); else ok('岗位弹层具备模态语义');
+    // ===== E3（岗位弹层定制要求）：折叠区字段 + 提交载荷与首页 briefFromForm 同形状 =====
+    const briefDom = await page.evaluate(() => {
+      const det = document.querySelector('#ed-jobpop details');
+      if (!det) return { det: false };
+      const degDef = det.querySelector('button[data-deg][aria-pressed="true"]');
+      const pgDef = det.querySelector('button[data-pages][aria-pressed="true"]');
+      return {
+        det: true,
+        summary: (det.querySelector('summary') || {}).textContent || '',
+        textareas: det.querySelectorAll('textarea').length,
+        degBtns: det.querySelectorAll('button[data-deg]').length,
+        pageBtns: det.querySelectorAll('button[data-pages]').length,
+        degPressed: det.querySelectorAll('button[data-deg][aria-pressed="true"]').length,
+        pgPressed: det.querySelectorAll('button[data-pages][aria-pressed="true"]').length,
+        degDefault: degDef ? degDef.getAttribute('data-deg') : null,
+        pgDefault: pgDef ? pgDef.getAttribute('data-pages') : null,
+        chip: !!det.querySelector('.ed-jp-chips button[data-tag="E3-定制重点"]')
+      };
+    });
+    if (!briefDom.det || !briefDom.summary.includes('本次定制要求')) bad('E3 弹层缺「本次定制要求」折叠 details：' + JSON.stringify(briefDom.summary || ''));
+    else if (briefDom.textareas !== 2) bad('E3 定制要求区应有 2 个 textarea（必须保留/不强调）：' + briefDom.textareas);
+    else if (!briefDom.chip) bad('E3 重点 chips 未按 __MATS__ tags 聚合渲染（缺 E3-定制重点）');
+    else if (briefDom.degBtns !== 3 || briefDom.degPressed !== 1 || briefDom.degDefault !== 'refocus') bad('E3 幅度按钮组应 3 项且默认恰 1 个 aria-pressed=refocus：' + JSON.stringify({ n: briefDom.degBtns, p: briefDom.degPressed, d: briefDom.degDefault }));
+    else if (briefDom.pageBtns !== 2 || briefDom.pgPressed !== 1 || briefDom.pgDefault !== '2') bad('E3 页数按钮组应 2 项且默认恰 1 个 aria-pressed=2：' + JSON.stringify({ n: briefDom.pageBtns, p: briefDom.pgPressed, d: briefDom.pgDefault }));
+    else ok('E3 弹层定制要求区（details + 2 textarea + chips + 幅度3/页数2，默认 refocus/2）');
+    // 提交载荷：route 捕获 /job/create（stub 响应，不真建草稿、不跳转）。
+    // 守卫：折叠区缺失（如旧实现）时上面已记 bad，这里直接跳过 fill/click，避免等元素超时炸掉整套件。
+    if (!briefDom.det) bad('E3 载荷阶段跳过（折叠区不存在）');
+    else {
+      let e3payload = null;
+      await page.route('**/job/create', (route) => {
+        try { e3payload = route.request().postDataJSON(); } catch (e) { e3payload = null; }
+        route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: false, error: 'E3-stub' }) });
+      });
+      await page.fill('#ed-jobpop input[aria-label="公司"]', 'E3公司');
+      await page.fill('#ed-jobpop input[aria-label="岗位"]', 'E3岗位');
+      await page.click('#ed-jobpop details summary');   // 展开「本次定制要求」（折叠态里 textarea 不可见）
+      await page.evaluate(() => { const c = document.querySelector('#ed-jobpop .ed-jp-chips button[data-tag="E3-定制重点"]'); if (c) c.click(); });
+      await page.fill('#ed-jobpop textarea[aria-label="必须保留的项目"]', '项目X');
+      await page.fill('#ed-jobpop textarea[aria-label="不希望强调"]', '旧技术栈');
+      await page.click('#ed-jobpop .ed-jp-row .ed-primary');
+      await page.waitForTimeout(400);
+      await page.unroute('**/job/create');
+      const e3keys = e3payload && e3payload.brief ? Object.keys(e3payload.brief).sort().join(',') : '';
+      if (!e3payload || !e3payload.brief) bad('E3 /job/create 载荷缺 brief：' + JSON.stringify(e3payload).slice(0, 80));
+      else if (e3keys !== 'deemphasize,degree,focus,keepProjects,pages') bad('E3 brief 五键不符：' + e3keys);
+      else if (JSON.stringify(e3payload.brief.focus) !== JSON.stringify(['E3-定制重点'])) bad('E3 focus 未透传选中 chip：' + JSON.stringify(e3payload.brief.focus));
+      else if ((e3payload.brief.keepProjects || []).join() !== '项目X' || (e3payload.brief.deemphasize || []).join() !== '旧技术栈') bad('E3 保留/不强调未透传：' + JSON.stringify(e3payload.brief.keepProjects) + '/' + JSON.stringify(e3payload.brief.deemphasize));
+      else if (e3payload.brief.degree !== 'refocus' || e3payload.brief.pages !== 2) bad('E3 幅度/页数默认不符：' + JSON.stringify({ d: e3payload.brief.degree, p: e3payload.brief.pages }));
+      else ok('E3 /job/create 载荷 brief 五键齐且值透传（degree=refocus/pages=2 默认）');
+    }
+    await page.keyboard.press('Escape');   // 关弹层（单层 Esc），让开 jobmask 遮罩再测排版面板
+    // ===== E1/E2（排版监听器外提）：程序改写排版面板即时刷新 + 监听器不叠加 =====
+    await page.click('#ed-rtabs button[data-pane="typo"]');
+    await page.waitForSelector('#ed-pane-typo .ed-typo');
+    await page.evaluate(() => window.__edSetTypo('/*TYPO-E1*/body{font-size:14.5px;line-height:1.6}.sheet{padding-top:8.2mm;padding-bottom:8.2mm}.plain-lines p{margin-bottom:0.8mm}li{margin-top:0.8mm;margin-bottom:0.8mm}.section{margin-top:4.2mm}'));
+    const e1 = await page.evaluate(() => ({
+      range: (document.getElementById('ed-typo-fontSize') || {}).value || null,
+      num: (document.getElementById('ed-typo-num-fontSize') || {}).value || null
+    }));
+    if (e1.range !== '14.5' || e1.num !== '14.5') bad('E1 程序改写排版（__edSetTypo 派发 ed-typo）面板滑杆未刷新：' + JSON.stringify(e1));
+    else ok('E1 __edSetTypo 后排版面板滑杆/数值即时刷新');
+    const e2 = await page.evaluate(() => {
+      const pane = document.getElementById('ed-pane-typo');
+      const btn = pane.querySelector('.ed-reset');
+      btn.click(); btn.click();                       // 连续两次「恢复默认排版」
+      const obs = new MutationObserver(() => {});
+      obs.observe(pane, { childList: true });
+      window.dispatchEvent(new Event('ed-typo'));     // 再派发一次 → 面板应恰重建一次
+      const rebuilds = obs.takeRecords().filter((r) => r.addedNodes.length > 0).length;
+      obs.disconnect();
+      return { rebuilds: rebuilds, slider: (document.getElementById('ed-typo-fontSize') || {}).value || null };
+    });
+    if (e2.rebuilds !== 1) bad('E2 连续两次恢复默认后派发一次 ed-typo，面板重建 ' + e2.rebuilds + ' 次（监听器叠加）');
+    else if (e2.slider !== '13') bad('E2 恢复默认后滑杆应回默认 13：' + e2.slider);
+    else ok('E2 排版监听器全局恰一次（两次恢复默认后仍只重建一次，滑杆回默认）');
     await ctx.close();
   }
 

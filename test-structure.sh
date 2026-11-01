@@ -2006,14 +2006,14 @@ const COLD = /#F4F5F8|#202737|#697186|#DCE0E8|#5B5DE8|#EEEFFE|#409eff|#2563eb|#d
 fs.readFileSync(F, 'utf8').split('\n').forEach((ln, i) => {
   if (COLD.test(ln)) fail(`${F}:${i + 1} 冷色/靛蓝残留: ${ln.trim().slice(0, 90)}`);
 });
-// 路由集合不变（任何新增 pathname 字面量都会红）。初值 = S2 开工前实测冻结的 54 个字面量；S4a-T10 登记 /export/layout-apply、S4a-T11 登记 /favicon.ico（56），批次2-T2 登记 /eval/create、/eval/promote（58，登记非放宽）
+// 路由集合不变（任何新增 pathname 字面量都会红）。初值 = S2 开工前实测冻结的 54 个字面量；S4a-T10 登记 /export/layout-apply、S4a-T11 登记 /favicon.ico（56），批次2-T2 登记 /eval/create、/eval/promote（58，登记非放宽），2026-11-01 登记 /evals（评估历史独立页，59，登记非放宽）
 const sm = fs.readFileSync(F, 'utf8');
 const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','/ai/prep','/ai/review','/ai/rewrite','/ai/test',
   '/ai/zone-analyze','/ai/zone-rewrite',
   '/api/extract','/app','/app/add','/app/archive-regenerate','/app/del','/app/ics','/app/update','/applications',
   '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf',
   '/job-panel.js','/job/brief','/job/changes','/job/create','/job/generate','/job/gen-cancel','/job/gen-start','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',
-  '/materials','/new','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings','/eval/create','/eval/promote',
+  '/materials','/new','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings','/eval/create','/eval/promote','/evals',
   '/snapshot/baseline','/snapshot/note','/snapshot/pdf','/snapshot/view','/snapshots','/stats','/tag',
   '/zones','/zones/init','/zone-panel.js','/upload'].sort();   // 2026-10-28 AUD-12：接回首页一直在调用却缺失的 PDF 上传入口（登记非放宽）
 const got = [...new Set([...sm.matchAll(/url\.pathname === '([^']+)'/g)].map((m) => m[1]))].sort();
@@ -3964,6 +3964,138 @@ try {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 console.log('✅ EV-7 评估 UI 入口 + 报告卡片转义（XSS）+ restore 预览 evals 计数');
+EOF
+
+# —— EV-8：评估历史（首页卡 + /evals 独立页）：转义 / 按钮可见性 / 只出元数据 / 导航零变化 ——
+# ① 纯渲染字符串断言：把 server.mjs 里的评估历史渲染函数抠出来单跑（转义 / 来源缺失的旧记录隐藏按钮 / 列表不回显报告正文）
+# ② 隔离实例断言：临时 RESUME_ROOT + 合成 evaluations.json（含 XSS 载荷）+ 随机端口 → 首页卡与 /evals 页
+node --input-type=module << 'EOF'
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import { spawn } from 'node:child_process';
+import { evalRecordView } from './eval.mjs';
+
+const fail = (m) => { console.error('❌ EV-8 ' + m); process.exit(1); };
+const assert = (c, m) => { if (!c) fail(m); };
+const srv = fs.readFileSync('server.mjs', 'utf8');
+
+// —— icon()（UI-2 同款抠法）——
+const iStart = srv.indexOf('const ICON_TAG_WHITELIST');
+const iEnd = srv.indexOf('function page(');
+assert(iStart > 0 && iEnd > iStart, '应能定位 icon() 源码区间');
+const { ICONS } = await import('./vendors/icons.mjs');
+const icon = new Function('ICONS', srv.slice(iStart, iEnd) + '\nreturn icon;')(ICONS);
+// —— escHtml / escAttr / badge ——
+const escSrc = srv.slice(srv.indexOf('const escHtml ='), srv.indexOf('const jsonScript ='));
+const escHtml = new Function(escSrc + '\nreturn escHtml;')();
+const escAttr = new Function(escSrc + '\nreturn escAttr;')();
+const badgeSrc = srv.slice(srv.indexOf('const BADGE_ICON'), srv.indexOf('// 客户端状态提示'));
+const badge = new Function('icon', badgeSrc + '\nreturn badge;')(icon);
+// —— 评估历史渲染函数（首页卡与 /evals 页共用同一份）——
+const hStart = srv.indexOf('const EVAL_VERDICT_TEXT');
+const hEnd = srv.indexOf('function docInfo(');
+assert(hStart > 0 && hEnd > hStart, '应能定位 evalHistoryRows 源码区间');
+const H = new Function('escHtml', 'escAttr', 'badge', srv.slice(hStart, hEnd) + '\nreturn { evalHistoryRows, evalHistoryPayload, evalRecordPayload };')(escHtml, escAttr, badge);
+
+// ===== ① 纯渲染字符串断言 =====
+const XSS = '<script>alert(1)</script><img src=x onerror="alert(2)">';
+const rec = {
+  id: 'ev-20261030-120000-000-000', company: '甲公司' + XSS, role: '后端' + XSS,
+  score: 4.5, verdict: 'apply', createdAt: '2026-10-30T12:00:00.000Z',
+  source: { type: 'resume', docId: 'master', hash: '0123456789abcdef' },
+  blocks: { roleSummary: 'REPORT-BODY-MARKER' }
+};
+const view = evalRecordView(rec);
+const row = H.evalHistoryRows([view]);
+assert(row.includes('&lt;script&gt;'), '评估历史的模型/用户文本必须转义成实体，实际: ' + row.slice(0, 200));
+assert(!row.includes('<script'), '评估历史不得含裸 <script>');
+assert(!row.includes('<img'), '评估历史不得含裸 <img>');
+assert(!row.includes('REPORT-BODY-MARKER'), '列表只出元数据，不得回显报告正文');
+assert(row.includes('甲公司'), '评估历史应含 company');
+assert(row.includes('class="badge'), '评分与结论应用 badge()');
+assert(row.includes('4.5 / 5'), '应显示 score/5');
+assert(row.includes('建议投'), '应显示结论（verdict 徽章）');
+assert(row.includes('data-eval-hist="promote"') && row.includes('data-eval-from="master"'),
+  'sourceState=recorded 的记录应有「转入适配」按钮且 from 取 source.docId');
+assert(row.includes('data-eval-hist="report"'), '应有「查看报告」按钮');
+// 来源缺失的旧记录：无 source → 隐藏转入适配 + 标「来源缺失」
+const legacy = evalRecordView({ id: 'ev-legacy', company: '乙公司', role: '后端', score: 3, verdict: 'caution', createdAt: '2026-10-29T09:00:00.000Z', blocks: {} });
+assert(legacy.sourceState === 'legacy', '无 source 的旧记录 sourceState 应为 legacy');
+const row2 = H.evalHistoryRows([legacy]);
+assert(!row2.includes('data-eval-hist="promote"'), '来源缺失的旧记录不得出现「转入适配」按钮');
+assert(row2.includes('来源缺失'), '来源缺失的旧记录应标「来源缺失」');
+// 已转适配的记录：标「已转适配」且不再给「转入适配」
+const done = evalRecordView({ ...rec, source: undefined, promotedTo: 'job-1', blocks: {} });
+const row3 = H.evalHistoryRows([done]);
+assert(row3.includes('已转适配'), '已转适配的记录应标状态');
+assert(!row3.includes('data-eval-hist="promote"'), '已转适配的记录不应再给「转入适配」按钮');
+// 内联载荷：JD 正文不进页面
+const payload = H.evalHistoryPayload([view]);
+assert(payload[rec.id] && payload[rec.id].jd === undefined, '内联载荷不应带 JD 正文');
+assert(payload[rec.id].blocks && payload[rec.id].blocks.roleSummary === 'REPORT-BODY-MARKER', '内联载荷应带报告正文（客户端渲染用）');
+console.log('✅ EV-8 ① 评估历史渲染函数：转义 / 按钮可见性 / 只出元数据');
+
+// ===== ② 隔离实例断言 =====
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ev8-'));
+const R = path.join(tmp, 'root');
+for (const d of ['docs', 'snapshots', 'pdfs', 'backups', 'logs']) fs.mkdirSync(path.join(R, d), { recursive: true });
+const evalRec = (over) => ({
+  id: 'ev-20261030-120000-000-000', jd: 'JD ' + XSS, jdFp: 'fp',
+  company: '甲公司' + XSS, role: '后端' + XSS, score: 4.5, verdict: 'apply',
+  blocks: { roleSummary: XSS, level: 'right', levelReason: XSS, salary: { text: XSS, source: 'JD 未提供' }, angle: XSS, matches: [{ req: XSS, status: 'covered', evidence: XSS }], gaps: [XSS], verdictReason: XSS },
+  model: 'stub', source: { type: 'resume', docId: 'master', hash: '0123456789abcdef' },
+  createdAt: '2026-10-30T12:00:00.000Z', promotedTo: null, ...over
+});
+fs.writeFileSync(path.join(R, 'evaluations.json'), JSON.stringify([
+  evalRec({}),
+  evalRec({ id: 'ev-20261029-090000-000-000', source: undefined, createdAt: '2026-10-29T09:00:00.000Z' })
+]));
+fs.writeFileSync(path.join(R, 'docs-meta.json'), JSON.stringify({ master: { kind: 'master', flow: 'reviewed', theme: 'classic', styleHash: 'h', typo: '', schemaVersion: 2 } }));
+fs.writeFileSync(path.join(R, 'applications.json'), '[]');
+fs.writeFileSync(path.join(R, 'materials.json'), '[]');
+fs.writeFileSync(path.join(R, 'docs', 'master.html'), '<!doctype html>\n<html><head><meta charset="utf-8"></head><body>\n<h1>张三</h1>\n<div class="sheet"><p>正文</p></div>\n</body></html>\n');
+
+const freePort = () => new Promise((r) => { const s = http.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
+const port = await freePort();
+const proc = spawn(process.execPath, ['server.mjs'], { cwd: process.cwd(), env: { ...process.env, RESUME_ROOT: R, PORT: String(port) }, stdio: ['ignore', 'ignore', 'pipe'] });
+let serr = '';
+proc.stderr.on('data', (d) => { serr += d; });
+const stop = async () => { try { proc.kill('SIGTERM'); } catch {} await new Promise(r => setTimeout(r, 200)); try { proc.kill('SIGKILL'); } catch {} };
+process.on('exit', () => { try { proc.kill('SIGKILL'); } catch {} });
+try {
+  let up = false;
+  for (let i = 0; i < 150; i++) { try { await fetch(`http://127.0.0.1:${port}/`); up = true; break; } catch { await new Promise(r => setTimeout(r, 80)); } }
+  if (!up) fail('测试服务启动失败: ' + serr.slice(0, 500));
+
+  const home = await (await fetch(`http://127.0.0.1:${port}/`)).text();
+  assert(home.includes('评估历史'), '首页应含「评估历史」卡');
+  assert(home.includes('甲公司'), '首页应含该条 company·role');
+  assert(home.includes('&lt;script&gt;'), '首页的 XSS 载荷应渲染为实体');
+  assert(!home.includes('<script>alert(1)'), '首页不得含裸标签');
+  assert(!home.includes('<img src=x onerror'), '首页不得含裸 img 标签');
+  assert(home.includes('href="/evals"'), '首页应含 /evals 入口');
+  // 首页不得新增裸 <script> 标签（报告渲染器与接线都在既有 script 块内）
+  const scriptTags = (home.match(/<script/g) || []).length;
+  assert(scriptTags === 3, '首页 <script> 标签数应为 3（未新增），实际 ' + scriptTags);
+
+  const ev = await fetch(`http://127.0.0.1:${port}/evals`);
+  assert(ev.status === 200, '/evals 应返回 200，实际 ' + ev.status);
+  const evh = await ev.text();
+  assert(evh.includes('评估历史') && evh.includes('甲公司'), '/evals 应含历史行');
+  assert(/<h1>评估历史<\/h1>/.test(evh), '/evals 页题应为 h1');
+  // 导航视觉零变化：topnav 仍 6 个链接，侧栏无新项
+  const nav = (evh.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
+  assert((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length === 6, '/evals 的 topnav 链接数应仍为 6');
+  const side = (evh.match(/<aside class="sidenav">[\s\S]*?<\/aside>/) || [''])[0];
+  assert((side.match(/<a [^>]*>/g) || []).length === 5, '/evals 的侧栏项应仍为 5（不进侧栏）');
+  assert(/<a href="\/" class="on">/.test(side), '/evals 侧栏「文档」应高亮（active=docs）');
+  console.log('✅ EV-8 ② 隔离实例：首页卡 + /evals 页（转义 / 入口 / 导航零变化）');
+} finally {
+  await stop();
+}
+
 EOF
 
 # —— SEC-1：Host 白名单（DNS rebinding 防线，2026-10-19 安全审查 🔴-1）——

@@ -1140,7 +1140,7 @@ function page(title, inner, active = '', wide = false) {
 /* 浅色克制设计系统（2026-10-21 UI 重设计，设计文档 dev-docs/2026-10-21-ui-redesign-design.md）：
    主行动用近黑不用蓝；彩色只承载状态；零阴影靠 1px 边框 + 背景差表达层级。
    旧名（--bg/--panel/--ink/...）保留为别名，既有 CSS 几百处零改动即生效。 */
-/*A-VARS*/:root{--background:#ffffff;--foreground:#0a0a0a;--muted:#737373;--card:#ffffff;--card-2:#fafafa;--border:#e5e5e5;--accent:#18181b;--accent-fg:#ffffff;--success:#15803D;--success-bg:#f0fdf4;--warning:#A25711;--warning-bg:#fffbeb;--danger:#B91C1C;--danger-bg:#fef2f2;--radius:4px;--radius-lg:6px;--shadow:none;--font:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;--font-mono:ui-monospace,Menlo,monospace;--bg:var(--background);--panel:var(--card);--ink:var(--foreground);--fg:var(--foreground);--mut:var(--muted);--line:var(--border);--accent-ink:var(--accent-fg);--accent-soft:var(--card-2);--ok:var(--success);--ok-soft:var(--success-bg);--warn:var(--warning);--warn-soft:var(--warning-bg);--err:var(--danger);--err-soft:var(--danger-bg);--ai:var(--foreground);--ai-soft:var(--card-2);--serif:var(--font);--sans:var(--font);--shadow-up:0 10px 24px rgba(0,0,0,.10)}
+/*A-VARS*/:root{--background:#ffffff;--foreground:#0a0a0a;--muted:#737373;--card:#ffffff;--card-2:#fafafa;--border:#e5e5e5;--accent:#18181b;--accent-fg:#ffffff;--success:#15803D;--success-bg:#f0fdf4;--warning:#A25711;--warning-bg:#fffbeb;--danger:#B91C1C;--danger-bg:#fef2f2;--radius:4px;--radius-lg:6px;--shadow:none;--font:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;--font-mono:ui-monospace,Menlo,monospace;--bg:var(--background);--panel:var(--card);--ink:var(--foreground);--fg:var(--foreground);--mut:var(--muted);--line:var(--border);--accent-ink:var(--accent-fg);--accent-soft:var(--card-2);--ok:var(--success);--ok-soft:var(--success-bg);--warn:var(--warning);--warn-soft:var(--warning-bg);--err:var(--danger);--err-soft:var(--danger-bg);--ai:var(--foreground);--ai-soft:var(--card-2);--serif:var(--font);--sans:var(--font);--shadow-up:0 10px 24px rgba(0,0,0,.10);--space-hair:2px;--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-6:24px}
 *{box-sizing:border-box}
 /* 批次B：body 不再限宽（max-width:1100px 会把「侧栏+内容」压扁）——
    页面总宽改由 .home / .topnav 自身定宽居中（各 1400px），body 只留左右 20px 内边距。 */
@@ -1176,10 +1176,25 @@ html{scroll-padding-top:64px}
 .sidenav a:hover{background:var(--card-2);color:var(--foreground)}
 .sidenav a.on{background:var(--card-2);color:var(--foreground);font-weight:600}
 .mainarea{min-width:0}
-/* 内容区页标题：用直接子选择器，首页 hero 里的大标题（.hero-title）不受影响 */
-.mainarea>h1{font-size:20px;font-weight:700;letter-spacing:-.01em;margin:0 0 4px}
+/* 内容区页标题（现档 20px/700/-.01em）：.mainarea 的直接子级，或 .page-head 容器内的 h1。
+   hero 里的大标题（.hero-title）不是 .mainarea 的直接子级，仍由自己的类覆盖。 */
+.mainarea>h1,.page-head>h1{font-size:20px;font-weight:700;letter-spacing:-.01em}
+.mainarea>h1{margin:0 0 var(--space-3)}
+/* 页头统一容器：页题 + 右侧动作/计数两栏（视图切换链接、n= 一律移出 h1，h1 只放标题文字）。
+   窄屏靠 flex-wrap 自然折行；右侧动作靠 justify-content 右对齐。 */
+.page-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap;margin:0 0 var(--space-3)}
+.page-head>h1{margin:0}
+.page-head .page-meta{font-size:13px;font-weight:400;color:var(--mut)}
 @media (max-width:860px){.home{grid-template-columns:1fr}.sidenav{position:static;border-right:0;border-bottom:1px solid var(--border);padding:0 0 10px;min-height:0}.sidenav a{display:inline-flex;margin:0 4px 2px 0}}
-h1{font-family:var(--serif);font-size:26px;font-weight:800;letter-spacing:.6px;margin:6px 0 12px}
+/* 标题三档（A-VARS 登记的唯一档位表；新增标题必须归入其中一档，不得新增第四档）：
+     ① brand .topnav .brand          16px / 800 / +0.4px
+     ② 页题  .mainarea>h1,.page-head>h1  20px / 700 / -0.01em
+     ③ hero  .hero-title             34px / 800 / +0.8px
+   层级只靠「字号 + 字重」拉开，字距只作微调（tracking 下限 -0.04em）。
+   —— 旧 h1{26px/800/+0.6px} 是死规则：全站 h1 都由 page() 包进 .mainarea，被上面两档覆盖，
+      删掉零渲染变化（--serif 与 --font 同族，font-family 也无差），只是消除「页题 26px」的误导。 */
+/* 二级标题档：此前全站无 h2 样式，落浏览器默认 1.5em（比页题还大） */
+.mainarea h2{font-size:16px;font-weight:700;margin:16px 0 8px}
 button{cursor:pointer;background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--radius);min-height:32px;padding:0 12px;font-weight:600;font-size:13px;transition:transform .12s,box-shadow .12s,background .12s}
 button.secondary{background:var(--panel);color:var(--ink);border:1px solid var(--line)}
 button.danger{background:var(--panel);color:var(--err);border:1px solid var(--err-soft)}
@@ -1193,9 +1208,20 @@ select{border:1px solid var(--line);border-radius:var(--radius);padding:7px 10px
 button:focus-visible,input:focus-visible,a:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 16px}
 .card-active{border-color:var(--accent);background:var(--card-2)}
-.badge{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:2px 9px;font-size:11px;font-weight:500;background:var(--card-2);color:var(--mut);margin-right:6px}
+/* 卡片标题唯一口径（全仓卡片标题只此一处，首页/导出/设置/复盘四页同款）：
+   14px/800。font-family 写 var(--font) 而非 var(--serif) —— 两者同族（--serif:var(--font)），零视觉差。 */
+.card-title{font-family:var(--font);font-size:14px;font-weight:800}
+/* doc-card 的 16px 是有意层级（文档标题比卡片标题大一号），单独登记，不是第四档。 */
+.doc-card .card-title{font-size:16px}
+/* 徽章与胶囊同档：字号 12px、内边距 3px 11px，与 .chip 完全一致，两枚胶囊只剩 1px 边框差。
+   margin-right:6px 保留 —— 它是徽章后分隔的唯一机制（全站 43 处在用，删则粘连）。
+   注意：徽章自带右距；放进 flex/gap 容器必须给 .badge{margin-right:0}，否则双倍计距。 */
+.badge{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:3px 11px;font-size:12px;font-weight:500;background:var(--card-2);color:var(--mut);margin-right:6px}
 .badge svg{width:11px;height:11px;stroke-width:2.4;flex:none}
-.chip{border:1px solid var(--line);border-radius:999px;padding:3px 11px;font-size:12px;background:var(--panel);cursor:pointer}
+/* 胶囊：字号 12px / 内边距 3px 11px 与 .badge 完全同款（两枚胶囊同一字号与内边距）。
+   min-height 收为 26px：全局 button{min-height:32px} 会把胶囊撑到 32px，比徽章高 6.8px —— 两枚就不同档了。
+   胶囊高度改由自身盒模型决定（27.2px，与徽章 25.2px 只差 chip 的 1px 边框）；26px 下限仍高于 WCAG 2.2 的 24px 目标尺寸。 */
+.chip{border:1px solid var(--line);border-radius:999px;padding:3px 11px;font-size:12px;background:var(--panel);cursor:pointer;min-height:26px}
 .chip[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
 /* 语义徽章：底色 + 语义色 + 图标 + 文字（颜色不单独承载语义，WCAG color-not-only）。
    类名沿用既有的 .badge ok/.warn/.err/.ai（既有 43 处在用），只新增 .badge.mute
@@ -1364,6 +1390,135 @@ const jsonAttr = (v) => JSON.stringify(v).replace(/'/g, '\\u0027');
 // 不转 &：值多已过 escHtml（& < > 以实体存在），此处再转会变成 &amp;amp;
 const jsonScript = (v) => JSON.stringify(v).replace(/</g, '\\u003c');
 
+// ===== 岗位评估：报告渲染器 + 历史列表接线（首页卡与 /evals 页共用同一份）=====
+// EVAL_CARD_JS：客户端报告渲染器。**必须能独立执行**（test-structure.sh EV-7 会把本块抽出来单跑）——
+// 图标在服务端内联进块内，不依赖页面级全局（vendors/icons.mjs 仍是唯一来源）。
+// 本块只定义变量与函数：**顶层不得碰 document**（单跑时没有 DOM）。
+const EVAL_CARD_JS = `/*EVAL_CARD_JS_START*/
+// 报告渲染器必须能独立执行（测试会单独把本块抽出来跑）——图标在服务端内联进块内，
+// 不依赖页面级全局（vendors/icons.mjs 仍是唯一来源）。
+var EVAL_ICON = { ok: ${jsonScript(icon('circle-check', 12))}, warn: ${jsonScript(icon('circle-alert', 12))} };
+var EVAL_BTN_ICON = ${jsonScript(icon('compass', 13))};
+function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+function evalCardHtml(rec, opts) {
+  var b = (rec && rec.blocks) || {};
+  var VERDICT = { apply: '建议投', caution: '谨慎', skip: '不建议' };
+  // 文案写明方向而不只给档位名：under/right/over 说的是「简历资历 vs 岗位要求」，
+  // 用户看到「偏保守」不知道是谁对谁保守（2026-10-19 补 prompt 语义时同步）。
+  var LEVEL = { under: '低于岗位要求', right: '恰好匹配', over: '高于岗位要求' };
+  var STATUS = { covered: '已有证据', sourced: '素材支持', partial: '部分匹配', missing: '未找到' };
+  var sal = b.salary || {};
+  var h = [];
+  h.push('<div class="card" style="margin-top:12px">');
+  h.push('<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap"><b style="font-size:24px">' + esc(rec.score == null ? '-' : rec.score) + ' / 5</b><b style="font-size:16px">' + esc(VERDICT[rec.verdict] || rec.verdict || '未定') + '</b><span style="font-size:12px;color:var(--mut)">岗位评估报告</span></div>');
+  h.push('<p style="margin:6px 0"><b>角色摘要：</b>' + esc(b.roleSummary) + '</p>');
+  h.push('<p style="margin:6px 0"><b>级别：</b>' + esc(LEVEL[b.level] || b.level || '') + (b.levelReason ? '（' + esc(b.levelReason) + '）' : '') + '</p>');
+  if (sal.source === 'JD 未提供') {
+    h.push('<p style="margin:6px 0"><b>薪资：</b><b style="color:var(--warn)">JD 未提供</b> ' + EVAL_ICON.warn + ' 无外部薪资数据（本系统不查外部薪资库，别当成市场价）</p>');
+  } else {
+    h.push('<p style="margin:6px 0"><b>薪资：</b>' + esc(sal.text) + ' <span style="font-size:12px;color:var(--mut)">（来源：' + esc(sal.source) + '）</span></p>');
+  }
+  h.push('<p style="margin:6px 0"><b>最该强调：</b>' + esc(b.angle) + '</p>');
+  h.push('<p style="margin:6px 0"><b>结论理由：</b>' + esc(b.verdictReason) + '</p>');
+  h.push('<div style="margin-top:10px"><b>逐条匹配</b>');
+  var ms = Array.isArray(b.matches) ? b.matches : [];
+  if (!ms.length) h.push('<p style="font-size:13px;color:var(--mut)">（无）</p>');
+  ms.forEach(function (m) {
+    h.push('<div style="margin-top:6px;font-size:13px">· ' + esc(m.req) + ' — ' + esc(STATUS[m.status] || m.status || '') +
+      (m.evidence ? '<div style="color:var(--mut);font-size:12px">证据：' + esc(m.evidence) + '</div>' : '') + '</div>');
+  });
+  h.push('</div>');
+  h.push('<div style="margin-top:10px"><b>缺失能力</b>');
+  var gs = Array.isArray(b.gaps) ? b.gaps : [];
+  if (!gs.length) h.push('<p style="font-size:13px;color:var(--mut)">（无）</p>');
+  gs.forEach(function (g) { h.push('<div style="font-size:13px">· ' + esc(g) + '</div>'); });
+  h.push('</div>');
+  // 动作行（转入适配 / 重新评估）只在「刚评估完」的场景出现：历史记录是回看，
+  // 来源缺失的旧记录没有可转的母版 —— 动作由列表行自己出（那里才判 sourceState）。
+  if (!(opts && opts.hideActions)) {
+    h.push('<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button type="button" data-eval-act="promote" data-eval-id="' + esc(rec.id) + '">' + EVAL_ICON.ok + ' 就它了，转入适配</button><button type="button" class="secondary" data-eval-act="redo">重新评估</button></div>');
+  }
+  h.push('</div>');
+  return h.join('');
+}
+/*EVAL_CARD_JS_END*/`;
+
+// EVAL_HISTORY_JS：评估历史列表的客户端接线（首页卡与 /evals 页共用同一段）。
+// 「查看报告」= 把页面内联的记录交给 evalCardHtml 渲染；「转入适配」= POST /eval/promote。
+// 作用域限定在 #evalHistory 容器内：首页「刚评估完」那条流程（#evalResult）另有自己的处理器，互不干扰。
+const EVAL_HISTORY_JS = `
+(function () {
+  var box = document.getElementById('evalHistory');
+  if (!box) return;
+  var msg = document.getElementById('evalHistoryMsg');
+  var recs = (typeof EVAL_RECORDS !== 'undefined' && EVAL_RECORDS) || {};
+  box.addEventListener('click', async function (e) {
+    var t = e.target.closest('[data-eval-hist]');
+    if (!t) return;
+    var act = t.getAttribute('data-eval-hist');
+    var id = String(t.getAttribute('data-eval-id') || '');
+    if (act === 'report') {
+      var slot = document.getElementById('evalSlot-' + id);
+      if (!slot || !Object.prototype.hasOwnProperty.call(recs, id)) return;
+      var open = slot.getAttribute('data-open') === '1';
+      slot.innerHTML = open ? '' : evalCardHtml(recs[id], { hideActions: true });
+      slot.setAttribute('data-open', open ? '0' : '1');
+      t.textContent = open ? '查看报告' : '收起报告';
+      return;
+    }
+    if (act === 'promote') {
+      t.disabled = true;
+      try {
+        var r = await fetch('/eval/promote', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ evalId: id, from: t.getAttribute('data-eval-from') }) });
+        var d = await r.json().catch(function () { return null; });
+        if (d && d.existing) { location.href = '/edit?id=' + encodeURIComponent(d.existing); return; }
+        if (!r.ok || !d || !d.ok || !d.id) { if (msg) __status(msg, 'err', (d && d.error) || ('HTTP ' + r.status)); t.disabled = false; return; }
+        location.href = '/edit?id=' + encodeURIComponent(d.id);
+      } catch (err) { if (msg) __status(msg, 'err', err.message); t.disabled = false; }
+    }
+  });
+})();`;
+
+// ===== 评估历史（首页卡与 /evals 页共用同一渲染函数）=====
+// 列表**只出元数据**（评分 / 结论 / 公司·岗位 / 时间 / 状态），不回显报告正文；
+// 报告正文由 evalCardHtml 在客户端渲染（记录经 jsonScript 内联进页面，见 EVAL_RECORDS）。
+const EVAL_VERDICT_TEXT = { apply: '建议投', caution: '谨慎', skip: '不建议' };
+const EVAL_VERDICT_CLS = { apply: 'ok', caution: 'warn', skip: 'err' };
+const evalTimeText = (s) => { const t = Date.parse(String(s || '')); return Number.isFinite(t) ? new Date(t).toLocaleString('zh-CN') : String(s || ''); };
+// 内联载荷：JD 正文不进页面（可达 6 万字，报告渲染也用不到）；其余字段原样带出。
+const evalRecordPayload = (rec) => { const r = { ...rec }; delete r.jd; delete r.jdFp; return r; };
+const evalHistoryPayload = (records) => {
+  const out = {};
+  for (const rec of records) { const rid = String((rec && rec.id) || ''); if (rid) out[rid] = evalRecordPayload(rec); }
+  return out;
+};
+function evalHistoryRows(records) {
+  if (!records.length) return '<div style="color:var(--mut);font-size:13px">还没有评估记录。到首页「针对岗位生成」里点「先评估这个岗位」，评估结果会记在这里。</div>';
+  return records.map((rec) => {
+    const rid = String((rec && rec.id) || '');
+    const v = String((rec && rec.verdict) || '');
+    const cls = EVAL_VERDICT_CLS[v] || 'mute';
+    const promoted = !!(rec && rec.promotedTo);
+    // sourceState ≠ recorded 的旧记录没有记录过母版 → 无从「转入适配」（from 取 rec.source.docId），按钮隐藏。
+    const srcDoc = (rec && rec.source && rec.source.docId) ? String(rec.source.docId) : '';
+    const canPromote = rec.sourceState === 'recorded' && !!srcDoc && !promoted;
+    const status = (promoted ? badge('ok', '已转适配', 'circle-check') : '')
+      + (rec.sourceState !== 'recorded' ? badge('warn', '来源缺失', 'circle-alert') : '');
+    // 动作列对齐：行容器 space-between 右对齐，按钮数不同的行会把「查看报告」挤到不同横坐标（实测两行左缘差 83px，扫读找不到同一列）。
+    // 无「转入适配」的行放一枚同款隐形占位（visibility:hidden 保持同宽、disabled 且不带 data-eval-hist，
+    // 不可点不可聚焦也不进测试断言口径）——动作组逐行等宽，「查看报告」在首页卡与 /evals 页各行列对齐。
+    const promoteBtn = canPromote
+      ? `<button type="button" data-eval-hist="promote" data-eval-id="${escAttr(rid)}" data-eval-from="${escAttr(srcDoc)}">转入适配</button>`
+      : `<button type="button" disabled style="visibility:hidden">转入适配</button>`;
+    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap">
+      <span>${badge('ai', ((rec && rec.score) == null ? '—' : String(rec.score)) + ' / 5')}${badge(cls, EVAL_VERDICT_TEXT[v] || '未定')}<span style="color:var(--mut);font-size:12px">${escHtml(String((rec && rec.company) || '') + '·' + String((rec && rec.role) || ''))} · ${escHtml(evalTimeText(rec && rec.createdAt))}</span>${status}</span>
+      <span style="display:flex;gap:6px;align-items:center"><button type="button" class="secondary" data-eval-hist="report" data-eval-id="${escAttr(rid)}">查看报告</button>${promoteBtn}</span>
+    </div>
+    <div id="evalSlot-${escAttr(rid)}" data-eval-slot="1"></div>`;
+  }).join('');
+}
+
 function docInfo(id, m) {
   const f = docPath(id);
   if (!fs.existsSync(f)) return null;
@@ -1444,7 +1599,7 @@ function listPage(showArchived = false) {
     const pdfBadge = si.state === 'none' ? badge('warn', 'PDF 未生成')
       : si.state === 'stale' ? badge('warn', 'PDF 较旧')
       : badge('ok', 'PDF 同步');
-    return `<li class="card doc-card"><b style="font-family:var(--serif);font-size:16px">${info.title}</b>
+    return `<li class="card doc-card"><b class="card-title">${info.title}</b>
       <div style="color:var(--mut);font-size:12px;margin:6px 0">${id} · 更新于 ${info.mtime}</div>
       <div style="margin-bottom:8px"><span class="badge">快照 ${snaps}</span>${pdfBadge}${m.job ? jobStatusBadge(id) : ''}${m.archivedAt ? badge('', '已归档', 'archive') : ''}${tag ? `<span class="badge">${escHtml(tag)}</span>` : ''}${info.degraded ? badge('warn', '待结构化') : ''}</div>
       ${m.parent ? `<div style="font-size:12px;color:var(--mut)">岗位版：${escHtml((m.company || '') + '·' + (m.role || ''))}（母版 ${escHtml(m.parent)}）</div>` : ''}
@@ -1486,6 +1641,14 @@ function listPage(showArchived = false) {
   const fallbackId = byMtime.length ? byMtime[0].id : '';
   const docIds = byMtime.map((d) => d.id);
   const docTitles = Object.fromEntries(byMtime.map((d) => [d.id, d.title]));
+  // 评估历史（首页卡）：读时视图 evalRecordView（旧记录的 sourced 降级为 missing，历史分数不重算）。
+  // 首页只列最近 10 条；全量在 /evals 页。列表只出元数据，报告正文由客户端 evalCardHtml 渲染。
+  const evalHomeRecords = loadEvals().map(evalRecordView);
+  const evalHomeCard = evalHomeRecords.length ? `<div class="card" style="margin-top:var(--space-3)">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><b class="card-title">评估历史</b><a href="/evals">查看全部 →</a></div>
+      <div id="evalHistory">${evalHistoryRows(evalHomeRecords.slice(0, 10))}</div>
+      <span id="evalHistoryMsg" role="status" style="font-size:12px;color:var(--mut)"></span>
+    </div>` : '';
   // S4a-T5：重点 chips 建议值 = 素材 tags 聚合（首版不做历史 brief 聚合）
   const tagCount = new Map();
   for (const mt of loadMats()) for (const t of (Array.isArray(mt.tags) ? mt.tags : [])) if (typeof t === 'string' && t.trim()) tagCount.set(t.trim(), (tagCount.get(t.trim()) || 0) + 1);
@@ -1549,10 +1712,11 @@ function listPage(showArchived = false) {
       </form>`}
       <div id="evalResult"></div>
     </details>
-    ${drafts.length ? `<div class="card" style="margin-top:12px"><b>继续处理岗位草稿</b>
+    ${drafts.length ? `<div class="card" style="margin-top:12px"><b class="card-title">继续处理岗位草稿</b>
       ${drafts.map((d) => { const dl = deliverableNow(d.id, meta[d.id] || {}, d);   // 每草稿只算一次：原写法在同一模板串里调两次，2N 次同步解析卡首屏
         return `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><span><b>${d.title}</b> ${badge(dl ? 'ok' : 'warn', dl ? '可投递' : '草稿')}<span style="color:var(--mut);font-size:12px">${escHtml(((meta[d.id] || {}).company || '') + '·' + ((meta[d.id] || {}).role || ''))} · ${d.mtime}</span></span><a href="/edit?id=${escAttr(d.id)}"><button>继续处理</button></a></div>`; }).join('')}
     </div>` : ''}
+    ${evalHomeCard}
     <div class="card" style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <form method="post" action="/new"><button class="secondary">＋ 新建空白文档</button></form>
       <details class="import-box" style="flex:1;min-width:220px"><summary style="cursor:pointer;font-weight:700">${icon('file-text', 13)} 导入 PDF</summary>
@@ -1573,6 +1737,9 @@ function listPage(showArchived = false) {
       : `<li class="list-empty">还没有简历文档。可在页面上方 <a href="#up">上传 PDF 导入</a>，或回到顶部点「＋ 新建第一份简历」。</li>`)
       : ''}<li class="search-empty" style="display:none">没有匹配「<span class="q"></span>」的文档。<button type="button" class="secondary" id="clearSearch">清除搜索</button></li></ul>
     <script>
+      // 评估历史记录（首页卡最多 10 条）：内联进页面，客户端由 evalCardHtml 渲染报告。
+      // jsonScript 转义 '<'：记录自带的结束标签不能闭合本脚本（本注释自身也不写出该标签）。
+      var EVAL_RECORDS = ${jsonScript(evalHistoryPayload(evalHomeRecords))};
       document.getElementById('up').addEventListener('submit', async function (e) {
         e.preventDefault();
         var f = document.getElementById('upfile').files[0];
@@ -1671,50 +1838,8 @@ function listPage(showArchived = false) {
       });
       // ===== 岗位评估 UI：/eval/create → 报告卡片 → /eval/promote =====
       // 报告内容全部来自模型：渲染前逐字段转义（模型输出直接进 innerHTML = XSS）。
-      /*EVAL_CARD_JS_START*/
-      // 报告渲染器必须能独立执行（测试会单独把本块抽出来跑）——图标在服务端内联进块内，
-      // 不依赖页面级全局（vendors/icons.mjs 仍是唯一来源）。
-      var EVAL_ICON = { ok: ${jsonScript(icon('circle-check', 12))}, warn: ${jsonScript(icon('circle-alert', 12))} };
-      var EVAL_BTN_ICON = ${jsonScript(icon('compass', 13))};
-      function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
-      function evalCardHtml(rec) {
-        var b = (rec && rec.blocks) || {};
-        var VERDICT = { apply: '建议投', caution: '谨慎', skip: '不建议' };
-        // 文案写明方向而不只给档位名：under/right/over 说的是「简历资历 vs 岗位要求」，
-        // 用户看到「偏保守」不知道是谁对谁保守（2026-10-19 补 prompt 语义时同步）。
-        var LEVEL = { under: '低于岗位要求', right: '恰好匹配', over: '高于岗位要求' };
-        var STATUS = { covered: '已有证据', sourced: '素材支持', partial: '部分匹配', missing: '未找到' };
-        var sal = b.salary || {};
-        var h = [];
-        h.push('<div class="card" style="margin-top:12px">');
-        h.push('<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap"><b style="font-size:24px">' + esc(rec.score == null ? '-' : rec.score) + ' / 5</b><b style="font-size:16px">' + esc(VERDICT[rec.verdict] || rec.verdict || '未定') + '</b><span style="font-size:12px;color:var(--mut)">岗位评估报告</span></div>');
-        h.push('<p style="margin:6px 0"><b>角色摘要：</b>' + esc(b.roleSummary) + '</p>');
-        h.push('<p style="margin:6px 0"><b>级别：</b>' + esc(LEVEL[b.level] || b.level || '') + (b.levelReason ? '（' + esc(b.levelReason) + '）' : '') + '</p>');
-        if (sal.source === 'JD 未提供') {
-          h.push('<p style="margin:6px 0"><b>薪资：</b><b style="color:var(--warn)">JD 未提供</b> ' + EVAL_ICON.warn + ' 无外部薪资数据（本系统不查外部薪资库，别当成市场价）</p>');
-        } else {
-          h.push('<p style="margin:6px 0"><b>薪资：</b>' + esc(sal.text) + ' <span style="font-size:12px;color:var(--mut)">（来源：' + esc(sal.source) + '）</span></p>');
-        }
-        h.push('<p style="margin:6px 0"><b>最该强调：</b>' + esc(b.angle) + '</p>');
-        h.push('<p style="margin:6px 0"><b>结论理由：</b>' + esc(b.verdictReason) + '</p>');
-        h.push('<div style="margin-top:10px"><b>逐条匹配</b>');
-        var ms = Array.isArray(b.matches) ? b.matches : [];
-        if (!ms.length) h.push('<p style="font-size:13px;color:var(--mut)">（无）</p>');
-        ms.forEach(function (m) {
-          h.push('<div style="margin-top:6px;font-size:13px">· ' + esc(m.req) + ' — ' + esc(STATUS[m.status] || m.status || '') +
-            (m.evidence ? '<div style="color:var(--mut);font-size:12px">证据：' + esc(m.evidence) + '</div>' : '') + '</div>');
-        });
-        h.push('</div>');
-        h.push('<div style="margin-top:10px"><b>缺失能力</b>');
-        var gs = Array.isArray(b.gaps) ? b.gaps : [];
-        if (!gs.length) h.push('<p style="font-size:13px;color:var(--mut)">（无）</p>');
-        gs.forEach(function (g) { h.push('<div style="font-size:13px">· ' + esc(g) + '</div>'); });
-        h.push('</div>');
-        h.push('<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button type="button" data-eval-act="promote" data-eval-id="' + esc(rec.id) + '">' + EVAL_ICON.ok + ' 就它了，转入适配</button><button type="button" class="secondary" data-eval-act="redo">重新评估</button></div>');
-        h.push('</div>');
-        return h.join('');
-      }
-      /*EVAL_CARD_JS_END*/
+      ${EVAL_CARD_JS}
+      ${EVAL_HISTORY_JS}
       (function () {
         var btn = document.getElementById('evalBtn');
         var box = document.getElementById('evalResult');
@@ -2392,6 +2517,25 @@ async function handler(req, res) {
       rec2.promotedTo = r.id;
       saveEvals(list2);
       return sendJson(200, { ok: true, id: r.id });
+    }
+    // ===== 评估历史（独立页）：全量列表 + 逐条展开报告 =====
+    // 服务端渲染全量元数据（与首页卡共用 evalHistoryRows），报告正文经 jsonScript 内联，
+    // 客户端由 evalCardHtml 渲染 —— 首页卡与本页共用同一套渲染函数与接线脚本。
+    // 不进 topnav / 侧栏（导航视觉零变化）：入口是首页「评估历史」卡里的「查看全部 →」。
+    // active 传 'docs'：本页由首页进入，归属「文档」，侧栏保持「文档」高亮。
+    if (req.method === 'GET' && url.pathname === '/evals') {
+      const records = loadEvals().map(evalRecordView);
+      return send(200, page('评估历史', `<h1>评估历史</h1>
+    <div class="card">
+      <div id="evalHistory">${evalHistoryRows(records)}</div>
+      <span id="evalHistoryMsg" role="status" style="font-size:12px;color:var(--mut)"></span>
+      <p style="font-size:12px;color:var(--mut);margin-top:10px"><a href="/">返回首页</a></p>
+    </div>
+    <script>
+      var EVAL_RECORDS = ${jsonScript(evalHistoryPayload(records))};
+      ${EVAL_CARD_JS}
+      ${EVAL_HISTORY_JS}
+    </script>`, 'docs'));
     }
     // 岗位修改清单读/写（状态持久化；应用动作由前端 DOM 执行后回写状态）
     if (req.method === 'GET' && url.pathname === '/job/changes') {
@@ -3100,7 +3244,7 @@ async function handler(req, res) {
           </form>
         </details>
       </div>`;
-      return send(200, page('素材库', `<h1>${icon('box', 18)} 素材库</h1>
+      return send(200, page('素材库', `<h1>素材库</h1>
     ${corruptBanner()}
     <p style="font-size:13px;color:var(--mut)">事实层确认后才建议用于生成：只有「已确认」的素材会参与岗位草稿生成；旧素材默认待确认，需你预览后确认。${unconfirmed ? ` 当前 ${unconfirmed} 条未确认。` : ''}
     ${unconfirmed ? `<button class="secondary" onclick="matConfirmAll()">全部标记已确认（先预览再用）</button>` : ''}</p>
@@ -3391,7 +3535,7 @@ async function handler(req, res) {
           // data-ch 是属性上下文：channel 由 /app/add、/app/update 原样落库（用户可控）→ 必须 escAttr
           return `<tr data-ch="${escAttr(a.channel || '')}"><td><b>${escHtml(a.company)}</b></td><td>${escHtml(a.role)}</td><td>${escHtml(a.channel || '')}</td><td>${escHtml(a.status)}</td><td>${escHtml(a.appliedAt || '')}</td><td>${escHtml(a.nextStep || '')}</td><td>${escHtml(a.dueDate || '')}${due}</td><td>${archiveBadge}<a href="/app?id=${escAttr(a.id)}">详情</a></td></tr>`;
         };
-        return send(200, page('投递看板·表格', `<h1>投递看板 <a href="/applications" style="font-size:13px;font-weight:400">⇄ 看板视图</a></h1>
+        return send(200, page('投递看板·表格', `<div class="page-head"><h1>投递看板</h1><a href="/applications" style="font-size:13px;font-weight:400">⇄ 看板视图</a></div>
       ${corruptBanner()}
       <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">
         <!-- option value 是属性上下文：渠道名用户可控 → escAttr；显示文本走 escHtml（文本节点） -->
@@ -3430,7 +3574,7 @@ async function handler(req, res) {
         const due = a.dueDate && (new Date(a.dueDate).getTime() - nowMs) < 48 * 3600 * 1000 && new Date(a.dueDate).getTime() >= nowMs - 24 * 3600 * 1000 ? '<span class="badge warn" role="img" aria-label="临近截止" title="临近截止">' + icon('circle-alert', 11) + '</span>' : '';
         const arch = a.archive && a.archive.status === 'failed' ? '<span class="badge err" title="存档 PDF 生成失败">' + icon('circle-x', 11) + '存档缺失</span>' : '';
         return `<div class="app-card card" data-status="${escAttr(a.status)}" data-app="${escAttr(a.id)}" style="margin:8px 0;padding:8px 10px;background:var(--panel);border:1px solid var(--line)">
-          <div style="font-family:var(--serif);font-size:14px;font-weight:800;color:var(--ink)">${escHtml(a.company)}${due}</div>
+          <div class="card-title" style="color:var(--ink)">${escHtml(a.company)}${due}</div>
           <div style="color:var(--mut);font-size:12px">${escHtml(a.role)}</div>
           <div style="font-size:12px;color:var(--mut);margin:2px 0"><a href="/edit?id=${escAttr(a.docId)}">${escHtml(a.docId)}</a> ${badge(a.jd ? 'ok' : 'warn', 'JD')}${arch}${a.channel ? `<span class="badge">${escHtml(a.channel)}</span>` : ''}</div>
           ${a.nextStep || a.dueDate ? `<div style="font-size:12px;color:var(--mut)">${a.nextStep ? '下一步：' + escHtml(a.nextStep) : ''}${a.dueDate ? ' 截止：' + escHtml(a.dueDate) : ''}</div>` : ''}
@@ -3449,7 +3593,7 @@ async function handler(req, res) {
         const items = apps.filter((a) => a.status === st);
         return `<div class="kb-col${items.length ? '' : ' empty'}"><div class="group-head">${st} <span style="color:var(--mut);font-weight:600">${items.length}</span></div>${items.map(appCard).join('') || '<div style="color:var(--mut);font-size:12px;padding:4px 8px">（空）</div>'}</div>`;
       }).join('');
-      return send(200, page('投递看板', `<h1>投递看板 <a href="/applications?view=table" style="font-size:13px;font-weight:400">⇄ 表格视图</a></h1>
+      return send(200, page('投递看板', `<div class="page-head"><h1>投递看板</h1><a href="/applications?view=table" style="font-size:13px;font-weight:400">⇄ 表格视图</a></div>
     ${corruptBanner()}
     <p><a href="/">返回首页</a></p>
     <details class="card" id="appAddBox"><summary style="cursor:pointer;font-weight:700">＋ 新增投递（记录已发生的投递，不自动发送）</summary>
@@ -3646,8 +3790,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     <p>OpenAI 兼容格式，火山方舟可直接用（baseURL 填 <code>https://ark.cn-beijing.volces.com/api/v3</code>）。配置存本地 config.json，不进任何仓库、不进备份。</p>
     <div id="cards"></div>
     <p><button type="button" id="addBtn">${icon('plus', 13)} 添加配置</button> <button type="button" id="saveBtn">保存</button> <a href="/">返回首页</a> <span id="msg"></span></p>
-    <div class="card" style="margin-top:20px">
-      <b style="font-family:var(--serif);font-size:14px">${icon('save', 13)} 备份与恢复</b>
+    <div class="card" style="margin-top:var(--space-3)">
+      <b class="card-title">${icon('save', 13)} 备份与恢复</b>
       <p style="font-size:13px;color:var(--mut)">备份含 docs/snapshots/pdfs 与四个 JSON（docs-meta/applications/materials/evaluations），<b>不含 config.json（密钥不进备份）</b>。</p>
       <p><a href="/backup"><button>下载备份</button></a> <span style="font-size:12px;color:var(--mut)">恢复默认「合并」：本地独有记录保留，同 id 冲突以备份为准，预览里逐条列出</span></p>
       <form id="restoreForm"><input type="file" id="restoreFile" accept=".tar.gz,.tgz">
@@ -4069,7 +4213,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     // ===== 复盘 =====
     if (req.method === 'GET' && url.pathname === '/stats') {
       const apps = loadApps();
-      if (!apps.length) return send(200, page('复盘', `<h1>${icon('chart-bar', 18)} 复盘统计</h1><div class="card" style="text-align:center;padding:40px;color:var(--mut)">暂无投递记录<br><br><a href="/applications">先去投递看板添加记录</a></div>`, 'stats'));
+      if (!apps.length) return send(200, page('复盘', `<h1>复盘统计</h1><div class="card" style="text-align:center;padding:40px;color:var(--mut)">暂无投递记录<br><br><a href="/applications">先去投递看板添加记录</a></div>`, 'stats'));
       const funnel = APP_STATUSES.map((s) => [s, apps.filter((a) => a.status === s).length]);
       const byCh = {}; apps.forEach((a) => { byCh[a.channel || '未填'] = (byCh[a.channel || '未填'] || 0) + 1; });
       const byDoc = {}; apps.forEach((a) => { byDoc[a.docId] = (byDoc[a.docId] || 0) + 1; });
@@ -4078,14 +4222,14 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const n = apps.length;
       const funnelBar = funnel.map(([s, c]) => `<div style="display:flex;align-items:center;margin:6px 0"><span style="width:70px;font-size:12px">${s}</span><div style="flex:1;background:var(--bg);border-radius:4px;height:20px"><div style="background:var(--accent);height:100%;border-radius:4px;width:${n ? (c / n * 100) : 0}%"></div></div><span style="width:30px;text-align:right;font-size:12px">${c}</span></div>`).join('');
       const warn = n < 10 ? `<div class="badge warn" style="margin-bottom:10px">${icon('circle-alert', 11)}样本量小（n=${n}），仅供参考</div>` : '';
-      return send(200, page('复盘', `<h1>${icon('chart-bar', 18)} 复盘统计 <span style="font-size:13px;font-weight:400;color:var(--mut)">n=${n}</span></h1>${warn}
-    <div class="card"><b style="font-family:var(--serif);font-size:14px">状态分布</b><div style="font-size:11px;color:var(--mut);margin:4px 0">当前状态计数（非阶段漏斗；有面试记录即计入面试口径）</div>${funnelBar}</div>
+      return send(200, page('复盘', `<div class="page-head"><h1>复盘统计</h1><span class="page-meta">n=${n}</span></div>${warn}
+    <div class="card"><b class="card-title">状态分布</b><div style="font-size:11px;color:var(--mut);margin:4px 0">当前状态计数（非阶段漏斗；有面试记录即计入面试口径）</div>${funnelBar}</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px">
-      <div class="card"><b style="font-family:var(--serif);font-size:14px">按渠道</b>${Object.entries(byCh).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
-      <div class="card"><b style="font-family:var(--serif);font-size:14px">按简历版本</b>${Object.entries(byDoc).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
-      <div class="card"><b style="font-family:var(--serif);font-size:14px">按岗位方向</b>${Object.entries(byTag).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
+      <div class="card"><b class="card-title">按渠道</b>${Object.entries(byCh).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
+      <div class="card"><b class="card-title">按简历版本</b>${Object.entries(byDoc).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
+      <div class="card"><b class="card-title">按岗位方向</b>${Object.entries(byTag).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
     </div>
-    <div class="card" style="margin-top:12px"><b style="font-family:var(--serif);font-size:14px">面试参与</b><p style="font-size:13px">${interviewed}/${n} 有面试安排或已进入面试（${n ? Math.round(interviewed / n * 100) : 0}%）；预约不等于完成。</p></div>`, 'stats'));
+    <div class="card" style="margin-top:12px"><b class="card-title">面试参与</b><p style="font-size:13px">${interviewed}/${n} 有面试安排或已进入面试（${n ? Math.round(interviewed / n * 100) : 0}%）；预约不等于完成。</p></div>`, 'stats'));
     }
     // ===== 备份 =====
     if (req.method === 'GET' && url.pathname === '/backup') {
@@ -4560,21 +4704,23 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const job = meta.job || null;
       const pdfStat = rst.pdfExists ? fs.statSync(pdfPath(id)) : null;
       const pdfCurrent = rst.state === 'fresh' && !renderError;
-      const lines = docToText(fs.readFileSync(docPath(id), 'utf8'), { includeHidden: false }).split('\n');
+      const docHtml = fs.readFileSync(docPath(id), 'utf8');
+      const lines = docToText(docHtml, { includeHidden: false }).split('\n');
       const projects = countProjects(docPath(id));
       
       const pageTexts = [];   // S4a-T10：分页文本层（排版诊断输入）
-      const rows = [];   // PDF 体检结论行（页面/空白页/孤立标题/字符量）
+      const rows = [];   // PDF 体检结论行（页面/空白页/孤立标题/字符量/文本层自检）
       // 体检结论的通过/告警标记：图标 + 语义色（颜色不单独承载语义，WCAG color-not-only）
       const mark = (ok) => `<span style="color:var(--${ok ? 'ok' : 'warn'})">${icon(ok ? 'check' : 'circle-alert', 12)}</span>`;
       let pages = 0;   // 块外 3254 的 layout 门控要用到，声明须在 pdfStat 分支之前
+      let fullText = '';       // 全文 pdftotext 的输出（文本层自检的输入；原来只取 .length 丢弃文本）
+      let budgetCut = false;   // 分页提取预算耗尽 → 文本层结论不可靠（见 layerCheck）
       if (pdfStat) {
         try { pages = parseInt(execFileSync('pdfinfo', [pdfPath(id)], { timeout: 10000 }).toString().match(/Pages:\s*(\d+)/)?.[1] || '0', 10); } catch { pages = 0; }
         const blank = [], orphan = [];
         // 总预算（AUD-17）：单页 15s 超时 × 页数会累积成无界等待 → 加整轮上限，耗尽即停并如实说明。
         const EXTRACT_BUDGET_MS = 20000;
         const extractDeadline = Date.now() + EXTRACT_BUDGET_MS;
-        let budgetCut = false;
         for (let p = 1; p <= pages; p++) {
           if (Date.now() > extractDeadline) { budgetCut = true; break; }
           let t = '';
@@ -4585,7 +4731,10 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
           const lastLine = t.split('\n').map((l) => l.trim()).filter(Boolean).pop() || '';
           if (lastLine && lastLine.length <= 10 && !/[，。、；：！？,.0-9]/.test(lastLine) && clean.length >= 10) orphan.push(p);
         }
-        const totalChars = (() => { try { return execFileSync('pdftotext', [pdfPath(id), '-'], { timeout: 30000 }).toString('utf8').length; } catch { return 0; } })();
+        // 全文 pdftotext：原来只取 .length（文本被丢掉），这里保留文本本身供下面的文本层自检用。
+        // 进程调用次数与超时都不变（仍是这一次全文调用，30s）。
+        try { fullText = execFileSync('pdftotext', [pdfPath(id), '-'], { timeout: 30000 }).toString('utf8'); } catch { fullText = ''; }
+        const totalChars = fullText.length;
         rows.push(`${mark(pages > 0)} 实际页数：${pages || '读取失败'}${pages === 2 ? '（符合两页目标）' : pages > 2 ? '（超过两页，见下方建议）' : ''}`);
         if (budgetCut) rows.push(`${mark(false)} 分页文本提取：超出 ${EXTRACT_BUDGET_MS / 1000}s 总预算，只提取了前 ${pageTexts.length}/${pages} 页（结论不完整）`);
         rows.push(`${mark(!blank.length)} 空白页检查：${blank.length ? `疑似空白页：${blank.join('、')}` : '无'}`);
@@ -4593,6 +4742,25 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         rows.push(`${mark(totalChars >= 200)} 文本层字符量：${totalChars}`);
         
       }
+      // ===== 文本层自检：姓名 / 邮箱在 PDF 文本层里能不能被提取到 =====
+      // 期望串来自可见事实：姓名 = 文档 <h1> 原文（decodeName 同法）；邮箱 = 正文首个 email 匹配。
+      // 两侧剥掉所有空白再比 substring —— PDF 文本层常在词间断行，直接比会误判为「提取不到」。
+      // 行文案只出 ✓/⚠ 与命中计数，**不回显邮箱原文**（邮箱是个人信息，导出页只报能不能提取）。
+      // fail-honest：没有 PDF / 分页预算耗尽 / 文本层没取到 / 文档里根本没有该字段 → 一律「未校验」，绝不报通过。
+      const squashWs = (t) => String(t == null ? '' : t).replace(/\s+/g, '');
+      const nameRaw = (docHtml.match(/<h1[^>]*>([^<]*)<\/h1>/) || [])[1] || '';
+      const nameExpect = nameRaw ? decodeName(nameRaw) : '';
+      const emailExpect = (lines.join('\n').match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/) || [''])[0];
+      const layerCheck = (label, expect, what) => {
+        if (!pdfStat) return `${mark(false)} ${label}：未校验（还没有 PDF）`;
+        if (budgetCut) return `${mark(false)} ${label}：未校验（分页文本提取超出预算，结论不可靠）`;
+        if (!fullText) return `${mark(false)} ${label}：未校验（PDF 文本层未取到）`;
+        if (!expect) return `${mark(false)} ${label}：未校验（文档里没有${what}）`;
+        const n = squashWs(fullText).split(squashWs(expect)).length - 1;
+        return n > 0 ? `${mark(true)} ${label}：命中 ${n} 处` : `${mark(false)} ${label}：未在文本层找到`;
+      };
+      rows.push(layerCheck('姓名可提取', nameExpect, '姓名'));
+      rows.push(layerCheck('邮箱可提取', emailExpect, '邮箱'));
       const suggestions = pageSuggestions(lines, { projects }).map((s) => `<li>${escHtml(s.text)}</li>`).join('');
       // S4a-T10：排版诊断（渲染级，半自动 3 轮；结构性事实表述；下限内不再压缩；超页二出路）+ 导出检查三级（与审阅 Tab 同源 jobViewLive）
       const jobLive = jobViewLive(id, meta);
@@ -4607,7 +4775,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         ? layoutDiagnose(pageTexts, { paras: parasOf(fs.readFileSync(docPath(id), 'utf8')), sections: secTitles, typo: typoVals, targetPages: (job && job.brief && job.brief.pages) || 2, rounds: Number(meta.layoutRounds) || 0 })
         : null;
       const layoutBlock = !layout ? '' : `
-    <div class="card" style="margin-top:12px"><b>排版诊断</b><span style="font-size:12px;color:var(--mut)">（排版迭代 ${layout.rounds}/3 轮 · 实际 ${layout.pages} 页 / 目标 ${layout.target} 页 · 请以实际渲染核对）</span>
+    <div class="card" style="margin-top:12px"><b class="card-title">排版诊断</b><span style="font-size:12px;color:var(--mut)">（排版迭代 ${layout.rounds}/3 轮 · 实际 ${layout.pages} 页 / 目标 ${layout.target} 页 · 请以实际渲染核对）</span>
       ${layout.items.length ? `<ul style="font-size:13px">${layout.items.map((it) => `<li>${escHtml(it.text)}${it.zid ? `（<a href="/edit?id=${id}">定位 ${escHtml(it.zid)}</a>）` : it.page ? `（第 ${it.page} 页）` : ''}</li>`).join('')}</ul>` : '<p style="font-size:13px;color:var(--mut)">无跨页标题 / 末页偏少等结构性事项。</p>'}
       ${layout.over && layout.apply ? `<div style="font-size:13px">建议本轮参数：字号 ${typoVals.fontSize}px → <b>${layout.apply.fontSize}px</b> · 行高 ${typoVals.lineHeight} → <b>${layout.apply.lineHeight}</b> · 段距 ${typoVals.paraGap}mm → <b>${layout.apply.paraGap}mm</b>
         <form id="layApplyForm" style="display:inline;margin-left:8px"
@@ -4675,9 +4843,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       <details style="font-size:13px;margin-top:6px"><summary style="cursor:pointer">语义说明</summary>
         <div>· 下载/记录投递：都先 POST /export 创建不可变导出记录（幂等键 renderInputId，同内容重复点击不再记录），产物存 pdfs/history/，经 /history-pdf?exportId=… 下载<br>· 投递存档：绑定所选导出的冻结快照，之后改稿不影响它（绝不重冻后来的正文）<br>· 下方预览为「最新版」便利文件（可被覆盖）；导出记录与投递存档不指向它</div></details>
     </div>
-    ${rows.length ? `<div class="card" style="margin-top:12px"><b>渲染检查</b>${rows.map((r) => `<div style="margin:6px 0">${r}</div>`).join('')}</div>` : ''}
+    ${rows.length ? `<div class="card" style="margin-top:12px"><b class="card-title">渲染检查</b>${rows.map((r) => `<div style="margin:6px 0">${r}</div>`).join('')}</div>` : ''}
     ${layoutBlock}
-    <div class="card" style="margin-top:12px"><b>导出检查（内容侧，与审阅 Tab 同源即时状态）</b>
+    <div class="card" style="margin-top:12px"><b class="card-title">导出检查（内容侧，与审阅 Tab 同源即时状态）</b>
       <div style="font-size:13px;margin:6px 0">建议核对：${(() => {
         const v = expChecks.check || {};
         const parts = [];
@@ -4692,13 +4860,13 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       })()}</div>
       <div style="font-size:13px;margin:6px 0">整体审阅完成：${expChecks.reviewComplete ? icon('circle-check', 13) + ' 是（可进入投递）' : '否（仍有待处理/稍后处理/待核对项——不阻塞导出）'}</div>
     </div>
-    ${suggestions ? `<div class="card" style="margin-top:12px"><b>超过两页的可读处理建议</b><ol style="font-size:13px">${suggestions}</ol><p style="font-size:12px;color:var(--mut)">不需要靠缩小字号硬塞：优先去重、精简、隐藏低相关项目；也可以保留更多页。</p></div>` : ''}
+    ${suggestions ? `<div class="card" style="margin-top:12px"><b class="card-title">超过两页的可读处理建议</b><ol style="font-size:13px">${suggestions}</ol><p style="font-size:12px;color:var(--mut)">不需要靠缩小字号硬塞：优先去重、精简、隐藏低相关项目；也可以保留更多页。</p></div>` : ''}
     <div class="card" style="margin-top:12px">
-      <b>导出记录</b> <span style="font-size:12px;color:var(--mut)">不可变产物；同内容（同 renderInputId）只记一条</span>
+      <b class="card-title">导出记录</b> <span style="font-size:12px;color:var(--mut)">不可变产物；同内容（同 renderInputId）只记一条</span>
       ${exRows || '<div style="color:var(--mut);font-size:12px;margin-top:6px">尚无导出记录（点「下载最新版 PDF」即创建首条）</div>'}
     </div>
     <div class="card" style="margin-top:12px">
-      <b>记录已投递</b>
+      <b class="card-title">记录已投递</b>
       <p style="font-size:12px;color:var(--mut)">只做记录，不会自动发送任何文件。记录时先创建不可变导出（同内容复用既有记录），存档 PDF 绑定该导出的冻结快照。${deliveredCnt ? `该文档已有 ${deliveredCnt} 条投递记录（关联按 exportId 派生）。` : ''}</p>
       <form id="trackForm">
         <!-- value 是属性上下文：company/role 原样落库（用户可控）→ escAttr（不转义 " 就能闭合属性注入事件处理器） -->
