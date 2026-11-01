@@ -135,10 +135,13 @@ export function createSlotPool({ size, name, waitMs = 5000 } = {}) {
   }
 
   // withLease：acquire → fn(lease) → finally 释放。fn 抛错也释放。
+  // BL-P4-06：不再预先 claim —— 凭证以未占用（inUse=false）状态交给 fn，fn 可把
+  // 凭证透传给 llm/renderDoc 等下层由其自行 claim（同一凭证不重复占用，消除互斥）。
+  // finally 只清理自己签发的这一个凭证：守卫版 unclaim（未占用→false 不动状态；
+  // fn 中途抛错时下层若已 claim 未归还，也先归还占用）+ release 归还容量。
   async function withLease(fn) {
     const lease = await acquire();
     try {
-      claim(lease);   // 执行器占用（同一凭证不得并发给两个执行器）
       // 必须 await：槽位必须在 fn 的异步工作真正结束后才释放（RES-03/04）。
       return await fn(lease);
     } finally {

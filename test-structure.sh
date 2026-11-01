@@ -27,6 +27,9 @@ node ./test-fixtures/reliability/test-slots-unclaim-guard.mjs
 # ===== BL-P4-03：7 个 /ai/* 路由模型调用异常捕获为 502 可读 JSON（隔离服务 + 本机回环，不再 500 text/plain）=====
 node ./test-fixtures/reliability/test-ai-routes-error.mjs
 
+# ===== BL-P4-06：withLease 与透传合同互斥修正（不再预先 claim，凭证以未占用态交 fn）=====
+node ./test-fixtures/reliability/test-slots-withlease.mjs
+
 # ===== SRC-07 I3：来源包纯函数回归显式接入结构套件（零 I/O / 无模型 / 无服务）=====
 node --test test-fixtures/reliability/test-sources.mjs
 
