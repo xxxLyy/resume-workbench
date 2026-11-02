@@ -1243,6 +1243,48 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     sp.textContent = txt;
     return sp;
   }
+  // ===== P3 批次进度与重试（修改清单生成；诚实进度——只显示真实计数，不显示百分比）=====
+  // 批次文案：正常推进「第 x/y 批」（x = done+failed+1 = 在途批，1 基）；重试中「重试第 x/y 批」（retrying 0 基）。
+  function batchProgressText(gt) {
+    var b = gt.batches;
+    if (!b || !b.total) return '';
+    if (typeof b.retrying === 'number') return '重试第 ' + (b.retrying + 1) + '/' + b.total + ' 批';
+    var x = Math.min((b.done || 0) + ((b.failed && b.failed.length) || 0) + 1, b.total);
+    return '第 ' + x + '/' + b.total + ' 批';
+  }
+  // changes 任务的进度行：S4b-B genProgressLine 模式复用（时长 ticker 原位更新），追加批次计数
+  function changesProgressLine(gt) {
+    var line = genProgressLine(gt);
+    var bt = batchProgressText(gt);
+    if (bt) line.appendChild(document.createTextNode(' · ' + bt));
+    return line;
+  }
+  // 失败批重试入口（done/error 且 batches.failed 非空）：每批一枚「重试该批」；成功批已落账不受影响
+  function renderBatchRetryRow(gt) {
+    var b = gt.batches;
+    if (!b || !Array.isArray(b.failed) || !b.failed.length || !gt.taskId) return null;
+    var box = document.createElement('div');
+    box.className = 'jp-reason';
+    b.failed.forEach(function (f) {
+      var row = document.createElement('div');
+      row.textContent = '第 ' + (Number(f.batch) + 1) + ' 批未完成：' + (f.error || '原因未知') + ' ';
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'jp-refbtn';
+      btn.textContent = '重试该批';
+      btn.addEventListener('click', function () {
+        btn.disabled = true;   // 防连点：下次 render() 重建按钮时自动恢复
+        api('/job/gen-retry?id=' + DOC_ID + '&kind=changes&batch=' + Number(f.batch) + '&taskId=' + encodeURIComponent(gt.taskId), {}).then(function (d) {
+          if (!d.ok) { btn.disabled = false; note(d.error || '重试启动失败', 'warn'); return; }
+          note('正在重试第 ' + (Number(f.batch) + 1) + ' 批…');
+          refresh();
+        }, function (e) { btn.disabled = false; note(e.message || e, 'warn'); });
+      });
+      row.appendChild(btn);
+      box.appendChild(row);
+    });
+    return box;
+  }
   // 秒级 ticker：只原位更新时长文本；没有 running 节点时每秒一次空查询，开销可忽略
   setInterval(function () {
     var nodes = document.querySelectorAll('[data-gen-elapsed]');
@@ -1661,6 +1703,20 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       head.appendChild(cmp);
     }
     root.appendChild(head);
+
+    // P3：修改清单任务状态行——running → 批次进度（「第 x/y 批」/重试中「重试第 x/y 批」，时长 ticker 复用）；
+    // done/error 且有失败批 → 「重试该批」入口（成功批已落账不受影响）。
+    var gtCh = (job.genTasks || {}).changes || {};
+    if (gtCh.status === 'running') {
+      var prog = document.createElement('div');
+      prog.className = 'jp-reason';
+      prog.textContent = '⟳ 正在生成建议…';
+      root.appendChild(prog);
+      root.appendChild(changesProgressLine(gtCh));
+    } else {
+      var retryRow = renderBatchRetryRow(gtCh);
+      if (retryRow) root.appendChild(retryRow);
+    }
 
     var changes = job.changes || [];
     // 筛选（reviewPos.filter 持久化）：全部 / 仅重点 / 仅本次变化

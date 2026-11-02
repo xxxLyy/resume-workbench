@@ -2429,6 +2429,19 @@ else
   fi
 fi
 
+# ===== 16l-2. P3 批次重试 UI（失败批行+重试按钮 / 重试中「重试第 x/y 批」进度 / 成功后按钮消失且候选可见）=====
+if node test-fixtures/reliability/test-gen-retry-ui.mjs; then
+  echo '✅ 批次重试 UI 回归（失败批行+重试按钮 + 重试中批次进度与 ticker + 成功后按钮消失且候选可见 + 零百分比）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 批次重试 UI 回归未执行：Chromium 不可用'
+  else
+    fail "批次重试 UI 回归未通过 (exit $RC)"
+  fi
+fi
+
 # ===== 16m. S5 八步向导页 UI（确认卡片流/逐跳过/暂存续作/完整流程产出可编辑文档）=====
 if node test-fixtures/reliability/test-onboarding-ui.mjs; then
   echo '✅ 引导向导 UI 回归（完整流程产出可编辑文档 / 全跳过产出合法文档 / 暂存退出重进恢复 / 首页显式入口不自动进入向导）'

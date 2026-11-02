@@ -745,6 +745,12 @@ async function runChangesPipeline(id, taskId, scope, held) {
       if (!reqsByZid.has(z)) reqsByZid.set(z, []);
       reqsByZid.get(z).push(l.req);
     }
+    // 批次计划随任务落账（P3 重试依据：重跑批 N 时按 zoneKey+zids+reqs 重建同一批的 prompt）
+    const batchPlan = plan.map((b, bi) => ({
+      batch: bi, zoneKey: b.zoneKey,
+      zids: b.paras ? b.paras.map((p) => p.zid) : null,
+      reqs: b.paras ? [...new Set(b.paras.flatMap((p) => reqsByZid.get(p.zid) || []))] : []
+    }));
     let usageAll = metaA.usage ?? null;
     const mergedSummary = [], mergedChanges = [], mergedTodos = [];
     for (let bi = 0; bi < plan.length; bi++) {
@@ -761,7 +767,7 @@ async function runChangesPipeline(id, taskId, scope, held) {
       } else if (located.length) {
         pb.user += '\n\n' + locateBlock(located, parasStart);   // 全文回退批保持 P1 定位块注入
       }
-      flush({ stage: 'calling', batches: snapBatches() });
+      flush({ stage: 'calling', batches: snapBatches(), batchPlan });
       const metaB = {};
       let rawB;
       try {
@@ -800,8 +806,9 @@ async function runChangesPipeline(id, taskId, scope, held) {
     stages.push({ stage: 'validate', startedAt: tValidate, ms: Date.now() - tValidate });
     if (!ops) { flush({}); return finishGenTask(id, 'changes', taskId, null, '模型输出无法解析为修改操作，未应用任何修改'); }
     // —— ⑤ assemble：applyChangesResult 落账（语义不变；终态前最后一步，只记 startedAt）——
+    // resultOps 随任务落账（P3 批次重试的合并基线：重试成功 = 原成功批 resultOps + 重试批 ops 再走一次收口）
     stages.push({ stage: 'assemble', startedAt: Date.now() });
-    flush({});
+    flush({ resultOps: ops });
     return finishGenTask(id, 'changes', taskId, (cur) => ({
       ok: true,
       extra: applyChangesResult(cur, ops, { scope, html, paras: parasStart, mats: confirmedMats, brief: m0.job.brief || null })
@@ -809,6 +816,97 @@ async function runChangesPipeline(id, taskId, scope, held) {
   } catch (e) {
     return finishGenTask(id, 'changes', taskId, null, '模型调用失败：' + (e.message || e));
   }
+}
+
+// ===== P3：批次重试（服务端幂等重试）=====
+// 只重跑指定失败批（批次计划 batchPlan 随任务落账，重建同一批 prompt——zid/区域/对应要求不变，
+// 段落文本以当前正文为准：用户可能已编辑，锚定与护栏在落账时按当前正文重评）。
+// 成功：该批从 batches.failed 摘除、done+1、resultOps（原成功批合并 ops）+ 重试批 ops 合并，
+// 走既有 finishGenTask 收口重新落账——新 gen 待审候选 = 全部成功批之并集（accepted/rejected 历史
+// 不被覆盖，只有 pending 被 superseded——与「二次生成」同口径）；todos 按 section+question 去重
+// 不重复追加（apply 回调内完成，applyChangesResult 本体零改动）。全部批成功 = 最后一次重试走同一收口。
+// 失败/异常：恢复 done 终态（成功批候选不回滚），失败原因刷新进 batches.failed 该批条目，可再次重试；
+// usage 照实累计（失败批的服务商调用已发生）。stages 保持原运行明细（重试不新增阶段条目，batches 是
+// 重试的进度载体）。
+async function runGenBatchRetry(id, taskId, batch, { lease } = {}) {
+  try {
+    const m0 = loadMeta()[id];
+    const gt0 = m0 && m0.job && m0.job.genTasks && m0.job.genTasks.changes;
+    if (!gt0 || gt0.taskId !== taskId) throw new Error('任务已被新任务取代');
+    const html = fs.readFileSync(docPath(id), 'utf8');
+    const parasNow = parasOf(html);
+    const planEntry = (Array.isArray(gt0.batchPlan) ? gt0.batchPlan : []).find((p) => p && p.batch === batch);
+    if (!planEntry) throw new Error('批次计划缺失');
+    // 重建批 prompt（与 P2 同一构造）：区域批按计划 zid 取当前段落（缺段 → 批失败，正文已变化请重新生成）
+    let bParas = null, bScope = null, bDocText;
+    if (planEntry.zoneKey === null) {
+      bDocText = docToText(html, { includeHidden: false });
+    } else {
+      const byZid = new Map(parasNow.map((p) => [p.zid, p]));
+      bParas = (planEntry.zids || []).map((z) => byZid.get(z)).filter(Boolean);
+      if (!bParas.length || bParas.length !== (planEntry.zids || []).length) {
+        return finishRetryFailure(id, taskId, batch, '重试失败：批次目标段落已不存在（正文已变化），请重新生成', null);
+      }
+      bScope = { zone: planEntry.zoneKey, zoneLabel: ZONE_LABELS[planEntry.zoneKey] || planEntry.zoneKey, digest: digestOf(html) };
+      bDocText = bParas.map((p) => `（zid：${p.zid}）${p.text}`).join('\n');
+    }
+    const confirmedMats = loadMats().filter((x) => x.factStatus === 'confirmed' && m0.job.materials.includes(x.id));
+    const pb = buildJobPrompt({ docText: bDocText, jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: confirmedMats, twoPage: true, brief: m0.job.brief || null, scope: bScope, feedback: m0.job.feedback || null });
+    if (bScope && (planEntry.reqs || []).length) pb.user += '\n\n【本批对应 JD 要求】\n' + planEntry.reqs.map((r) => '· ' + r).join('\n');
+    const metaB = {};
+    let rawB;
+    try {
+      rawB = await chat(root, pb.sys, pb.user, { lease, meta: metaB });
+    } catch (e) {
+      return finishRetryFailure(id, taskId, batch, '重试失败：模型调用失败：' + (e.message || e), null);
+    }
+    // 每批校验（与 P2 同口径）：parseJobOps（内含 factGuard）+ 空间预算（基线=该批当前段落）
+    const opsB = parseJobOps(rawB);
+    if (!opsB) return finishRetryFailure(id, taskId, batch, '重试失败：模型输出无法解析为修改操作', metaB.usage);
+    const budgetErr = batchBudgetError(opsB, { paras: bParas }, parasNow);
+    if (budgetErr) return finishRetryFailure(id, taskId, batch, '重试失败：' + budgetErr, metaB.usage);
+    // 成功：failed 摘除 + done+1 + resultOps 合并 + usage 合并 → 既有 finishGenTask 收口
+    const prev = (gt0.resultOps && typeof gt0.resultOps === 'object') ? gt0.resultOps : { summary: '', changes: [], todos: [] };
+    const mergedOps = {
+      summary: [prev.summary, opsB.summary].filter(Boolean).join('；'),
+      changes: (prev.changes || []).concat(opsB.changes),
+      todos: (prev.todos || []).concat(opsB.todos)
+    };
+    patchGenTask(id, 'changes', taskId, {
+      batches: { total: gt0.batches.total, done: gt0.batches.done + 1, failed: gt0.batches.failed.filter((f) => f.batch !== batch) },
+      resultOps: mergedOps,
+      usage: mergeGenUsage(gt0.usage ?? null, metaB.usage ?? null)
+    });
+    return finishGenTask(id, 'changes', taskId, (cur) => ({
+      ok: true,
+      extra: applyChangesResult(cur, {
+        ...mergedOps,
+        todos: (mergedOps.todos || []).filter((t) => !(cur.job.todos || []).some((u) => u.section === t.section && u.question === t.question))   // 重试不重复追加既有 todos
+      }, { scope: gt0.scope || 'all', html, paras: parasNow, mats: confirmedMats, brief: m0.job.brief || null })
+    }));
+  } catch (e) {
+    return finishRetryFailure(id, taskId, batch, '重试异常：' + (e.message || e), null);
+  }
+}
+
+// 重试失败/异常收尾：恢复 done 终态（守卫：taskId 匹配且仍 running——被取消/超时打断则不复活），
+// 失败原因刷新进 batches.failed 该批条目、retrying 标记移除；usage 可选累计。
+function finishRetryFailure(id, taskId, batch, error, usage) {
+  updateMetaAll(root, (all) => {
+    const m = all[id];
+    const gt = m && m.job && m.job.genTasks && m.job.genTasks.changes;
+    if (!gt || gt.taskId !== taskId || gt.status !== 'running' || !gt.batches) return null;
+    const next = {
+      ...gt, status: 'done', stage: null, error: null,
+      ...(usage ? { usage: mergeGenUsage(gt.usage ?? null, usage) } : {}),
+      batches: {
+        total: gt.batches.total, done: gt.batches.done,
+        failed: (gt.batches.failed || []).map((f) => (f.batch === batch ? { ...f, error } : f))
+      }
+    };
+    return { ...all, [id]: { ...m, job: { ...m.job, genTasks: { ...(m.job.genTasks || {}), changes: next } } } };
+  });
+  return { ok: false, error };
 }
 
 // 任务体（node 单进程 fire-and-forget：Promise 即可，不引调度平台）。interview/evidence 通道完整复用既有链路；
@@ -3839,6 +3937,66 @@ async function handler(req, res) {
       });
       if (!cancelled) return sendJson(409, { ok: false, error: '任务已结束或已被新任务取代（taskId 不匹配当前 running）' });
       return sendJson(200, { ok: true });
+    }
+    // gen-retry（P3 批次重试）：只重跑指定失败批。守卫照 gen-start 全套——
+    //   ① 资源准入先行：先借 AI 槽（借不到 429 且零写入，不造「永远 running」假任务），登记 running 若抛错归还；
+    //   ② updateMetaAll 事务内并发闸照 startGenTask（全库同类 ≤1 / 合计 ≤2，过期残留不占额度）；
+    //   ③ taskId 匹配当前任务记录（防误重试已被新任务取代的旧任务）；
+    //   ④ 任务可重试态：done/error 且 batches.failed 含该批、batchPlan 计划在（旧记录无计划 → 请重新生成）。
+    // 受理后 fire-and-forget runGenBatchRetry（凭证透传同 gen-start；释放=这次重试真正结束）。
+    if (req.method === 'POST' && url.pathname === '/job/gen-retry') {
+      const kind = url.searchParams.get('kind');
+      const batchRaw = url.searchParams.get('batch');
+      const reqTaskId = url.searchParams.get('taskId') || '';
+      if (kind !== 'changes' || batchRaw === null || !/^\d+$/.test(batchRaw)) return sendJson(400, { ok: false, error: 'kind 必须是 changes 且 batch 必须是非负整数' });
+      const batch = Number(batchRaw);
+      if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型：草稿仍可手动编辑，配置后可生成建议' });
+      let lease;
+      try { lease = aiPool.borrow(); }
+      catch (e) { return sendJson((e && e.httpCode) || 429, { ok: false, error: (e && e.message) || 'AI 排队已满，请稍候' }); }
+      let reject = null;
+      try {
+        updateMetaAll(root, (all) => {
+          const m = all[id];
+          if (!m || !m.job) { reject = { status: 404, error: '该文档不是岗位草稿' }; return null; }
+          const now = Date.now();
+          // 并发闸（照 startGenTask）：全库同类 running ≤1、两类合计 ≤2；过期残留不计入
+          let sameKindOther = false, total = 0;
+          for (const [did, dm] of Object.entries(all)) {
+            const gt2 = dm && dm.job && dm.job.genTasks;
+            if (!gt2) continue;
+            for (const k of GEN_KINDS) {
+              const t = gt2[k];
+              if (!t || t.status !== 'running' || genExpired(t, now)) continue;
+              total++;
+              if (k === 'changes' && did !== id) sameKindOther = true;
+            }
+          }
+          if (sameKindOther) { reject = { status: 409, error: '另一文档的任务进行中，请稍后再试' }; return null; }
+          if (total >= 2) { reject = { status: 409, error: '并发任务已达上限（全库同类 1 + 跨类合计 ' + (GEN_KINDS.length - 1) + '），请稍后再试' }; return null; }
+          const gt = m.job.genTasks && m.job.genTasks.changes;
+          if (!gt || gt.taskId !== reqTaskId) { reject = { status: 409, error: 'taskId 不匹配当前任务（可能已被新任务取代），请刷新后重试' }; return null; }
+          if (gt.status !== 'done' && gt.status !== 'error') { reject = { status: 409, error: '任务不在可重试状态（running/cancelled 不可重试）' }; return null; }
+          const b = gt.batches;
+          if (!b || !Array.isArray(b.failed) || !b.failed.some((f) => f && f.batch === batch)) { reject = { status: 409, error: '批次 ' + batch + ' 不在失败清单，无需重试' }; return null; }
+          const plan = Array.isArray(gt.batchPlan) ? gt.batchPlan : [];
+          if (!plan.some((p) => p && p.batch === batch)) { reject = { status: 409, error: '批次计划缺失（旧任务记录），请重新生成' }; return null; }
+          // 可重试 → 任务重启 running（新 startedAt=TTL 重新起算；retrying=N 供面板显示「重试第 x/y 批」）
+          const job = { ...m.job, genTasks: { ...(m.job.genTasks || {}), changes: { ...gt, status: 'running', stage: 'calling', error: null, startedAt: now, batches: { total: b.total, done: b.done, failed: b.failed, retrying: batch } } } };
+          return { ...all, [id]: { ...m, job } };
+        });
+      } catch (e) {
+        try { lease.release(); } catch {}
+        throw e;
+      }
+      if (reject) { try { lease.release(); } catch {} return sendJson(reject.status, { ok: false, error: reject.error }); }
+      runGenBatchRetry(id, reqTaskId, batch, { lease })
+        .catch((e) => {
+          // 重试运行器意外异常也要收敛任务态：恢复 done（成功批候选已在账上），原因进失败清单
+          try { finishRetryFailure(id, reqTaskId, batch, '重试异常：' + ((e && e.message) || e), null); } catch {}
+        })
+        .finally(() => { try { lease.release(); } catch {} });
+      return sendJson(200, { ok: true, taskId: reqTaskId, batch, status: 'running' });
     }
     // 生成建议（LLM 可选；失败不影响已有草稿与母版）
     // S4a-T4：内部转 changes 任务同步等待（响应形状不变，现有 job-panel 调用不破；T9 再切纯异步轮询）。
