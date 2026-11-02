@@ -8,6 +8,7 @@ unset RESUME_CHROMIUM
 # ===== 预览/编辑页 CSP 锁定（BL-P1-02≡BL-P7-01 / BL-P7-03，B 线批 1）：HTTP 头契约 =====
 node ./test-fixtures/reliability/test-snapview-csp.mjs
 node ./test-fixtures/reliability/test-edit-csp-frames.mjs
+node ./test-fixtures/reliability/test-app-pages-csp.mjs
 
 # ===== B 线批 2 · 数据完整性：zone 扫描/双 zid、tx 吞损坏、migrate 三件、备份恢复形状 =====
 node ./test-fixtures/reliability/test-zone-quote-scan.mjs

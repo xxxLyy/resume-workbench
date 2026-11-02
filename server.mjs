@@ -2231,7 +2231,30 @@ async function handler(req, res) {
     // 不加 no-store 时浏览器会缓存旧 HTML —— 症状是「服务端代码已改，页面行为没变」
     // （2026-10-18：删除模型配置不落盘，根因即用户标签页跑着重启前的旧 JS）。
     // 只对 HTML 加；PDF / 附件 / 静态资源各自 res.writeHead，不经过这里，不受影响。
-    const extra = /^text\/html/.test(type) ? { 'Cache-Control': 'no-store' } : {};
+    const isHtml = /^text\/html/.test(type);
+    const extra = isHtml ? { 'Cache-Control': 'no-store' } : {};
+    // 全站应用页默认 CSP（2026-11-02 B 线收口新发现：此前只有 /edit 与 /snapshot/view 有 CSP）。
+    // 显式传了 Content-Security-Policy 的路由（/edit 的 nonce+hash 策略、/snapshot/view 的锁定策略）保持各自更严口径。
+    // 口径：锁死除 script-src 外的全部通道——connect/form-action 限自源（外传关死）、img 不放 https:
+    //（应用页零外链图，图片信标外传关死）、object 'none'、frame-ancestors 'none'（防嵌框）、base-uri 'none'、
+    // frame-src 'self'（/export 的 PDF 预览 iframe）。script-src 保留 'unsafe-inline'：应用页有 51 处内联事件属性
+    // + 28 个内联脚本块，nonce 挡不住内联事件属性，去 'unsafe-inline' 需重构全部 handler——登记为后续项。
+    const hasCsp = extraHeaders && Object.keys(extraHeaders).some((k) => k.toLowerCase() === 'content-security-policy');
+    if (isHtml && !hasCsp) {
+      extra['Content-Security-Policy'] = [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob:",
+        "font-src 'self' data:",
+        "connect-src 'self'",
+        "frame-src 'self'",
+        "object-src 'none'",
+        "frame-ancestors 'none'",
+        "base-uri 'none'",
+        "form-action 'self'"
+      ].join('; ');
+    }
     res.writeHead(code, { 'Content-Type': type, ...extra, ...(extraHeaders || {}) });
     res.end(body);
   };
