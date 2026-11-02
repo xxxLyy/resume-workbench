@@ -2422,3 +2422,16 @@ else
     fail "生成进度 UI 回归未通过 (exit $RC)"
   fi
 fi
+
+# ===== 16m. S5 八步向导页 UI（确认卡片流/逐跳过/暂存续作/完整流程产出可编辑文档）=====
+if node test-fixtures/reliability/test-onboarding-ui.mjs; then
+  echo '✅ 引导向导 UI 回归（完整流程产出可编辑文档 / 全跳过产出合法文档 / 暂存退出重进恢复 / 首页显式入口不自动进入向导）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 引导向导 UI 回归未执行：Chromium 不可用'
+  else
+    fail "引导向导 UI 回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi
