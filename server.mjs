@@ -13,7 +13,7 @@ import { loadProfiles, hasLLM, chat, chatMsgs, listModels, assertSafeBaseURL } f
 import { buildRewrite, buildChat, parseChanges, buildReview, buildMatch, parseReport } from './ai.mjs';
 import { buildJobPrompt, parseJobOps, pageSuggestions } from './job.mjs';
 import { buildEvalPrompt, parseEvalReport, evalSource, evalRecordView } from './eval.mjs';
-import { docToLines, docToText, contentHash, sectionsOf } from './extract.mjs';
+import { docToLines, docToText, contentHash, sectionsOf, bodyOf, decodeEntities } from './extract.mjs';
 import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, digestOf, buildZoneAnalyzePrompt, parseZoneAnalysis, buildZoneRewritePrompt, parseZoneRewrites, FACT_KEYS, MAT_STATES, migrateMats, parasOf, zidsOf, zoneEditUnits } from './zone.mjs';
 import { applyZoneOps } from './zone-ops.mjs';   // 区域安全子集（ZONE-04）：磁盘正文 + 提交原文 + 归属 + 锁 + 事实护栏 五项齐备才应用
 import { rotateLogIfNeeded } from './logrotate.mjs';
@@ -45,7 +45,12 @@ const svgAsset = (name) => {
   catch { return ''; }   // 缺失 → 空插画位，不影响功能
 };
 const HERO_SVG = svgAsset('hero-mirror.svg');
-for (const d of ['docs', 'snapshots', 'pdfs', 'backups', 'logs', '.tx']) fs.mkdirSync(path.join(root, d), { recursive: true });
+for (const d of ['docs', 'snapshots', 'pdfs', 'backups', 'logs', '.tx', 'photos']) fs.mkdirSync(path.join(root, d), { recursive: true });
+// photos/ 自排除 Git（S5 照片方案）：目录内 .gitignore 忽略全部内容——不改仓库 .gitignore 即达成「照片排除 Git」
+try {
+  const obGi = path.join(root, 'photos', '.gitignore');
+  if (!fs.existsSync(obGi)) fs.writeFileSync(obGi, '# 照片属个人隐私：本目录内容一律不入库（S5 设计 §5）\n*\n!.gitignore\n');
+} catch (e) { console.error('[startup] photos/.gitignore 写入失败: ' + (e && e.message)); }
 
 // 服务日志由 launchd 写入 RESUME_LOG_FILE：启动时轮转一次，此后每 24h 检查（copytruncate，50MB 触发、留尾部 2MB 到 .1）
 // 日志权限收紧（2026-10-19 安全审查 ⚪-6）：日志由 launchd 打开，创建时的 umask 决定权限，
@@ -74,7 +79,7 @@ function hardenDataPerms(root) {
       else { try { fs.chmodSync(fp, 0o600); } catch {} }
     }
   };
-  for (const d of ['docs', 'snapshots', 'pdfs', 'backups']) {
+  for (const d of ['docs', 'snapshots', 'pdfs', 'backups', 'photos']) {
     const dp = path.join(root, d);
     if (!fs.existsSync(dp)) continue;
     try { fs.chmodSync(dp, 0o700); } catch {}   // 目录不给其他用户列目录
@@ -2246,6 +2251,287 @@ async function saveJsonProtocol(req, id, url) {
   return out;
 }
 
+// ===== S5 引导建档向导（设计：dev-docs/2026-11-02-s5-design.md）=====
+// 核心决策：向导进度不新建文件 —— 首个「合并预填后仍有内容」的确认步创建一份真实草稿文档
+// （kind=master / flow=draft，与 /new 产出同权），此后每步确认写入该文档；暂存 = 文档自然存在。
+// 「空输入不产出脏文档」由「首步确认前不建文档」保证；无文档阶段的进度由客户端持有。
+const OB_STEPS = ['0.1', '0.2', '0.3', '0.4', '0.5', '0.6', '0.7', '0.8'];
+const OB_LABELS = { '0.1': '基础信息', '0.2': '画像与方向', '0.3': '经历补充', '0.4': 'STAR 结构化', '0.5': '软性信息', '0.6': '证件照（可选）', '0.7': '预览微调', '0.8': '生成与导出' };
+const OB_COPY = {
+  '0.1': '先留下名字和联系方式，简历的骨架就有了。',
+  '0.2': '用几句话说清你是谁、想去哪里。',
+  '0.3': '把做过的事摆上来，一条经历一块卡片，随时可改。',
+  '0.4': '对每段经历逐条套 STAR，允许跳过；事实与条件如实录入并标注来源。',
+  '0.5': '技能与教育经历，按行补充即可。',
+  '0.6': '证件照完全可选，不选也不影响后续。',
+  '0.7': '预览与微调复用编辑器，改完回来继续。',
+  '0.8': '确认完成：产出一份正常文档，与手建文档完全同权。'
+};
+// 内容步 → 目标区域标题（写档 splice 与预填提取共用同一映射；header 由 0.1 专写）
+const OB_TITLES = { '0.2': [['summary', '个人总结']], '0.3': [['work', '工作经历'], ['projects', '项目经历']], '0.4': [['work', '工作经历']], '0.5': [['skills', '专业技能'], ['edu', '教育经历']] };
+// 「原始内联」约定与模板占位符一致：个人总结=纯文本、专业技能=<p> 行、其余=entry HTML。
+// splice 落档时再套区域外壳；创建路径直接填占位符（模板自带外壳）。
+const OB_SECTION_WRAP = {
+  '个人总结': (t) => `<p class="summary">${t}</p>`,
+  '专业技能': (t) => `<div class="plain-lines">${t}</div>`
+};
+const OB_PHOTO_MAX = 5 * 1024 * 1024;
+const OB_PHOTO_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
+const OB_PAGE_SVG = svgAsset('hero-page.svg');
+
+const obLinesHtml = (v) => String(v ?? '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+  .map((s) => `<p>${escHtml(s)}</p>`).join('');
+const obEntriesHtml = (list) => (Array.isArray(list) ? list : []).filter((e) => e && typeof e === 'object').map((e) => {
+  const pts = (Array.isArray(e.points) ? e.points : []).map((x) => String(x ?? '').trim()).filter(Boolean);
+  return `<div class="entry-head"><div class="entry-title">${escHtml(String(e.title ?? '').trim())}</div>` +
+    `<div class="entry-role">${escHtml(String(e.role ?? '').trim())}</div>` +
+    `<div class="entry-date">${escHtml(String(e.date ?? '').trim())}</div></div>` +
+    (pts.length ? `<ul>${pts.map((p) => `<li>${escHtml(p)}</li>`).join('')}</ul>` : '');
+}).join('\n');
+// 页壳表单（零 JS）的行式简表：`名称 | 职位 | 时间` 起段，`- ` 行进要点（确认卡片流由前端卡承接）
+function obParseEntriesText(text) {
+  const entries = [];
+  let cur = null;
+  for (const raw of String(text ?? '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (/^[-•]\s*/.test(line)) {
+      const pt = line.replace(/^[-•]\s*/, '').trim();
+      if (pt && cur) cur.points.push(pt);
+      continue;
+    }
+    if (cur) entries.push(cur);
+    const seg = line.split('|').map((s) => s.trim());
+    cur = { title: seg[0] || '', role: seg[1] || '', date: seg[2] || '', points: [] };
+  }
+  if (cur) entries.push(cur);
+  return entries;
+}
+// 按区域标题替换 section 内联（sectionsOf 定位 + bodyOf 偏移换算绝对位置）；区域缺失 → null（不写，进度照走）
+function obReplaceSection(html, title, rawInner) {
+  const body = bodyOf(html);
+  const off = html.indexOf(body);
+  if (off < 0) return null;
+  const sec = sectionsOf(html).find((s) => s.title === title && !s.hidden);
+  if (!sec) return null;
+  const tm = /<div[^>]*class="[^"]*\bsection-title\b[^"]*"[^>]*>[\s\S]*?<\/div>/i.exec(sec.html);
+  const titleHtml = tm ? tm[0] : `<div class="section-title">${escHtml(title)}</div>`;
+  const wrap = OB_SECTION_WRAP[title] || ((t) => t);
+  const rebuilt = `<section class="section">${titleHtml}\n      ${wrap(rawInner)}\n    </section>`;
+  return html.slice(0, off + sec.start) + rebuilt + html.slice(off + sec.end);
+}
+const obHeaderHtml = (h) =>
+  `<header class="header"><h1>${escHtml(h.name || '')}</h1><div class="contact">${escHtml(h.contact || '')}<br />${escHtml(h.intent || '')}</div></header>`;
+function obReplaceHeader(html, headerHtml) {
+  if (!/<header class="header">[\s\S]*?<\/header>/.test(html)) return null;
+  return html.replace(/<header class="header">[\s\S]*?<\/header>/, () => headerHtml);   // 函数替换防 $& 解释
+}
+// 预填提取（纯确定性，零 AI 零外联）：stripInjections 后按 h1 / .contact / sectionsOf 取文本结构。
+// 信任边界与 /duplicate 同级（不剥正文脚本，/edit CSP 兜底）；摘除 data-zid —— 新文档由 normalizeZids 重打，不携带母版区域绑定。
+function obExtractPrefill(srcHtml) {
+  const html = stripInjections(String(srcHtml || ''));
+  const out = { name: '', contact: '', intent: '', sections: {} };
+  const h1 = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(html);
+  if (h1) out.name = decodeEntities(h1[1].replace(/<[^>]*>/g, '')).trim();
+  const ct = /<div[^>]*class="[^"]*\bcontact\b[^"]*"[^>]*>([\s\S]*?)<\/div>/i.exec(html);
+  if (ct) {
+    const lines = ct[1].split(/<br\s*\/?>/i).map((s) => decodeEntities(s.replace(/<[^>]*>/g, '')).trim());
+    out.contact = lines[0] || '';
+    out.intent = lines[1] || '';
+  }
+  for (const s of sectionsOf(html)) {
+    if (s.hidden || !s.title) continue;
+    const tm = /<div[^>]*class="[^"]*\bsection-title\b[^"]*"[^>]*>[\s\S]*?<\/div>/i.exec(s.html);
+    let inner = s.html.slice(tm ? tm[0].length : 0).replace(/<\/section>\s*$/i, '').trim();
+    inner = inner.replace(/\s*data-zid="[^"]*"/g, '');
+    if (!inner) continue;
+    if (s.title === '个人总结') {
+      const pm = /<p[^>]*class="[^"]*\bsummary\b[^"]*"[^>]*>([\s\S]*?)<\/p>/i.exec(inner);
+      if (pm) inner = pm[1].trim();
+    } else if (s.title === '专业技能') {
+      const dm = /^<div[^>]*class="[^"]*\bplain-lines\b[^"]*"[^>]*>([\s\S]*)<\/div>$/i.exec(inner);
+      if (dm) inner = dm[1].trim();
+    }
+    if (inner) out.sections[s.title] = inner;
+  }
+  return out;
+}
+// 合并本步载荷与预填：payload 非空字段胜出，空缺位由母版填充（只补缺失），prefilled 如实登记。
+// 返回 {header?, sections{标题→原始内联}, facts?, prefilled[], hasContent}
+function obMergeStep(step, p, prefill, skipFlag) {
+  const res = { header: null, sections: {}, facts: null, prefilled: [], hasContent: false };
+  if (skipFlag) return res;
+  const own = (f) => String(p[f] ?? '').trim();
+  const pick = (f) => {
+    const v = own(f);
+    if (v) return v;
+    const pv = prefill ? String(prefill[f] ?? '').trim() : '';
+    if (pv) { res.prefilled.push(f); return pv; }
+    return '';
+  };
+  if (step === '0.1') {
+    const name = pick('name'), contact = pick('contact'), intent = pick('intent');
+    if (name || contact || intent) { res.header = { name, contact, intent }; res.hasContent = true; }
+  } else if (step === '0.6') {
+    if (p.photo) res.hasContent = true;   // 照片属内容，但必须有文档承载（无文档 → 400）
+  } else if (OB_TITLES[step]) {
+    for (const [field, title] of OB_TITLES[step]) {
+      let inner = '';
+      if (field === 'summary') inner = escHtml(pick('summary'));
+      else if (field === 'skills') inner = obLinesHtml(p.skills);
+      else {
+        const list = Array.isArray(p[field]) ? p[field] : null;
+        inner = list ? obEntriesHtml(list) : '';
+      }
+      if (!inner && prefill && prefill.sections[title]) { inner = prefill.sections[title]; res.prefilled.push(field); }
+      if (inner) { res.sections[title] = inner; res.hasContent = true; }
+    }
+    if (step === '0.4' && Array.isArray(p.facts) && p.facts.length) {
+      // 事实层（roadmap：{事实、条件、个人贡献、来源}）只暂存到 meta.onboarding.facts，与素材库合并属前端卡
+      res.facts = p.facts.filter((f) => f && typeof f === 'object').slice(0, 50).map((f) => ({
+        subject: String(f.subject ?? '').slice(0, 200), fact: String(f.fact ?? '').slice(0, 2000),
+        condition: String(f.condition ?? '').slice(0, 2000), contribution: String(f.contribution ?? '').slice(0, 2000),
+        source: String(f.source ?? '').slice(0, 200)
+      }));
+      if (res.facts.length) res.hasContent = true;
+    }
+  }
+  return res;
+}
+// 每步写档 = /save 语义的最小复刻（同原语不打折）：stripInjections → normalizeZids → normalizeToCurrent
+// → 根锁 + 文档锁 → beginTx/atomicWrite/updateMeta/commitTx（异常双恢复）→ dropSupersededTx。
+// updateMeta 内 rev+1 + zoneSync（区域初绑/同步）。不打快照（同 autosave 口径，避免步进刷爆配额）。
+// onboardingRec 与正文同事务落 meta（内容与进度原子一致）。
+async function obWriteDoc(id, rawHtml, onboardingRec) {
+  let html = stripInjections(rawHtml);
+  html = normalizeZids(html);
+  if (!looksLikeDoc(html)) return { status: 400, body: { ok: false, error: '向导写入被拒：载荷剥离后不含任何 HTML 元素' } };
+  const norm = normalizeToCurrent(html);
+  let out;
+  try { rootLock.acquire(root); }
+  catch (e) { if (e instanceof LockHeld) return { status: 503, body: { ok: false, error: '另一保存/迁移正在进行（.migrate.lock），请稍后重试' } }; throw e; }
+  try {
+    out = await withDocLock(root, id, async () => {
+      const oldHtml = fs.readFileSync(docPath(id), 'utf8');
+      const oldMeta = loadMeta()[id] ?? null;
+      const txId = beginTx(root, id, 'save', '');
+      try {
+        atomicWrite(docPath(id), norm.html);
+        updateMeta(root, id, (m) => {
+          const base = { ...(m || {}) };
+          base.typo = norm.typo;
+          base.rev = (Number(base.rev) || 0) + 1;
+          Object.assign(base, zoneSync(norm.html, base));   // S3：zones 同步（正文为准）
+          base.onboarding = onboardingRec;
+          return base;
+        });
+        commitTx(root, txId);
+      } catch (e2) {
+        // 与 /save 同机制：任一异常用旧正文 + 旧 meta 双恢复，再抛
+        let htmlBack = false, metaBack = false;
+        try { atomicWrite(docPath(id), oldHtml); htmlBack = true; } catch {}
+        try { updateMeta(root, id, () => oldMeta); metaBack = true; } catch {}
+        if (htmlBack && metaBack) { try { commitTx(root, txId); } catch {} }
+        throw e2;
+      }
+      try {
+        const stale = dropSupersededTx(root, id);
+        if (stale) console.error(`[tx] 同文档过期事务记录已清理 ${stale} 条：${id}（onboarding）`);
+      } catch {}
+      return { status: 200, body: { ok: true } };
+    });
+  } catch (e) {
+    if (e instanceof LockHeld) return { status: 409, body: { ok: false, retry: true, error: '该文档正在被另一保存/回滚/复制处理，请稍后重试' } };
+    throw e;
+  } finally {
+    try { rootLock.release(root); } catch {}
+  }
+  return out;
+}
+function onboardingPage(state) {
+  const ob = state.ob || null;
+  const finished = !!(ob && ob.finished);
+  const skipped = new Set((ob && Array.isArray(ob.skipped)) ? ob.skipped : []);
+  const nextStep = finished ? '' : (ob && ob.next) || '0.1';
+  const cur = OB_STEPS.includes(nextStep) ? nextStep : '0.1';
+  const curIdx = OB_STEPS.indexOf(cur);
+  const badge = (st) => st === 'done' ? '<span class="badge ok">已确认</span>'
+    : st === 'skip' ? '<span class="badge mute">已跳过</span>'
+    : st === 'cur' ? '<span class="badge warn">进行中</span>' : '<span class="badge mute">待进行</span>';
+  const rail = `<ol class="ob-rail" data-ob-rail>${OB_STEPS.map((k, i) => {
+    const st = finished ? 'done' : i < curIdx ? (skipped.has(k) ? 'skip' : 'done') : i === curIdx ? 'cur' : 'pending';
+    return `<li${st === 'cur' ? ' class="ob-cur"' : ''}><span class="ob-idx">${k}</span>${escHtml(OB_LABELS[k])}${badge(st)}</li>`;
+  }).join('')}</ol>`;
+  const docId = state.docId || '';
+  const field = (label, name, ph, tag = 'input', rows = 3) => tag === 'textarea'
+    ? `<label class="ob-field"><span>${label}</span><textarea name="${name}" rows="${rows}" placeholder="${escAttr(ph)}"></textarea></label>`
+    : `<label class="ob-field"><span>${label}</span><input name="${name}" placeholder="${escAttr(ph)}"></label>`;
+  let formInner = '';
+  if (cur === '0.1') {
+    const opts = docIdsOnDisk().filter((d) => d !== docId)
+      .map((d) => `<option value="${escAttr(d)}">${escHtml(d)}</option>`).join('');
+    formInner = field('姓名', 'name', '你的名字') + field('联系方式', 'contact', '电话 / 邮箱（可留空）') +
+      field('求职意向', 'intent', '想投什么方向（可留空）') +
+      (opts ? `<label class="ob-field"><span>从已有简历预填（可选：只补缺失项，已填字段不会被覆盖）</span><select name="prefillFrom"><option value="">不预填</option>${opts}</select></label>` : '');
+  } else if (cur === '0.2') {
+    formInner = field('个人总结', 'summary', '几句话说清你是谁、想去哪里（可留空跳过）', 'textarea', 4);
+  } else if (cur === '0.3') {
+    formInner = field('经历（每段一行：名称 | 职位 | 时间，随后行以 - 写要点）', 'workText', '合成公司 | 工程师 | 2024.01 - 2025.01', 'textarea', 6) +
+      field('项目经历（同上格式，可留空）', 'projectsText', '项目 | 角色 | 时间', 'textarea', 3);
+  } else if (cur === '0.4') {
+    formInner = `<p class="ob-note">STAR 逐条引导与事实层录入（事实、条件、个人贡献、来源，可跳过）由确认卡片流承接；本页可先跳过，之后在编辑器中继续。</p>`;
+  } else if (cur === '0.5') {
+    formInner = field('技能（每行一条）', 'skillsText', '技能一', 'textarea', 4) +
+      field('教育经历（名称 | 专业 | 时间）', 'eduText', '学校 | 专业 | 时间', 'textarea', 3);
+  } else if (cur === '0.6') {
+    formInner = `<p class="ob-note">照片完全可选；选择照片在确认卡片流中完成（前端卡），本页可直接跳过。</p>`;
+  } else if (cur === '0.7') {
+    formInner = `<p class="ob-note">预览与微调复用编辑器${docId ? `：<a href="/edit?id=${escAttr(docId)}">打开编辑器</a>` : '（先完成基础信息步）'}，改完回来继续。</p>`;
+  } else if (cur === '0.8') {
+    formInner = `<p class="ob-note">确认完成后，产出文档与手建文档完全同权，走既有导出链路。</p>`;
+  }
+  const hidden = `<input type="hidden" name="step" value="${escAttr(cur)}">${docId ? `<input type="hidden" name="docId" value="${escAttr(docId)}">` : ''}`;
+  const actions = cur === '0.8'
+    ? `<button type="submit">完成引导</button>`
+    : `<button type="submit">确认并下一步</button><button type="submit" name="skip" value="1">跳过这步</button>`;
+  const form = finished
+    ? `<div class="ob-card"><div class="ob-done-title">引导完成</div><p class="ob-note">文档与手建文档完全同权，可继续编辑与导出。</p><p><a href="/edit?id=${escAttr(docId)}">打开编辑器</a> · <a href="/export?id=${escAttr(docId)}">导出 PDF</a></p></div>`
+    : `<form method="post" action="/onboarding/step" class="ob-form">${hidden}${formInner}<div class="ob-actions">${actions}<a href="/" title="已确认内容已存入文档，随时回来继续">暂存退出</a></div></form>`;
+  const banner = docId
+    ? `<p class="ob-note">已恢复未完成的引导${ob && ob.last ? `（最近确认 ${escHtml(ob.last)}）` : ''}，继续即可。</p>`
+    : `<p class="ob-note">八步都是可跳过的组织方式：每步可跳过、可暂存续作；已有简历可预填、只补缺失项。没有文档前不会产生任何文件。</p>`;
+  const illust = curIdx === 0 || finished ? HERO_SVG : OB_PAGE_SVG;
+  return page('引导建档', `
+<h1>引导建档</h1>
+<div class="ob-shell" data-ob data-ob-doc="${escAttr(docId)}" data-ob-next="${escAttr(finished ? '' : cur)}">
+  <div class="ob-illust">${illust}<p>${escHtml(OB_COPY[cur] || '')}</p></div>
+  <div>
+    ${rail}
+    ${banner}
+    ${form}
+  </div>
+</div>
+<style>
+.ob-shell{display:grid;grid-template-columns:minmax(180px,280px) minmax(0,1fr);gap:var(--space-6);align-items:start;margin-top:var(--space-2)}
+.ob-illust svg{width:100%;max-width:240px;height:auto;display:block;margin:0 auto}
+.ob-illust p{color:var(--muted);font-size:13px;text-align:center;margin:var(--space-2) 0 0}
+.ob-rail{list-style:none;margin:0 0 var(--space-4);padding:0;display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.ob-rail li{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:999px;padding:3px 10px;font-size:12px;color:var(--muted)}
+.ob-rail li.ob-cur{border-color:var(--foreground);color:var(--foreground);font-weight:600}
+.ob-idx{font-weight:700;font-family:var(--font-mono)}
+.ob-form .ob-field{display:block;margin:0 0 var(--space-3)}
+.ob-form .ob-field>span{display:block;font-size:13px;color:var(--muted);margin-bottom:4px}
+.ob-form input,.ob-form textarea,.ob-form select{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius);font:inherit;font-size:13px;background:var(--card);color:var(--foreground)}
+.ob-note{font-size:13px;color:var(--muted);margin:0 0 var(--space-3)}
+.ob-actions{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;margin-top:var(--space-4)}
+.ob-card{border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--space-4);background:var(--card-2)}
+/* 完成卡标题走 h2 二级档的视觉规格但不占 h2 语义位：E1 钉「全站唯一 h2 在损坏页」，
+   新增 h2 须先归档 DESIGN.md 档位表（本卡不扩档），故用样式档实现同一层级。 */
+.ob-done-title{font-size:16px;font-weight:700;margin:0 0 var(--space-2)}
+@media (max-width:860px){.ob-shell{grid-template-columns:1fr}}
+</style>`);
+}
+
 async function handler(req, res) {
   const url = new URL(req.url, 'http://localhost');
   const id = url.searchParams.get('id') || 'linghaoxiang';
@@ -2457,6 +2743,145 @@ async function handler(req, res) {
       // 新建即登记样式来源与状态维度（meta 唯一写入者 updateMeta）：theme/styleHash/typo/schemaVersion + kind/flow/archivedAt
       updateMeta(root, newId, (m) => ({ ...(m || {}), ...themeRegistration('classic'), kind: 'master', flow: 'draft', archivedAt: null }));
       return redirect(`/edit?id=${newId}`);
+    }
+    // ===== S5 引导建档向导（设计：dev-docs/2026-11-02-s5-design.md）=====
+    // GET 页壳：无 docId = 新会话；带 docId = 暂存续作（渲染进度 + 当前步表单）。/onboarding/guided 为 roadmap 原文别名。
+    if (req.method === 'GET' && (url.pathname === '/onboarding' || url.pathname === '/onboarding/guided')) {
+      const qid = url.searchParams.get('docId') || '';
+      if (!qid) return send(200, onboardingPage({ docId: '', ob: null }));
+      if (!VALID_ID.test(qid)) return send(400, 'invalid docId', 'text/plain');
+      if (!fs.existsSync(docPath(qid))) return send(404, 'doc not found', 'text/plain');
+      const qm = loadMeta()[qid] || null;
+      if (!qm || !qm.onboarding || typeof qm.onboarding !== 'object') return send(409, '该文档不是引导文档（无向导进度）', 'text/plain');
+      return send(200, onboardingPage({ docId: qid, ob: qm.onboarding }));
+    }
+    if (req.method === 'POST' && url.pathname === '/onboarding/step') {
+      let body;
+      try { body = await readBodyAuto(req); } catch { return sendJson(400, { ok: false, error: '请求体解析失败' }); }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return sendJson(400, { ok: false, error: '请求体应为对象' });
+      const step = String(body.step || '');
+      const obIdx = OB_STEPS.indexOf(step);
+      if (obIdx < 0) return sendJson(400, { ok: false, error: `未知步骤：${step || '(空)'}（合法 0.1–0.8）` });
+      const p = (body.payload && typeof body.payload === 'object' && !Array.isArray(body.payload)) ? body.payload : body;
+      // 表单（零 JS 页壳）行式简表 → 结构化载荷（JSON 调用方直接给数组）
+      if (!Array.isArray(p.work) && p.workText) p.work = obParseEntriesText(p.workText);
+      if (!Array.isArray(p.projects) && p.projectsText) p.projects = obParseEntriesText(p.projectsText);
+      if (!Array.isArray(p.edu) && p.eduText) p.edu = obParseEntriesText(p.eduText);
+      if (!p.skills && p.skillsText) p.skills = String(p.skillsText);
+      const skipFlag = body.skip === true || body.skip === '1' || body.skip === 'true';
+      // docId 闸门（VALID_ID 全局口径；错误体 {ok,error} 与全站一致）
+      let docId = null, obRec = null;
+      if (body.docId != null && String(body.docId) !== '') {
+        docId = String(body.docId);
+        if (!VALID_ID.test(docId)) return sendJson(400, { ok: false, error: 'invalid docId' });
+        if (!fs.existsSync(docPath(docId))) return sendJson(404, { ok: false, error: 'doc not found' });
+        const dm = loadMeta()[docId] || null;
+        obRec = dm && dm.onboarding && typeof dm.onboarding === 'object' ? dm.onboarding : null;
+        if (!obRec) return sendJson(409, { ok: false, error: '该文档不是引导文档，不能按向导步进（请直接在编辑器中修改）' });
+        if (obRec.finished) return sendJson(409, { ok: false, error: '该文档已完成引导（后续修改请直接在编辑器中进行）' });
+        const lastIdx = obRec.last ? OB_STEPS.indexOf(obRec.last) : -1;
+        if (lastIdx >= 0 && obIdx < lastIdx) {
+          return sendJson(409, { ok: false, error: `步骤 ${step} 已越过当前进度（${obRec.last} 已确认，不能回退；请直接在编辑器中修改）` });
+        }
+      }
+      // 预填提取（纯确定性；带 prefillFrom 才提取）
+      let prefill = null, pfUsed = '';
+      if (body.prefillFrom != null && String(body.prefillFrom) !== '') {
+        pfUsed = String(body.prefillFrom);
+        if (!VALID_ID.test(pfUsed)) return sendJson(400, { ok: false, error: 'invalid prefillFrom' });
+        if (!fs.existsSync(docPath(pfUsed))) return sendJson(404, { ok: false, error: `预填来源文档不存在：${pfUsed}` });
+        prefill = obExtractPrefill(fs.readFileSync(docPath(pfUsed), 'utf8'));
+      }
+      const merged = obMergeStep(step, p, prefill, skipFlag);
+      const nextStep = OB_STEPS[obIdx + 1] || null;
+      // 照片（0.6）：有文档才承载；存用户数据目录 photos/（启动时自写 .gitignore 排除 Git）；注入模板属前端卡
+      let photoSaved = null;
+      if (!skipFlag && step === '0.6' && docId && p.photo) {
+        const pm = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=\s]+)$/.exec(String(p.photo));
+        if (!pm) return sendJson(400, { ok: false, error: '照片格式不支持（仅 png/jpeg/webp 的 data URL）' });
+        let buf = null;
+        try { buf = Buffer.from(pm[2].replace(/\s+/g, ''), 'base64'); } catch {}
+        if (!buf || !buf.length) return sendJson(400, { ok: false, error: '照片数据无法解码' });
+        if (buf.length > OB_PHOTO_MAX) return sendJson(400, { ok: false, error: '照片过大（上限 5MB）' });
+        const fname = `${docId}.${OB_PHOTO_EXT[pm[1]]}`;
+        try { fs.writeFileSync(path.join(root, 'photos', fname), buf, { mode: 0o600 }); }
+        catch (e) { return sendJson(500, { ok: false, error: '照片写入失败：' + String((e && e.message) || e) }); }
+        photoSaved = { file: 'photos/' + fname, bytes: buf.length, type: pm[1] };
+      }
+      // 进度记录：skipped 合并（显式 skip / 空载荷的步；向前跳步时夹在中间的步）
+      const lastIdxPrev = obRec && obRec.last ? OB_STEPS.indexOf(obRec.last) : -1;
+      const skipped = new Set(obRec && Array.isArray(obRec.skipped) ? obRec.skipped : []);
+      if (skipFlag || (!merged.hasContent && step !== '0.8')) skipped.add(step);
+      else if (docId) { for (let k = lastIdxPrev + 1; k < obIdx; k++) skipped.add(OB_STEPS[k]); }
+      const nextRec = { last: step, next: nextStep, skipped: [...skipped].sort() };
+      if (merged.facts) nextRec.facts = { at: new Date().toISOString(), items: merged.facts };
+      else if (obRec && obRec.facts) nextRec.facts = obRec.facts;
+      if (photoSaved) nextRec.photo = photoSaved;
+      else if (obRec && obRec.photo) nextRec.photo = obRec.photo;
+      if (pfUsed) nextRec.prefillFrom = pfUsed;
+      else if (obRec && obRec.prefillFrom) nextRec.prefillFrom = obRec.prefillFrom;
+      if (step === '0.8') { nextRec.finished = true; nextRec.next = null; }
+      // —— 无文档会话：合并预填后仍无内容 → 不建档（空输入不产出脏文档；首步确认前不建文档）——
+      if (!docId) {
+        if (!merged.hasContent) return sendJson(200, { ok: true, step, docId: null, created: false, nextStep });
+        if (step === '0.6') return sendJson(400, { ok: false, error: '照片需要先有文档承载：请先完成基础信息步（0.1）' });
+        // 建档：与 /new 同款（assembleTemplate + themeRegistration + kind=master/flow=draft + 同 id 分配方案），
+        // 差异仅两处：占位符填本步内容；normalizeZids + zoneSync 在建档时即做区域初绑（内容即刻可被区域功能识别）。
+        const header = merged.header || { name: '', contact: '', intent: '' };
+        let i = 0, newId;
+        do { newId = i === 0 ? 'doc' : 'doc-' + i; i++; } while (fs.existsSync(docPath(newId)));
+        const newHtml0 = assembleTemplate('classic')
+          .replaceAll('{{NAME}}', () => escHtml(header.name || '未命名'))
+          .replaceAll('{{CONTACT}}', () => escHtml(header.contact || ''))
+          .replaceAll('{{INTENT}}', () => escHtml(header.intent || ''))
+          .replaceAll('{{SUMMARY}}', () => merged.sections['个人总结'] ?? '点击开始编辑…')
+          .replaceAll('{{SKILLS}}', () => merged.sections['专业技能'] ?? '<p>技能…</p>')
+          .replaceAll('{{WORK}}', () => merged.sections['工作经历'] ?? '')
+          .replaceAll('{{PROJECTS}}', () => merged.sections['项目经历'] ?? '')
+          .replaceAll('{{EDU}}', () => merged.sections['教育经历'] ?? '')
+          .replaceAll('{{DOC_ID}}', () => newId);
+        const newHtml = normalizeZids(stripInjections(newHtml0));
+        fs.writeFileSync(docPath(newId), newHtml);
+        updateMeta(root, newId, (m) => {
+          const base = { ...(m || {}), ...themeRegistration('classic'), kind: 'master', flow: 'draft', archivedAt: null, onboarding: nextRec };
+          Object.assign(base, zoneSync(newHtml, base));
+          return base;
+        });
+        const resp = { ok: true, step, docId: newId, created: true, nextStep };
+        if (merged.prefilled.length) resp.prefilled = merged.prefilled;
+        return sendJson(200, resp);
+      }
+      // —— 既有文档：本步有内容 → 区域写档（/save 语义，进度与正文同事务）；无内容/skip → 只推进度 ——
+      let html = fs.readFileSync(docPath(docId), 'utf8');
+      let wrote = false;
+      if (!skipFlag) {
+        if (merged.header) {
+          const nh = obReplaceHeader(html, obHeaderHtml(merged.header));
+          if (nh != null) { html = nh; wrote = true; }
+        }
+        for (const [title, rawInner] of Object.entries(merged.sections)) {
+          const nh = obReplaceSection(html, title, rawInner);
+          if (nh != null) { html = nh; wrote = true; }
+        }
+      }
+      const resp = { ok: true, step, docId, created: false, nextStep };
+      if (merged.prefilled.length) resp.prefilled = merged.prefilled;
+      if (step === '0.8') resp.editUrl = '/edit?id=' + docId;
+      if (wrote) {
+        const w = await obWriteDoc(docId, html, nextRec);
+        if (w.status !== 200) return sendJson(w.status, w.body);
+      } else {
+        // 进度推进（无正文变化 → 不动正文、不 bump rev）：与写路径同锁口径
+        try {
+          await withDocLock(root, docId, async () => {
+            updateMeta(root, docId, (m) => ({ ...(m || {}), onboarding: nextRec }));
+          });
+        } catch (e) {
+          if (e instanceof LockHeld) return sendJson(409, { ok: false, retry: true, error: '该文档正在被另一操作处理，请稍后重试' });
+          throw e;
+        }
+      }
+      return sendJson(200, resp);
     }
     if (req.method === 'POST' && url.pathname === '/duplicate') {
       const to = url.searchParams.get('to') || '';
