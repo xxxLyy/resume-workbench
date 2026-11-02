@@ -5131,6 +5131,29 @@ for (const t of ['身份证 130105199001011234', '单号 10012345678932', '日�
 console.log('✅ E3 导出文本层自检第三项（电话可提取）+ 电话期望正则行为两面');
 EOF
 
+# —— B1：双 accent 双区规则定案钉值（DESIGN.md §2，2026-11-02 用户拍板）——
+# 逐字钉值（UI-2 模式）：应用页主行动 --accent 为近黑、编辑器 --ed-accent 为暖橙，各自钉死在
+# 登记行（server.mjs /*A-VARS*/ 单行 / editor-shell.js body.ed-on token 行）内，漂移即红。
+# 大小写按现行字面（#18181b 小写 / #C2410C 大写）；改色值须与 DESIGN.md §2 同提交。
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const assert = (c, m) => { if (!c) { console.error('❌ B1 ' + m); process.exit(1); } };
+const srv = readFileSync('./server.mjs', 'utf8');
+const ed = readFileSync('./editor-shell.js', 'utf8');
+// ① 应用页（server.mjs）：--accent 钉在 /*A-VARS*/ token 行内，近黑 #18181b；全文件仅此一处字面声明
+const av = srv.split('\n').find((l) => l.includes('/*A-VARS*/'));
+assert(av, 'server.mjs 应有 /*A-VARS*/ token 行');
+assert(av.includes('--accent:#18181b'),
+  '应用页 --accent 应钉近黑 #18181b（DESIGN.md §2 双区规则），实际: ' + (av.match(/--accent:[^;]*/) || [])[0]);
+assert((srv.match(/--accent:\s*#/g) || []).length === 1, 'server.mjs 应只有一处 --accent: 字面色声明（其余一律 var() 引用）');
+// ② 编辑器（editor-shell.js）：--ed-accent 钉在 body.ed-on token 行内，暖橙 #C2410C
+const token = ed.split('\n').find((l) => l.includes('body.ed-on{--ed-'));
+assert(token, 'editor-shell.js 应有 body.ed-on{--ed-…} token 行');
+assert(token.includes('--ed-accent:#C2410C'),
+  '编辑器 --ed-accent 应钉暖橙 #C2410C（DESIGN.md §2 双区规则），实际: ' + (token.match(/--ed-accent:[^;]*/) || [])[0]);
+console.log('✅ B1 双 accent 双区规则（应用页近黑 / 编辑器暖橙）逐字钉值');
+EOF
+
 # ===== V1/V2：可靠性加固「验证基础包」的本轮回归（无真实模型 / 无真实服务 / 无私有数据）=====
 # 明确接入现有测试入口：这些用例随 test:all 一起跑，不再靠人工单独执行。
 node test-fixtures/reliability/test-harness.mjs exit

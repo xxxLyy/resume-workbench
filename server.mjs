@@ -1177,6 +1177,7 @@ function page(title, inner, active = '', wide = false) {
 /* 浅色克制设计系统（2026-10-21 UI 重设计，设计文档 dev-docs/2026-10-21-ui-redesign-design.md）：
    主行动用近黑不用蓝；彩色只承载状态；零阴影靠 1px 边框 + 背景差表达层级。
    旧名（--bg/--panel/--ink/...）保留为别名，既有 CSS 几百处零改动即生效。 */
+/* B1 双区规则已定案（DESIGN.md §2，2026-11-02 用户拍板）：应用页主行动 --accent 为近黑；编辑器 --ed-accent 为暖橙（editor-shell.js），两区不互通；字面值已钉 test-structure.sh B1 断言。 */
 /*A-VARS*/:root{--background:#ffffff;--foreground:#0a0a0a;--muted:#737373;--card:#ffffff;--card-2:#fafafa;--border:#e5e5e5;--accent:#18181b;--accent-fg:#ffffff;--success:#15803D;--success-bg:#f0fdf4;--warning:#A25711;--warning-bg:#fffbeb;--danger:#B91C1C;--danger-bg:#fef2f2;--radius:4px;--radius-lg:6px;--shadow:none;--font:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;--font-mono:ui-monospace,Menlo,monospace;--bg:var(--background);--panel:var(--card);--ink:var(--foreground);--fg:var(--foreground);--mut:var(--muted);--line:var(--border);--accent-ink:var(--accent-fg);--accent-soft:var(--card-2);--ok:var(--success);--ok-soft:var(--success-bg);--warn:var(--warning);--warn-soft:var(--warning-bg);--err:var(--danger);--err-soft:var(--danger-bg);--ai:var(--foreground);--ai-soft:var(--card-2);--serif:var(--font);--sans:var(--font);--shadow-up:0 10px 24px rgba(0,0,0,.10);--space-hair:2px;--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-6:24px}
 *{box-sizing:border-box}
 /* 批次B：body 不再限宽（max-width:1100px 会把「侧栏+内容」压扁）——

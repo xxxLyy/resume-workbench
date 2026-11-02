@@ -34,6 +34,7 @@
   应用页页题（`.mainarea>h1`）、hero 标题（`.hero-title`）、品牌（`.topnav .brand`）**都渲染为无衬线**，这是有意的。
 - 真衬线只存在于编辑器：`--ed-serif`（Songti / Noto Serif CJK 栈）给 `.ed-label` 与编辑器内标题类。
 - 若将来要让应用页标题走真衬线 = 换视觉身份，属于 B1 决策，须用户正式拍板，不得顺手改。
+- B1 已定案（2026-11-02，用户拍板）：双 accent 双区规则即本表口径——应用页主行动 `--accent` 近黑 `#18181b`、编辑器 `--ed-accent` 暖橙 `#C2410C`，不换族不混用；两值已逐字钉进 `test-structure.sh` B1 断言。
 
 ---
 
