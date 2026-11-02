@@ -76,6 +76,9 @@ node ./test-fixtures/reliability/test-lease.mjs
 # ===== 渲染信任边界 + 产物成对发布（AUD-05/AUD-07 + 回滚不完整时的恢复源保护）=====
 node ./test-fixtures/reliability/test-render-safe.mjs
 
+# ===== B3T：themes 旧蓝清除（用户批准解冻）：#409eff/#4b5563/#1f2937 家族与冷色黑名单 0 命中 + print 兜底/注入层覆盖锚点仍在 =====
+node ./test-fixtures/reliability/test-themes-blue-purge.mjs
+
 node --input-type=module << 'EOF'
 import { structureText } from './structure.mjs';
 
@@ -2083,12 +2086,25 @@ console.log('✅ S2-B1 server.mjs 设计变量统一 + 路由集合不变');
 EOF
 
 # —— S2-A：注入层纪律（编辑器外壳注入 CSS 的边界护栏；S2 全程生效）——
-echo "── S2-A: 注入层纪律（仅屏幕 / 不声明正文文字属性 / !important 不增）+ print 仍在 + themes 零改动 ──"
+echo "── S2-A: 注入层纪律（仅屏幕 / 不声明正文文字属性 / !important 不增）+ print 仍在 + themes 基线比对（B3T 清除版白名单）──"
 # RELIABILITY_BASELINE_BEGIN
 S2_BASE=5208e44
+# B3T（2026-11-03，用户批准解冻 themes/）：基线之上允许且仅允许一次已批准的旧蓝清除改动——
+# working tree 相对基线的 themes 差异，其内容 sha1 必须恰为 B3T 清除版（下方钉定值）；回退到基线
+# 原版（旧蓝复活）也会被 test-themes-blue-purge 夹具判红。其余任何字节漂移一律红。
+S2_B3T_SHA1=e6efa7fa09f10e658ba73d62d4866aa1e24f5c1f
 # 浅克隆（--depth 1）里没有这个 revision → 跳过比对（不能误报「themes/ 被改动」）
 if git cat-file -e "$S2_BASE^{commit}" 2>/dev/null; then
-  git diff --quiet "$S2_BASE" -- themes/ || { echo "❌ themes/ 被改动（S2 全程禁止）"; git diff --stat "$S2_BASE" -- themes/; exit 1; }
+  if git diff --quiet "$S2_BASE" -- themes/; then :; else
+    S2_THEMES_NOW=$(shasum -a 1 themes/resume-classic.css | awk '{print $1}')
+    if [ "$S2_THEMES_NOW" = "$S2_B3T_SHA1" ]; then
+      echo "⏭  S2 冻结件比对：themes/ 差异 = B3T 已批准的旧蓝清除版（sha1 白名单命中）"
+    else
+      echo "❌ themes/ 被改动且不是 B3T 清除版（基线 $S2_BASE；白名单 sha1 $S2_B3T_SHA1，实测 $S2_THEMES_NOW）"
+      git diff --stat "$S2_BASE" -- themes/
+      exit 1
+    fi
+  fi
 else
   # 严格验收下冻结基线是必需项：缺基线必须失败，不能用一个更近的提交让差异消失，也不能跳过比对。
   if [ "${RESUME_TEST_STRICT:-0}" = 1 ]; then
