@@ -1078,3 +1078,8 @@ Flash 23 条要点见各提交信息与 `b47-report` 工作流报告；收口时
 - B1 双 accent 文案定案、B3 themes 解冻（含 B12 bodyHash）——等用户拍板。
 - 全站应用页 CSP 补齐（本轮新登记）。
 - 游离进程清理（等确认）。
+
+### 7. 收口后追加（2026-11-02，用户确认「按顺序做完」）
+
+- **游离进程清理**：实测只剩 3 个（PID 52431/55506/60732，9 天前夹具孤儿，RESUME_ROOT 均为 /T 下隔离临时根 ev7-*/xss-restore-*），逐个核对归属后 kill；此前登记的「4 个无 RESUME_ROOT 实例（29270/50544/50867/60004）」已不存在，且当时判断有误——50544/50867/60004 正是这三个孤儿且带隔离 RESUME_ROOT。7766 不受影响。
+- **全站应用页默认 CSP**（`c1e03bc`）：send() 对 text/html 统一下发，显式策略路由（/edit、/snapshot/view）保持各自口径。锁死 connect/form-action/img（不放 https:）/object/frame-ancestors/base-uri，frame-src 'self' 供 /export PDF 预览。**保留 script-src 'unsafe-inline'**：应用页 51 处内联事件属性 + 28 个内联脚本块，nonce 挡不住内联事件属性；**后续项：重构全部内联 handler 为委托监听后去掉 'unsafe-inline'**（多小时、全站按钮回归）。四套件 623✅；7766 重启后真实浏览器 8 页零 CSP 违规零错误。
