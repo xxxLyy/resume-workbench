@@ -566,18 +566,30 @@ function applyChangesResult(cur, ops, ctx = {}) {
   return { generated: g.kept.length, todos: ops.todos.length };
 }
 
-// ===== S4b-A：changes 通道五阶段管线（kind=changes 真拆分 + 阶段上报）=====
-// ① analyze（JD 要求提取，独立 chat）→ ② locate（要求→zid 区域定位，纯函数）→ ③ rewrite（改写，本卡单批）
-// → ④ validate（parseJobOps+factGuard+既有守卫）→ ⑤ assemble（applyChangesResult 落账，语义不变）。
+// ===== S4b-A：changes 通道五阶段管线（kind=changes 真拆分 + 阶段上报；P2 起分批改写）=====
+// ① analyze（JD 要求提取，独立 chat）→ ② locate（要求→zid 区域定位，纯函数）→ ③ rewrite（分批改写，见下）
+// → ④ validate（parseJobOps+factGuard+空间预算+既有守卫）→ ⑤ assemble（applyChangesResult 落账，语义不变）。
 // 阶段上报（与 S4b-B 三值并存）：genTasks.changes.stages = [{stage, startedAt, ms?}] 只增不改的明细——
 // chat 调用点仍置 calling / 返回后置 parsing（粗粒度语义零变化）；chat 阶段开条目于调用前（等待中即可见）、
 // 返回后补 ms；纯函数阶段一次写入含真实起止；assemble 是终态前最后一步，只记 startedAt——落账即 done，
 // patchGenTask 守卫正确拒绝事后的 ms 补写（合同 ms? 可缺省）。completeGenResult 以 {...gt} 展开收口，
 // stages 原样保留，gen-result.mjs 零改动。
+// 分批（P2）：rewrite 按批次执行（规划见 planBatches，每批 ≤3 个目标 zid、按 meta.zones 区域分桶；
+// 无 zones/零命中回退 P1 单批形状）。并发取舍（卡片允许的简化）：批次【顺序】执行、每批独立 chat——
+// /job/gen-start 为整任务借一个 AI 槽并透传租约（RES-02 合同），批间并发要么破坏「一请求一槽」的
+// 容量记账、要么要求任务提前占 N 槽饿死共享池；顺序实现任务占用恒为 1 槽（「批内并发不超池余量」
+// 平凡成立），进度/用量/失败记账天然无竞争。分批收益在本卡体现为失败隔离+每批预算，而非墙钟时间。
+// 批次进度：genTasks.changes.batches = {total, done, failed:[{batch(0 基), error}]} 随 /job/changes 暴露，
+// 每批完成后即时落账（轮询实时可见）；不显示百分比（诚实进度纪律——只暴露真实计数）。
+// 每批校验：parseJobOps（内含 factGuard）+ 空间预算（口径见 batchBudgetError）；失败批登记
+// batches.failed、不进 assemble（单批失败不污染成功批，登记即「待重试」——重试=用户重新生成，本卡
+// 不新增端点）；成功批合并（summary 拼接/changes/todos 串联）后一次 assemble，applyChangesResult
+// 语义逐字不变。终态语义（自定）：只要有一批成功 → 任务 done（failed[] 即可见的失败登记，不发明
+// partial 新状态污染面板/状态机）；全部批失败 → 沿用 P1 既有 error 文案显式失败。
 // 失败合同：analyze 失败（调用异常/输出不可解析）显式失败不降级——连要求清单都产不出的端点，
-// 大概率同样产不出修改操作 JSON，早失败比慢失败诚实；locate 无命中不算失败（JD 无对应经历是常态）；
-// rewrite/validate 沿用既有文案与守卫，产物语义与重构前逐字一致（批次隔离/超时/迟到落账全在既有链路）。
-// 多次调用的 usage：按字段对已知部分求和（全未知则该字段 null）——诚实下界，不编 0。
+// 大概率同样产不出修改操作 JSON，早失败比慢失败诚实；locate 无命中不算失败（JD 无对应经历是常态）。
+// 多次调用的 usage：analyze + 全部批次（含失败批——服务商调用已发生）按字段对已知部分求和
+//（全未知则该字段 null）——诚实下界，不编 0。
 function mergeGenUsage(a, b) {
   if (!a) return b || null;
   if (!b) return a || null;
@@ -637,8 +649,8 @@ function locateReqs(reqs, paras) {
   });
 }
 
-// ③ rewrite 的定位块（仅全文通道注入）：把「要求→段落」对应关系交给改写，before 才有逐字锚定依据；
-// 局部重生成的 docText 已带 zid 标注（S4a-T8 合同：标注数=区域段落数，断言钉死），不再重复注入。
+// ③ rewrite 的定位块（仅全文回退批注入）：把「要求→段落」对应关系交给改写，before 才有逐字锚定依据；
+// 区域批不带此块——它自己就是按定位结果切出来的（批 prompt 另带【本批对应 JD 要求】）。
 function locateBlock(located, paras) {
   const byZid = new Map(paras.map((p) => [p.zid, p]));
   return '【要求→段落定位（供改写锚定）】\n' + located.map((l) => {
@@ -646,6 +658,55 @@ function locateBlock(located, paras) {
       .map((p) => `（zid：${p.zid}）${p.text}`).join('；');
     return '· ' + l.req + (ps ? ' → ' + ps : ' → （正文未见直接对应段落）');
   }).join('\n');
+}
+
+// ===== P2：分批改写 =====
+// 批次规划（纯函数）：locate 命中的目标 zid 按 meta.zones 归属分桶（区域唯一真源，zoneSync 维护），
+// 每桶按文档序切成 ≤GEN_BATCH_ZIDS 个 zid 的批；无 zones 数据（区域维度不存在，无从分组）或零命中
+// → 回退单批：全文任务（scope=all）回退批保持 P1 全文 prompt 形状，zone:<key> 局部任务回退批保持
+// P1 整区域形状（它本身就是「批」粒度，S4a-T8 断言钉死其 prompt 形状）。返回 [{zoneKey, paras}]：
+// zoneKey=null 表示全文回退批（paras=null，预算基线=全文段落）；其余批 paras 为该批目标段落（预算基线）。
+const GEN_BATCH_ZIDS = 3;   // 每批最多目标 zid 数（默认口径，卡片指定）
+function planBatches(located, parasStart, m0, scope, html) {
+  const paraByZid = new Map(parasStart.map((p) => [p.zid, p]));
+  if (typeof scope === 'string' && scope.startsWith('zone:')) {
+    const zk = scope.slice(5);
+    return [{ zoneKey: zk, paras: zoneParas(html, m0, zk) }];
+  }
+  const targets = [];
+  for (const l of located) for (const z of l.zids) if (paraByZid.has(z) && !targets.includes(z)) targets.push(z);
+  const zones = m0.zones || {};
+  if (!targets.length || !Object.keys(zones).length) return [{ zoneKey: null, paras: null }];
+  const byZone = new Map();   // 迭代序=首次插入序=文档序（targets 已按文档序去重）
+  for (const z of targets) {
+    const zk = (zones[z] && zones[z].zone) || 'other';
+    if (!byZone.has(zk)) byZone.set(zk, []);
+    byZone.get(zk).push(z);
+  }
+  const batches = [];
+  for (const [zk, zids] of byZone) {
+    for (let i = 0; i < zids.length; i += GEN_BATCH_ZIDS) {
+      batches.push({ zoneKey: zk, paras: zids.slice(i, i + GEN_BATCH_ZIDS).map((z) => paraByZid.get(z)) });
+    }
+  }
+  return batches;
+}
+
+// 空间预算（P2，口径自定）：批内 replace/add 的改后文本总量（空白折叠后计长）不得超过
+// 该批目标段落原文总量 × 1.3 + 80 字符。理由：×1.3 容忍对齐 JD 的自然扩写（关键词补强、要点展开）；
+// +80 绝对余量保护短段落（10 字的段落 ×1.3 只多 3 字，任何有效改写都写不进去）。
+// hide/reorder 不占预算（不新增文本）。超预算 = 该批校验失败：登记 batches.failed（错误带数值），
+// 该批 ops 不进 assemble——分批的意义就是把超编批次隔离成可重试单元，而不是让全文一起膨胀。
+// 回退批同口径、以全文段落为基线——基线即全文，预算实际不构成约束（与 P1 行为等价）。
+function batchBudgetError(opsB, batch, parasStart) {
+  const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+  const used = (opsB.changes || [])
+    .filter((c) => c.kind === 'replace' || c.kind === 'add')
+    .reduce((n, c) => n + [...norm(c.after)].length, 0);
+  if (!used) return null;
+  const base = (batch.paras || parasStart).reduce((n, p) => n + [...norm(p.text)].length, 0);
+  const budget = Math.round(base * 1.3) + 80;
+  return used > budget ? `超出空间预算（改后 ${used} 字 > 基线 ${base} 字 ×1.3 + 80 = ${budget} 字）` : null;
 }
 
 // 五阶段管线本体。入参与旧 changes 分支一致（id/taskId/scope/租约），返回 finishGenTask 的对外结果。
@@ -672,27 +733,70 @@ async function runChangesPipeline(id, taskId, scope, held) {
     const tLocate = Date.now();
     const located = locateReqs(reqs, parasStart);
     stages.push({ stage: 'locate', startedAt: tLocate, ms: Date.now() - tLocate });
-    // —— ③ rewrite：改写（本卡单批：buildJobPrompt 既有合同 + 定位块仅全文通道注入）——
+    // —— ③ rewrite：分批改写（P2）——批次规划 → 顺序执行，每批独立 chat + 校验 + 进度落账
     const stRewrite = { stage: 'rewrite', startedAt: Date.now() };
     stages.push(stRewrite);
-    flush({ stage: 'calling' });
-    let docText, scopeInfo = null;
-    if (typeof scope === 'string' && scope.startsWith('zone:')) {
-      const zk = scope.slice(5);
-      scopeInfo = { zone: zk, zoneLabel: ZONE_LABELS[zk] || zk, digest: digestOf(html) };
-      docText = zoneParas(html, m0, zk).map((p) => `（zid：${p.zid}）${p.text}`).join('\n');
-    } else {
-      docText = docToText(html, { includeHidden: false });
+    const digest = digestOf(html);
+    const plan = planBatches(located, parasStart, m0, scope, html);
+    const batchState = { total: plan.length, done: 0, failed: [] };   // {total, done, failed:[{batch,error}]}
+    const snapBatches = () => ({ ...batchState, failed: [...batchState.failed] });
+    const reqsByZid = new Map();   // 要求→命中 zid 反向索引：区域批 prompt 带【本批对应 JD 要求】（analyze→locate→批 数据流）
+    for (const l of located) for (const z of l.zids) {
+      if (!reqsByZid.has(z)) reqsByZid.set(z, []);
+      reqsByZid.get(z).push(l.req);
     }
-    const p = buildJobPrompt({ docText, jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: confirmedMats, twoPage: true, brief: m0.job.brief || null, scope: scopeInfo, feedback: m0.job.feedback || null });   // S4a-T9：过往反馈进 prompt
-    if (!scopeInfo && located.length) p.user += '\n\n' + locateBlock(located, parasStart);
-    const metaR = {};
-    const raw = await chat(root, p.sys, p.user, { lease: held, meta: metaR });
+    let usageAll = metaA.usage ?? null;
+    const mergedSummary = [], mergedChanges = [], mergedTodos = [];
+    for (let bi = 0; bi < plan.length; bi++) {
+      const b = plan[bi];
+      const bScope = b.zoneKey === null ? null
+        : { zone: b.zoneKey, zoneLabel: ZONE_LABELS[b.zoneKey] || b.zoneKey, digest };
+      const bDocText = b.zoneKey === null
+        ? docToText(html, { includeHidden: false })
+        : b.paras.map((p) => `（zid：${p.zid}）${p.text}`).join('\n');
+      const pb = buildJobPrompt({ docText: bDocText, jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: confirmedMats, twoPage: true, brief: m0.job.brief || null, scope: bScope, feedback: m0.job.feedback || null });   // S4a-T9：过往反馈进 prompt
+      if (b.zoneKey !== null) {
+        const bReqs = [...new Set(b.paras.flatMap((p) => reqsByZid.get(p.zid) || []))];
+        if (bReqs.length) pb.user += '\n\n【本批对应 JD 要求】\n' + bReqs.map((r) => '· ' + r).join('\n');
+      } else if (located.length) {
+        pb.user += '\n\n' + locateBlock(located, parasStart);   // 全文回退批保持 P1 定位块注入
+      }
+      flush({ stage: 'calling', batches: snapBatches() });
+      const metaB = {};
+      let rawB;
+      try {
+        rawB = await chat(root, pb.sys, pb.user, { lease: held, meta: metaB });
+      } catch (e) {
+        batchState.failed.push({ batch: bi, error: '模型调用失败：' + (e.message || e) });   // 单批失败不污染其他批
+        stRewrite.ms = Date.now() - stRewrite.startedAt;
+        flush({ stage: 'parsing', usage: usageAll, batches: snapBatches() });
+        continue;
+      }
+      usageAll = mergeGenUsage(usageAll, metaB.usage ?? null);
+      // 每批校验（卡片：每批完成后 factGuard + 空间预算）：factGuard 在 parseJobOps 内；
+      // 失败批登记 batches.failed、不进 assemble；成功批累积，最终一次 assemble 落账。
+      const opsB = parseJobOps(rawB);
+      if (!opsB) {
+        batchState.failed.push({ batch: bi, error: '模型输出无法解析为修改操作' });
+      } else {
+        const budgetErr = batchBudgetError(opsB, b, parasStart);
+        if (budgetErr) batchState.failed.push({ batch: bi, error: budgetErr });
+        else {
+          mergedSummary.push(opsB.summary);
+          mergedChanges.push(...opsB.changes);
+          mergedTodos.push(...opsB.todos);
+          batchState.done++;
+        }
+      }
+      stRewrite.ms = Date.now() - stRewrite.startedAt;
+      flush({ stage: 'parsing', usage: usageAll, batches: snapBatches() });
+    }
     stRewrite.ms = Date.now() - stRewrite.startedAt;
-    flush({ stage: 'parsing', usage: mergeGenUsage(metaA.usage ?? null, metaR.usage ?? null) });
-    // —— ④ validate：parseJobOps（内含 factGuard 事实护栏）——坏输出在既有文案下显式失败
+    // —— ④ validate：合并成功批 + 终检（全部批失败 → 沿用 P1 既有文案显式失败）——
     const tValidate = Date.now();
-    const ops = parseJobOps(raw);
+    const ops = batchState.done
+      ? { summary: mergedSummary.filter(Boolean).join('；'), changes: mergedChanges, todos: mergedTodos }
+      : null;
     stages.push({ stage: 'validate', startedAt: tValidate, ms: Date.now() - tValidate });
     if (!ops) { flush({}); return finishGenTask(id, 'changes', taskId, null, '模型输出无法解析为修改操作，未应用任何修改'); }
     // —— ⑤ assemble：applyChangesResult 落账（语义不变；终态前最后一步，只记 startedAt）——

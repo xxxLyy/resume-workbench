@@ -31,6 +31,9 @@ node ./test-fixtures/reliability/test-gen-progress.mjs
 # ===== S4b-A 生成管线五阶段：kind=changes 真拆分（analyze→locate→rewrite→validate→assemble）+ stages 明细上报 =====
 node ./test-fixtures/reliability/test-gen-stages.mjs
 
+# ===== S4b-A P2 分批改写：按区域分批（≤3 zid/批）+ 每批 factGuard/空间预算 + batches 进度与失败隔离 =====
+node ./test-fixtures/reliability/test-gen-batches.mjs
+
 # ===== S5 引导向导服务端：步进 API/暂存续作/预填补缺（隔离根 + 桩 LLM；设计 dev-docs/2026-11-02-s5-design.md）=====
 node ./test-fixtures/reliability/test-onboarding-api.mjs
 
