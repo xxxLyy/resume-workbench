@@ -1083,3 +1083,22 @@ Flash 23 条要点见各提交信息与 `b47-report` 工作流报告；收口时
 
 - **游离进程清理**：实测只剩 3 个（PID 52431/55506/60732，9 天前夹具孤儿，RESUME_ROOT 均为 /T 下隔离临时根 ev7-*/xss-restore-*），逐个核对归属后 kill；此前登记的「4 个无 RESUME_ROOT 实例（29270/50544/50867/60004）」已不存在，且当时判断有误——50544/50867/60004 正是这三个孤儿且带隔离 RESUME_ROOT。7766 不受影响。
 - **全站应用页默认 CSP**（`c1e03bc`）：send() 对 text/html 统一下发，显式策略路由（/edit、/snapshot/view）保持各自口径。锁死 connect/form-action/img（不放 https:）/object/frame-ancestors/base-uri，frame-src 'self' 供 /export PDF 预览。**保留 script-src 'unsafe-inline'**：应用页 51 处内联事件属性 + 28 个内联脚本块，nonce 挡不住内联事件属性；**后续项：重构全部内联 handler 为委托监听后去掉 'unsafe-inline'**（多小时、全站按钮回归）。四套件 623✅；7766 重启后真实浏览器 8 页零 CSP 违规零错误。
+
+### 8. S4b-B 交付 + S4b-C 核实（2026-11-02，用户拍板 B→C→A 顺序）
+
+- **S4b-B「诚实最小进度」已交付**（设计 `dev-docs/2026-11-02-s4b-progress-design.md`，实施 `96f8e8f`）：
+  genTasks 增 stage/model/usage 渐进默认字段；stage 只写管线真实检查点（queued/calling/parsing，
+  patchGenTask 守卫写入，终态由 completeGenResult 收口）；llm.mjs chat/chatMsgs 增 meta 出参带 usage
+  （llm 边界归一 {prompt,completion,total}，缺记 null；返回值兼容零改动）；/job/changes 带 genTtlMs；
+  面板 running 态「已等待 m:ss · 阶段 · 模型名」（秒级 ticker 原位更新，不经 render——A9 纪律）+
+  接近上限提示，done 态真实用量或「服务商未返回」，取消文案「不会撤销服务商已发生的计费」，全程无百分比。
+  夹具 test-gen-progress（HTTP）/ test-gen-progress-ui（浏览器，撤实现阴性对照红）。四套件 626✅；
+  7766 重启至 96f8e8f，真实页面加载零错误（真实文档均为母版、无岗位草稿，面板进度行由隔离实例夹具覆盖）。
+  实施中修的坑：chat() 包装层只转发 {lease} 把 meta 出参丢掉（探针定位后补转发）。
+- **S4b-C「面试指南」核实为已交付**：S4a 的 S4B-3 段已实现 roadmap ③ 全部约束——按需生成
+  （gen-start kind=interview）、不阻塞导出（「不影响导出」折叠区、导出检查不依赖）、可停止
+  （gen-cancel + 取消按钮）、重试、stale 判定、链卡/通用追问卡片。本轮 S4b-B 的进度/用量/取消文案
+  同步覆盖 interview 通道。测试覆盖：test-gen-task.mjs（任务生命周期）+ 既有浏览器夹具。**无新代码**。
+- **S4b-A（五阶段分阶段管线 + 分批并行/重试）为唯一剩余项**：按推荐「择机」——动的是刚完成可靠性
+  加固的核心生成路径（3–4d 量级），建议与下次本来就要动管线的需求合并立项；诚实最小进度已把
+  等待体验的痛点（276s 黑等）消掉大半，不构成紧迫性。
