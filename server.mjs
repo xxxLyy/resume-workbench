@@ -423,7 +423,8 @@ function gatePool(method, pathname) {
     return { pool: renderPool, label: '渲染' };
   }
   // /eval/create、/restructure 也直连 LLM → 一并进闸门（实测 4 并发全放行、0×429）
-  if (method === 'POST' && (/^\/ai\//.test(pathname) || pathname === '/eval/create' || pathname === '/restructure')
+  // /onboarding/star-suggest（S5F）：向导 STAR AI 整理同样直连 chat → 同闸门
+  if (method === 'POST' && (/^\/ai\//.test(pathname) || pathname === '/eval/create' || pathname === '/restructure' || pathname === '/onboarding/star-suggest')
     && !AI_EXEMPT.has(pathname)) {
     return { pool: aiPool, label: 'AI' };
   }
@@ -2275,11 +2276,11 @@ const OB_COPY = {
 const OB_HINT = {
   '0.1': '联系方式与求职意向都可以留空，之后随时回编辑器补。',
   '0.2': '摘要放在简历最显眼的位置，写不好可以先跳过。',
-  '0.3': '要点可逐条套 STAR（情境/任务/行动/结果，允许只填部分或跳过）；事实层（事实/条件/个人贡献/来源）如实记录并标注来源，表达层可后补。',
+  '0.3': '要点可逐条套 STAR（情境/任务/行动/结果，允许只填部分或跳过），也可用「AI 套 STAR」生成建议——建议只回填卡片，确认提交后才写入；事实层（事实/条件/个人贡献/来源）如实记录并标注来源，表达层可后补。',
   '0.4': '项目卡片与经历同款：名称、角色、时间加要点。',
   '0.5': '技能按行拆分，每行一条。',
   '0.6': '教育经历按段录入，最新的在前更好。',
-  '0.7': '照片上传将在后续版本提供，本步可先跳过；照片会存入本地数据目录并排除 Git。',
+  '0.7': '照片会存入本地数据目录（photos/，已排除 Git）；模板照片位待模板库（S6）提供。完全可选，可直接跳过。',
   '0.8': '点「打开编辑器」可预览微调（复用编辑器）；确认完成后走既有导出链路。全程未填内容也会产出一份合法空白文档。'
 };
 // 内容步 → 目标区域标题（写档 splice 与预填提取共用同一映射；header 由 0.1 专写）
@@ -2425,6 +2426,37 @@ function obMergeStep(step, p, prefill, skipFlag) {
   if (p.photo) res.hasContent = true;
   return res;
 }
+// ===== S5F ①：STAR AI 整理（0.3 经历步的建议卡；roadmap 原文的「0.4 STAR 结构化」在本步序为 0.3）=====
+// 确认门控=结构性：建议只从本端点出、只能经 POST /onboarding/step（用户确认后的载荷）落正文，
+// 本端点绝不写文档。prompt 显式约束只整理用户事实、不补造；解析侧再做结构性守卫（未知 index 丢弃、空字段丢弃、长度截断）。
+const OB_STAR_KEYS = ['s', 't', 'a', 'r'];
+const obStarPrompt = (entries) => {
+  const lines = entries.map((e, i) => `第${i + 1}段 名称：${e.title || '（未填）'}\n原文要点：${e.points.join('；') || '（未填）'}`);
+  return {
+    sys: '你是简历写作助手，只做语句整理，不做事实创作。',
+    user: `请对下面每段经历的原文逐条套 STAR 结构（s=情境 t=任务 a=行动 r=结果）。\n硬性约束：\n1. 只允许整理用户给出的原文，不得补造任何经历、公司、时间、数字或结果；\n2. 每个字段只能是原文语句的改写（可拆分、可精简用词），没有原文依据的字段一律输出空字符串；\n3. 只输出 JSON，不要任何解释与前后缀，格式：{"entries":[{"index":1,"star":{"s":"","t":"","a":"","r":""}}]}，index 从 1 起，对应下面第几段。\n\n经历原文：\n${lines.join('\n')}`
+  };
+};
+function parseObStarSuggestions(text, count) {
+  const m = /\{[\s\S]*\}/.exec(String(text || ''));   // 容错：截取首个大括号区间（自然语前缀不致命）
+  if (!m) return [];
+  let d = null;
+  try { d = JSON.parse(m[0]); } catch { return []; }
+  const arr = Array.isArray(d && d.entries) ? d.entries : [];
+  const out = [];
+  for (const it of arr) {
+    const idx = Number(it && it.index);
+    if (!Number.isInteger(idx) || idx < 1 || idx > count) continue;   // 未知/越界 index 丢弃（不产新条目）
+    const st = it.star && typeof it.star === 'object' ? it.star : {};
+    const star = {};
+    for (const k of OB_STAR_KEYS) {
+      const v = String(st[k] ?? '').trim().slice(0, 300);
+      if (v) star[k] = v;   // 空字段丢弃 = 模型没依据就不给建议
+    }
+    if (Object.keys(star).length) out.push({ index: idx - 1, star });
+  }
+  return out.slice(0, 20);
+}
 // 建档（与 /new 同款分配与登记；差异仅：内容由向导组装 + onboarding 进度与区域初绑同事务落 meta）
 const obNewDocId = () => { let i = 0, newId; do { newId = i === 0 ? 'doc' : 'doc-' + i; i++; } while (fs.existsSync(docPath(newId))); return newId; };
 function obCreateDoc(newId, newHtml, onboardingRec) {
@@ -2503,8 +2535,9 @@ function obUnfinishedList() {
   }
   return items.length ? `<div class="ob-card ob-resume"><div class="ob-done-title">继续上次引导</div><p class="ob-note">以下引导暂存过，点开从上次的步骤继续。</p>${items.join('')}</div>` : '';
 }
-// 条目卡（0.3 经历 / 0.4 项目 / 0.6 教育）：一块散料一张卡，各带编辑；kindLabel 驱动 STAR/事实层子表单
-function obEntryCard(kindLabel) {
+// 条目卡（0.3 经历 / 0.4 项目 / 0.6 教育）：一块散料一张卡，各带编辑；kindLabel 驱动 STAR/事实层子表单。
+// canAi = 已有文档承载时才渲染「AI 套 STAR」建议按钮（S5F：建议只进卡片输入框，确认提交后才写入）。
+function obEntryCard(kindLabel, canAi) {
   const starFacts = kindLabel === '经历' ? `
       <details class="ob-sub"><summary>STAR 结构化（可选，逐条套用，可跳过）</summary>
         <div class="ob-erow">
@@ -2513,6 +2546,7 @@ function obEntryCard(kindLabel) {
           <label>行动<input data-k="a" placeholder="做了什么"></label>
           <label>结果<input data-k="r" placeholder="带来什么结果"></label>
         </div>
+        ${canAi ? `<button type="button" class="ob-ai" data-ob-ai>AI 套 STAR（只产建议，确认提交后才写入）</button>` : ''}
       </details>
       <details class="ob-sub"><summary>事实层（可选：事实 / 条件 / 个人贡献 / 来源；表达可后补）</summary>
         <div class="ob-erow">
@@ -2535,7 +2569,43 @@ function obEntryCard(kindLabel) {
   </fieldset>`;
 }
 // 条目卡的提交序列化（CSP 允许内联脚本；无 JS 时 details 备用简表照常可用）
-const OB_CARDS_JS = `<script>
+const OB_STAR_KEYS_FILL_JS = `function OB_STAR_KEYS_FILL(card, star) {
+  ['s', 't', 'a', 'r'].forEach(function (k) {
+    if (!star[k]) return;
+    var inp = card.querySelector('[data-k="' + k + '"]');
+    if (inp) inp.value = star[k];
+  });
+}`;
+// 照片步（0.7）：选文件 → data URL → 随表单走既有 POST /onboarding/step（服务端存 photos/，0600）
+const OB_PHOTO_JS = `<script>
+(function () {
+  var file = document.querySelector('[data-ob-photo-file]');
+  if (!file) return;
+  var hidden = document.getElementById('obPhoto');
+  var note = document.querySelector('[data-ob-photo-note]');
+  file.addEventListener('change', function () {
+    var f = file.files && file.files[0];
+    hidden.value = '';
+    if (note) { note.hidden = true; note.textContent = ''; }
+    if (!f) return;
+    if (f.size > 5 * 1024 * 1024) {
+      if (note) { note.hidden = false; note.textContent = '文件过大（上限 5MB），已清空选择'; }
+      file.value = '';
+      return;
+    }
+    var r = new FileReader();
+    r.onload = function () {
+      hidden.value = String(r.result || '');
+      if (note) { note.hidden = false; note.textContent = '已选择：' + f.name + '（点「确认并下一步」保存）'; }
+    };
+    r.onerror = function () {
+      if (note) { note.hidden = false; note.textContent = '读取文件失败，请重选'; }
+    };
+    r.readAsDataURL(f);
+  });
+})();
+</script>`;
+const OB_CARDS_JS = `<script>${OB_STAR_KEYS_FILL_JS}
 (function () {
   var wrap = document.querySelector('[data-ob-entries]');
   if (!wrap) return;
@@ -2581,6 +2651,40 @@ const OB_CARDS_JS = `<script>
     obj[field] = out;
     payloadInput.value = out.length ? JSON.stringify(obj) : '';
   });
+  // S5F：AI 套 STAR——建议只回填到卡片输入框（用户可改、确认提交才落正文）；失败回落纯手填
+  var docHidden = form ? form.querySelector('[name="docId"]') : null;
+  wrap.addEventListener('click', function (ev) {
+    var btn = ev.target.closest ? ev.target.closest('[data-ob-ai]') : null;
+    if (!btn) return;
+    var card = btn.closest('[data-ob-entry]');
+    if (!card) return;
+    var e = { title: '', points: [] };
+    card.querySelectorAll('[data-k]').forEach(function (el) {
+      var k = el.getAttribute('data-k');
+      var v = el.value.trim();
+      if (!v) return;
+      if (k === 'points') e.points = el.value.split(/\\n/).map(function (s) { return s.trim(); }).filter(Boolean);
+      else if (['s', 't', 'a', 'r'].indexOf(k) < 0 && ['fact', 'condition', 'contribution', 'source'].indexOf(k) < 0) e[k] = v;
+    });
+    if (!e.title && !e.points.length) return;
+    btn.disabled = true;
+    var old = btn.textContent;
+    btn.textContent = 'AI 整理中…';
+    fetch('/onboarding/star-suggest', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ docId: docHidden ? docHidden.value : '', entries: [e] })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d || d.ok !== true) { btn.textContent = (d && d.error) || 'AI 建议不可用，可手填'; return; }
+      var sug = (d.suggestions || [])[0];
+      if (!sug || !sug.star) { btn.textContent = '模型没有给出可用建议，可手填'; return; }
+      OB_STAR_KEYS_FILL(card, sug.star);
+      var det = card.querySelector('.ob-sub');
+      if (det) det.open = true;
+      btn.textContent = '已按建议回填（可修改，确认提交后才写入）';
+    }).catch(function () {
+      btn.textContent = 'AI 建议不可用，可手填';
+    }).finally(function () { btn.disabled = false; setTimeout(function () { btn.textContent = old; }, 4000); });
+  });
 })();
 </script>`;
 
@@ -2620,7 +2724,7 @@ function onboardingPage(state) {
     formInner = `<div class="ob-card">${field('个人总结', 'summary', '几句话说清你是谁、想去哪里（可留空跳过）', 4)}</div>`;
   } else if (isEntryStep) {
     formInner = `<div class="ob-entries" data-ob-entries data-ob-field="${escAttr(entryField)}">
-      ${obEntryCard(entryKind)}
+      ${obEntryCard(entryKind, !!docId)}
       <button type="button" class="ob-add" id="obAdd">＋ 再加一张卡</button>
       <input type="hidden" name="payload" id="obPayload" value="">
     </div>
@@ -2630,9 +2734,14 @@ function onboardingPage(state) {
   } else if (cur === '0.5') {
     formInner = `<div class="ob-card">${field('技能（每行一条，可留空跳过）', 'skills', '技能一', 4)}</div>`;
   } else if (cur === '0.7') {
+    // 照片可选（S5F ②）：选择即随本步保存到 photos/（用户数据目录，已排除 Git）；
+    // 模板照片位受冻结件约束——template.html 无照片位，登记「模板位待 S6」，本步只存路径不注入
     formInner = `<div class="ob-card">
       <div class="ob-done-title">证件照（可选）</div>
-      <p class="ob-note">照片上传与模板注入将在后续版本提供；届时照片会存入本地数据目录并自动排除 Git。现在可直接跳过，不影响任何后续步骤。</p>
+      <p class="ob-note">照片会存入本地数据目录（photos/，已排除 Git）；简历模板的照片位待模板库（S6）提供，本步先保存文件。不上传可直接跳过。</p>
+      <label class="ob-field"><span>选择照片（png / jpeg / webp，不超过 5MB）</span><input type="file" name="photoFile" accept="image/png,image/jpeg,image/webp" data-ob-photo-file></label>
+      <input type="hidden" name="photo" id="obPhoto" value="">
+      <p class="ob-note" data-ob-photo-note hidden></p>
     </div>`;
   } else if (cur === '0.8') {
     formInner = `<div class="ob-card">
@@ -2647,7 +2756,7 @@ function onboardingPage(state) {
     : `<button type="submit">确认并下一步</button><button type="submit" name="skip" value="1">跳过这步</button>`;
   const form = finished
     ? `<div class="ob-card"><div class="ob-done-title">引导完成</div><p class="ob-note">文档与手建文档完全同权，可继续编辑与导出。</p><p><a href="/edit?id=${escAttr(docId)}">打开编辑器</a> · <a href="/export?id=${escAttr(docId)}">导出 PDF</a></p></div>`
-    : `<form method="post" action="/onboarding/step" class="ob-form">${hidden}${formInner}<div class="ob-actions">${actions}<a href="/" title="已确认内容已存入文档，随时回来继续">暂存退出</a></div></form>${isEntryStep ? OB_CARDS_JS : ''}`;
+    : `<form method="post" action="/onboarding/step" class="ob-form">${hidden}${formInner}<div class="ob-actions">${actions}<a href="/" title="已确认内容已存入文档，随时回来继续">暂存退出</a></div></form>${isEntryStep ? OB_CARDS_JS : ''}${cur === '0.7' ? OB_PHOTO_JS : ''}`;
   const banner = docId
     ? `<p class="ob-note">已恢复未完成的引导${ob && ob.last ? `（最近确认 ${escHtml(OB_LABELS[ob.last] || ob.last)}）` : ''}，从当前步继续即可。</p>`
     : `<p class="ob-note">八步都是可跳过的组织方式：每步可跳过、可暂存续作；已有简历可预填、只补缺失项。首个有内容的确认步才建档，空输入不产生文件。</p>`;
@@ -2696,6 +2805,7 @@ function onboardingPage(state) {
 .ob-sub summary{cursor:pointer;font-size:12px;font-weight:600;color:var(--muted)}
 .ob-sub[open]{padding-bottom:10px}
 .ob-add{border-style:dashed}
+.ob-ai{border-style:dashed;font-size:12px;color:var(--muted);margin-top:var(--space-2)}
 .ob-del{border-style:dashed;color:var(--muted);font-size:12px}
 .ob-fallback{margin-bottom:var(--space-3);font-size:13px}
 .ob-fallback summary{cursor:pointer;color:var(--muted);font-size:12px}
@@ -3084,6 +3194,33 @@ async function handler(req, res) {
       if (merged.prefilled.length) resp.prefilled = merged.prefilled;
       if (step === '0.8') resp.editUrl = '/edit?id=' + docId;
       return sendJson(200, resp);
+    }
+    // S5F ①：STAR AI 整理——只产建议卡，绝不写文档（确认门控=结构性的：正文只认 POST /onboarding/step）
+    if (req.method === 'POST' && url.pathname === '/onboarding/star-suggest') {
+      // 桩友好：未配置模型 → 明确语义的失败，前端回落纯手填（该步可跳过）
+      if (!hasLLM(root)) return sendJson(409, { ok: false, code: 'NO_LLM', error: '未配置模型：可在卡片中手动填写 STAR，或跳过本步' });
+      let body;
+      try { body = await readBodyAuto(req); } catch { return sendJson(400, { ok: false, error: '请求体解析失败' }); }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return sendJson(400, { ok: false, error: '请求体应为对象' });
+      const sDocId = String(body.docId || '');
+      if (!VALID_ID.test(sDocId)) return sendJson(400, { ok: false, error: 'invalid docId' });
+      if (!fs.existsSync(docPath(sDocId))) return sendJson(404, { ok: false, error: 'doc not found' });
+      const sMeta = loadMeta()[sDocId] || null;
+      const sOb = sMeta && sMeta.onboarding && typeof sMeta.onboarding === 'object' ? sMeta.onboarding : null;
+      if (!sOb || sOb.finished) return sendJson(409, { ok: false, error: '该文档不在引导中，不能请求 STAR 建议' });
+      const entries = (Array.isArray(body.entries) ? body.entries : [])
+        .filter((e) => e && typeof e === 'object').slice(0, 20)
+        .map((e) => ({
+          title: String(e.title ?? '').slice(0, 200),
+          points: (Array.isArray(e.points) ? e.points : []).map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 20).map((x) => x.slice(0, 500))
+        }))
+        .filter((e) => e.title || e.points.length);
+      if (!entries.length) return sendJson(400, { ok: false, error: '请先填写经历名称或要点，再请求 STAR 建议' });
+      const sp = obStarPrompt(entries);
+      let out;
+      try { out = await chat(root, sp.sys, sp.user, { lease: leaseOf(req) }); }
+      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
+      return sendJson(200, { ok: true, suggestions: parseObStarSuggestions(out, entries.length) });
     }
     if (req.method === 'POST' && url.pathname === '/duplicate') {
       const to = url.searchParams.get('to') || '';

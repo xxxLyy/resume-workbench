@@ -2435,3 +2435,16 @@ else
     fail "引导向导 UI 回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
   fi
 fi
+
+# ===== 16n. S5F 收尾端到端（STAR AI 建议确认门控 / 桩友好 NO_LLM / 照片落 photos/ + git-ignore / 渲染导出）=====
+if node test-fixtures/reliability/test-onboarding-star-photo.mjs; then
+  echo '✅ S5F 端到端回归（建议确认门控 / NO_LLM 回落手填 / 照片落盘排除 Git / 0.8 后渲染出 PDF）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ S5F 端到端回归未执行：Chromium 不可用'
+  else
+    fail "S5F 端到端回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi
