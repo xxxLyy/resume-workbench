@@ -28,6 +28,9 @@ node ./test-fixtures/reliability/test-fact-date-space.mjs
 # ===== S4b-B 诚实最小进度：stage/model/usage 数据层 + genTtlMs（桩 LLM 可控延迟）=====
 node ./test-fixtures/reliability/test-gen-progress.mjs
 
+# ===== S4b-A 生成管线五阶段：kind=changes 真拆分（analyze→locate→rewrite→validate→assemble）+ stages 明细上报 =====
+node ./test-fixtures/reliability/test-gen-stages.mjs
+
 # ===== S5 引导向导服务端：步进 API/暂存续作/预填补缺（隔离根 + 桩 LLM；设计 dev-docs/2026-11-02-s5-design.md）=====
 node ./test-fixtures/reliability/test-onboarding-api.mjs
 

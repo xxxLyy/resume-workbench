@@ -222,9 +222,15 @@ http.createServer((q, s) => {
       let content = reply;
       try {
         const sys = JSON.parse(b).messages.find((m) => m.role === 'system').content;
-        if (String(sys).includes('区域分析顾问')) content = zoneAnalyze;
-        else if (String(sys).includes('区域改写器')) content = zoneRewrite;
-        else if (String(sys).includes('简历定制编排器')) {
+      if (String(sys).includes('区域分析顾问')) content = zoneAnalyze;
+      else if (String(sys).includes('区域改写器')) content = zoneRewrite;
+      else if (String(sys).includes('需求分析师')) {
+        // S4b-A 五阶段管线 ①：analyze（JD 要求提取，独立 chat）。返回可定位到正文的要求，
+        // 使 locate 产出 zid、rewrite 请求带定位块（管线数据流为真）；rewrite 仍由「简历定制编排器」分支应答，
+        // 既有产物断言面不变。
+        content = JSON.stringify({ requirements: ['交易系统与高并发经验', '量化结果导向'] });
+      }
+      else if (String(sys).includes('简历定制编排器')) {
           // S4a-T8 控制文件：llm-changes-zone=局部重生成（从请求 zid 标注提取，zids[0] 由测试锁定）；llm-changes-add=全文生成含 add 候选
           if (String(sys).includes('局部重生成') && fs.existsSync('$TEST_DIR/llm-changes-zone')) {
             const u = JSON.parse(b).messages.find((m) => m.role === 'user').content;

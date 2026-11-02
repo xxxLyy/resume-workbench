@@ -566,9 +566,150 @@ function applyChangesResult(cur, ops, ctx = {}) {
   return { generated: g.kept.length, todos: ops.todos.length };
 }
 
-// 任务体（node 单进程 fire-and-forget：Promise 即可，不引调度平台）。changes 通道完整复用既有链路；
-// evidence 通道（S4a-T6）：JD + 已确认素材（facts+表达）+ 区域分组段落（请求内 ID）→ parseEvidence →
-// finishGenTask 校验落账——整批替换与 evidenceGen+1 只在成功落账事务内（设计 §5.1 反例2：失败/取消/超时不碰旧数据）。
+// ===== S4b-A：changes 通道五阶段管线（kind=changes 真拆分 + 阶段上报）=====
+// ① analyze（JD 要求提取，独立 chat）→ ② locate（要求→zid 区域定位，纯函数）→ ③ rewrite（改写，本卡单批）
+// → ④ validate（parseJobOps+factGuard+既有守卫）→ ⑤ assemble（applyChangesResult 落账，语义不变）。
+// 阶段上报（与 S4b-B 三值并存）：genTasks.changes.stages = [{stage, startedAt, ms?}] 只增不改的明细——
+// chat 调用点仍置 calling / 返回后置 parsing（粗粒度语义零变化）；chat 阶段开条目于调用前（等待中即可见）、
+// 返回后补 ms；纯函数阶段一次写入含真实起止；assemble 是终态前最后一步，只记 startedAt——落账即 done，
+// patchGenTask 守卫正确拒绝事后的 ms 补写（合同 ms? 可缺省）。completeGenResult 以 {...gt} 展开收口，
+// stages 原样保留，gen-result.mjs 零改动。
+// 失败合同：analyze 失败（调用异常/输出不可解析）显式失败不降级——连要求清单都产不出的端点，
+// 大概率同样产不出修改操作 JSON，早失败比慢失败诚实；locate 无命中不算失败（JD 无对应经历是常态）；
+// rewrite/validate 沿用既有文案与守卫，产物语义与重构前逐字一致（批次隔离/超时/迟到落账全在既有链路）。
+// 多次调用的 usage：按字段对已知部分求和（全未知则该字段 null）——诚实下界，不编 0。
+function mergeGenUsage(a, b) {
+  if (!a) return b || null;
+  if (!b) return a || null;
+  const f = (x, y) => (x == null && y == null) ? null : ((x || 0) + (y || 0));
+  return { prompt: f(a.prompt, b.prompt), completion: f(a.completion, b.completion), total: f(a.total, b.total) };
+}
+
+// ① analyze 的 prompt（system 含「需求分析师」标记；与 buildJobPrompt 同约束风格：只准输出 JSON）
+function buildAnalyzePrompt({ jd, company, role }) {
+  const sys = `你是简历定制需求分析师。从【目标 JD】提取这份简历需要对照的要求清单，供后续改写与定位使用。你只能输出 JSON，不能输出解释文字。
+
+输出格式（严格 JSON）：
+{"requirements":["要求一","要求二"]}
+
+规则：
+1. 只提取 JD 明确写出的要求（技能、经验、职责领域、成果口径），每条一句话、不超过 30 字。
+2. 不得编造 JD 没有的内容；最多 8 条，按重要性排序；JD 无可提取要求时输出 {"requirements":[]}。
+3. JD 是要求来源，不是事实来源：不得把 JD 要求当成简历已有经历。`;
+  const user = `【目标公司】${company}\n【目标岗位】${role}\n【JD】\n${jd || '（未提供 JD）'}`;
+  return { sys, user };
+}
+
+// ① analyze 输出解析：null = 不可解析（任务失败）；[] 合法（JD 无可提取要求，后续 locate/rewrite 照走）
+function parseAnalyzeReqs(raw) {
+  let data;
+  try {
+    const cleaned = String(raw).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+    data = JSON.parse(cleaned);
+  } catch { return null; }
+  const arr = Array.isArray(data) ? data
+    : (data && typeof data === 'object' && Array.isArray(data.requirements) ? data.requirements : null);
+  if (!arr) return null;
+  return arr.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim()).slice(0, 8);
+}
+
+// ② locate：要求 → zid 段落定位（纯函数）。复用 zone.mjs parasOf 既有解析（与 evidence 通道同一段落口径）。
+// 匹配确定性：拉丁/数字串（≥2 字符）原样包含 + 中文字符全部二元组命中任一即算；
+// 按命中数降序取前 3 段（prompt 预算），并列按文档序；无命中 → 空 zids（不算失败）。
+function locateReqs(reqs, paras) {
+  const kwOf = (r) => {
+    const kws = new Set(String(r || '').match(/[A-Za-z0-9][A-Za-z0-9.+#-]+/g) || []);
+    const cjk = String(r || '').match(/[\u4e00-\u9fa5]/g) || [];
+    for (let i = 0; i + 1 < cjk.length; i++) kws.add(cjk[i] + cjk[i + 1]);
+    return [...kws];
+  };
+  return (Array.isArray(reqs) ? reqs : []).map((req) => {
+    const kws = kwOf(req);
+    const scored = [];
+    for (const p of paras) {
+      if (!p || !p.text) continue;
+      let n = 0;
+      for (const k of kws) if (p.text.includes(k)) n++;
+      if (n > 0) scored.push({ zid: p.zid, n });
+    }
+    scored.sort((a, b) => b.n - a.n);
+    return { req, zids: scored.slice(0, 3).map((s) => s.zid) };
+  });
+}
+
+// ③ rewrite 的定位块（仅全文通道注入）：把「要求→段落」对应关系交给改写，before 才有逐字锚定依据；
+// 局部重生成的 docText 已带 zid 标注（S4a-T8 合同：标注数=区域段落数，断言钉死），不再重复注入。
+function locateBlock(located, paras) {
+  const byZid = new Map(paras.map((p) => [p.zid, p]));
+  return '【要求→段落定位（供改写锚定）】\n' + located.map((l) => {
+    const ps = (l.zids || []).map((z) => byZid.get(z)).filter(Boolean)
+      .map((p) => `（zid：${p.zid}）${p.text}`).join('；');
+    return '· ' + l.req + (ps ? ' → ' + ps : ' → （正文未见直接对应段落）');
+  }).join('\n');
+}
+
+// 五阶段管线本体。入参与旧 changes 分支一致（id/taskId/scope/租约），返回 finishGenTask 的对外结果。
+async function runChangesPipeline(id, taskId, scope, held) {
+  const stages = [];   // 明细只增不改；flush 落快照（条目随后原地补 ms，不影响已落盘内容）
+  const flush = (patch) => patchGenTask(id, 'changes', taskId, { ...patch, stages: stages.map((s) => ({ ...s })) });
+  try {
+    const m0 = loadMeta()[id];
+    if (!m0 || !m0.job) return finishGenTask(id, 'changes', taskId, null, '文档已不是岗位草稿');
+    const html = fs.readFileSync(docPath(id), 'utf8');
+    const parasStart = parasOf(html);   // S4a-T8：生成基线段落——baseSnapshot 与锚点解析共用同一份快照
+    const confirmedMats = loadMats().filter((x) => x.factStatus === 'confirmed' && m0.job.materials.includes(x.id));
+    // —— ① analyze：JD 要求提取（独立 chat 调用；失败显式失败，见头部合同）——
+    const stAnalyze = { stage: 'analyze', startedAt: Date.now() };
+    stages.push(stAnalyze); flush({});
+    const pa = buildAnalyzePrompt({ jd: m0.jd || '', company: m0.company || '', role: m0.role || '' });
+    const metaA = {};
+    const rawA = await chat(root, pa.sys, pa.user, { lease: held, meta: metaA });
+    stAnalyze.ms = Date.now() - stAnalyze.startedAt;
+    flush({ stage: 'parsing', usage: metaA.usage ?? null });   // 模型已返回：本地解析校验（S4b-B 粗粒度检查点）
+    const reqs = parseAnalyzeReqs(rawA);
+    if (reqs === null) return finishGenTask(id, 'changes', taskId, null, '模型输出无法解析为 JD 要求清单，未应用任何修改');
+    // —— ② locate：要求 → zid 区域定位（纯函数；无命中不算失败）——
+    const tLocate = Date.now();
+    const located = locateReqs(reqs, parasStart);
+    stages.push({ stage: 'locate', startedAt: tLocate, ms: Date.now() - tLocate });
+    // —— ③ rewrite：改写（本卡单批：buildJobPrompt 既有合同 + 定位块仅全文通道注入）——
+    const stRewrite = { stage: 'rewrite', startedAt: Date.now() };
+    stages.push(stRewrite);
+    flush({ stage: 'calling' });
+    let docText, scopeInfo = null;
+    if (typeof scope === 'string' && scope.startsWith('zone:')) {
+      const zk = scope.slice(5);
+      scopeInfo = { zone: zk, zoneLabel: ZONE_LABELS[zk] || zk, digest: digestOf(html) };
+      docText = zoneParas(html, m0, zk).map((p) => `（zid：${p.zid}）${p.text}`).join('\n');
+    } else {
+      docText = docToText(html, { includeHidden: false });
+    }
+    const p = buildJobPrompt({ docText, jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: confirmedMats, twoPage: true, brief: m0.job.brief || null, scope: scopeInfo, feedback: m0.job.feedback || null });   // S4a-T9：过往反馈进 prompt
+    if (!scopeInfo && located.length) p.user += '\n\n' + locateBlock(located, parasStart);
+    const metaR = {};
+    const raw = await chat(root, p.sys, p.user, { lease: held, meta: metaR });
+    stRewrite.ms = Date.now() - stRewrite.startedAt;
+    flush({ stage: 'parsing', usage: mergeGenUsage(metaA.usage ?? null, metaR.usage ?? null) });
+    // —— ④ validate：parseJobOps（内含 factGuard 事实护栏）——坏输出在既有文案下显式失败
+    const tValidate = Date.now();
+    const ops = parseJobOps(raw);
+    stages.push({ stage: 'validate', startedAt: tValidate, ms: Date.now() - tValidate });
+    if (!ops) { flush({}); return finishGenTask(id, 'changes', taskId, null, '模型输出无法解析为修改操作，未应用任何修改'); }
+    // —— ⑤ assemble：applyChangesResult 落账（语义不变；终态前最后一步，只记 startedAt）——
+    stages.push({ stage: 'assemble', startedAt: Date.now() });
+    flush({});
+    return finishGenTask(id, 'changes', taskId, (cur) => ({
+      ok: true,
+      extra: applyChangesResult(cur, ops, { scope, html, paras: parasStart, mats: confirmedMats, brief: m0.job.brief || null })
+    }));
+  } catch (e) {
+    return finishGenTask(id, 'changes', taskId, null, '模型调用失败：' + (e.message || e));
+  }
+}
+
+// 任务体（node 单进程 fire-and-forget：Promise 即可，不引调度平台）。interview/evidence 通道完整复用既有链路；
+// changes 通道自 S4b-A 起走 runChangesPipeline 五阶段管线（analyze→locate→rewrite→validate→assemble）；
+// finishGenTask 校验落账——整批替换与批次推进只在成功落账事务内（设计 §5.1 反例2：失败/取消/超时不碰旧数据）。
 async function runGenTask(id, kind, taskId, scope = 'all', { lease } = {}) {
   // 后台任务自己占一个 AI 槽（RES-04）：HTTP 响应早已结束，真实占用才开始。
   // 释放 = 这次后台工作真正结束（最外层 finally）；逻辑取消/超时/HTTP 断连都不等于释放。
@@ -661,34 +802,8 @@ async function runGenTaskInner(id, kind, taskId, scope, held) {
       return finishGenTask(id, kind, taskId, null, '模型调用失败：' + (e.message || e));
     }
   }
-  try {
-    const m0 = loadMeta()[id];
-    if (!m0 || !m0.job) return finishGenTask(id, kind, taskId, null, '文档已不是岗位草稿');
-    const html = fs.readFileSync(docPath(id), 'utf8');
-    const parasStart = parasOf(html);   // S4a-T8：生成基线段落——baseSnapshot 与锚点解析共用同一份快照
-    const confirmedMats = loadMats().filter((x) => x.factStatus === 'confirmed' && m0.job.materials.includes(x.id));
-    // 局部重生成（scope=zone:X，设计 §5.2）：prompt 只带该区域段落（zid 标注）+ 全文摘要；全文生成 docText 不变
-    let docText, scopeInfo = null;
-    if (typeof scope === 'string' && scope.startsWith('zone:')) {
-      const zk = scope.slice(5);
-      scopeInfo = { zone: zk, zoneLabel: ZONE_LABELS[zk] || zk, digest: digestOf(html) };
-      docText = zoneParas(html, m0, zk).map((p) => `（zid：${p.zid}）${p.text}`).join('\n');
-    } else {
-      docText = docToText(html, { includeHidden: false });
-    }
-    const p = buildJobPrompt({ docText, jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: confirmedMats, twoPage: true, brief: m0.job.brief || null, scope: scopeInfo, feedback: m0.job.feedback || null });   // S4a-T9：过往反馈进 prompt
-    const genMeta = {};
-    const raw = await chat(root, p.sys, p.user, { lease: held, meta: genMeta });
-    patchGenTask(id, kind, taskId, { stage: 'parsing', usage: genMeta.usage ?? null });   // 模型已返回：本地解析校验（S4b-B）
-    const ops = parseJobOps(raw);
-    if (!ops) return finishGenTask(id, kind, taskId, null, '模型输出无法解析为修改操作，未应用任何修改');
-    return finishGenTask(id, kind, taskId, (cur) => ({
-      ok: true,
-      extra: applyChangesResult(cur, ops, { scope, html, paras: parasStart, mats: confirmedMats, brief: m0.job.brief || null })
-    }));
-  } catch (e) {
-    return finishGenTask(id, kind, taskId, null, '模型调用失败：' + (e.message || e));
-  }
+  // changes 通道（S4b-A）：五阶段管线（analyze→locate→rewrite→validate→assemble），合同见 runChangesPipeline 头注
+  return runChangesPipeline(id, taskId, scope, held);
 }
 
 // 原子启动（设计 §6 v1.4：updateMetaAll 全表事务锁内扫描）：全库同类 running ≤1、两类合计 ≤2，超限 409；
