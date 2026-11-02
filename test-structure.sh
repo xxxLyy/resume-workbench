@@ -79,6 +79,9 @@ node ./test-fixtures/reliability/test-render-safe.mjs
 # ===== B3T：themes 旧蓝清除（用户批准解冻）：#409eff/#4b5563/#1f2937 家族与冷色黑名单 0 命中 + print 兜底/注入层覆盖锚点仍在 =====
 node ./test-fixtures/reliability/test-themes-blue-purge.mjs
 
+# ===== B12H：bodyHash 渲染身份口径（只算打印可见内容）：打印不可见编辑态不影响身份，正文变化仍改变身份 =====
+node ./test-fixtures/reliability/test-bodyhash-identity.mjs
+
 node --input-type=module << 'EOF'
 import { structureText } from './structure.mjs';
 

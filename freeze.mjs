@@ -93,6 +93,25 @@ function stripZid(html) {
   return String(html).replace(/\sdata-zid="[^"]*"/g, "");
 }
 
+// B12H（2026-11-03）：bodyHash 只反映打印产物身份 —— @media print 下 display:none 的运行时编辑态
+// （themes/resume-classic.css print 兜底行所列 .edit-toolbar/.page-line/.toast/.recovery-bar）、
+// data-editor 代次标记（migrate-editor 升代会改写它）与 data-state 状态读数（全仓仅 .save-state
+// 保存药丸使用，纯编辑态）一律在哈希前摘除。否则：saveState 的文案与 data-state 属性、工具栏
+// 按钮的 emoji/SVG 图标与 doc-name、编辑器代次升级，都会让同一份 PDF 像素不变却被判「较旧」
+// 触发无谓重渲染。只摘哈希输入——freezeHtml 返回的 html 原样保留工具栏（server.mjs:846 /
+// migrate-meta.mjs:156 要从产物 html 读 data-editor 定代次，摘了会坏迁移）。
+// 实现依据：.edit-toolbar 内只有 span/button（含 svg）子元素、无嵌套 <div>（template.html 编辑器
+// 工具栏），惰性匹配到第一个 </div> 即其真实闭合；.page-line/.toast/.recovery-bar 是 div>span/button
+// 平铺结构，且客户端保存克隆本就会摘除（template.html doSave clone），正常不进落盘文档，此处兜底。
+// 后果登记：口径切换后既有 PDF 会一次性判旧（lastRenderInputId 按旧口径记录）→ 下次导出自动
+// 重生成；导出历史 PDF 以完整 renderInputId 命名、不可变，不受影响。
+function stripPrintHidden(html) {
+  return String(html)
+    .replace(/<(\w+)\b[^>]*\bclass="[^"]*\b(?:edit-toolbar|page-line|toast|recovery-bar)\b[^"]*"[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
+    .replace(/\sdata-editor="[^"]*"/gi, '')
+    .replace(/\sdata-state="[^"]*"/gi, '');
+}
+
 // —— 资源引用收集 ——
 // 会实际加载资源的标签/属性（<a href> 是导航链接、不加载资源，绝不收集——否则含超链接的简历会被误判不可复现）
 // 标签体允许引号内 '>'（如 <img alt="a > b" src="x.png">）：逐段跳过成对引号，避免在属性值处截断漏收 src
@@ -229,7 +248,7 @@ export function freezeHtml(html, meta) {
       : block + out;                                          // 无 head 的片段：前置兜底
   }
   const styles = mainStyles(out);
-  const bodyHash = sha1(stripSaveState(stripZid(bodyInner(out))).trim());
+  const bodyHash = sha1(stripPrintHidden(stripSaveState(stripZid(bodyInner(out)))).trim());
   const cssHash = styles.length ? sha1(styles.map((s) => s.css).join('\n')) : sha1('');
   const typoHash = sha1(typo);
   const fp = resourceFingerprint(out);
