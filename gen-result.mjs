@@ -10,17 +10,19 @@ const copy = (x) => JSON.parse(JSON.stringify(x));
 // cur：当前文档元数据（不会就地修改）。
 // options: { kind, taskId, now, ttlMs, apply, errMsg }
 // 返回：{ next, out } —— next 为要落盘的元数据或 null（放弃写入）；out 为对外结果。
-export function completeGenResult(cur, { kind, taskId, now, ttlMs, apply, errMsg }) {
+// options.usage（S4b-B，可选）：本次任务模型返回的真实用量（无则 null）；终态统一携带、stage 清空。
+export function completeGenResult(cur, { kind, taskId, now, ttlMs, apply, errMsg, usage }) {
   const gt = cur?.job?.genTasks?.[kind];
   // 迟到回调 / taskId 已被替代 / 任务已取消：整条丢弃，不碰任何状态（零落账）。
   if (!gt || gt.taskId !== taskId || gt.status !== 'running') {
     return { next: null, out: { dropped: true } };
   }
+  const usageFinal = usage === undefined ? (gt.usage ?? null) : usage;
   // 拒绝分支：从原 cur 生成，绝不采用回调的工作副本——副本里的内容、批次、版本变化一律不提交。
   // dropped=true 用于「结果不落账但原因可见」的超时路径：对外仍是 dropped（既有 /job/generate 409 形状不变）。
   const reject = (error, dropped = false) => {
     const next = copy(cur);
-    next.job.genTasks[kind] = { ...gt, status: 'error', error };
+    next.job.genTasks[kind] = { ...gt, status: 'error', error, stage: null, usage: usageFinal };
     return { next, out: dropped ? { dropped: true, error } : { ok: false, error } };
   };
   if (typeof gt.startedAt === 'number' && gt.startedAt + ttlMs < now) {
@@ -32,6 +34,6 @@ export function completeGenResult(cur, { kind, taskId, now, ttlMs, apply, errMsg
   const result = apply ? apply(work) : { ok: true, extra: {} };
   if (!result || typeof result.ok !== 'boolean') return reject('完成回调契约不合法');
   if (!result.ok) return reject(String(result.error || '生成结果不再适用'));
-  work.job.genTasks[kind] = { ...gt, status: 'done', error: null };
+  work.job.genTasks[kind] = { ...gt, status: 'done', error: null, stage: null, usage: usageFinal };
   return { next: work, out: { ok: true, job: work.job, ...(result.extra || {}) } };
 }

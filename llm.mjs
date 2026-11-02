@@ -88,7 +88,7 @@ export async function listModels(baseURL, apiKey) {
 }
 
 // chatMsgs — 多消息形态；chat 是它的两消息特例
-export async function chatMsgs(root, messages, { lease } = {}) {
+export async function chatMsgs(root, messages, { lease, meta } = {}) {
   const c = loadConfig(root);
   if (!c) throw new Error('LLM 未配置');
   // baseURL 来自本地 config（设置页可改）→ 同样过 assertSafeBaseURL：否则把 Bearer 发到
@@ -119,6 +119,17 @@ export async function chatMsgs(root, messages, { lease } = {}) {
     // r.json() 与结构校验刻意放在 withRetry 外：body 解析/格式错误天然不重试
     const data = await r.json();
     if (!data.choices?.[0]?.message?.content) throw new Error('LLM 返回格式异常');
+    // 可选出参（S4b-B 诚实最小进度）：把响应里的 usage 交给调用方采集，返回值与签名兼容不变；
+    // 重试成功时以最后一次响应为准（meta 在成功分支覆盖写）。字段在此归一为 {prompt,completion,total}，
+    // 厂商 token 名不出 llm.mjs 边界；缺字段记 null（诚实：没有就明说，不编 0）。
+    if (meta && typeof meta === 'object') {
+      const u = data.usage || null;
+      meta.usage = u ? {
+        prompt: (typeof u.prompt_tokens === 'number' ? u.prompt_tokens : (typeof u.prompt === 'number' ? u.prompt : null)),
+        completion: (typeof u.completion_tokens === 'number' ? u.completion_tokens : (typeof u.completion === 'number' ? u.completion : null)),
+        total: (typeof u.total_tokens === 'number' ? u.total_tokens : (typeof u.total === 'number' ? u.total : null))
+      } : null;
+    }
     return data.choices[0].message.content;
   } finally {
     if (held) { try { aiPool.unclaim(held); } catch {} }
@@ -126,6 +137,6 @@ export async function chatMsgs(root, messages, { lease } = {}) {
   }
 }
 
-export async function chat(root, system, user, { lease } = {}) {
-  return chatMsgs(root, [{ role: 'system', content: system }, { role: 'user', content: user }], { lease });
+export async function chat(root, system, user, { lease, meta } = {}) {
+  return chatMsgs(root, [{ role: 'system', content: system }, { role: 'user', content: user }], { lease, meta });
 }

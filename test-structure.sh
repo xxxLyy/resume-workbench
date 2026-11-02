@@ -25,6 +25,9 @@ node ./test-fixtures/reliability/test-sweep-import-placeholder.mjs
 node ./test-fixtures/reliability/test-fact-num-equivalence.mjs
 node ./test-fixtures/reliability/test-fact-date-space.mjs
 
+# ===== S4b-B 诚实最小进度：stage/model/usage 数据层 + genTtlMs（桩 LLM 可控延迟）=====
+node ./test-fixtures/reliability/test-gen-progress.mjs
+
 # ===== BL-P6-01：logrotate 备份写失败（.1 为目录/不可写）必须放弃截断，主日志原样保留 =====
 node ./test-fixtures/reliability/test-logrotate-fail-path.mjs
 

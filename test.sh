@@ -2409,3 +2409,16 @@ else
     fail "候选保留回归未通过 (exit $RC)"
   fi
 fi
+
+# ===== 16l. S4b-B 诚实最小进度 UI（running 行/时长 ticker/用量/取消计费文案）=====
+if node test-fixtures/reliability/test-gen-progress-ui.mjs; then
+  echo '✅ 生成进度 UI 回归（阶段/时长/模型 + 用量两态 + 取消计费文案 + 零百分比）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 生成进度 UI 回归未执行：Chromium 不可用'
+  else
+    fail "生成进度 UI 回归未通过 (exit $RC)"
+  fi
+fi

@@ -451,16 +451,29 @@ function sweepGenTasks(id, m) {
 // 判定在独立工作副本上运行，业务拒绝不提交副本里的内容/批次/版本变化；只有成功落账才写 done。
 // 落账用 updateMetaAll：mutator 返回 null = 放弃写入（迟到/被替代/已取消零落账），
 // 而不是 updateMeta 的 null = 删除本文档元数据（设计 §4「next=null 不得误用成删除」）。
-function finishGenTask(id, kind, taskId, apply, errMsg) {
+function finishGenTask(id, kind, taskId, apply, errMsg, usage) {
   let out = { dropped: true };
   updateMetaAll(root, (all) => {
     const result = completeGenResult(all[id], {
-      kind, taskId, now: Date.now(), ttlMs: GEN_TTL_MS, apply, errMsg
+      kind, taskId, now: Date.now(), ttlMs: GEN_TTL_MS, apply, errMsg, usage
     });
     out = result.out;
     return result.next ? { ...all, [id]: result.next } : null;
   });
   return out;
+}
+
+// 任务记录打补丁（S4b-B 诚实最小进度）：只在管线真有的检查点写，守卫语义与完成回调同款——
+// taskId 匹配且仍 running 才写（不复活已取消/超时任务，迟到写入零落账）。
+// 检查点：queued 在 startGenTask 注册时写；calling 在拿到槽位后写；parsing+usage 在模型返回后
+// 一次写入（usage 先落任务记录，终态由 completeGenResult 的 gt.usage 兜底带上——finishGenTask 各出口零改动）。
+function patchGenTask(id, kind, taskId, patch) {
+  updateMetaAll(root, (all) => {
+    const gt = all[id] && all[id].job && all[id].job.genTasks && all[id].job.genTasks[kind];
+    if (!gt || gt.taskId !== taskId || gt.status !== 'running') return null;
+    const job = { ...all[id].job, genTasks: { ...(all[id].job.genTasks || {}), [kind]: { ...gt, ...patch } } };
+    return { ...all, [id]: { ...all[id], job } };
+  });
 }
 
 // changes 成功落账（S4a-T8：候选锚定 zid/baseSnapshot/zone + guardOps 锁定与范围护栏 + 局部 supersede 同 zone）
@@ -555,6 +568,8 @@ async function runGenTask(id, kind, taskId, scope = 'all', { lease } = {}) {
   // 释放 = 这次后台工作真正结束（最外层 finally）；逻辑取消/超时/HTTP 断连都不等于释放。
   // 与同步入口共用同一个 aiPool → 全进程 AI 实际并发 ≤2（RES-02）。
   const ownLease = lease ? null : await aiPool.acquire();
+  // 槽位已到手 → calling（S4b-B：模型调用阶段的起点；透传 lease 时 queued 窗口极短，同 tick 内到达）
+  patchGenTask(id, kind, taskId, { stage: 'calling' });
   try {
     return await runGenTaskInner(id, kind, taskId, scope, lease || ownLease);
   } finally {
@@ -575,7 +590,9 @@ async function runGenTaskInner(id, kind, taskId, scope, held) {
       // prompt 与 parser 共用同一批 sourceParas → 模型能引用的片段与被核验的片段完全一致。
       const sources = resolveInterviewSources({ evidence: ev, paras });
       const p = buildInterviewPrompt({ jd: m0.jd || '', company: m0.company || '', role: m0.role || '', evidence: ev, sources });
-      const raw = await chat(root, p.sys, p.user, { lease: held });
+      const genMeta = {};
+      const raw = await chat(root, p.sys, p.user, { lease: held, meta: genMeta });
+      patchGenTask(id, kind, taskId, { stage: 'parsing', usage: genMeta.usage ?? null });   // 模型已返回：本地解析校验（S4b-B；usage 先落记录，终态兜底带上）
       const gen = (Number(m0.job.interviewGen) || 0) + 1;
       const iv = parseInterview(raw, { evidence: ev, sources });
       if (!iv) return finishGenTask(id, kind, taskId, null, '模型输出无法解析为面试追问，未替换任何内容');
@@ -612,7 +629,9 @@ async function runGenTaskInner(id, kind, taskId, scope, held) {
       const mats = loadMats().filter((x) => x.factStatus === 'confirmed' && m0.job.materials.includes(x.id));
       const paras = parasOf(html);
       const p = buildEvidencePrompt({ jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: mats, zones: m0.zones || {}, paras });
-      const raw = await chat(root, p.sys, p.user, { lease: held });
+      const genMeta = {};
+      const raw = await chat(root, p.sys, p.user, { lease: held, meta: genMeta });
+      patchGenTask(id, kind, taskId, { stage: 'parsing', usage: genMeta.usage ?? null });   // 模型已返回：本地解析校验（S4b-B；usage 先落记录，终态兜底带上）
       // 解析用批次号在锁外读取即可：同 kind 任务被 startGenTask 串行化（running 期间新任务 409），锁内必然一致；
       // 期间任务被取消/过期也不影响——迟到落账由 finishGenTask 的 taskId 不匹配与超时分支拒绝（零落账）。
       const gen = (Number(m0.job.evidenceGen) || 0) + 1;
@@ -652,7 +671,9 @@ async function runGenTaskInner(id, kind, taskId, scope, held) {
       docText = docToText(html, { includeHidden: false });
     }
     const p = buildJobPrompt({ docText, jd: m0.jd || '', company: m0.company || '', role: m0.role || '', materials: confirmedMats, twoPage: true, brief: m0.job.brief || null, scope: scopeInfo, feedback: m0.job.feedback || null });   // S4a-T9：过往反馈进 prompt
-    const raw = await chat(root, p.sys, p.user, { lease: held });
+    const genMeta = {};
+    const raw = await chat(root, p.sys, p.user, { lease: held, meta: genMeta });
+    patchGenTask(id, kind, taskId, { stage: 'parsing', usage: genMeta.usage ?? null });   // 模型已返回：本地解析校验（S4b-B）
     const ops = parseJobOps(raw);
     if (!ops) return finishGenTask(id, kind, taskId, null, '模型输出无法解析为修改操作，未应用任何修改');
     return finishGenTask(id, kind, taskId, (cur) => ({
@@ -689,7 +710,9 @@ function startGenTask(id, kind, scope = 'all') {
     if (sameKindOther) { reject = { status: 409, error: '另一文档的任务进行中，请稍后再试' }; return null; }
     if (total >= 2) { reject = { status: 409, error: '并发任务已达上限（全库同类 1 + 跨类合计 ' + (GEN_KINDS.length - 1) + '），请稍后再试' }; return null; }
     taskId = newGenTaskId();
-    const job = { ...m.job, genTasks: { ...(m.job.genTasks || {}), [kind]: { taskId, status: 'running', startedAt: now, baseHash, error: null, scope } } };
+    const model = (() => { try { const c = loadProfiles(root); return (c && c.profiles && c.profiles[c.active]) ? c.profiles[c.active].model : null; } catch { return null; } })();
+    // stage:'queued' = 已注册、等并发槽位（S4b-B）；model 记录启动时的 active profile 模型名
+    const job = { ...m.job, genTasks: { ...(m.job.genTasks || {}), [kind]: { taskId, status: 'running', startedAt: now, baseHash, error: null, scope, stage: 'queued', model, usage: null } } };
     return { ...all, [id]: { ...m, job } };
   });
   return { taskId, reject };
@@ -2606,7 +2629,7 @@ async function handler(req, res) {
         }
         job.saveReceipts = { ...(job.saveReceipts || {}), found, queried: wantReqIds };
       }
-      return sendJson(200, { ok: true, job, rev: Number(m.rev) || 0, zones: m.zones || null, zoneOrder: m.zoneOrder || null, zoneRounds: m.zoneRounds || null, doc: { id, parent: m.parent || '', company: m.company || '', role: m.role || '', jd: m.jd || '', jdSource: m.jdSource || '', mtime: docMtime } });
+      return sendJson(200, { ok: true, job, rev: Number(m.rev) || 0, zones: m.zones || null, zoneOrder: m.zoneOrder || null, zoneRounds: m.zoneRounds || null, genTtlMs: GEN_TTL_MS, doc: { id, parent: m.parent || '', company: m.company || '', role: m.role || '', jd: m.jd || '', jdSource: m.jdSource || '', mtime: docMtime } });
     }
     if (req.method === 'POST' && url.pathname === '/job/changes') {
       const body = JSON.parse(await readBody(req));

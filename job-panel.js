@@ -1122,6 +1122,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     return api('/job/changes?id=' + DOC_ID).then(function (d) {
       if (!d.ok) return;
       job = d.job; doc = d.doc; docRev = d.rev || 0;
+      if (d.genTtlMs) genTtlMs = Number(d.genTtlMs) || 0;   // S4b-B：任务总时限随响应，提示不写死
       render();
     }).catch(function () {}).then(function () {
       // 自续判定放 catch 之后的语义位：running 期间瞬时 GET 失败也续排（S4a-T7 转交 b），不断链卡死 UI
@@ -1207,6 +1208,51 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
   var EV_STATUS = { covered: '简历已覆盖', sourced: '素材有据·简历未表达', thin: '表达不充分', todo: '待补充', none: '未找到证据' };
   var FACT_LABELS = { company: '公司', role: '职位', dates: '时间', education: '学历', metrics: '指标', contribution: '贡献', conditions: '条件' };
   var GT_LABEL = { idle: '未生成', running: '正在分析证据…', done: '已生成', error: '失败', cancelled: '已取消' };
+  // ===== S4b-B 诚实最小进度：阶段/时长/用量（只显示管线真实检查点，不编百分比）=====
+  var GEN_STAGE_LABEL = { queued: '排队等待槽位', calling: '调用模型中', parsing: '解析校验中' };
+  var genTtlMs = 0;   // /job/changes 随响应带来的任务总时限（refresh 更新），面板不写死
+  function fmtElapsed(ms) {
+    var s = Math.max(0, Math.floor(ms / 1000));
+    return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+  }
+  // running 任务的进度行：「已等待 m:ss · 阶段 · 模型名（· 接近上限提示）」。
+  // 时长节点带 data-gen-elapsed，由秒级 ticker 原位更新——不经 render（A9：重建吞在途输入）。
+  function genProgressLine(gt) {
+    var startedAt = Number(gt.startedAt) || Date.now();
+    var line = document.createElement('span');
+    line.className = 'jp-meta';
+    line.style.cssText = 'margin-left:6px';
+    var el = document.createElement('span');
+    el.setAttribute('data-gen-elapsed', String(startedAt));
+    el.textContent = '已等待 ' + fmtElapsed(Date.now() - startedAt);
+    line.appendChild(el);
+    line.appendChild(document.createTextNode(' · ' + (GEN_STAGE_LABEL[gt.stage] || '处理中') + (gt.model ? ' · ' + gt.model : '')));
+    if (genTtlMs > 0 && Date.now() - startedAt > genTtlMs * 0.7) {
+      line.appendChild(document.createTextNode(' · 接近 ' + Math.round(genTtlMs / 60000) + ' 分钟上限，超时后任务会标失败、可重试'));
+    }
+    return line;
+  }
+  // done 任务的用量徽章：真实 total；服务商没返回就明说「未返回」（不编 0）
+  function usageBadge(gt) {
+    if (!gt || gt.status !== 'done') return null;
+    var u = gt.usage;
+    var txt = (u && typeof u.total === 'number') ? ('用量 ' + u.total + ' tokens') : '用量：服务商未返回';
+    var sp = document.createElement('span');
+    sp.className = 'jp-meta';
+    sp.style.cssText = 'margin-left:6px';
+    sp.textContent = txt;
+    return sp;
+  }
+  // 秒级 ticker：只原位更新时长文本；没有 running 节点时每秒一次空查询，开销可忽略
+  setInterval(function () {
+    var nodes = document.querySelectorAll('[data-gen-elapsed]');
+    if (!nodes.length) return;
+    var now = Date.now();
+    Array.prototype.forEach.call(nodes, function (el) {
+      var startedAt = Number(el.getAttribute('data-gen-elapsed')) || 0;
+      el.textContent = '已等待 ' + fmtElapsed(now - startedAt);
+    });
+  }, 1000);
   // 徽章口径（设计 §4.3）：失效条目盖过一切显示「待重新关联」；noteConfirmed 归 sourced 同层但绝不变「简历已覆盖」
   function evBadge(e) {
     if (e.stale) return '<span class="jp-st conflict">来源已变化，待重新关联</span>';
@@ -1302,6 +1348,9 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     st.className = 'jp-st ' + gt.status;
     st.textContent = GT_LABEL[gt.status] || gt.status || '未生成';
     headEl.appendChild(st);
+    // S4b-B：running → 阶段/时长/模型；done → 真实用量（或「未返回」）
+    if (gt.status === 'running') headEl.appendChild(genProgressLine(gt));
+    else if (gt.status === 'done') { var ub = usageBadge(gt); if (ub) headEl.appendChild(ub); }
     var act = document.createElement('button');
     act.type = 'button';
     if (gt.status === 'running') {
@@ -1309,7 +1358,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       act.textContent = '取消';
       act.addEventListener('click', function () {
         api('/job/gen-cancel?id=' + DOC_ID + '&kind=evidence&taskId=' + encodeURIComponent(gt.taskId || ''), {}).then(function (d) {
-          note(d.ok ? '已取消' : (d.error || '取消失败'), d.ok ? '' : 'warn');
+          note(d.ok ? '已取消（不会撤销服务商已发生的计费）' : (d.error || '取消失败'), d.ok ? '' : 'warn');
           refresh();
         });
       });
@@ -1448,6 +1497,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       spin.className = 'jp-reason';
       spin.textContent = '⟳ 正在生成追问…';
       det.appendChild(spin);
+      det.appendChild(genProgressLine(gt));   // S4b-B：阶段/时长/模型（时长由 ticker 原位更新）
       // 「可停止生成」是设计承诺，之前 running 分支不渲染任何按钮 = 无法停止（2026-10-18 OCR）
       var cancel = document.createElement('button');
       cancel.type = 'button';
@@ -1455,7 +1505,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       cancel.textContent = '取消';
       cancel.addEventListener('click', function () {
         api('/job/gen-cancel?id=' + DOC_ID + '&kind=interview&taskId=' + encodeURIComponent(gt.taskId || ''), {}).then(function (d) {
-          note(d.ok ? '已取消' : (d.error || '取消失败'), d.ok ? '' : 'warn');
+          note(d.ok ? '已取消（不会撤销服务商已发生的计费）' : (d.error || '取消失败'), d.ok ? '' : 'warn');
           refresh();
         });
       });
@@ -1522,6 +1572,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
         ? '生成失败：' + (gt.error || '未知原因')
         : (gt.status === 'cancelled' ? '已取消。' : '按你的证据表预判面试官会追问什么，附答法要点。生成失败不影响导出。');
       det.appendChild(hint2);
+      if (gt.status === 'done') { var ub2 = usageBadge(gt); if (ub2) det.appendChild(ub2); }   // S4b-B：真实用量
       act.textContent = gt.status === 'error' ? '重试' : (gt.status === 'cancelled' ? '继续生成' : '生成面试追问');
       act.addEventListener('click', start);
       det.appendChild(act);
