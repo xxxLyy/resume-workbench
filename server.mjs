@@ -1538,11 +1538,12 @@ html{scroll-padding-top:64px}
       删掉零渲染变化（--serif 与 --font 同族，font-family 也无差），只是消除「页题 26px」的误导。 */
 /* 二级标题档：此前全站无 h2 样式，落浏览器默认 1.5em（比页题还大） */
 .mainarea h2{font-size:16px;font-weight:700;margin:16px 0 8px}
-button{cursor:pointer;background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--radius);min-height:32px;padding:0 12px;font-weight:600;font-size:13px;transition:transform .12s,box-shadow .12s,background .12s}
+button{cursor:pointer;background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--radius);min-height:32px;padding:0 12px;font-weight:600;font-size:13px;transition:transform .12s,background .12s}
 button.secondary{background:var(--panel);color:var(--ink);border:1px solid var(--line)}
 button.danger{background:var(--panel);color:var(--err);border:1px solid var(--err-soft)}
 button.danger:hover{background:var(--err-soft)}
-button:hover{transform:translateY(-1px);box-shadow:0 3px 9px rgba(0,0,0,.06)}
+/* R2⑩：hover 删影保留 translateY（零阴影定案见 DESIGN.md §3.1，阴影例外仅 --shadow-up 已登记；transition 同步清理 box-shadow） */
+button:hover{transform:translateY(-1px)}
 button:active{transform:translateY(1px);box-shadow:none}
 button.secondary:hover{background:var(--bg)}
 button:disabled{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none}
@@ -2046,7 +2047,8 @@ function listPage(showArchived = false) {
       <div class="stat"><b>${infos.length}</b><span>文档</span></div>
       <div class="stat"><b>${degradedCount}</b><span>待结构化</span></div>
       <div class="stat"><b>${activeApps}</b><span>投递中</span></div>
-      <div class="stat"><b>${todoBits.length}</b><span>待办提醒</span></div>
+      <!--R2①：待办提醒=真待办（待结构化+逾期与面试提醒）；投递中/PDF/AI 配置是状态行，只呈现在 statusline 不计入。-->
+      <div class="stat"><b>${degradedCount + upcoming.length}</b><span>待办提醒</span></div>
     </div>
     ${corruptBanner()}
     <details class="card" id="jobCard">
@@ -2232,7 +2234,7 @@ function listPage(showArchived = false) {
             var r = await fetch('/eval/create', { method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ from: from, company: document.getElementById('jobCompany').value.trim(), role: document.getElementById('jobRole').value.trim(), jd: jd }) });
             var d = await r.json().catch(function () { return null; });
-            if (!r.ok || !d || !d.ok || !d.eval) { __status(msg, 'err', (d && d.error) || ('HTTP ' + r.status)); return; }
+            if (!r.ok || !d || !d.ok || !d.eval) { __status(msg, 'err', (d && d.error) || ('HTTP ' + r.status)); if (d && d.settingsPath) msg.appendChild(Object.assign(document.createElement('a'), { href: d.settingsPath, textContent: ' 去设置 →' })); return; }   // R2②：settingsPath → 可点击入口（同 :2210 先例）
             ctx = { id: d.eval.id, from: from };
             box.innerHTML = evalCardHtml(d.eval);
           } catch (err) { __status(msg, 'err', err.message); }
@@ -3082,12 +3084,18 @@ function onboardingPage(state) {
   const hidden = `<input type="hidden" name="step" value="${escAttr(cur)}">${docId ? `<input type="hidden" name="docId" value="${escAttr(docId)}">` : ''}`;
   const actions = cur === '0.8'
     ? `<button type="submit">完成引导</button>`
-    : `<button type="submit">确认并下一步</button><button type="submit" name="skip" value="1">跳过这步</button>`;
+    // R2④：跳过是次级动作 → button.secondary（:1542），不与主行动同实底
+    : `<button type="submit">确认并下一步</button><button type="submit" name="skip" value="1" class="secondary">跳过这步</button>`;
   const form = finished
     ? `<div class="ob-card"><div class="ob-done-title">引导完成</div><p class="ob-note">文档与手建文档完全同权，可继续编辑与导出。</p><p><a href="/edit?id=${escAttr(docId)}">打开编辑器</a> · <a href="/export?id=${escAttr(docId)}">导出 PDF</a></p></div>`
     : `<form method="post" action="/onboarding/step" class="ob-form">${hidden}${formInner}<div class="ob-actions">${actions}<a href="/" title="已确认内容已存入文档，随时回来继续">暂存退出</a></div></form>${isEntryStep ? OB_CARDS_JS : ''}${cur === '0.7' ? OB_PHOTO_JS : ''}`;
+  // R2⑤：横幅区分 forward（from=step 步进回跳）/resume（后续再进来）两态；
+  // last 落在 skipped 数组里（跳过的步也会推进 last）→ 显示「已跳过 X」，不得谎称「最近确认」。
+  const lastMark = (ob && ob.last) ? `（${skipped.has(ob.last) ? '已跳过' : '最近确认'} ${escHtml(OB_LABELS[ob.last] || ob.last)}）` : '';
   const banner = docId
-    ? `<p class="ob-note">已恢复未完成的引导${ob && ob.last ? `（最近确认 ${escHtml(OB_LABELS[ob.last] || ob.last)}）` : ''}，从当前步继续即可。</p>`
+    ? (state.mode === 'forward'
+        ? `<p class="ob-note">已进入下一步${lastMark}，从当前步继续即可。</p>`
+        : `<p class="ob-note">已恢复未完成的引导${lastMark}，从当前步继续即可。</p>`)
     : `<p class="ob-note">八步都是可跳过的组织方式：每步可跳过、可暂存续作；已有简历可预填、只补缺失项。首个有内容的确认步才建档，空输入不产生文件。</p>`;
   const illust = curIdx === 0 || finished ? HERO_SVG : OB_PAGE_SVG;
   return page('引导建档', `
@@ -3133,9 +3141,11 @@ function onboardingPage(state) {
 .ob-sub{border:1px dashed var(--border);border-radius:var(--radius);padding:6px 10px;margin:0 0 var(--space-2)}
 .ob-sub summary{cursor:pointer;font-size:12px;font-weight:600;color:var(--muted)}
 .ob-sub[open]{padding-bottom:10px}
-.ob-add{border-style:dashed}
-.ob-ai{border-style:dashed;font-size:12px;color:var(--muted);margin-top:var(--space-2)}
-.ob-del{border-style:dashed;color:var(--muted);font-size:12px}
+/* R2③：卡片流辅助钮浅底虚线化——全局 button 是 accent 实底，辅助钮（加卡/AI/删卡）压成 --card 浅底；
+   .ob-add 是 .ob-entries 的 grid 项，默认 stretch 拉满整行 → justify-self:start 收回内容宽 */
+.ob-add{border-style:dashed;background:var(--card);color:var(--muted);justify-self:start}
+.ob-ai{border-style:dashed;background:var(--card);font-size:12px;color:var(--muted);margin-top:var(--space-2)}
+.ob-del{border-style:dashed;background:var(--card);color:var(--muted);font-size:12px}
 .ob-fallback{margin-bottom:var(--space-3);font-size:13px}
 .ob-fallback summary{cursor:pointer;color:var(--muted);font-size:12px}
 .ob-resume .ob-resume-item{display:flex;justify-content:space-between;gap:var(--space-3);padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius);margin-bottom:var(--space-2);font-weight:400}
@@ -3369,7 +3379,8 @@ async function handler(req, res) {
       if (!fs.existsSync(docPath(qid))) return send(404, 'doc not found', 'text/plain');
       const qm = loadMeta()[qid] || null;
       if (!qm || !qm.onboarding || typeof qm.onboarding !== 'object') return send(409, '该文档不是引导文档（无向导进度）', 'text/plain');
-      return send(200, onboardingPage({ docId: qid, ob: qm.onboarding }));
+      // R2⑤：from=step（步进 PRG 回跳）= forward 态；其余入口（首页恢复/直接续作）= resume 态
+      return send(200, onboardingPage({ docId: qid, ob: qm.onboarding, mode: url.searchParams.get('from') === 'step' ? 'forward' : 'resume' }));
     }
     if (req.method === 'POST' && url.pathname === '/onboarding/step') {
       let body;
@@ -3487,7 +3498,7 @@ async function handler(req, res) {
           .replaceAll('{{DOC_ID}}', () => newId);
         const newHtml = normalizeZids(stripInjections(newHtml0));
         obCreateDoc(newId, newHtml, nextRec);
-        return isForm ? redirect(`/onboarding?docId=${newId}`)
+        return isForm ? redirect(`/onboarding?docId=${newId}&from=step`)
           : sendJson(200, Object.assign({ ok: true, step, docId: newId, created: true, nextStep },
             merged.prefilled.length ? { prefilled: merged.prefilled } : {}));
       }
@@ -3518,7 +3529,7 @@ async function handler(req, res) {
           throw e;
         }
       }
-      if (isForm) return redirect(step === '0.8' ? `/edit?id=${docId}` : `/onboarding?docId=${docId}`);
+      if (isForm) return redirect(step === '0.8' ? `/edit?id=${docId}` : `/onboarding?docId=${docId}&from=step`);   // R2⑤：回跳带 forward 态标记
       const resp = { ok: true, step, docId, created: false, nextStep };
       if (merged.prefilled.length) resp.prefilled = merged.prefilled;
       if (step === '0.8') resp.editUrl = '/edit?id=' + docId;
@@ -3622,7 +3633,7 @@ async function handler(req, res) {
     // 超时/失败语义直接沿用 chat() 的 profile 级 timeoutMs（默认 120s）+ withRetry 的 POST 不重试，
     // 失败一律 502 回到调用方，不写半条记录。
     if (req.method === 'POST' && url.pathname === '/eval/create') {
-      if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型：请到侧栏「设置」完成模型配置' });
+      if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型：请先完成模型配置', settingsPath: '/settings' });   // R2②：settingsPath 供消费方按 :2210 先例渲染真实入口链接（「侧栏「设置」」是死引用）
       const body = await readBodyAuto(req);
       const from = String(body.from || '');
       if (!VALID_ID.test(from)) return sendJson(400, { ok: false, error: 'invalid from' });
@@ -5270,7 +5281,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     }
     // ===== AI（统一正文提取；不再包含工具栏/占位符/隐藏内容）=====
     if (req.method === 'POST' && url.pathname === '/ai/rewrite') {
-      if (!hasLLM(root)) return send(409, '未配置大模型：请到侧栏「设置」完成模型配置', 'text/plain');
+      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');   // R2②：路径直达（「侧栏「设置」」是死引用）
       const body = JSON.parse(await readBody(req));
       if (!body.text || !body.instruction) return send(400, 'text 和 instruction 必填', 'text/plain');
       const p = buildRewrite(body.text, body.instruction);
@@ -5280,7 +5291,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       return sendJson(200, { ok: true, revised });
     }
     if (req.method === 'POST' && url.pathname === '/ai/chat') {
-      if (!hasLLM(root)) return send(409, '未配置大模型：请到侧栏「设置」完成模型配置', 'text/plain');
+      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');   // R2②：路径直达（「侧栏「设置」」是死引用）
       const body = JSON.parse(await readBody(req));
       if (!body.message) return send(400, 'message 必填', 'text/plain');
       if (body.id && !VALID_ID.test(body.id)) return send(400, 'invalid id', 'text/plain');
@@ -5301,7 +5312,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       return sendJson(200, { ok: true, ...(parsed || { reply: raw }) });
     }
     if (req.method === 'POST' && url.pathname === '/restructure') {
-      if (!hasLLM(root)) return send(409, '未配置大模型：请到侧栏「设置」完成模型配置', 'text/plain');
+      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');   // R2②：路径直达（「侧栏「设置」」是死引用）
       if (!fs.existsSync(docPath(id))) return send(404, 'doc not found', 'text/plain');
       // 文档锁 + 冲突检测（2026-10-22 审查 [中]）：结构化要跑几秒 LLM，
       // 这期间用户可能又保存了一次 → 结构化结果会把用户的编辑整篇覆盖（实测用户的编辑消失）。
@@ -5341,7 +5352,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       });
     }
     if (req.method === 'POST' && url.pathname === '/ai/review') {
-      if (!hasLLM(root)) return send(409, '未配置大模型：请到侧栏「设置」完成模型配置', 'text/plain');
+      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');   // R2②：路径直达（「侧栏「设置」」是死引用）
       const body = JSON.parse(await readBody(req));
       if (body.id && !VALID_ID.test(body.id)) return send(400, 'invalid id', 'text/plain');
       if (body.mode !== 'full' && body.mode !== 'quant') return send(400, "mode 仅支持 'full'|'quant'", 'text/plain');
@@ -5358,7 +5369,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       return sendJson(200, parsed ? { ok: true, report: parsed } : { ok: true, reply: raw });
     }
     if (req.method === 'POST' && url.pathname === '/ai/match') {
-      if (!hasLLM(root)) return send(409, '未配置大模型：请到侧栏「设置」完成模型配置', 'text/plain');
+      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');   // R2②：路径直达（「侧栏「设置」」是死引用）
       const body = JSON.parse(await readBody(req));
       if (body.id && !VALID_ID.test(body.id)) return send(400, 'invalid id', 'text/plain');
       if (typeof body.jd !== 'string' || !body.jd.trim()) return send(400, 'jd 必填', 'text/plain');
@@ -5492,6 +5503,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const byCh = {}; apps.forEach((a) => { byCh[a.channel || '未填'] = (byCh[a.channel || '未填'] || 0) + 1; });
       const byDoc = {}; apps.forEach((a) => { byDoc[a.docId] = (byDoc[a.docId] || 0) + 1; });
       const byTag = {}; const meta = loadMeta(); apps.forEach((a) => { const t = (meta[a.docId] || {}).tag || '未标记'; byTag[t] = (byTag[t] || 0) + 1; });
+      // R2⑨：按简历版本的键从裸 id 映射为「标题（id）」（docInfo 现成标题，与首页母版下拉 :2061 同格式）；
+      // 已删文档 docInfo 为 null → 回退裸 id。title 已在 docInfo 内转义，此处不再包 escHtml（防双转义）。
+      const byDocLabel = (k) => { const di = docInfo(k, meta[k]); return di ? `${di.title}（${escAttr(k)}）` : escHtml(k); };
       const interviewed = apps.filter((a) => ['面试中', 'offer'].includes(a.status) || (Array.isArray(a.interviews) && a.interviews.length)).length;
       const n = apps.length;
       const funnelBar = funnel.map(([s, c]) => `<div style="display:flex;align-items:center;margin:6px 0"><span style="width:70px;font-size:12px">${s}</span><div style="flex:1;background:var(--bg);border-radius:4px;height:20px"><div style="background:var(--accent);height:100%;border-radius:4px;width:${n ? (c / n * 100) : 0}%"></div></div><span style="width:30px;text-align:right;font-size:12px">${c}</span></div>`).join('');
@@ -5544,7 +5558,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     <div class="card"><b class="card-title">状态分布</b><div style="font-size:11px;color:var(--mut);margin:4px 0">当前状态计数（非阶段漏斗；有面试记录即计入面试口径）</div>${funnelBar}</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px">
       <div class="card"><b class="card-title">按渠道</b>${Object.entries(byCh).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
-      <div class="card"><b class="card-title">按简历版本</b>${Object.entries(byDoc).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
+      <div class="card"><b class="card-title">按简历版本</b>${Object.entries(byDoc).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${byDocLabel(k)}</span><span>${v}</span></div>`).join('')}</div>
       <div class="card"><b class="card-title">按岗位方向</b>${Object.entries(byTag).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
     </div>
     <div class="card" style="margin-top:12px"><b class="card-title">面试参与</b><p style="font-size:13px">${interviewed}/${n} 有面试安排或已进入面试（${n ? Math.round(interviewed / n * 100) : 0}%）；预约不等于完成。</p></div>`, 'stats'));
@@ -6076,7 +6090,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         if (budgetCut) rows.push(`${mark(false)} 分页文本提取：超出 ${EXTRACT_BUDGET_MS / 1000}s 总预算，只提取了前 ${pageTexts.length}/${pages} 页（结论不完整）`);
         rows.push(`${mark(!blank.length)} 空白页检查：${blank.length ? `疑似空白页：${blank.join('、')}` : '无'}`);
         rows.push(`${mark(!orphan.length)} 孤立标题检查：${orphan.length ? orphan.map((p) => `第${p}页末疑似孤立标题`).join('；') : '无'}`);
-        rows.push(`${mark(totalChars >= 200)} 文本层字符量：${totalChars}`);
+        rows.push(`${mark(totalChars >= 200)} 文本层字符量：${totalChars}${totalChars < 200 ? '（<200：图文简历可忽略，否则检查文本层）' : ''}`);   // R2⑧：告警带阈值与原因
         
       }
       // ===== 文本层自检：姓名 / 邮箱 / 电话在 PDF 文本层里能不能被提取到 =====
@@ -6143,7 +6157,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       // S4a 上线后修复3：可投递改为显式确认——整体审阅完成 + 当前 PDF 才出按钮；确认后 S1 flow 契约不变
       const flowNow = flowOf(meta);
       const confirmDeliverable = meta.parent && pdfCurrent && expChecks.reviewComplete && flowNow !== 'reviewed'
-        ? `<form method="post" action="/job/changes?id=${id}" style="display:inline" onsubmit="event.preventDefault();__wv('/job/changes?id=${id}',{id:${jsStr(id)},status:'deliverable'}).then(function(){location.reload();}).catch(function(e){alert('确认失败：'+e.message)})"><button class="ok" type="submit">确认可投递（整体审阅已完成）</button></form>`
+        ? `<form method="post" action="/job/changes?id=${id}" style="display:inline" onsubmit="event.preventDefault();__wv('/job/changes?id=${id}',{id:${jsStr(id)},status:'deliverable'}).then(function(){location.reload();}).catch(function(e){alert('确认失败：'+e.message)})"><button class="secondary" type="submit">确认可投递</button></form>`
+        // R2⑥：button.ok 从无样式定义（一直误渲染成 accent 实底）→ 降 secondary；「（整体审阅已完成）」状态说明移出按钮文案——上下徽章/导出检查区已承载同一状态
         : flowNow === 'reviewed' ? badge('ok', '已确认可投递')
         : `<span class="badge mute" title="整体审阅完成 + 当前 PDF 后可确认">${icon('circle-help', 11)}未确认可投递</span>`;
       const versionLine = pdfCurrent
@@ -6152,6 +6167,11 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
           ? `${badge('err', '当前显示的是旧版本 PDF（生成于 ' + new Date(pdfStat.mtimeMs).toLocaleString('zh-CN') + '），不是最新内容')}`
           : `${badge('err', '尚无 PDF')}`;
       const trackSrc = meta.parent ? `<span class="badge ai">${escHtml((meta.company || '') + '·' + (meta.role || ''))}</span>` : '';
+      // R2⑦：导出对象行——岗位稿 company·role 徽章优先、id 退居次要；母版无徽章则维持 id 主显。
+      //   （旧文案是进行时措辞，本页是状态页，整词已从源面清零并被 test-structure.sh 钉死。）
+      const exportObj = trackSrc
+        ? `${trackSrc} <span style="font-size:12px;color:var(--mut)">文档 ${escHtml(id)}</span>`
+        : `<b>${escHtml(id)}</b>`;
       // 导出记录（S1-T8）：不可变产物列表；usedBy/deliveredRefs 读取时派生自 applications.json（权威来源，绝不存储）
       const apps4ex = loadApps();
       const deliveredCnt = apps4ex.filter((a) => a.docId === id).length;
@@ -6166,7 +6186,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       }).join('');
       return send(200, page('导出', `<h1>导出 PDF</h1>
     <div class="card">
-      <p>正在导出：<b>${escHtml(id)}</b> ${trackSrc} ${versionLine}</p>
+      <p>导出对象：${exportObj} ${versionLine}</p>
       <p style="font-size:13px;color:var(--mut)">最后编辑 ${docStat.mtime.toLocaleString('zh-CN')}${pdfStat ? ` ｜ PDF 生成于 ${new Date(pdfStat.mtimeMs).toLocaleString('zh-CN')}` : ''}</p>
       ${renderError ? `<p style="color:var(--err)">${icon('circle-x', 13)}重新生成失败：${escHtml(renderError)}。下方数据基于${pdfStat ? '旧版本 PDF' : '无 PDF'}，请修复渲染环境后重试。</p>` : ''}
       ${!pdfCurrent && pdfStat && !renderError ? `<p style="color:var(--warn)">${icon('circle-alert', 13)}文档内容已更新（渲染标识不一致），当前 PDF 不是最新内容。</p>` : ''}

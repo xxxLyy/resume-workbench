@@ -40,6 +40,9 @@ node ./test-fixtures/reliability/test-gen-retry.mjs
 # ===== S5 引导向导服务端：步进 API/暂存续作/预填补缺（隔离根 + 桩 LLM；设计 dev-docs/2026-11-02-s5-design.md）=====
 node ./test-fixtures/reliability/test-onboarding-api.mjs
 
+# ===== R2 文案与按钮语义修复包：首页待办计数 / 409 死引用 / 向导横幅两态 / 导出页语义（隔离根 HTTP，无浏览器依赖）=====
+node ./test-fixtures/reliability/test-copy-semantic-fixes.mjs
+
 # ===== BL-P6-01：logrotate 备份写失败（.1 为目录/不可写）必须放弃截断，主日志原样保留 =====
 node ./test-fixtures/reliability/test-logrotate-fail-path.mjs
 
@@ -5227,3 +5230,52 @@ node ./test-fixtures/reliability/test-gen-task.mjs
 
 # ===== AUD-17：重活前置有界（差异矩阵分配前有界 / JD 远程读取有界且不误伤正常输入）=====
 node ./test-fixtures/reliability/test-limits.mjs
+
+# ===== R2：文案与按钮语义修复包源级钉值（行为面走上方 test-copy-semantic-fixes.mjs；一处一改断言同提交）=====
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const assert = (c, m) => { if (!c) { console.error('❌ R2 ' + m); process.exit(1); } };
+const srv = readFileSync('./server.mjs', 'utf8');
+// ① 首页「待办提醒」= 真待办（degradedCount + upcoming）；投递中/PDF/AI 状态行仍在 statusline 全量呈现
+assert(/<div class="stat"><b>\$\{degradedCount \+ upcoming\.length\}<\/b><span>待办提醒<\/span><\/div>/.test(srv),
+  '「待办提醒」stat 应为 degradedCount + upcoming.length（真待办），状态行不得计入');
+assert(srv.includes("${todoBits.join('<span class=\"sep\">·</span>')}"), 'statusline 应保持 todoBits 全量呈现（①不砍状态行）');
+// ② 六处「请到侧栏「设置」」死引用清零：sendJson 带 settingsPath 字段，text/plain 直接给出 /settings 路径
+assert(!srv.includes('请到侧栏'), 'server.mjs 不得再有「请到侧栏」死文案（编辑器内无侧栏可点）');
+assert(srv.includes("settingsPath: '/settings'"), '/eval/create 409 JSON 应带 settingsPath 字段（消费方按 :2210 先例渲染链接）');
+assert((srv.match(/打开 \/settings 完成模型配置/g) || []).length === 5, '五处 text/plain 409 应直接给出 /settings 路径');
+// ③ .ob-add/.ob-ai/.ob-del 浅底虚线化（background:var(--card)）且 .ob-add 非全宽
+for (const cls of ['ob-add', 'ob-ai', 'ob-del']) {
+  const rule = srv.match(new RegExp('\\.' + cls + '\\{[^}]*\\}'));
+  assert(rule, '.' + cls + ' 规则应存在');
+  assert(rule[0].includes('background:var(--card)'), '.' + cls + ' 应浅底化（不得再用全局 accent 实底）');
+  assert(!rule[0].includes('var(--accent)'), '.' + cls + ' 不得引用 accent');
+}
+assert(/\.ob-add\{[^}]*justify-self:start/.test(srv), '.ob-add 应非全宽（grid 项 justify-self:start）');
+// ④ 「跳过这步」降级 button.secondary
+assert(srv.includes('<button type="submit" name="skip" value="1" class="secondary">跳过这步</button>'),
+  '「跳过这步」应为 secondary（次级动作不得与主行动同实底）');
+// ⑤ 横幅区分 forward/resume 两态；skipped 数组内的步显示「已跳过」
+assert(srv.includes('已恢复未完成的引导') && srv.includes('已进入下一步'), '向导横幅应区分 resume（已恢复）/forward（已进入下一步）两态');
+assert(srv.includes("skipped.has(ob.last) ? '已跳过' : '最近确认'"), 'last 落在 skipped 数组时应显示「已跳过」而非「最近确认」');
+// ⑥ 确认可投递：无定义的 button.ok 降为 secondary，括号状态说明移出按钮文案（徽章已承载）
+assert(!srv.includes('class="ok"'), '不得再引用无定义的 button.ok 类');
+assert(!srv.includes('确认可投递（'), '括号状态说明应移出「确认可投递」按钮文案');
+assert(srv.includes('<button class="secondary" type="submit">确认可投递</button>'), '「确认可投递」应为 secondary 纯文案按钮');
+// ⑦ 「导出对象：」替代「正在导出：」，岗位稿 company·role 徽章优先、id 次要
+assert(srv.includes('导出对象：'), '导出页应为「导出对象：」');
+assert(!srv.includes('正在导出'), '导出页不得再出现「正在导出」（状态页不是进行时）');
+assert(srv.includes('导出对象：${exportObj}'), '导出对象行应走 exportObj（岗位稿徽章优先、id 次要）');
+// ⑧ 文本层字符量告警带阈值与原因
+assert(srv.includes('图文简历可忽略'), '字符量告警应带阈值与原因（<200：图文简历可忽略，否则检查文本层）');
+// ⑨ 复盘「按简历版本」byDoc 键映射「标题（id）」（docInfo 现成标题），已删文档回退裸 id
+assert(srv.includes('const byDocLabel = (k) => { const di = docInfo(k, meta[k]); return di ? `${di.title}（${escAttr(k)}）` : escHtml(k); };'),
+  'byDoc 键应映射为「标题（id）」，已删文档回退裸 id');
+assert(srv.includes('${byDocLabel(k)}'), '「按简历版本」渲染应走 byDocLabel');
+// ⑩ button:hover 删影保留 translateY（零阴影定案，阴影例外仅 --shadow-up 已登记 DESIGN.md §3.1），transition 清理 box-shadow
+// （范围=卡片点名的 button 全局规则；.cta 等既有独立规则不在本卡范围，不顺手改）
+assert(srv.includes('button:hover{transform:translateY(-1px)}'), 'button:hover 应删影保留 translateY');
+assert(!/button:hover\{[^}]*box-shadow/.test(srv), 'button:hover 规则内不得再有 box-shadow');
+assert(!srv.includes('transition:transform .12s,box-shadow'), 'button transition 应清理 box-shadow');
+console.log('✅ R2 文案与按钮语义源级钉值（十项）');
+EOF
