@@ -162,6 +162,16 @@
     + '.ed-typo .ed-reset{width:100%;min-height:32px;border:1px solid var(--ed-line);border-radius:var(--ed-radius);background:var(--ed-panel);color:var(--ed-ink);font-size:12px;cursor:pointer}'
     + '.ed-typo .ed-reset:hover{background:var(--ed-bg)}'
     + '.ed-typo .ed-note{font-size:11px;color:var(--ed-mut);line-height:1.6;margin-top:12px}'
+    // 排版密度预设 + 页数感知（A3）：三档预设置顶（命中高亮 aria-pressed，手动改滑杆即失选）；
+    // 页数行如实显示（无渲染历史=尚未渲染，不臆造）；超页「切到紧凑档」是普通动作 → 中性描边（非 accent 主行动）
+    + '.ed-typo .ed-presets{display:flex;gap:6px;margin-bottom:14px}'
+    + '.ed-typo .ed-preset{flex:1;min-height:28px;border:1px solid var(--ed-line);border-radius:var(--ed-radius);background:var(--ed-panel);color:var(--ed-ink);font-size:12px;cursor:pointer}'
+    + '.ed-typo .ed-preset:hover{background:var(--ed-bg)}'
+    + '.ed-typo .ed-preset.ed-preset-on{border-color:var(--ed-accent);color:var(--ed-accent);font-weight:700}'
+    + '.ed-typo .ed-pagerow{font-size:11px;color:var(--ed-mut);line-height:1.6;margin:10px 0 2px;display:flex;flex-wrap:wrap;align-items:center;gap:6px}'
+    + '.ed-typo .ed-pagemore{min-height:26px;padding:0 10px;border:1px solid var(--ed-line);border-radius:var(--ed-radius);background:var(--ed-panel);color:var(--ed-ink);font-size:12px;cursor:pointer}'
+    + '.ed-typo .ed-pagemore:hover{background:var(--ed-bg)}'
+    + '.ed-typo .ed-pagenote{font-size:11px;color:var(--ed-mut);line-height:1.6;margin:6px 0 0}'
     // 模板页签（S6-A2）：主题卡 = 标签 + 受众一句 + scaled iframe 真实渲染（/theme-preview 经 srcdoc 装载）
     + '.ed-theme{padding:14px 12px;font-size:12px}'
     + '.ed-theme .ed-tcard{border:1px solid var(--ed-line);border-radius:var(--ed-radius);padding:10px;margin-bottom:12px;background:var(--ed-panel)}'
@@ -1927,6 +1937,7 @@
     if (name === 'review') window.dispatchEvent(new Event('ed-review-refresh'));
     if (name === 'zone') window.dispatchEvent(new Event('ed-zone-refresh'));
     if (name === 'theme') buildThemePane();   // S6-A2：首次打开才建卡/取预览（懒加载，不吃首屏）
+    if (name === 'typo') loadTypoPageInfo();  // A3：页数感知懒加载（再激活重取——渲染/导出后页数会变）
     if (window.__edApplyWidthTier) window.__edApplyWidthTier();   // S4a-T9：宽度档随活跃度联动
     persistSoon();                       // S2-T6：活动面板属会话状态
   }
@@ -2071,6 +2082,20 @@
   // 不逐项回写。本轮功能零变更，仅把合同写进代码。
   var TYPO_DEFAULTS = { fontSize: 13, lineHeight: 1.43, pagePad: 9.4, paraGap: 0.45, secGap: 2.9 };
   var typoPane = right.querySelector('#ed-pane-typo');
+  // ===== 排版密度三档预设（A3）：映射既有五滑杆字段（FIELDS），应用走 applyTypo/typoCss 单一通道 =====
+  // 「标准」= TYPO_DEFAULTS 逐字相同；档位只作用于呈现层参数，与主题无关、绝不触碰正文。
+  var TYPO_PRESETS = {
+    compact: { label: '紧凑', values: { fontSize: 12, lineHeight: 1.35, pagePad: 7.5, paraGap: 0.3, secGap: 2.2 } },
+    standard: { label: '标准', values: { fontSize: 13, lineHeight: 1.43, pagePad: 9.4, paraGap: 0.45, secGap: 2.9 } },
+    relaxed: { label: '宽松', values: { fontSize: 13.5, lineHeight: 1.6, pagePad: 12, paraGap: 0.8, secGap: 4.5 } }
+  };
+  var TYPO_FIELD_NAMES = { fontSize: '字号', lineHeight: '行距', pagePad: '页边距', paraGap: '段距', secGap: '章节距' };
+  var TYPO_FIELD_UNITS = { fontSize: 'px', lineHeight: '', pagePad: 'mm', paraGap: 'mm', secGap: 'mm' };
+  var typoPreset = null;        // 当前命中的预设 key；手动改任一滑杆即取消（诚实 UI）
+  var typoPresetNote = '';      // 最近一次预设应用的行内结果（列出实际改变的参数）；手动改滑杆即清空
+  var typoPageInfo = null;      // /layout-info 结果 {pages,target}；null=未取到（行不渲染，不臆造）
+  var typoPageFailed = false;   // 页数信息获取失败（如实显示不可用，与「尚未渲染」区分）
+  var typoPageRowEl = null;     // 当前行元素（buildTypoPane 重建时刷新引用）
   function getTypoEl() { return document.getElementById('typo-custom'); }
   function typoCss(v) {
     return '/*TYPO-CUSTOM*/body{font-size:' + v.fontSize + 'px;line-height:' + v.lineHeight + '}'
@@ -2109,11 +2134,101 @@
     // 面板刷新监听器在外层（紧邻首次 buildTypoPane()），不随点击叠加。
     window.dispatchEvent(new Event('ed-typo'));
   }
+  // 当前取值命中哪档预设（逐字段精确相等；手动调到与某档完全同值 → 如实亮该档）
+  function detectTypoPreset(v) {
+    var keys = Object.keys(TYPO_DEFAULTS);
+    for (var k in TYPO_PRESETS) {
+      var same = true;
+      for (var i = 0; i < keys.length; i++) {
+        if (Math.round((Number(v[keys[i]]) || 0) * 100) !== Math.round(TYPO_PRESETS[k].values[keys[i]] * 100)) { same = false; break; }
+      }
+      if (same) return k;
+    }
+    return null;
+  }
+  // 页数感知行（A3）：typoPageInfo 未取到前不渲染（不臆造）；有数据如实显示，超页给「切到紧凑档」。
+  function renderTypoPageRow(box) {
+    if (!box) box = typoPane.querySelector('.ed-typo');
+    if (!box) return;
+    var noteOld = box.querySelector('.ed-pagenote');
+    if (noteOld) noteOld.remove();
+    if (typoPageRowEl && typoPageRowEl.parentNode === box) typoPageRowEl.remove();
+    if (typoPageInfo === null && !typoPageFailed) { typoPageRowEl = null; return; }   // 未取到：整行不出现
+    var row = document.createElement('div');
+    row.className = 'ed-pagerow';
+    if (typoPageFailed) {
+      row.textContent = '页数信息不可用';
+    } else if (typoPageInfo && typoPageInfo.pages == null) {
+      row.textContent = '尚未渲染';   // 无渲染历史：如实说明，不臆造页数
+    } else if (typoPageInfo) {
+      row.textContent = '上次渲染 ' + typoPageInfo.pages + ' 页（目标 ' + typoPageInfo.target + ' 页）';
+      if (typoPageInfo.pages > typoPageInfo.target) {
+        var more = document.createElement('button');
+        more.type = 'button';
+        more.className = 'ed-pagemore';
+        more.textContent = '切到紧凑档';
+        more.title = '一键应用紧凑预设（只调整呈现层参数，不改动内容）';
+        more.addEventListener('click', function () {
+          var before = readTypo();
+          typoPreset = 'compact';
+          applyTypo(Object.assign({}, TYPO_PRESETS.compact.values));
+          var changed = Object.keys(TYPO_PRESETS.compact.values)
+            .filter(function (k) { return Math.round(before[k] * 100) !== Math.round(TYPO_PRESETS.compact.values[k] * 100); })
+            .map(function (k) { return TYPO_FIELD_NAMES[k] + ' ' + before[k] + '→' + TYPO_PRESETS.compact.values[k] + TYPO_FIELD_UNITS[k]; });
+          typoPresetNote = changed.length
+            ? '已应用紧凑预设：' + changed.join('、') + '。内容未改动，效果以下次导出为准。'
+            : '当前已是紧凑档取值，无参数变化。';
+          renderTypoPageRow(box);
+          window.dispatchEvent(new Event('ed-typo'));
+        });
+        row.appendChild(more);
+      }
+    }
+    var footerNote = box.querySelector('.ed-note');
+    if (footerNote) box.insertBefore(row, footerNote); else box.appendChild(row);
+    typoPageRowEl = row;
+    if (typoPresetNote) {
+      var note = document.createElement('div');
+      note.className = 'ed-pagenote';
+      note.textContent = typoPresetNote;
+      if (footerNote) footerNote.parentNode.insertBefore(note, footerNote); else box.appendChild(note);
+    }
+  }
+  // 页数数据懒加载：首次切到「排版」页签时取（/layout-info 只读；再激活时重取——渲染/导出后页数会变）。
+  function loadTypoPageInfo() {
+    fetch('/layout-info?id=' + encodeURIComponent(DOC_ID))
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+      .then(function (d) { typoPageFailed = false; typoPageInfo = (d && d.ok) ? { pages: d.pages, target: d.target } : null; })
+      .catch(function () { typoPageFailed = true; })
+      .then(function () { renderTypoPageRow(null); });
+  }
   function buildTypoPane() {
     var v = readTypo();
+    typoPreset = detectTypoPreset(v);
     typoPane.innerHTML = '';
     var box = document.createElement('div');
     box.className = 'ed-typo';
+    // 三档预设置顶：命中档高亮（aria-pressed）；应用走 applyTypo 单一通道后派发 ed-typo 让滑杆与行重建。
+    var prow = document.createElement('div');
+    prow.className = 'ed-presets';
+    prow.setAttribute('role', 'group');
+    prow.setAttribute('aria-label', '排版密度预设');
+    Object.keys(TYPO_PRESETS).forEach(function (key) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ed-preset' + (typoPreset === key ? ' ed-preset-on' : '');
+      b.setAttribute('data-preset', key);
+      b.setAttribute('aria-pressed', typoPreset === key ? 'true' : 'false');
+      b.textContent = TYPO_PRESETS[key].label;
+      b.title = '应用「' + TYPO_PRESETS[key].label + '」密度（字号/行距/页边距/段距/章节距 五项一起调）';
+      b.addEventListener('click', function () {
+        typoPreset = key;
+        applyTypo(Object.assign({}, TYPO_PRESETS[key].values));
+        window.dispatchEvent(new Event('ed-typo'));
+      });
+      prow.appendChild(b);
+    });
+    box.appendChild(prow);
     var FIELDS = [
       ['fontSize', '正文字号', 11, 15, 0.5, 'px'],
       ['lineHeight', '行距', 1.3, 1.8, 0.01, ''],
@@ -2150,6 +2265,16 @@
         v[key] = Math.round(val * 100) / 100;
         input.value = v[key];
         num.value = v[key];
+        // 手动改任一滑杆 → 预设失选 + 应用结果行清空（诚实 UI：面板当前值不再代表任何档位）。
+        // 只就地更新按钮态，不整面板重建（拖动中重建会打断滑杆拖拽）。
+        if (typoPreset !== null || typoPresetNote) {
+          typoPreset = null;
+          typoPresetNote = '';
+          box.querySelectorAll('.ed-preset').forEach(function (b) {
+            b.classList.remove('ed-preset-on');
+            b.setAttribute('aria-pressed', 'false');
+          });
+        }
         applyTypo(v);
       };
       input.addEventListener('input', function () { commit(input.value); });
@@ -2164,6 +2289,8 @@
     reset.textContent = '恢复默认排版';
     reset.addEventListener('click', resetTypo);
     box.appendChild(reset);
+    // 页数感知行（A3）：数据懒加载后由 renderTypoPageRow 原位填充；取到前整行不出现。
+    renderTypoPageRow(box);
     var note = document.createElement('div');
     note.className = 'ed-note';
     note.textContent = '设置随文档保存，导出 PDF 与屏幕预览一致。修改正文排版不影响编辑器界面。';

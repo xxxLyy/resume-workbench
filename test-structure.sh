@@ -100,8 +100,11 @@ node ./test-fixtures/reliability/test-themes-blue-purge.mjs
 # ===== S6-A1：模板库装配（meta.theme 数据源 → /edit 服务与渲染/快照冻结输入按主题装配；未知主题报错不写盘；classic/legacy 零回归）=====
 node ./test-fixtures/reliability/test-themes-assemble.mjs
 
-# ===== S6-A2：模板库 UI（/theme-preview 只读+闸门+锁 CSP；/theme/apply 写 meta.theme 重装配；模板页签/主题卡/blob iframe/切换语义）=====
+# ===== S6-A2：模板库 UI（/theme-preview 只读+闸门+锁 CSP；/theme/apply 写 meta.theme 重装配；模板页签/主题卡/srcdoc iframe/切换语义）=====
 node ./test-fixtures/reliability/test-theme-picker-ui.mjs
+
+# ===== A3：排版密度三档预设 + 页数感知收紧建议（只建议不删内容：正文零变化/仅 typo 块变化/尚未渲染不臆造）=====
+node ./test-fixtures/reliability/test-typo-presets.mjs
 
 # ===== B12H：bodyHash 渲染身份口径（只算打印可见内容）：打印不可见编辑态不影响身份，正文变化仍改变身份 =====
 node ./test-fixtures/reliability/test-bodyhash-identity.mjs
@@ -2101,7 +2104,7 @@ const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','
   '/ai/zone-analyze','/ai/zone-rewrite',
   '/api/extract','/app','/app/add','/app/archive-regenerate','/app/del','/app/ics','/app/update','/applications',
   '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf',
-  '/job-panel.js','/job/brief','/job/changes','/job/create','/job/generate','/job/gen-cancel','/job/gen-retry','/job/gen-start','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',
+  '/job-panel.js','/job/brief','/job/changes','/job/create','/job/generate','/job/gen-cancel','/job/gen-retry','/job/gen-start','/layout-info','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',
   '/materials','/new','/onboarding','/onboarding/guided','/onboarding/star-suggest','/onboarding/step','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings','/eval/create','/eval/promote','/evals',
   '/snapshot/baseline','/snapshot/note','/snapshot/pdf','/snapshot/view','/snapshots','/stats','/tag',
   '/theme-preview','/theme/apply',

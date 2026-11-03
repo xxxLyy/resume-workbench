@@ -4754,6 +4754,27 @@ async function handler(req, res) {
       updateMeta(root, docId, (m) => ({ ...(m || {}), theme: th }));
       return sendJson(200, { ok: true, theme: th });
     }
+    // ===== A3：排版密度页数感知（只读）：上次渲染页数 + 目标页数 =====
+    // 数据源（如实、不臆造）：① pdfs/<id>.pdf 现测（pdfinfo，与 /export 同方法）= 上次真实渲染；
+    // ② 回退 meta.exports 渲染历史里最近一条 pages（:4316 导出记录既有字段）；两者皆缺 → pages:null。
+    // 目标 = job.brief.pages（normBrief 缺省 2），与导出 overpage 标记同口径（||2）。
+    // 零写路径：不渲染、不 updateMeta、不碰文档——前端只据此显示「上次渲染 N 页（目标 M 页）/尚未渲染」。
+    if (req.method === 'GET' && url.pathname === '/layout-info') {
+      const qid = url.searchParams.get('id') || '';
+      if (!VALID_ID.test(qid)) return sendJson(400, { ok: false, error: 'invalid id' });
+      if (!fs.existsSync(docPath(qid))) return sendJson(404, { ok: false, error: 'doc not found' });
+      const m = loadMeta()[qid] || {};
+      const target = Number(m.job && m.job.brief && m.job.brief.pages) || 2;
+      let pages = null;
+      if (fs.existsSync(pdfPath(qid))) {
+        try { pages = parseInt(execFileSync('pdfinfo', [pdfPath(qid)], { timeout: 10000 }).toString().match(/Pages:\s*(\d+)/)?.[1] || '0', 10) || null; } catch { pages = null; }
+      }
+      if (pages == null) {
+        const list = exportsOf(m);
+        for (let i = list.length - 1; i >= 0; i--) { if (Number(list[i] && list[i].pages) > 0) { pages = Number(list[i].pages); break; } }
+      }
+      return sendJson(200, { ok: true, pages, target });
+    }
     if (req.method === 'GET' && url.pathname === '/snapshots') {
       const dir = snapDir(id);
       const files = fs.existsSync(dir) ? fs.readdirSync(dir).sort().reverse() : [];
