@@ -4880,6 +4880,9 @@ async function handler(req, res) {
       const app = loadApps().find((a) => a.id === aid);
       if (!app) return send(404, 'app not found', 'text/plain');
       const interviews = Array.isArray(app.interviews) ? app.interviews : [];
+      // F3：面试准备建议历史（最新在前）。形状守卫：坏形状当无记录（无 preps 时维持现状空态）；
+      // 只呈现 text 为字符串的条目，模型输出与历史数据均不可信，渲染一律 escHtml。
+      const preps = Array.isArray(app.preps) ? app.preps.filter((p) => p && typeof p.text === 'string') : [];
       const now = Date.now();
       const dueBadge = app.dueDate && (new Date(app.dueDate).getTime() - now) < 48 * 3600 * 1000 ? badge('warn', '到期') : '';
       const archiveMissing = !app.archive || app.archive.status !== 'ok';
@@ -4926,7 +4929,10 @@ async function handler(req, res) {
     </div>
     <div class="card" style="margin-top:12px">
       <b>AI 面试准备建议</b> <button id="prepBtn">生成</button><span id="prepMsg"></span>
-      <div id="prepOut" style="margin-top:8px;font-size:13px;white-space:pre-wrap"></div>
+      <div id="prepOut" style="margin-top:8px;font-size:13px;white-space:pre-wrap">${preps.length ? escHtml(preps[0].text) + (preps[0].at ? `<div style="font-size:12px;color:var(--mut);margin-top:4px">生成于 ${escHtml(preps[0].at)}</div>` : '') : ''}</div>
+      ${preps.length > 1 ? `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--mut)">历史生成（${preps.length - 1}）</summary>${preps.slice(1).map((p) => `<div style="margin-top:8px;font-size:12px;color:var(--mut)">${escHtml(p.at || '时间缺失')}</div><pre style="font-size:12px;white-space:pre-wrap;margin:2px 0 0;font-family:inherit">${escHtml(p.text)}</pre>`).join('')}</details>` : ''}
+      <!-- F3：preps 只读服务端渲染（模型输出不可信，一律 escHtml）；生成成功的前端回调仍就地覆盖
+           #prepOut（行为不变），刷新后由这里承接最近一次与更早版本收起的折叠区。 -->
     </div>
     <script>var APPID = ${jsonScript(app.id)};</script>
     <script>
@@ -5000,6 +5006,14 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       let text;
       try { text = await chat(root, sys, user, { lease: leaseOf(req) }); }
       catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
+      // F3：成功才持久化 {text, at} 进 app.preps（最新在前，上限 20；saveApps 落既有 applications.json，无新文件）。
+      // 409（未配置 LLM）/400（非法 id）/502（模型失败）任何失败路径都在此之前返回，零写入。
+      // 跨 await 重新读表（同 /eval/promote 的 AUD-14 口径）：生成期间投递可能被删除或修改。
+      const appsNow = loadApps();
+      const appNow = appsNow.find((a) => a.id === body.id);
+      if (!appNow) return sendJson(404, { ok: false, error: '投递记录已删除，未保存本次建议' });
+      appNow.preps = [{ text, at: timestamp() }, ...(Array.isArray(appNow.preps) ? appNow.preps : [])].slice(0, 20);
+      saveApps(appsNow);
       return sendJson(200, { ok: true, text });
     }
     // ===== JD 链接读取 =====
