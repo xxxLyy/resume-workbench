@@ -1,0 +1,72 @@
+/* resume-magazine.css — S6-A1 杂志感展示版（roadmap 决策 2：杂志感作为可选“展示版”进 S6）
+   边界（S2 交接清单）：只携带简历内容样式 + 自己的最小 print 隐藏规则，不为旧文档外壳样式负责。
+   版式语言：衬线大标题刊头 + 小字号字距拉开的小节眉标（短横线收尾）+ 留白加大 + 日期右齐等宽数字。 */
+@page { size: A4; margin: 0; }
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: #fff; color: #1f1d1a; }
+body {
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", SimSun, Arial, sans-serif;
+  font-size: 12.6px;
+  line-height: 1.5;
+}
+.sheet {
+  position: relative;
+  width: 210mm;
+  min-height: 297mm;
+  padding: 14mm 13mm 12mm;
+  background: #fff;
+  page-break-after: always;
+}
+.sheet:last-child { page-break-after: auto; }
+.header {
+  text-align: left;
+  padding-bottom: 4mm;
+  margin-bottom: 6mm;
+  border-bottom: 3px solid #1c1917;
+}
+h1 {
+  margin: 0 0 1.4mm;
+  font-family: Georgia, "Songti SC", "Noto Serif CJK SC", SimSun, serif;
+  font-size: 34px;
+  line-height: 1.05;
+  font-weight: 700;
+  color: #1c1917;
+  letter-spacing: 0.5px;
+}
+.contact { font-size: 11.5px; line-height: 1.55; color: #57534e; letter-spacing: 0.3px; }
+.section { margin-top: 4.5mm; }
+.section-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #9a3412;
+  letter-spacing: 2.5px;
+  margin-bottom: 2mm;
+  break-after: avoid;
+}
+.section-title::after { content: ""; display: block; width: 9mm; height: 2px; background: #9a3412; margin-top: 1mm; }
+.summary { margin: 0; font-size: 13.2px; color: #292524; }
+.plain-lines p { margin: 0 0 0.7mm; }
+.entry-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 3mm;
+  margin: 0 0 0.5mm;
+  break-after: avoid;
+  break-inside: avoid;
+}
+.entry-title { font-size: 13.6px; font-weight: 800; color: #1c1917; }
+.entry-role { font-size: 12px; color: #78716c; }
+.entry-date { font-size: 11.4px; color: #a8a29e; white-space: nowrap; margin-left: auto; font-variant-numeric: tabular-nums; }
+ul { list-style: none; padding: 0; margin: 0 0 1.6mm; }
+li { position: relative; padding-left: 4mm; margin: 0.4mm 0; break-inside: avoid; }
+li::before {
+  content: "▪";
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: #9a3412;
+  font-size: 11px;
+  line-height: 1.7;
+}
+@media print { .edit-toolbar, .page-line, .toast, .recovery-bar { display: none !important; } }

@@ -2,7 +2,8 @@
 
 > 写给未来的设计/开发接手人。本文件是**规范**（normative），不是灵感稿。
 > 与代码冲突时以代码为准，但代码与本文件冲突 = 需要修代码或修本文件，不要默默分叉。
-> 冻结件（`template.html` / `themes/` / `render.mjs`）不在本系统的可改范围内，见 §6。
+> 冻结件（`template.html` / `render.mjs`）不在本系统的可改范围内，见 §7（`themes/` 已解冻，边界见 §7：
+> 新增主题文件允许，`resume-classic.css` 内容为渲染契约不改动）。
 
 ---
 
@@ -143,7 +144,7 @@ FIELDS（editor-shell.js） → typoCss(v) → #typo-custom（落盘进 <head>�
 | 文件 | 状态 |
 |---|---|
 | `template.html` | **冻结**：可读不可改。简历打印排版本轮零改动。（排版设置读写钩子 `window.__edGetTypo/__edSetTypo` 在此文件，改它即越界。） |
-| `themes/` | **冻结**：简历渲染主题。 |
+| `themes/` | **B3 已解冻（2026-11-02 用户拍板，commit 8abdfcb）**：新增主题文件允许；`resume-classic.css` 现有内容为渲染契约不改动。 |
 | `render.mjs` | **冻结**：只消费 `#typo-custom`，不改。 |
 | `docs/` `snapshots/` `pdfs/` `backups/` `logs/` `*.json`（`config.json` / `applications.json` / `materials.json` / `evaluations.json` / `docs-meta.json` / `.chromium-choice.json`） | **真实数据**：禁写禁删。要复现一律用临时 `RESUME_ROOT` + 随机端口 + 合成文档。 |
 | `server.mjs` / `editor-shell.js` / `ai-panel.js` / `job-panel.js` / `zone-panel.js` | 可改：应用页样式与注入层样式的落点。 |

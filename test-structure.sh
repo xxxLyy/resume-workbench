@@ -97,6 +97,9 @@ node ./test-fixtures/reliability/test-render-safe.mjs
 # ===== B3T：themes 旧蓝清除（用户批准解冻）：#409eff/#4b5563/#1f2937 家族与冷色黑名单 0 命中 + print 兜底/注入层覆盖锚点仍在 =====
 node ./test-fixtures/reliability/test-themes-blue-purge.mjs
 
+# ===== S6-A1：模板库装配（meta.theme 数据源 → /edit 服务与渲染/快照冻结输入按主题装配；未知主题报错不写盘；classic/legacy 零回归）=====
+node ./test-fixtures/reliability/test-themes-assemble.mjs
+
 # ===== B12H：bodyHash 渲染身份口径（只算打印可见内容）：打印不可见编辑态不影响身份，正文变化仍改变身份 =====
 node ./test-fixtures/reliability/test-bodyhash-identity.mjs
 
@@ -2110,29 +2113,31 @@ EOF
 echo "── S2-A: 注入层纪律（仅屏幕 / 不声明正文文字属性 / !important 不增）+ print 仍在 + themes 基线比对（B3T 清除版白名单）──"
 # RELIABILITY_BASELINE_BEGIN
 S2_BASE=5208e44
-# B3T（2026-11-03，用户批准解冻 themes/）：基线之上允许且仅允许一次已批准的旧蓝清除改动——
-# working tree 相对基线的 themes 差异，其内容 sha1 必须恰为 B3T 清除版（下方钉定值）；回退到基线
-# 原版（旧蓝复活）也会被 test-themes-blue-purge 夹具判红。其余任何字节漂移一律红。
+# B3T（2026-11-03，用户批准解冻 themes/）：classic 清除旧蓝后其内容成为渲染契约，逐字节钉定 B3T 清除版 sha1。
+# S6-A1（2026-11-04，模板库 A）：themes/ 解冻合同落地（DESIGN.md §7）——新增主题文件允许
+# （resume-dual/resume-magazine 等 themes/resume-*.css），resume-classic.css 仍不改动。
+# classic 钉定与新增主题 print 规则检查【无条件执行】（git 无关：浅克隆同样生效，比旧「基线在才比对」更严）；
+# 基线 revision 的在否只决定跳过语义（V1 合同，test-harness.mjs 钉定：普通模式可跳过、严格模式必须失败）。
 S2_B3T_SHA1=e6efa7fa09f10e658ba73d62d4866aa1e24f5c1f
-# 浅克隆（--depth 1）里没有这个 revision → 跳过比对（不能误报「themes/ 被改动」）
+S2_THEMES_NOW=$(shasum -a 1 themes/resume-classic.css | awk '{print $1}')
+if [ "$S2_THEMES_NOW" != "$S2_B3T_SHA1" ]; then
+  echo "❌ themes/resume-classic.css 被改动（渲染契约：必须保持 B3T 清除版 sha1 $S2_B3T_SHA1，实测 $S2_THEMES_NOW）"
+  exit 1
+fi
+# 新增主题文件必须自带最小 print 隐藏规则（S2 交接清单：新主题只携带简历内容样式+自己的最小 print 隐藏规则）
+for S2_THEME_FILE in themes/resume-*.css; do
+  grep -qF '@media print { .edit-toolbar, .page-line, .toast, .recovery-bar { display: none !important; } }' "$S2_THEME_FILE" \
+    || { echo "❌ $S2_THEME_FILE 缺少最小 print 隐藏规则（新主题自带打印隐藏，S2 交接清单）"; exit 1; }
+done
 if git cat-file -e "$S2_BASE^{commit}" 2>/dev/null; then
-  if git diff --quiet "$S2_BASE" -- themes/; then :; else
-    S2_THEMES_NOW=$(shasum -a 1 themes/resume-classic.css | awk '{print $1}')
-    if [ "$S2_THEMES_NOW" = "$S2_B3T_SHA1" ]; then
-      echo "⏭  S2 冻结件比对：themes/ 差异 = B3T 已批准的旧蓝清除版（sha1 白名单命中）"
-    else
-      echo "❌ themes/ 被改动且不是 B3T 清除版（基线 $S2_BASE；白名单 sha1 $S2_B3T_SHA1，实测 $S2_THEMES_NOW）"
-      git diff --stat "$S2_BASE" -- themes/
-      exit 1
-    fi
-  fi
+  echo "⏭  S2 冻结件比对：classic 钉定 B3T 清除版 sha1 ✓（新增主题文件 print 隐藏规则俱在；基线 $S2_BASE 在场）"
 else
   # 严格验收下冻结基线是必需项：缺基线必须失败，不能用一个更近的提交让差异消失，也不能跳过比对。
   if [ "${RESUME_TEST_STRICT:-0}" = 1 ]; then
     echo "❌ 严格验收缺冻结基线 $S2_BASE；先取得该提交，不能跳过比对"
     exit 1
   fi
-  echo "⏭  S2 冻结件比对（跳过：本地没有 $S2_BASE 这个 revision，浅克隆）"
+  echo "⏭  S2 冻结件比对（classic sha1 已无条件比对通过；基线 $S2_BASE 不在，浅克隆）"
 fi
 # RELIABILITY_BASELINE_END
 grep -qF '@media print { .edit-toolbar, .page-line, .toast, .recovery-bar { display: none !important; } }' themes/resume-classic.css \

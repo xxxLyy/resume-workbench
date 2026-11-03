@@ -34,7 +34,7 @@ import { publishPair, makeIdentityValidator } from './render-publish.mjs';   // 
 const JD_MAX_CHARS = 64 * 1024;
 import { applyOps, reviewConsistency, refFresh, buildEvidencePrompt, parseEvidence, buildInterviewPrompt, parseInterview, guardOps, exportChecks, layoutDiagnose, resolveInterviewSources, interviewSourceView, evidenceSourceView } from './evidence.mjs';
 import { completeGenResult } from './gen-result.mjs';   // 任务完成判定纯函数（设计 §4）：显式成功/拒绝 + 独立工作副本
-import { assembleTemplate, themeRegistration } from './template.mjs';
+import { assembleTemplate, themeCss, themeRegistration } from './template.mjs';
 import { ICONS } from './vendors/icons.mjs';  // Lucide 图标数据（纯数据文件，零 npm 依赖）
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -1182,9 +1182,10 @@ function buildManifest(frozen, html, meta) {
 }
 // 冻结点统一出口：freezeHtml（内联 typo、自包含）→ 原子写 <ts>.html + <ts>.manifest.json。返回 frozen 结果。
 function writeFrozenSnapshot(dir, ts, html, meta) {
-  const frozen = freezeHtml(html, meta || {});
+  const themed = applyDocTheme(html, meta || {});   // S6-A1：快照冻结的是按主题装配的渲染输入（主题 CSS 随快照冻结）
+  const frozen = freezeHtml(themed, meta || {});
   atomicWrite(path.join(dir, ts + '.html'), frozen.html);
-  atomicWrite(path.join(dir, ts + '.manifest.json'), JSON.stringify(buildManifest(frozen, html, meta || {})));
+  atomicWrite(path.join(dir, ts + '.manifest.json'), JSON.stringify(buildManifest(frozen, themed, meta || {})));
   return frozen;
 }
 function pruneSnapshots(id, dir, extraTs) {
@@ -1302,13 +1303,47 @@ async function renderDoc({ src, out, env, lease }) {
   }
 }
 
+// ===== S6-A1（模板库 A）：按文档 meta.theme 的装配解析（数据与渲染集成的唯一出口）=====
+// meta.theme 是文档主题的数据源（docs-meta 既有字段；主题选择 UI 属 A2，本卡只通管线）：
+//   - 值命中 themes/resume-*.css → 装配输出（/edit 服务与渲染/快照冻结输入）内联该主题 CSS，
+//     与 themes 文件逐字节一致（sha1 同 freeze cssHash 口径）；主样式块已登记同一 data-theme 时零改动
+//     （classic 文档渲染零回归，既有文档字节不动）。
+//   - 无值 / 'legacy'（T7 迁移哨兵）→ 原样保留实际内联 CSS（不做迁移）。
+//   - 其余未知值 → 沿用 themeCss 抛错并列可用主题（template.mjs 既有口径）；装配先于任何写盘 → 不写脏数据。
+// 新建文档路径（/new、向导建档、导入）仍 themeRegistration('classic') 默认（A2 承接选择入口），不经本函数。
+const MAIN_STYLE_RE = /<style\b([^>]*)>([\s\S]*?)<\/style>/gi;
+function docThemeAttr(html) {
+  MAIN_STYLE_RE.lastIndex = 0;
+  let m;
+  while ((m = MAIN_STYLE_RE.exec(String(html))) !== null) {
+    if (/\bid\s*=\s*["']typo-custom["']/i.test(m[1])) continue;
+    const dt = /\bdata-theme\s*=\s*["']([^"']*)["']/i.exec(m[1]);
+    return dt ? dt[1] : null;
+  }
+  return null;
+}
+function applyDocTheme(html, meta) {
+  const t = String((meta && meta.theme) || '').trim();
+  if (!t || t === 'legacy') return html;                 // 既有文档保留实际内联 CSS，不做迁移
+  if (docThemeAttr(html) === t) return html;             // 已是该主题 → 字节零改动
+  const css = themeCss(t);                               // 未知主题在替换前抛错（列可用主题）
+  const block = `<style data-theme="${t}">${css}</style>`;
+  MAIN_STYLE_RE.lastIndex = 0;
+  let m;
+  while ((m = MAIN_STYLE_RE.exec(String(html))) !== null) {
+    if (/\bid\s*=\s*["']typo-custom["']/i.test(m[1])) continue;
+    return html.slice(0, m.index) + block + html.slice(m.index + m[0].length);
+  }
+  return html;                                           // 无主样式块：无从装配，原样（与「无主样式」容忍口径一致）
+}
+
 // 当前文档陈旧状态单出口（staleInfo）：当前 HTML + 当前 meta 冻结出 renderInputId，
 // 对照 meta.lastRenderInputId 与 PDF 存在性 → none/stale/fresh。mtime 不作正确性依据（仅日志/展示）。
 // 调用方：首页徽章、/save 响应 pdfStale、/pdf、/export。
 function currentRenderState(id) {
   const html = fs.readFileSync(docPath(id), 'utf8');
   const meta = loadMeta()[id] || {};
-  const frozen = freezeHtml(html, meta);
+  const frozen = freezeHtml(applyDocTheme(html, meta), meta);   // S6-A1：陈旧判定与渲染同用一份按主题装配的输入
   const pdfExists = fs.existsSync(pdfPath(id));
   const si = staleInfo(meta, { renderInputId: frozen.renderInputId, pdfExists });
   let docMtime = null;   // 仅日志参考（判定不看它）
@@ -1323,8 +1358,8 @@ function currentRenderState(id) {
 // POST /render、/export 与 /pdf 的缺失/过期自动重渲、/rollback、/restructure 一律走这里；绝不直渲磁盘 HTML
 // （迁移后当前文档不含内联 typo，直渲会丢排版）。
 async function renderCurrent(id, { lease } = {}) {
-  const html = fs.readFileSync(docPath(id), 'utf8');
   const meta = loadMeta()[id] || {};
+  const html = applyDocTheme(fs.readFileSync(docPath(id), 'utf8'), meta);   // S6-A1：渲染输入按 meta.theme 装配
   const frozen = freezeHtml(html, meta);   // 任务启动即冻结输入
   const tmp = path.join(os.tmpdir(), `resume-frozen-${id}-${Date.now()}-${process.pid}.html`);
   atomicWrite(tmp, frozen.html);
@@ -1881,7 +1916,7 @@ function docInfo(id, m) {
     mtimeMs: stat.mtimeMs,
     degraded: content.includes('以下为 PDF 提取的原文'),
     hash: contentHash(content),
-    renderInputId: freezeHtml(content, m || {}).renderInputId   // 当前 HTML+当前 meta 的冻结标识（供 staleInfo）
+    renderInputId: freezeHtml(applyDocTheme(content, m), m || {}).renderInputId   // S6-A1：与渲染输入同源（当前 HTML+当前 meta 的冻结标识，供 staleInfo）
   };
 }
 
@@ -3277,6 +3312,8 @@ async function handler(req, res) {
         html = html.replace('<button id="histBtn"', `<button id="homeBtn" class="secondary" title="返回工作台">${icon('house', 13)} 首页</button><button id="histBtn"`);
       }
       const vm = loadMeta()[id] || {};
+      // S6-A1：编辑器所见即渲染所得——服务输出与渲染输入同走按主题装配（applyDocTheme，见 currentRenderState 上方）
+      html = applyDocTheme(html, vm);
       // 铁律一（编辑入口=渲染组装同款）+ S1 热修裁决：有效 typo = (meta.typo 定义且非空) ? meta.typo : 内联值。
       // 已迁移文档（meta.typo 定义）：serve 前剥离残留内联，非空则注入 meta.typo（'' 且无内联 → 不注入），编辑器所见即渲染所得。
       // meta.typo='' 且内联存在（手工态）：与 freezeHtml 同款回退内联（T7 承载缺陷修复，消除 WYSIWYG 分裂）。
@@ -3348,6 +3385,8 @@ async function handler(req, res) {
       }
     }
     if (req.method === 'POST' && url.pathname === '/new') {
+      // S6-A1：新建文档仍 classic 默认（meta.theme 的选择入口属 A2）；既有/被指派主题的文档在
+      // 服务与渲染装配时按 meta.theme 选主题（applyDocTheme），不经这里的建档装配。
       const tpl = assembleTemplate('classic');   // 主题唯一源装配（template.mjs）；代码/静态资源永远来自 APP_ROOT
       let i = 0, newId;
       do { newId = i === 0 ? 'doc' : 'doc-' + i; i++; } while (fs.existsSync(docPath(newId)));
