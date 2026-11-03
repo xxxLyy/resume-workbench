@@ -46,6 +46,17 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     + '.jp-msg{font-size:11px;color:var(--ed-mut)}'
     + '.jp-msg.is-warn{color:var(--ed-warn)}'
     + '.jp-msg.is-ok{color:var(--ed-ok)}'
+    // A4：采纳率摘要行 + 「AI 记住的偏好」小节（透明化；删除/清空是普通动作 → 中性描边）
+    + '.jp-adopt{font-size:11px;color:var(--ed-mut);line-height:1.6;margin:2px 0 6px}'
+    + '.jp-prefs{border:1px solid var(--ed-line);border-radius:6px;padding:8px 10px;margin:4px 0 8px}'
+    + '.jp-prefs h4{margin:0 0 2px;font-size:12px;color:var(--ed-ink)}'
+    + '.jp-prefgroup{margin-top:6px}'
+    + '.jp-prefcap{font-size:11px;color:var(--ed-mut);margin-bottom:2px}'
+    + '.jp-prefrow{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ed-ink);line-height:1.5;padding:1px 0}'
+    + '.jp-prefrow span{flex:1;min-width:0;overflow-wrap:anywhere}'
+    + '.jp-prefdel,.jp-prefclear{border:1px solid var(--ed-line);border-radius:6px;background:var(--ed-panel);color:var(--ed-ink);font-size:11px;cursor:pointer;padding:1px 8px;min-height:22px}'
+    + '.jp-prefdel:hover,.jp-prefclear:hover{background:var(--ed-bg)}'
+    + '.jp-prefclear{margin-top:6px}'
     // S4a-T6 三段骨架（要求与证据｜修改清单｜导出检查）+ 证据表最小渲染
     + '.jp-secs{display:flex;gap:2px;border-bottom:1px solid var(--ed-line);padding-bottom:8px}'
     + '.jp-secs button{flex:1;min-height:26px;padding:0 8px;border:none;background:transparent;font-size:12px;font-weight:600;color:var(--ed-mut);cursor:pointer;border-radius:7px}'
@@ -1723,6 +1734,118 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     return box;
   }
 
+  // ===== A4：采纳率摘要（重新生成前的一行，只读派生自 changes[].gen+status；零新存储、零 AI 调用）=====
+  // 上一轮 = gen 最大的那一轮；接受/拒绝只数该轮内的终态。拒绝原因取候选 note（拒绝 chips 写入），
+  // top1 = 出现最多的原因。拒绝集中「表达类」（改写偏离用户表达：改变原意/过度夸大/不符合我的表达，
+  // 自定义原因按词根识别）≥2 条 → 提示轻度精简档（job.mjs DEGREE_RULES.light 三档已在）——只提示，不改参数。
+  var ADOPT_EXPRESSION_REASONS = ['改变原意', '过度夸大', '不符合我的表达'];
+  function renderAdoptionSummary() {
+    var changes = job.changes || [];
+    if (!changes.length) return null;
+    var maxGen = changes.reduce(function (m, c) { return Math.max(m, c.gen || 0); }, 0);
+    if (!maxGen) return null;
+    var last = changes.filter(function (c) { return (c.gen || 0) === maxGen; });
+    var acc = last.filter(function (c) { return c.status === 'accepted'; }).length;
+    var rej = last.filter(function (c) { return c.status === 'rejected'; });
+    var counts = {};
+    rej.forEach(function (c) { var r = String(c.note || '').trim() || '未填原因'; counts[r] = (counts[r] || 0) + 1; });
+    var top1 = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; })[0] || '';
+    var line = '上一轮 ' + last.length + ' 条建议：接受 ' + acc + '、拒绝 ' + rej.length
+      + (top1 ? '（原因 top1：' + top1 + '）' : '');
+    var expr = rej.filter(function (c) {
+      var n = String(c.note || '').trim();
+      return ADOPT_EXPRESSION_REASONS.indexOf(n) >= 0 || /表达|啰嗦|冗长/.test(n);
+    }).length;
+    if (rej.length >= 2 && expr >= 2) line += '。可考虑把幅度调到轻度精简。';
+    return line;
+  }
+  // ===== A4：「AI 记住的偏好」小节：两类记忆透明化 =====
+  // 服务端 job.feedback（随文档保存，进下次生成 prompt）+ 本机 prefs（localStorage，随生成请求提交）。
+  // 删除单条/清空只动记忆，不动正文；服务端删除走 /job/feedback-del（环形重写）；无模型配置也可管理。
+  // 两来源皆空 → 不渲染（自然为空）。
+  function readLocalPrefs() {
+    try {
+      var v = JSON.parse(localStorage.getItem('s4a-feedback-prefs') || '[]');
+      return Array.isArray(v) ? v.filter(function (x) { return typeof x === 'string' && x.trim(); }) : [];
+    } catch (e) { return []; }
+  }
+  function writeLocalPrefs(list) {
+    try { localStorage.setItem('s4a-feedback-prefs', JSON.stringify(list)); } catch (e) {}
+  }
+  function renderPrefsSection() {
+    var serverFb = (Array.isArray(job.feedback) ? job.feedback : []).filter(function (x) { return typeof x === 'string' && x.trim(); });
+    var localPrefs = readLocalPrefs();
+    if (!serverFb.length && !localPrefs.length) return null;
+    var box = document.createElement('div');
+    box.className = 'jp-prefs';
+    var h = document.createElement('h4');
+    h.textContent = 'AI 记住的偏好';
+    box.appendChild(h);
+    var sub = document.createElement('div');
+    sub.className = 'jp-meta';
+    sub.textContent = '这些记忆会随下次生成提交给模型（避免重蹈）；可逐条删除或清空。删除只影响记忆，不改动正文。';
+    box.appendChild(sub);
+    var mkGroup = function (cap, rows, src) {
+      var g = document.createElement('div');
+      g.className = 'jp-prefgroup';
+      var t = document.createElement('div');
+      t.className = 'jp-prefcap';
+      t.textContent = cap + '（' + rows.length + '）';
+      g.appendChild(t);
+      rows.forEach(function (text, i) {
+        var row = document.createElement('div');
+        row.className = 'jp-prefrow';
+        var span = document.createElement('span');
+        span.textContent = text;
+        row.appendChild(span);
+        var del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'jp-prefdel';
+        del.setAttribute('data-src', src);
+        del.setAttribute('data-index', String(i));
+        del.setAttribute('aria-label', '删除这条偏好（' + cap + '）');
+        del.textContent = '删';
+        del.addEventListener('click', function () {
+          if (src === 'server') {
+            api('/job/feedback-del?id=' + DOC_ID, { id: DOC_ID, index: i }).then(function (d) {
+              if (d && d.ok) { job.feedback = d.feedback || []; note('已删除一条偏好', 'ok'); render(); }
+              else note((d && d.error) || '删除失败', 'warn');
+            });
+          } else {
+            var cur = readLocalPrefs();
+            cur.splice(i, 1);
+            writeLocalPrefs(cur);
+            note('已删除一条本机偏好', 'ok');
+            render();
+          }
+        });
+        row.appendChild(del);
+        g.appendChild(row);
+      });
+      var clear = document.createElement('button');
+      clear.type = 'button';
+      clear.className = 'jp-prefclear';
+      clear.setAttribute('data-src', src);
+      clear.textContent = src === 'server' ? '清空随文档偏好' : '清空本机偏好';
+      clear.addEventListener('click', function () {
+        if (src === 'server') {
+          api('/job/feedback-del?id=' + DOC_ID, { id: DOC_ID, clear: true }).then(function (d) {
+            if (d && d.ok) { job.feedback = d.feedback || []; note('已清空随文档偏好', 'ok'); render(); }
+            else note((d && d.error) || '清空失败', 'warn');
+          });
+        } else {
+          writeLocalPrefs([]);
+          note('已清空本机偏好', 'ok');
+          render();
+        }
+      });
+      g.appendChild(clear);
+      return g;
+    };
+    if (serverFb.length) box.appendChild(mkGroup('随文档保存', serverFb, 'server'));
+    if (localPrefs.length) box.appendChild(mkGroup('本机（仅此浏览器）', localPrefs, 'local'));
+    return box;
+  }
   function renderChanges() {
     var head = document.createElement('div');
     head.className = 'jp-head';
@@ -1738,7 +1861,15 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     gen.addEventListener('click', function () {
       if (busy) return; busy = true; gen.disabled = true;
       note('生成中（约几十秒）…');
-      api('/job/generate?id=' + DOC_ID, {}).then(function (d) {
+      // A4：本机 prefs（s4a-feedback-prefs，记住偏好时写入但一直没发）随生成请求并入 feedback 数组
+      // —— 服务端既有合并逻辑进 job.feedback 环形（≤20）并经 buildJobPrompt【过往反馈】块进下次 prompt。
+      // 与服务端环形已有条目去重：重复提交只会稀释环形，不产生新信息；本地坏 JSON 视作无 prefs。
+      var prefs = [];
+      try { prefs = JSON.parse(localStorage.getItem('s4a-feedback-prefs') || '[]') || []; } catch (e) { prefs = []; }
+      if (!Array.isArray(prefs)) prefs = [];
+      var known = Array.isArray(job.feedback) ? job.feedback : [];
+      var fb = prefs.filter(function (x) { return typeof x === 'string' && x.trim() && known.indexOf(x) < 0; }).slice(-20);
+      api('/job/generate?id=' + DOC_ID, fb.length ? { feedback: fb } : {}).then(function (d) {
         busy = false;
         if (!d.ok) { note(d.error || '生成失败', 'warn'); gen.disabled = false; return; }
         job = d.job; note('已生成 ' + d.generated + ' 条建议（旧候选标记为 superseded）', 'ok'); render();
@@ -1758,8 +1889,14 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       head.appendChild(cmp);
     }
     root.appendChild(head);
+    // A4：采纳率摘要（重新生成前的一行只读派生：changes[].gen+status；零新存储、零 AI 调用，不渲染则无）
+    var adopt = renderAdoptionSummary();
+    if (adopt) { var adoptEl = document.createElement('div'); adoptEl.className = 'jp-adopt'; adoptEl.textContent = adopt; root.appendChild(adoptEl); }
     var briefFocus = renderBriefFocus();   // F2：评估报告预填的本次重点（生成按钮区旁，仅呈现与删除）
     if (briefFocus) root.appendChild(briefFocus);
+    // A4：「AI 记住的偏好」小节（两类记忆：服务端 job.feedback 环形 + 本机 prefs；可删单条/清空；不依赖模型配置）
+    var prefsSec = renderPrefsSection();
+    if (prefsSec) root.appendChild(prefsSec);
 
     // P3：修改清单任务状态行——running → 批次进度（「第 x/y 批」/重试中「重试第 x/y 批」，时长 ticker 复用）；
     // done/error 且有失败批 → 「重试该批」入口（成功批已落账不受影响）。

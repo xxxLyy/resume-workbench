@@ -4088,6 +4088,29 @@ async function handler(req, res) {
     // 生成建议（LLM 可选；失败不影响已有草稿与母版）
     // S4a-T4：内部转 changes 任务同步等待（响应形状不变，现有 job-panel 调用不破；T9 再切纯异步轮询）。
     // 结果经与 gen-start 完全相同的 taskId 校验链路落账（并发双击在 startGenTask 锁内只剩一个）。
+    // ===== A4：偏好记忆管理（②）：删除 job.feedback 单条或清空（环形重写）=====
+    // 本机 prefs 走 localStorage 不经服务端；本端点只管服务端环形（随文档保存的那份）。
+    // 守卫：400（非法 id / index 非法或超界）/ 404（缺文档）/ 409（非岗位草稿）；零模型依赖（管理不依赖生成）。
+    if (req.method === 'POST' && url.pathname === '/job/feedback-del') {
+      const body = await readBodyAuto(req);
+      const docId = String((body && body.id) || '');
+      if (!VALID_ID.test(docId)) return sendJson(400, { ok: false, error: 'invalid id' });
+      if (!fs.existsSync(docPath(docId))) return sendJson(404, { ok: false, error: 'doc not found' });
+      const isClear = body && body.clear === true;
+      const idx = Number(body && body.index);
+      const m0 = loadMeta()[docId] || {};
+      if (!m0.job) return sendJson(409, { ok: false, error: '该文档不是岗位草稿' });
+      const list0 = Array.isArray(m0.job.feedback) ? m0.job.feedback : [];
+      if (!isClear && (!Number.isInteger(idx) || idx < 0)) return sendJson(400, { ok: false, error: 'index 必须是非负整数，或 clear=true 清空' });
+      if (!isClear && idx >= list0.length) return sendJson(400, { ok: false, error: `index 超出偏好列表范围（当前 ${list0.length} 条）` });
+      updateMeta(root, docId, (m) => {
+        if (!m || !m.job) return m;
+        const cur = Array.isArray(m.job.feedback) ? m.job.feedback : [];
+        m.job.feedback = isClear ? [] : cur.filter((_, i) => i !== idx);
+        return m;
+      });
+      return sendJson(200, { ok: true, feedback: (loadMeta()[docId].job || {}).feedback || [] });
+    }
     if (req.method === 'POST' && url.pathname === '/job/generate') {
       if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型：草稿仍可手动编辑，配置后可生成建议' });
       const genBody = JSON.parse(await readBody(req) || '{}');   // 兼容既有调用形状：空对象体；坏 JSON 400 路径保持
