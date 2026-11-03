@@ -46,6 +46,10 @@ node ./test-fixtures/reliability/test-copy-semantic-fixes.mjs
 # ===== R3 投递看板与设置页：label 可访问性 / 消除 prompt 链 / 设置空态说明卡（隔离根浏览器夹具；Chromium 缺失 exit 2）=====
 node ./test-apps-settings-forms.mjs
 
+# ===== VQA 视觉验收截图（零断言、退出 0）：7 个关键页 1280x900 全页图落 /tmp/shots-after，
+#       视觉判定走 DESIGN.md 对照（人工/视觉流程），本夹具只产出真实隔离实例渲染截图；Chromium 缺失 exit 2 =====
+node ./test-fixtures/reliability/test-visual-screens.mjs
+
 # ===== BL-P6-01：logrotate 备份写失败（.1 为目录/不可写）必须放弃截断，主日志原样保留 =====
 node ./test-fixtures/reliability/test-logrotate-fail-path.mjs
 
