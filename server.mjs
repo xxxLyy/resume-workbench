@@ -1854,17 +1854,23 @@ const evalHistoryPayload = (records) => {
   for (const rec of records) { const rid = String((rec && rec.id) || ''); if (rid) out[rid] = evalRecordPayload(rec); }
   return out;
 };
-function evalHistoryRows(records) {
+// docExists（可选）= (docId) => boolean：调用方提供时，「已转适配」徽章在目标文档在盘时渲染为
+// /edit 链接（F1）；目标缺失或未提供判定（历史调用方/纯渲染切片）维持纯徽章，不做链接承诺。
+function evalHistoryRows(records, docExists) {
   if (!records.length) return '<div style="color:var(--mut);font-size:13px">还没有评估记录。到首页「针对岗位生成」里点「先评估这个岗位」，评估结果会记在这里。</div>';
   return records.map((rec) => {
     const rid = String((rec && rec.id) || '');
     const v = String((rec && rec.verdict) || '');
     const cls = EVAL_VERDICT_CLS[v] || 'mute';
     const promoted = !!(rec && rec.promotedTo);
+    const pid = promoted ? String(rec.promotedTo) : '';
     // sourceState ≠ recorded 的旧记录没有记录过母版 → 无从「转入适配」（from 取 rec.source.docId），按钮隐藏。
     const srcDoc = (rec && rec.source && rec.source.docId) ? String(rec.source.docId) : '';
     const canPromote = rec.sourceState === 'recorded' && !!srcDoc && !promoted;
-    const status = (promoted ? badge('ok', '已转适配', 'circle-check') : '')
+    const promotedBadge = pid && typeof docExists === 'function' && docExists(pid)
+      ? `<a href="/edit?id=${escAttr(pid)}">${badge('ok', '已转适配', 'circle-check')}</a>`
+      : (pid ? badge('ok', '已转适配', 'circle-check') : '');
+    const status = promotedBadge
       + (rec.sourceState !== 'recorded' ? badge('warn', '来源缺失', 'circle-alert') : '');
     // 动作列对齐：行容器 space-between 右对齐，按钮数不同的行会把「查看报告」挤到不同横坐标（实测两行左缘差 83px，扫读找不到同一列）。
     // 无「转入适配」的行放一枚同款隐形占位（visibility:hidden 保持同宽、disabled 且不带 data-eval-hist，
@@ -2007,7 +2013,7 @@ function listPage(showArchived = false) {
   const evalHomeRecords = loadEvals().map(evalRecordView);
   const evalHomeCard = evalHomeRecords.length ? `<div class="card" style="margin-top:var(--space-3)">
       <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><b class="card-title">评估历史</b><a href="/evals">查看全部 →</a></div>
-      <div id="evalHistory">${evalHistoryRows(evalHomeRecords.slice(0, 10))}</div>
+      <div id="evalHistory">${evalHistoryRows(evalHomeRecords.slice(0, 10), (did) => fs.existsSync(docPath(did)))}</div>
       <span id="evalHistoryMsg" role="status" style="font-size:12px;color:var(--mut)"></span>
     </div>` : '';
   // S4a-T5：重点 chips 建议值 = 素材 tags 聚合（首版不做历史 brief 聚合）
@@ -3674,7 +3680,7 @@ async function handler(req, res) {
       const records = loadEvals().map(evalRecordView);
       return send(200, page('评估历史', `<h1>评估历史</h1>
     <div class="card">
-      <div id="evalHistory">${evalHistoryRows(records)}</div>
+      <div id="evalHistory">${evalHistoryRows(records, (did) => fs.existsSync(docPath(did)))}</div>
       <span id="evalHistoryMsg" role="status" style="font-size:12px;color:var(--mut)"></span>
       <p style="font-size:12px;color:var(--mut);margin-top:10px"><a href="/">返回首页</a></p>
     </div>
@@ -5453,7 +5459,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     // ===== 复盘 =====
     if (req.method === 'GET' && url.pathname === '/stats') {
       const apps = loadApps();
-      if (!apps.length) return send(200, page('复盘', `<h1>复盘统计</h1><div class="card" style="text-align:center;padding:40px;color:var(--mut)">暂无投递记录<br><br><a href="/applications">先去投递看板添加记录</a></div>`, 'stats'));
+      const evals = loadEvals().map(evalRecordView);
+      // 早退口径（F1）：投递与评估**均为空**才早退——有评估无投递时闭环卡仍要渲染，不得被空投递吞掉。
+      if (!apps.length && !evals.length) return send(200, page('复盘', `<h1>复盘统计</h1><div class="card" style="text-align:center;padding:40px;color:var(--mut)">暂无投递记录<br><br><a href="/applications">先去投递看板添加记录</a></div>`, 'stats'));
       const funnel = APP_STATUSES.map((s) => [s, apps.filter((a) => a.status === s).length]);
       const byCh = {}; apps.forEach((a) => { byCh[a.channel || '未填'] = (byCh[a.channel || '未填'] || 0) + 1; });
       const byDoc = {}; apps.forEach((a) => { byDoc[a.docId] = (byDoc[a.docId] || 0) + 1; });
@@ -5462,7 +5470,51 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const n = apps.length;
       const funnelBar = funnel.map(([s, c]) => `<div style="display:flex;align-items:center;margin:6px 0"><span style="width:70px;font-size:12px">${s}</span><div style="flex:1;background:var(--bg);border-radius:4px;height:20px"><div style="background:var(--accent);height:100%;border-radius:4px;width:${n ? (c / n * 100) : 0}%"></div></div><span style="width:30px;text-align:right;font-size:12px">${c}</span></div>`).join('');
       const warn = n < 10 ? `<div class="badge warn" style="margin-bottom:10px">${icon('circle-alert', 11)}样本量小（n=${n}），仅供参考</div>` : '';
+      // —— F1 评估 ↦ 投递 闭环卡（读时派生 join：零落库、零新文件、零写回）——
+      // join 口径：promotedTo→docId→deliveredRefs 为主（deliveredRefs 按 docId 过滤 applications.json，
+      // 文档在不在盘不影响投递事实）；未转适配时公司·岗位 trim 后精确相等作兜底并标「同名匹配」
+      // （两边都非空才参与，防空名误配）。只呈现既有评估结论与投递状态事实，不做任何比率/概率包装。
+      const onDisk = (id) => !!id && fs.existsSync(docPath(id));
+      const evalLoopRows = evals.map((rec) => {
+        const pid = String(rec.promotedTo || '');
+        const refs = pid ? deliveredRefs(pid, apps)
+          : apps.filter((a) => {
+              const ec = String((rec && rec.company) || '').trim(), er = String((rec && rec.role) || '').trim();
+              return (ec || er) && String((a && a.company) || '').trim() === ec && String((a && a.role) || '').trim() === er;
+            });
+        const sameName = !pid && refs.length > 0;
+        const refBits = refs.map((a) => {
+          const ivs = Array.isArray(a.interviews) ? a.interviews.length : 0;
+          return escHtml(String((a && a.status) || '未填状态'))
+            + ((a && a.appliedAt) ? '（投于 ' + escHtml(String(a.appliedAt)) + '）' : '')
+            + (ivs ? ' · 面试 ' + ivs + ' 轮' : '');
+        }).join('；');
+        const refsHtml = refs.length
+          ? `<div style="font-size:12px;color:var(--mut);margin-top:2px">投递 ${refs.length} 条：${refBits}</div>`
+          : '<div style="font-size:12px;color:var(--mut);margin-top:2px">暂无投递记录</div>';
+        const destHtml = !pid ? '<span style="font-size:12px;color:var(--mut)">未转适配</span>'
+          : onDisk(pid) ? `<a href="/edit?id=${escAttr(pid)}">已转适配 →</a>`
+          : '<span style="font-size:12px;color:var(--mut)">原文档已删除</span>';
+        const v = String((rec && rec.verdict) || '');
+        return `<div style="border-top:1px solid var(--line);padding:8px 0">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        ${badge('ai', ((rec && rec.score) == null ? '—' : String(rec.score)) + ' / 5')}${badge(EVAL_VERDICT_CLS[v] || 'mute', EVAL_VERDICT_TEXT[v] || '未定')}
+        <span style="font-size:13px">${escHtml(String((rec && rec.company) || ''))}·${escHtml(String((rec && rec.role) || ''))}</span>
+        <span style="font-size:12px;color:var(--mut)">${escHtml(evalTimeText(rec && rec.createdAt))}</span>
+        ${sameName ? badge('warn', '同名匹配') : ''}${destHtml}
+      </div>${refsHtml}
+    </div>`;
+      }).join('');
+      // 提醒区：评估了却没投 = 建议投/谨慎 且未转适配 且评估来源已记录（legacy/invalid 来源不参与提醒）
+      const notDelivered = evals.filter((e) => ['apply', 'caution'].includes(String((e && e.verdict) || ''))
+        && !(e && e.promotedTo) && (e && e.sourceState) === 'recorded');
+      const remindHtml = notDelivered.length ? `<div style="margin-top:10px">${badge('warn', '评估了却没投 ' + notDelivered.length + ' 条', 'circle-alert')}${notDelivered.map((e) => `<div style="font-size:12px;color:var(--mut);margin-top:4px">${escHtml(String(e.company || ''))}·${escHtml(String(e.role || ''))} · ${escHtml(evalTimeText(e.createdAt))}</div>`).join('')}</div>` : '';
+      const loopCard = `<div class="card" style="margin-top:12px"><b class="card-title">评估 ↦ 投递</b>
+      <div style="font-size:11px;color:var(--mut);margin:4px 0">只呈现已记录的评估结论与投递事实（读时对照，不做推断）</div>
+      ${evalLoopRows || '<div style="color:var(--mut);font-size:13px;margin-top:6px">还没有评估记录。到首页「针对岗位生成」里点「先评估这个岗位」，评估结果会记在这里。</div>'}
+      ${remindHtml}</div>`;
       return send(200, page('复盘', `<div class="page-head"><h1>复盘统计</h1><span class="page-meta">n=${n}</span></div>${warn}
+    ${loopCard}
     <div class="card"><b class="card-title">状态分布</b><div style="font-size:11px;color:var(--mut);margin:4px 0">当前状态计数（非阶段漏斗；有面试记录即计入面试口径）</div>${funnelBar}</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px">
       <div class="card"><b class="card-title">按渠道</b>${Object.entries(byCh).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>

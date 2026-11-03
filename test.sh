@@ -2467,3 +2467,10 @@ else
     fail "S5F 端到端回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
   fi
 fi
+
+# ===== 16p. F1 评估↦投递闭环视图（复盘页）：promotedTo 主 join + 同名兜底 + 提醒区 + 空态 + 早退口径 + /evals「已转适配」徽章链接化（独立隔离根 HTTP 夹具，非浏览器段）=====
+if node test-fixtures/reliability/test-stats-loop-view.mjs; then
+  echo '✅ 评估↦投递闭环视图回归（主 join 投递事实与 /edit 链接 / 已删降级 / 同名兜底 / 提醒区 / 空态指引 / 有评估无投递不早退 / 徽章链接化 + 转义与零比率包装）'
+else
+  fail "评估↦投递闭环视图回归未通过 (exit $?)"
+fi
