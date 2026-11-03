@@ -1102,3 +1102,41 @@ Flash 23 条要点见各提交信息与 `b47-report` 工作流报告；收口时
 - **S4b-A（五阶段分阶段管线 + 分批并行/重试）为唯一剩余项**：按推荐「择机」——动的是刚完成可靠性
   加固的核心生成路径（3–4d 量级），建议与下次本来就要动管线的需求合并立项；诚实最小进度已把
   等待体验的痛点（276s 黑等）消掉大半，不构成紧迫性。
+
+## 完善轮（2026-11-02）：B1/B3/B12 定案收口 + S5 引导向导 + S4b-A 五阶段管线 + 调研功能四件（起点 `main@8d89e41`，收口 `main@0cfd115`）
+
+本轮由动态工作流逐卡实施（每卡：夹具先红/阴性对照 → 实现 → 后绿 → 单独提交），**13 卡全部 passed，共 13 个提交**；工作流终验四套件 EXIT=0。用户拍板：B1 双 accent 定案、B3+B12 解冻（基线重置）；S5 架构决策=向导进度以真实草稿文档承载；S4b-A=changes 五阶段+分批+重试。
+
+### 1. 逐卡结果（13/13 passed）
+
+| 卡 | 内容 | 提交 | 文件 | 证据要点（先红→后绿） |
+|---|---|---|---|---|
+| B1 | 双 accent 双区规则正式定案（注释+断言钉色值） | `8be22ae` | DESIGN.md、server.mjs、editor-shell.js、test-structure.sh | 三层红：①缺位——套件原无钉值断言（grep 0 命中）；②阴性对照（纯内存零写盘）4 例全红——应用页 `--accent` 实测 #111114≠#18181b、编辑器 `--ed-accent` 实测 #C2410D≠#C2410C、登记行被改写为 #B45309、值逃出登记行；③实现期既有审计真拦——首版注释带字面 hex 触发 test-structure.sh:2051 S2-B1 ❌（server.mjs:1180 组件层残留字面色），注释去 hex 后转绿 |
+| B3T | 解冻 themes/：清除「仅屏幕显示」旧蓝段 | `8abdfcb` | themes/resume-classic.css、test-structure.sh、test-themes-blue-purge.mjs🆕 | 先红：旧蓝家族残留 6 行（79/83/85/86/88/100 行，#409eff/#4b5563/#1f2937）；后绿：「仅屏幕显示」段在但无冷色（段内清除形态）、冷色黑名单 0 命中、print 兜底与注入层覆盖锚点俱在 |
+| B12H | bodyHash 渲染身份口径修正：只算打印可见内容 | `c0c172b` | freeze.mjs、test-structure.sh、test-bodyhash-identity.mjs🆕 | 实读定位 freeze.mjs:232（bodyHash=sha1(stripSaveState(stripZid(bodyInner(out))).trim())，stripSaveState 在 :85-87 只摘 #saveState 文案不摘属性）；消费方 renderInputId（:236）→ staleInfo（:255-261）三态、server.mjs:846 与 migrate-meta.mjs:156 定代次。先红：saveState 文案/data-state 变化即改变 bodyHash。**后果：既有 PDF 一次性判旧属预期**（提交信息登记） |
+| S5R | S5 服务端：设计定稿+路由+草稿文档承载 | `6ced332` | server.mjs、test-structure.sh、dev-docs/2026-11-02-s5-design.md🆕、test-onboarding-api.mjs🆕 | 先红：路由不存在（空载荷首步 404）；阴性对照：短路 hasContent 守卫 →「空载荷首步不得建档」红（docId 非 null）；后绿 7 组断言：空输入不建档（docs/ 零新增）、逐步写档、跳步、步序门、docId 续作、预填只补缺失、产出文档与手建同权（/edit+DOC_ID+首页）、照片入 photos/ 带 Git 排除 |
+| S5U | S5 前端：八步向导页（可跳过/暂存/确认卡片流） | `a9b966c` | server.mjs、test.sh、test-onboarding-ui.mjs🆕 | 夹具抓住真实服务端缺陷：无文档会话跳步后 PRG 回 /onboarding 丢进度（永远停 0.1）→ 修复：GET /onboarding 接受 ?next=（∈OB_STEPS）、空步表单流 redirect 下一步、无文档建档时当前步之前一律记 skipped；阴性对照：删首页「引导建档」入口 → 红；另修两处夹具自身缺陷 |
+| S5F | S5 收尾：STAR+事实层录入、照片可选排除 Git、端到端 | `27b1087` | server.mjs、test-structure.sh、test.sh、2026-11-02-s5-design.md、test-onboarding-star-photo.mjs🆕 | 阴性对照（确认门控合同）：给 star-suggest 临时加落正文 →「建议响应后文档字节必须零变化」红；后绿：STAR 建议只回填卡片、确认才落正文（HTTP+UI 双验证）、NO_LLM 桩友好回落手填、事实层随文档保存、照片落 photos/（0600+meta 路径） |
+| P1 | 生成管线五阶段脚手架（kind=changes 真拆分+阶段上报） | `7f83481` | server.mjs、test-gen-stages.mjs🆕、test-structure.sh、test.sh | 先红：analyze 调用期间 /job/changes 无 stages 明细；后绿：stages 依次推进可见、粗粒度三值并存（S4b-B 进度行兼容）、usage 两次调用合并、产物与重构前等价、evidence/interview 零回归、失败零落账；既有 test-gen-task TASK-04 回归过 |
+| P2 | 分批并行改写+每批校验与空间预算+批次进度 | `6726a7b` | server.mjs、test-gen-batches.mjs🆕、test-structure.sh、test.sh | 先红：批 2 在途窗口无 batches 字段；后绿：batches 实时推进、失败批登记不污染成功批、预算校验拦截超编批、全部失败沿用既有文案、回退单批保持 P1 形状（P1 stages 断言零改动）；首跑暴露夹具断言 bug（未按 status 过滤旧候选），修夹具后绿、实现未改 |
+| P3 | 批次重试（服务端幂等重试+面板批次进度与重试按钮） | `ef9d8dd` | server.mjs、job-panel.js、test-gen-retry.mjs🆕、test-gen-retry-ui.mjs🆕、test-structure.sh、test.sh | 先红：gen-retry 端点缺失（taskId 不匹配 404≠409）；后绿：守卫照 gen-start（借槽先行/并发闸/taskId/可重试态）、成功批摘除并合并收口、失败恢复 done 可再试、retrying 进度可见、usage 照实累计；UI：失败批行+重试按钮+「重试第 x/y 批」进度 |
+| F1 | 评估—投递—结果闭环视图（复盘页） | `1553f4d` | server.mjs、test.sh、test-stats-loop-view.mjs🆕 | 后绿：主 join 链接与投递事实/已删降级/同名兜底/提醒区/空态指引//evals 徽章链接化/有评估无投递不早退/转义与零比率包装；回归 test-structure.sh 203✅（唯一 ❌ 为段 X Chromium 探测契约预期输出，既有口径）、test.sh 全量 436✅/0❌ |
+| F2 | 评估报告 angle/gaps 预填岗位定制要求 | `9aa6c8c` | server.mjs、job-panel.js、test.sh、test-eval-promote-brief.mjs🆕、test-eval-promote-brief-ui.mjs🆕 | 先红：promote 后 brief.focus 为空数组（HTTP+UI 双红）；后绿：focus=[angle,...gaps]、空报告 focus=[] 且 200、重复 promote 409 幂等、normBrief 20 条上限截断；UI：预填条目逐条呈现、删除回写 /job/brief 且 GET 反映、删空行消失 |
+| F3 | AI 面试准备建议持久化（随投递可回看） | `43bcdf8` | server.mjs、test.sh、test-ai-prep-persist.mjs🆕 | 先红：两次生成 200 但 applications.json 中 preps=null；后绿：落盘且 /app 双版本可见、21 次截 20 且历史转义、409 零写、非法 id 400；回归 test.sh 全量 442✅/0❌ + privacy-check.sh ✅ |
+| F4 | 首页近期日程聚合视图（逾期/面试） | `0cfd115` | server.mjs、test.sh、test-home-agenda.mjs🆕 | 后绿：三条记录前两条入卡且终态排除、链接与转义、逾期排最前+类型徽章、空表无卡、状态条锚链文案不变；test.sh 全量 444✅/0❌ + privacy-check.sh ✅ |
+
+🆕=本轮新增文件。ECC pre-commit 旁路 8 次（`6ced332`/`a9b966c`/`27b1087`/`7f83481`/`6726a7b`/`ef9d8dd`/`9aa6c8c`/`43bcdf8`）：钩子把夹具桩配置字面量（apiKey 字段「stub…not-real」占位，同形态已在 ≥5 个已入库夹具）误报为密钥，按流程 `ECC_SKIP_PRECOMMIT=1` 旁路并在提交信息登记原因；其余 5 卡（B1/B3T/B12H/F1/F4）钩子未拦截。历次提交前 `git status --short` 核对均仅含请求文件+固有 4 份未跟踪 dev-docs。
+
+### 2. 关键决策
+
+- **B1 双 accent 双区规则定案**：编辑器区 `--ed-accent` 钉 `#C2410C`、应用区 `--accent` 钉近黑 `#18181b`，两区互不串用；三层钉死——DESIGN.md 裁决登记 + server.mjs:1180 组件层注释（注释本身不得带字面 hex，否则既有审计红）+ test-structure.sh S2-B1 钉值断言。此后任一区色值漂移即静态审计红。
+- **B3+B12 基线重置后果**（用户拍板解冻）：themes/resume-classic.css 解冻并清除「仅屏幕显示」旧蓝段（#409eff/#4b5563/#1f2937 家族 6 行），注入覆盖锚点与 print 兜底保留；B12 把 bodyHash 改为只算打印可见内容（stripSaveState 扩为摘 #saveState 属性，stripZid 照旧）——渲染身份口径变更，**既有 frozen PDF/快照首次访问会一次性判旧、需重建一次，属预期非缺陷**（`c0c172b` 提交信息登记）。
+- **S5 架构=草稿文档承载**：向导进度不落会话内存，暂存于真实草稿文档——空载荷不建档（hasContent 守卫，阴性对照验证）、建档后与手建文档同权（/edit + DOC_ID + 首页）、跳步/续作/预填全走文档状态；照片入 photos/（0600）且 Git 排除。设计定稿见 `dev-docs/2026-11-02-s5-design.md`（已入库）。
+- **S4b-A 五阶段管线**（上一节「唯一剩余项」本轮落地）：kind=changes 真拆 analyze/locate/rewrite/validate/assemble 五阶段 + stages 上报（粗粒度三值与 S4b-B 进度行并存），分批并行改写（每批 factGuard 校验+空间预算，batches 实时进度），批次幂等重试（服务端守卫照 gen-start + 面板重试入口）。
+
+### 3. 剩余事项
+
+- 本轮 13 卡全部通过、终验四套件 EXIT=0；上一节 §6 所列「B1 定案、B3/B12 拍板、S4b-A」三项全部闭环，**本轮无未完成卡**。
+- 承接旧账仍开放：全站应用页 CSP 已补（`c1e03bc`）但 `script-src 'unsafe-inline'` 保留——需重构全部内联 handler 为委托监听后移除（多小时、全站按钮回归）。
+- ECC pre-commit 对桩配置字面量的误报未根治（本轮 8 次旁路）；后续统一夹具桩值形态或给钩子加白名单。
+- 若用户报告既有快照/PDF「突然判旧」，为 B12 基线重置的一次性后果，重新生成/冻结即可，非缺陷。
