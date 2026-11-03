@@ -43,6 +43,9 @@ node ./test-fixtures/reliability/test-onboarding-api.mjs
 # ===== R2 文案与按钮语义修复包：首页待办计数 / 409 死引用 / 向导横幅两态 / 导出页语义（隔离根 HTTP，无浏览器依赖）=====
 node ./test-fixtures/reliability/test-copy-semantic-fixes.mjs
 
+# ===== R3 投递看板与设置页：label 可访问性 / 消除 prompt 链 / 设置空态说明卡（隔离根浏览器夹具；Chromium 缺失 exit 2）=====
+node ./test-apps-settings-forms.mjs
+
 # ===== BL-P6-01：logrotate 备份写失败（.1 为目录/不可写）必须放弃截断，主日志原样保留 =====
 node ./test-fixtures/reliability/test-logrotate-fail-path.mjs
 
@@ -5278,4 +5281,35 @@ assert(srv.includes('button:hover{transform:translateY(-1px)}'), 'button:hover �
 assert(!/button:hover\{[^}]*box-shadow/.test(srv), 'button:hover 规则内不得再有 box-shadow');
 assert(!srv.includes('transition:transform .12s,box-shadow'), 'button transition 应清理 box-shadow');
 console.log('✅ R2 文案与按钮语义源级钉值（十项）');
+EOF
+
+# ===== R3：投递看板与设置页表单/可访问性源级钉值（行为面走 test-apps-settings-forms.mjs 浏览器夹具）=====
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const assert = (c, m) => { if (!c) { console.error('❌ R3 ' + m); process.exit(1); } };
+const srv = readFileSync('./server.mjs', 'utf8');
+// ① 投递卡脚本不得再有 prompt 链（其余页面的 prompt 用法不在本卡范围，不动）
+const appScript = srv.match(/function appPatch[\s\S]*?function appDel[\s\S]*?\n      \}/);
+assert(appScript, '应能定位投递看板脚本段（appPatch…appDel）');
+assert(!appScript[0].includes('prompt('), '投递卡脚本不得调用 prompt(（快速编辑应为行内表单）');
+assert(appScript[0].includes("'/app/update'"), '行内编辑仍应走 /app/update 既有端点');
+assert(/appEditSave[\s\S]*?company: get\('company'\)\.trim\(\), role: get\('role'\)\.trim\(\), note: get\('note'\), jd: get\('jd'\)/.test(appScript[0]),
+  '行内编辑提交载荷应保持 {company, role, note, jd} 契约');
+// ② 新增投递表单全部 label 包裹（.ob-field 同款模式），控件 id 原样（载荷契约不变）
+const appForm = srv.match(/<form id="appForm"[\s\S]*?<\/form>/);
+assert(appForm, '应能定位 #appForm');
+for (const id of ['company', 'role', 'docId', 'channel', 'appliedAt', 'dueDate', 'link', 'nextStep', 'jd', 'note']) {
+  assert(new RegExp('<span>[^<]*</span><(?:input|select|textarea)[^>]*id="' + id + '"').test(appForm[0]),
+    '#appForm 中 ' + id + ' 应为「label>span 文本 + 控件」包裹形态（可访问名）');
+  assert(appForm[0].includes('id="' + id + '"'), '#appForm 应保留控件 id：' + id + '（提交载荷契约不变）');
+}
+// ③④ 设置页：页名/h1「设置」；空态说明卡；inp() label 包裹；备份文件输入有可访问名
+assert(!srv.includes('大模型设置'), '设置页不得再叫「大模型设置」（topnav 已叫设置）');
+assert(srv.includes("<h1>设置</h1>"), '设置页 h1 应为「设置」');
+assert(srv.includes('id="settingsGuide"') && srv.includes("profiles.length ? '' : settingsGuide"), '无配置时应渲染说明卡（有配置不出现由浏览器夹具验证）');
+assert(/function inp\(i, f, label, val, extra\) \{[\s\S]*?<label[\s\S]*?<input [\s\S]*?oninput="state\.profiles\[' \+ i \+ '\]\.' \+ f \+ '=this\.value"><\/label>/.test(srv),
+  '设置页 inp() 应 label 包裹 input（可访问名）');
+assert(/<input type="file" id="restoreFile"[^>]*aria-label="/.test(srv), '备份文件选择应有可访问名（aria-label）');
+assert(srv.includes('guide.hidden = state.profiles.length > 0'), 'render() 应随配置状态显隐说明卡（删光配置后重新出现）');
+console.log('✅ R3 投递看板与设置页表单/可访问性源级钉值');
 EOF

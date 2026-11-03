@@ -4838,6 +4838,14 @@ async function handler(req, res) {
             <button class="secondary" style="padding:2px 8px" aria-label="快速编辑" onclick="appEdit(${jsStr(a.id)})">${icon('pencil', 13)}</button>
             <button class="danger" style="padding:2px 8px;min-height:28px" aria-label="删除投递" onclick="appDel(${jsStr(a.id)})">${icon('trash-2', 13)}</button>
           </div>
+          <!--R3①：行内快速编辑（原为 4 连 prompt 链）——展开即改、取消即收；仍走 /app/update 的 {company,role,note,jd} 契约-->
+          <div class="app-edit" id="editbox-${escAttr(a.id)}" hidden style="margin-top:8px;border-top:1px dashed var(--line);padding-top:8px">
+            <label style="display:block;font-size:12px;color:var(--mut)"><span>公司</span><input data-edit="company" style="width:100%;margin-top:3px" value="${escAttr(a.company)}"></label>
+            <label style="display:block;font-size:12px;color:var(--mut);margin-top:6px"><span>岗位</span><input data-edit="role" style="width:100%;margin-top:3px" value="${escAttr(a.role)}"></label>
+            <label style="display:block;font-size:12px;color:var(--mut);margin-top:6px"><span>备注（可空）</span><textarea data-edit="note" rows="2" style="width:100%;margin-top:3px">${escHtml(a.note || '')}</textarea></label>
+            <label style="display:block;font-size:12px;color:var(--mut);margin-top:6px"><span>JD（可空）</span><textarea data-edit="jd" rows="3" style="width:100%;margin-top:3px">${escHtml(a.jd || '')}</textarea></label>
+            <div style="margin-top:6px"><button type="button" onclick="appEditSave(${jsStr(a.id)})">保存</button> <button type="button" class="secondary" onclick="appEditToggle(${jsStr(a.id)},false)">取消</button></div>
+          </div>
         </div>`;
       };
       const cols = APP_STATUSES.map((st) => {
@@ -4848,12 +4856,26 @@ async function handler(req, res) {
     ${corruptBanner()}
     <p><a href="/">返回首页</a></p>
     <details class="card" id="appAddBox"><summary style="cursor:pointer;font-weight:700">＋ 新增投递（记录已发生的投递，不自动发送）</summary>
-    <form id="appForm" style="margin-top:10px">
-      <p>公司 <input id="company" required> 岗位 <input id="role" required> 简历 <select id="docId">${docIds.map((d) => `<option value="${d}">${escHtml(d)}</option>`).join('')}</select></p>
-      <p>渠道 <input id="channel" size="12"> 投递日期 <input id="appliedAt" type="date"> 截止 <input id="dueDate" type="date"></p>
-      <p>岗位链接 <input id="link" size="40"> 下一步 <input id="nextStep" size="30"></p>
-      <p>JD（可选）<br><textarea id="jd" rows="3" cols="60"></textarea></p>
-      <p>备注（可选）<input id="note" size="30"> <button>添加</button><span id="appmsg"></span></p>
+    <!--R3②：裸字段重排为向导 .ob-field 同款 label 包裹模式（每个控件有可访问名）；id 与提交载荷不变（/app/add 契约零变化）-->
+    <style>
+      .app-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--space-3);margin-top:10px}
+      .app-form>label{display:block;font-size:12px;color:var(--mut)}
+      .app-form>label>span{display:block}
+      .app-form input,.app-form select,.app-form textarea{width:100%;margin-top:3px}
+      .app-form .wide{grid-column:1/-1}
+    </style>
+    <form id="appForm" class="app-form" style="margin-top:10px">
+      <label><span>公司</span><input id="company" required></label>
+      <label><span>岗位</span><input id="role" required></label>
+      <label><span>简历</span><select id="docId">${docIds.map((d) => `<option value="${d}">${escHtml(d)}</option>`).join('')}</select></label>
+      <label><span>渠道</span><input id="channel"></label>
+      <label><span>投递日期</span><input id="appliedAt" type="date"></label>
+      <label><span>截止</span><input id="dueDate" type="date"></label>
+      <label><span>岗位链接</span><input id="link"></label>
+      <label><span>下一步</span><input id="nextStep"></label>
+      <label class="wide"><span>JD（可选）</span><textarea id="jd" rows="3"></textarea></label>
+      <label class="wide"><span>备注（可选）</span><input id="note"></label>
+      <div class="wide"><button>添加</button> <span id="appmsg"></span></div>
     </form></details>
     <div class="kb">${cols}</div>
     <script>var APP_STATUSES = ${JSON.stringify(APP_STATUSES)}; var APPS = ${JSON.stringify(apps).replace(/</g, '\\u003c')};</script>
@@ -4861,14 +4883,22 @@ async function handler(req, res) {
       function appPatch(id, patch) {
         __wv('/app/update', Object.assign({ id: id }, patch)).then(function () { location.reload(); }).catch(function () {});
       }
+      // R3①：快速编辑改为行内小表单（原 4 连 prompt 链）：展开即改、取消即收；
+      // 提交载荷仍是 {company, role, note, jd}（/app/update 契约零变化，未涉及字段原样保留）。
+      function appEditToggle(id, show) {
+        var box = document.getElementById('editbox-' + id);
+        if (box) box.hidden = !show;
+      }
       function appEdit(id) {
-        var a = APPS.find(function (x) { return x.id === id; });
-        if (!a) return;
-        var c = prompt('公司', a.company); if (c === null) return;
-        var r = prompt('岗位', a.role); if (r === null) return;
-        var n = prompt('备注（可空）', a.note || ''); if (n === null) return;
-        var j = prompt('JD（可空）', a.jd || ''); if (j === null) return;
-        appPatch(id, { company: c, role: r, note: n, jd: j });
+        appEditToggle(id, true);
+        var box = document.getElementById('editbox-' + id);
+        if (box) { var f = box.querySelector('input,textarea'); if (f) f.focus(); }
+      }
+      function appEditSave(id) {
+        var box = document.getElementById('editbox-' + id);
+        if (!box) return;
+        var get = function (k) { var el = box.querySelector('[data-edit="' + k + '"]'); return el ? el.value : ''; };
+        appPatch(id, { company: get('company').trim(), role: get('role').trim(), note: get('note'), jd: get('jd') });
       }
       function appDel(id) {
         if (!confirm('删除这条投递？')) return;
@@ -5055,16 +5085,31 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     // ===== 设置页 + 备份恢复 =====
     if (req.method === 'GET' && url.pathname === '/settings') {
       const { active, profiles } = loadProfiles(root);
-      return send(200, page('大模型设置', `<h1>大模型设置</h1>
+      // R3③：页名与 topnav 一致叫「设置」；无任何配置时给一张说明卡（首次使用知道每个字段是什么、怎么测）。
+      const settingsGuide = `<div class="card" id="settingsGuide" style="margin-top:var(--space-3)">
+      <b class="card-title">${icon('compass', 13)} 还没有模型配置——从这张卡开始</b>
+      <p style="font-size:13px;color:var(--mut)">配置只存本机 config.json（不进任何仓库、不进备份、密钥不出你的电脑）。不配置模型也能完成主流程，AI 能力是可选增强。</p>
+      <div style="font-size:13px;line-height:1.9">
+        <b>字段含义</b><br>
+        · 名称：给自己看的备注名，只用于列表区分<br>
+        · Base URL：OpenAI 兼容服务地址（火山方舟填 <code>https://ark.cn-beijing.volces.com/api/v3</code>）<br>
+        · API Key：服务商控制台签发的密钥，仅存本机<br>
+        · 模型：可手填；也可先「测试连接」，成功后从下方可点列表里选<br>
+        · 思考程度 reasoning_effort：留空=不传该参数；部分厂商不认这个字段，硬传会 400
+      </div>
+      <p style="font-size:13px;color:var(--mut);margin-bottom:0">测试连接流程：点「添加配置」→ 填 Base URL 与 API Key → 点该卡里的「测试连接」→ 出现可点选的模型按钮 → 选一个 → 点上方「保存」。</p>
+    </div>`;
+      return send(200, page('设置', `<h1>设置</h1>
     ${corruptBanner()}
     <p>OpenAI 兼容格式，火山方舟可直接用（baseURL 填 <code>https://ark.cn-beijing.volces.com/api/v3</code>）。配置存本地 config.json，不进任何仓库、不进备份。</p>
+    ${profiles.length ? '' : settingsGuide}
     <div id="cards"></div>
     <p><button type="button" id="addBtn">${icon('plus', 13)} 添加配置</button> <button type="button" id="saveBtn">保存</button> <a href="/">返回首页</a> <span id="msg"></span></p>
     <div class="card" style="margin-top:var(--space-3)">
       <b class="card-title">${icon('save', 13)} 备份与恢复</b>
       <p style="font-size:13px;color:var(--mut)">备份含 docs/snapshots/pdfs 与四个 JSON（docs-meta/applications/materials/evaluations），<b>不含 config.json（密钥不进备份）</b>。</p>
       <p><a href="/backup"><button>下载备份</button></a> <span style="font-size:12px;color:var(--mut)">恢复默认「合并」：本地独有记录保留，同 id 冲突以备份为准，预览里逐条列出</span></p>
-      <form id="restoreForm"><input type="file" id="restoreFile" accept=".tar.gz,.tgz">
+      <form id="restoreForm"><input type="file" id="restoreFile" accept=".tar.gz,.tgz" aria-label="选择备份文件（.tar.gz）">
         <label style="font-size:13px"><input type="radio" name="rmode" value="merge" checked> 合并（推荐）</label>
         <label style="font-size:13px"><input type="radio" name="rmode" value="replace"> 替换（清空现有后导入）</label>
         <button type="submit">恢复</button><span id="restoreMsg"></span></form>
@@ -5077,7 +5122,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       var state = DATA;
       function escAttr(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
       function inp(i, f, label, val, extra) {
-        return '<p>' + label + '<br><input ' + ((extra || '') + ' style="width:100%"') + ' value="' + escAttr(val) + '" oninput="state.profiles[' + i + '].' + f + '=this.value"></p>';
+        // R3④：label 包裹 input（可访问名）；value/oninput 语义不变
+        return '<p><label style="display:block;font-size:12px;color:var(--mut)">' + label + '<input ' + ((extra || '') + ' style="width:100%;margin-top:3px"') + ' value="' + escAttr(val) + '" oninput="state.profiles[' + i + '].' + f + '=this.value"></label></p>';
       }
       // 模型按钮组：pickModel 之后 render() 会重建卡片，按钮组必须跟着重建，
       // 否则切换一次模型后按钮就消失了，还得重新点「测试连接」（2026-10-19 实测）。
@@ -5093,6 +5139,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       function render() {
         var box = document.getElementById('cards');
         box.innerHTML = '';
+        var guide = document.getElementById('settingsGuide');
+        if (guide) guide.hidden = state.profiles.length > 0;   // R3③：删光配置后说明卡重新出现，有配置即隐藏（不刷新也成立）
         state.profiles.forEach(function (p, i) {
           var card = document.createElement('div');
           card.className = 'card' + (i === state.active ? ' card-active' : '');   // A6：激活卡一眼可辨（决定所有 AI 请求打到哪个模型的状态）
@@ -5103,13 +5151,13 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
             + inp(i, 'apiKey', 'API Key', p.apiKey, 'type="password"')
             + inp(i, 'model', '模型（可手填；点「测试连接」成功后下方出现可点的模型按钮）', p.model, '')
             + '<div id="models-' + i + '" style="margin:-6px 0 8px">' + modelButtonsHtml(p, i) + '</div>'
-            + '<p>思考程度 reasoning_effort（留空=不传该参数；部分厂商不认这个字段，硬传会 400）<br>'
+            + '<p><label style="display:block;font-size:12px;color:var(--mut)">思考程度 reasoning_effort（留空=不传该参数；部分厂商不认这个字段，硬传会 400）'
             + '<select onchange="state.profiles[' + i + '].reasoningEffort=this.value">'
             + '<option value=""' + (!p.reasoningEffort ? ' selected' : '') + '>（不设置）</option>'
             + ['low', 'medium', 'high', 'xhigh', 'max'].map(function (x) {
                 return '<option value="' + x + '"' + (p.reasoningEffort === x ? ' selected' : '') + '>' + x + '</option>';
               }).join('')
-            + '</select></p>'
+            + '</select></label></p>'
             + '<p><button type="button" onclick="testCard(' + i + ')">测试连接</button> <span id="msg-' + i + '"></span></p>';
           box.appendChild(card);
         });

@@ -232,9 +232,18 @@ try {
           },
           expect: (v) => v === '面试中' },
         { name: '投递编辑',
+          // R3① 适配（意图不变）：快速编辑已改为行内表单，写入点从 ✎ 点击移到「保存」点击——
+          // 用例随交互走到真实写入点再断言（失败 alert 可见 + 不刷新 + 磁盘旧值保留，三断言零放宽）。
           run: (p) => p.evaluate(() => {
             var b = document.querySelector('.app-card button[aria-label="快速编辑"]');
-            if (!b) return false; b.click(); return true;
+            if (!b) return false; b.click();
+            var box = document.querySelector('.app-card .app-edit');
+            if (!box || box.hidden) return false;
+            var f = box.querySelector('[data-edit="company"]');
+            if (!f) return false;
+            f.value = '合成公司改';
+            var save = Array.prototype.slice.call(box.querySelectorAll('button')).find(function (x) { return (x.textContent || '').indexOf('保存') >= 0; });
+            if (!save) return false; save.click(); return true;
           }),
           probe: async () => {
             const apps = readJson(path.join(root, 'applications.json')) || [];
