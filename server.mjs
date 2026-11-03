@@ -1485,16 +1485,8 @@ window.__wv = function (url, body, msgEl) {
 function page(title, inner, active = '', wide = false) {
   // 第 4 参 ic = Lucide 图标名（白名单外 icon() 返回空串 → 退化为纯文字，不炸）
   const nav = (key, href, label, ic) => `<a href="${href}"${active === key ? ' class="on"' : ''}>${ic ? icon(ic, 15) : ''}${label}</a>`;
-  // 侧栏（全站唯一一份，渲染在 page() 里 —— 只有 page() 拿得到 active，listPage() 拿不到，
-  // 放 listPage() 里就没法做当前项高亮）。侧栏 = 图标 + 文字（WCAG nav-label-icon），不搞 icon-only。
-  const side = `<aside class="sidenav">
-    <div class="side-brand">${icon('file-text', 17)}简历工作台</div>
-    <a href="/" class="${active === 'docs' ? 'on' : ''}">${icon('file-text', 15)}文档</a>
-    <a href="/materials" class="${active === 'materials' ? 'on' : ''}">${icon('box', 15)}素材库</a>
-    <a href="/applications" class="${active === 'apps' ? 'on' : ''}">${icon('columns-3', 15)}投递看板</a>
-    <a href="/stats" class="${active === 'stats' ? 'on' : ''}">${icon('chart-bar', 15)}复盘</a>
-    <a href="/settings" class="${active === 'settings' ? 'on' : ''}">${icon('settings', 15)}设置</a>
-  </aside>`;
+  // 导航唯一（用户裁决 2026-11-03：页头只显示一个）——topnav 是全站唯一页头（sticky + 当前项
+  // 高亮由 active 驱动）；旧 .sidenav 左栏与其完全重复，已移除（断言 UI-5 同步反转为「导航唯一」）。
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
 <style>/*BENTO-V1*/
 /* 浅色克制设计系统（2026-10-21 UI 重设计，设计文档 dev-docs/2026-10-21-ui-redesign-design.md）：
@@ -1524,18 +1516,9 @@ html{scroll-padding-top:64px}
 .topnav .links a svg{width:15px;height:15px;flex:none}
 .topnav .links a.on{color:var(--accent)}
 .topnav .links a:hover{color:var(--ink)}
-/* 批次B：侧栏 + 内容区（全站布局，shadcn 范式）
-   .home 自身定宽居中（body 不限宽，见 body 规则）；侧栏 sticky，当前项高亮 --card-2 底 + --foreground 字。
-   断点取 860px：设计 §5.1 写「<768px 收为顶部横条」，这里放宽到 860px —— 800px 窗口也该收成横条，
-   否则 200px 侧栏会把内容区压到 500px 出横条。 */
-.home{display:grid;grid-template-columns:200px minmax(0,1fr);gap:24px;align-items:start;margin:0 auto 40px;max-width:1400px}
-.sidenav{position:sticky;top:76px;border-right:1px solid var(--border);padding-right:16px;min-height:320px}
-.sidenav .side-brand{display:flex;align-items:center;gap:7px;font-weight:700;font-size:15px;margin-bottom:14px;color:var(--foreground)}
-.sidenav .side-brand svg{width:17px;height:17px;flex:none}
-.sidenav a{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:var(--radius);color:var(--muted);font-weight:500;font-size:13px;text-decoration:none;margin-bottom:2px}
-.sidenav a svg{width:15px;height:15px;flex:none}
-.sidenav a:hover{background:var(--card-2);color:var(--foreground)}
-.sidenav a.on{background:var(--card-2);color:var(--foreground);font-weight:600}
+/* 批次B → 导航唯一后（2026-11-03）：.home 只剩内容区，单列流式定宽居中。
+   旧 .sidenav 左栏规则已随 DOM 移除（topnav 是唯一页头，见 page() 注释）。 */
+.home{margin:0 auto 40px;max-width:1400px}
 .mainarea{min-width:0}
 /* 内容区页标题（现档 20px/700/-.01em）：.mainarea 的直接子级，或 .page-head 容器内的 h1。
    hero 里的大标题（.hero-title）不是 .mainarea 的直接子级，仍由自己的类覆盖。 */
@@ -1546,7 +1529,6 @@ html{scroll-padding-top:64px}
 .page-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap;margin:0 0 var(--space-3)}
 .page-head>h1{margin:0}
 .page-head .page-meta{font-size:13px;font-weight:400;color:var(--mut)}
-@media (max-width:860px){.home{grid-template-columns:1fr}.sidenav{position:static;border-right:0;border-bottom:1px solid var(--border);padding:0 0 10px;min-height:0}.sidenav a{display:inline-flex;margin:0 4px 2px 0}}
 /* 标题三档（A-VARS 登记的唯一档位表；新增标题必须归入其中一档，不得新增第四档）：
      ① brand .topnav .brand          16px / 800 / +0.4px
      ② 页题  .mainarea>h1,.page-head>h1  20px / 700 / -0.01em
@@ -1635,7 +1617,7 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 </style></head><body${wide ? ' class="wide"' : ''}>
 <script>${STATUS_SCRIPT}</script>
 <nav class="topnav"><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><span class="links">${nav('docs', '/', '文档', 'file-text')}${nav('materials', '/materials', '素材库', 'box')}${nav('apps', '/applications', '投递看板', 'columns-3')}${nav('stats', '/stats', '复盘', 'chart-bar')}${nav('settings', '/settings', '设置', 'settings')}</span></nav>
-<div class="home">${side}<div class="mainarea">${inner}</div></div>
+<div class="home"><div class="mainarea">${inner}</div></div>
 <footer>简历平台 · 本地优先 · 数据在 ${path.basename(root) === 'resume' ? '~/resume' : 'RESUME_ROOT'}</footer>
 ${WRITE_HELPER_JS}</body></html>`;
 }

@@ -4177,12 +4177,11 @@ try {
   const evh = await ev.text();
   assert(evh.includes('评估历史') && evh.includes('甲公司'), '/evals 应含历史行');
   assert(/<h1>评估历史<\/h1>/.test(evh), '/evals 页题应为 h1');
-  // 导航视觉零变化：topnav 仍 6 个链接，侧栏无新项
+  // 导航视觉零变化：topnav 仍 6 个链接；导航唯一（sidenav 已移除，不回归）
   const nav = (evh.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
   assert((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length === 6, '/evals 的 topnav 链接数应仍为 6');
-  const side = (evh.match(/<aside class="sidenav">[\s\S]*?<\/aside>/) || [''])[0];
-  assert((side.match(/<a [^>]*>/g) || []).length === 5, '/evals 的侧栏项应仍为 5（不进侧栏）');
-  assert(/<a href="\/" class="on">/.test(side), '/evals 侧栏「文档」应高亮（active=docs）');
+  assert(!evh.includes('class="sidenav"'), '导航唯一：/evals 不应再有 .sidenav（用户裁决 2026-11-03）');
+  assert(/<a href="\/" class="on">/.test(nav), '/evals topnav「文档」应高亮（active=docs）');
   console.log('✅ EV-8 ② 隔离实例：首页卡 + /evals 页（转义 / 入口 / 导航零变化）');
 } finally {
   await stop();
@@ -4437,21 +4436,23 @@ node --input-type=module << 'EOF'
 import { readFileSync } from 'node:fs';
 const assert = (c, m) => { if (!c) { console.error('❌ UI-5 ' + m); process.exit(1); } };
 const srv = readFileSync('./server.mjs', 'utf8');
-assert(/class="sidenav"/.test(srv), '应有侧栏 .sidenav');
+// 导航唯一（用户裁决 2026-11-03：页头只显示一个）——topnav 是唯一页头，旧 .sidenav 不得回归
+assert(!/class="sidenav"/.test(srv), '导航唯一：不应再有 .sidenav（topnav 是唯一页头，用户裁决 2026-11-03）');
+assert(/<nav class="topnav">/.test(srv), '应有唯一页头 .topnav');
 assert(/class="mainarea"/.test(srv), '应有内容区 .mainarea');
-// 侧栏含五个导航入口
-const side = (srv.match(/<aside class="sidenav">[\s\S]*?<\/aside>/) || [''])[0];
+// topnav 含五个导航入口
+const navblk = (srv.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
 for (const t of ['文档', '素材库', '投递看板', '复盘', '设置']) {
-  assert(side.includes(t), '侧栏应含入口: ' + t);
+  assert(navblk.includes(t), 'topnav 应含入口: ' + t);
 }
-// 侧栏必须由 page() 渲染（第三参数 active 即当前页 key），而不是 listPage()——
-// listPage() 拿不到 active，无法做当前项高亮。断言侧栏模板落在 page() 与 listPage() 之间。
+// topnav 必须由 page() 渲染（第三参数 active 即当前页 key），而不是 listPage()——
+// listPage() 拿不到 active，无法做当前项高亮。断言 topnav 模板落在 page() 与 listPage() 之间。
 const pStart = srv.indexOf('function page(');
 const listStart = srv.indexOf('function listPage(');
-const sideAt = srv.indexOf('<aside class="sidenav">');
+const navAt = srv.indexOf('<nav class="topnav">');
 assert(pStart > 0 && listStart > pStart, '应能定位 page() 与 listPage()');
-assert(sideAt > pStart && sideAt < listStart, '侧栏模板必须落在 page() 内（不能落进 listPage()——listPage 拿不到 active）');
-assert(/function page\([^)]*active/.test(srv), 'page() 应保留 active 参数（侧栏高亮依赖它）');
+assert(navAt > pStart && navAt < listStart, 'topnav 模板必须落在 page() 内（不能落进 listPage()——listPage 拿不到 active）');
+assert(/function page\([^)]*active/.test(srv), 'page() 应保留 active 参数（当前项高亮依赖它）');
 // 统计块：原 statusline 横条拆成独立统计块
 assert(/class="stat-grid"/.test(srv), '首页应有统计块区 .stat-grid');
 assert((srv.match(/class="stat"/g) || []).length >= 3, '至少 3 个统计块');
