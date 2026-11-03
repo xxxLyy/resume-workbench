@@ -105,6 +105,9 @@
     + '.ed-nav-more{min-width:22px;min-height:22px;padding:0 4px;border:none;background:transparent;color:var(--ed-mut);cursor:pointer;border-radius:var(--ed-radius);font-size:12px}'
     + '.ed-nav-more:hover{background:var(--ed-bg)}'
     + '.ed-nav-menu{position:absolute;right:0;top:100%;background:var(--ed-panel);border:1px solid var(--ed-line);border-radius:var(--ed-radius);padding:4px;display:flex;flex-direction:column;min-width:112px;z-index:30;box-shadow:0 4px 14px rgba(60,45,25,.12)}'
+    // hidden 态显式补回：上面的 display:flex 会压过 UA 的 [hidden]{display:none}（审计 R1：菜单加载即见盖在左栏上）；
+    // 开合仍由 renderNav 的 menu.hidden 驱动，语义零改动（test-shell-review-fixes.mjs 一并验证可开可关）
+    + '.ed-nav-menu[hidden]{display:none}'
     + '.ed-nav-menu button{text-align:left;border:none;background:transparent;padding:4px 8px;font-size:12px;color:var(--ed-ink);cursor:pointer;border-radius:var(--ed-radius);min-height:24px}'
     + '.ed-nav-menu button:hover:not([disabled]){background:var(--ed-bg)}'
     + '.ed-nav-entry .ed-nav-ops{display:inline-flex;gap:2px;flex:none}'

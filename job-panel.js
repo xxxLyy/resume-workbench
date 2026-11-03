@@ -1884,7 +1884,8 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       foot.appendChild(b);
       return b;
     };
-    mkFoot('‹ 上一条', '', function () { stepItem(-1); });
+    // R1：changes 为空时不渲染翻页钮（无条件渲染 = 空态死钮，审计 R1）；主行动流转不动
+    if (changes.length) mkFoot('‹ 上一条', '', function () { stepItem(-1); });
     if (pend.length) {
       mkFoot('接受', 'jp-primary', function () {
         var i = activeIdx(pend);
@@ -1898,7 +1899,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     } else {
       mkFoot('去导出检查 →', 'jp-primary', function () { setSec('export'); });
     }
-    mkFoot('下一条 ›', '', function () { stepItem(1); });
+    if (changes.length) mkFoot('下一条 ›', '', function () { stepItem(1); });
     var hint = document.createElement('span');
     hint.className = 'jp-meta';
     hint.textContent = '筛选：' + ({ all: '全部', important: '仅重点', new: '仅本次变化' }[posFilter] || posFilter) + ' · j/k 上下条 · 位置自动恢复';
