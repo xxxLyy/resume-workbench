@@ -100,6 +100,9 @@ node ./test-fixtures/reliability/test-themes-blue-purge.mjs
 # ===== S6-A1：模板库装配（meta.theme 数据源 → /edit 服务与渲染/快照冻结输入按主题装配；未知主题报错不写盘；classic/legacy 零回归）=====
 node ./test-fixtures/reliability/test-themes-assemble.mjs
 
+# ===== S6-A2：模板库 UI（/theme-preview 只读+闸门+锁 CSP；/theme/apply 写 meta.theme 重装配；模板页签/主题卡/blob iframe/切换语义）=====
+node ./test-fixtures/reliability/test-theme-picker-ui.mjs
+
 # ===== B12H：bodyHash 渲染身份口径（只算打印可见内容）：打印不可见编辑态不影响身份，正文变化仍改变身份 =====
 node ./test-fixtures/reliability/test-bodyhash-identity.mjs
 
@@ -2101,7 +2104,8 @@ const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','
   '/job-panel.js','/job/brief','/job/changes','/job/create','/job/generate','/job/gen-cancel','/job/gen-retry','/job/gen-start','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',
   '/materials','/new','/onboarding','/onboarding/guided','/onboarding/star-suggest','/onboarding/step','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings','/eval/create','/eval/promote','/evals',
   '/snapshot/baseline','/snapshot/note','/snapshot/pdf','/snapshot/view','/snapshots','/stats','/tag',
-  '/zones','/zones/init','/zone-panel.js','/upload'].sort();   // 2026-10-28 AUD-12：接回首页一直在调用却缺失的 PDF 上传入口（登记非放宽）
+  '/theme-preview','/theme/apply',
+  '/zones','/zones/init','/zone-panel.js','/upload'].sort();   // 2026-10-28 AUD-12：接回首页一直在调用却缺失的 PDF 上传入口（登记非放宽）；S6-A2：模板预览（只读）与主题选择两路由（登记非放宽）
 const got = [...new Set([...sm.matchAll(/url\.pathname === '([^']+)'/g)].map((m) => m[1]))].sort();
 const missing = ROUTES_FROZEN.filter((r) => !got.includes(r));
 const extra = got.filter((r) => !ROUTES_FROZEN.includes(r));

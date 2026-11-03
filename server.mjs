@@ -34,7 +34,7 @@ import { publishPair, makeIdentityValidator } from './render-publish.mjs';   // 
 const JD_MAX_CHARS = 64 * 1024;
 import { applyOps, reviewConsistency, refFresh, buildEvidencePrompt, parseEvidence, buildInterviewPrompt, parseInterview, guardOps, exportChecks, layoutDiagnose, resolveInterviewSources, interviewSourceView, evidenceSourceView } from './evidence.mjs';
 import { completeGenResult } from './gen-result.mjs';   // 任务完成判定纯函数（设计 §4）：显式成功/拒绝 + 独立工作副本
-import { assembleTemplate, themeCss, themeRegistration } from './template.mjs';
+import { assembleTemplate, listThemes, themeCss, themeRegistration } from './template.mjs';
 import { ICONS } from './vendors/icons.mjs';  // Lucide 图标数据（纯数据文件，零 npm 依赖）
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -92,6 +92,17 @@ setInterval(() => rotateLogIfNeeded(process.env.RESUME_LOG_FILE), 24 * 3600 * 10
 
 const VALID_ID = /^[a-z0-9][a-z0-9-]*$/;
 const MAX_SNAPSHOTS = 50;
+// 只读预览页统一锁定 CSP（/snapshot/view 与 S6-A2 /theme-preview 共用）：正文是外部输入且预览
+// 不需要脚本/网络/框架 → default-src 'none' 一刀切（BL-P1-02≡BL-P7-01 + BL-P7-02 口径）。
+const LOCKED_PREVIEW_CSP = [
+  "default-src 'none'",
+  "style-src 'unsafe-inline'",
+  "img-src 'self' data: blob: https:",
+  "font-src 'self' data:",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'"
+].join('; ');
 // 迁移互斥（S1-T7 修复轮1 I-3）：这些 GET 名义是读，实际会 renderCurrent → updateMeta(lastRenderInputId/lastRenderAt)
 // 并覆写 pdfs/<id>.pdf、拉起 Chromium；迁移三门禁期间放行它们＝浏览器标签页与迁移并发写 meta / 抢渲染。
 // 故与他人持 .migrate.lock 期间同样 503（纯读 GET 一律不受影响）。新增会写盘的 GET 必须登记到这里。
@@ -1325,6 +1336,11 @@ function docThemeAttr(html) {
 function applyDocTheme(html, meta) {
   const t = String((meta && meta.theme) || '').trim();
   if (!t || t === 'legacy') return html;                 // 既有文档保留实际内联 CSS，不做迁移
+  return applyThemeNamed(html, t);
+}
+// 按显式主题名装配（调用方保证 t 已验明在 listThemes() 内；themeCss 对未知值兜底抛错）。
+// S6-A2 的 /theme-preview 用它做「候选主题」预览（预览主题 = 显式参数，非 meta.theme）。
+function applyThemeNamed(html, t) {
   if (docThemeAttr(html) === t) return html;             // 已是该主题 → 字节零改动
   const css = themeCss(t);                               // 未知主题在替换前抛错（列可用主题）
   const block = `<style data-theme="${t}">${css}</style>`;
@@ -1738,7 +1754,9 @@ function shellBlock(id, mtimeMs, nonce) {
   const job = meta.job
     ? { hasJob: true, status: flowOf(meta), company: meta.company || '', role: meta.role || '', materials: meta.job.materials || [] }
     : { hasJob: false };
-  return `\n${SHELL_MARK}<script nonce="${nonce}">window.__MATS__=${JSON.stringify(mats).replace(/</g, '\\u003c')};window.__JOB_INFO__=${JSON.stringify(job).replace(/</g, '\\u003c')};</script><script src="/editor-shell.js" data-doc="${id}" data-mtime="${Number(mtimeMs) || 0}" defer></script><!--/SHELL-INJECT-->\n`;
+  // S6-A2：主题清单与当前主题随壳下发（模板页签数据源；主题元数据/文案在 editor-shell.js 客户端侧）
+  const themeInfo = { themes: listThemes(), current: (typeof meta.theme === 'string' ? meta.theme : '') || '' };
+  return `\n${SHELL_MARK}<script nonce="${nonce}">window.__MATS__=${JSON.stringify(mats).replace(/</g, '\\u003c')};window.__JOB_INFO__=${JSON.stringify(job).replace(/</g, '\\u003c')};window.__THEME_INFO__=${JSON.stringify(themeInfo).replace(/</g, '\\u003c')};</script><script src="/editor-shell.js" data-doc="${id}" data-mtime="${Number(mtimeMs) || 0}" defer></script><!--/SHELL-INJECT-->\n`;
 }
 function jobBlock(id) {
   return `\n${JOB_MARK}<script src="/job-panel.js" data-doc="${id}" defer></script><!--/JOB-INJECT-->\n`;
@@ -3341,9 +3359,10 @@ async function handler(req, res) {
       if (!html.includes(ZONE_MARK)) html = html.replace('</body>', zoneBlock(id) + '</body>');
       // CSP：文档正文是外部输入（恢复的备份可带 <script>）→ 只放行已知的编辑器主脚本（sha256）
       // 与服务端注入块（nonce）；其余内联脚本一律被挡（2026-10-22 审查 [高]）。
-      // frame-src/object-src 显式关死（BL-P7-03，2026-11-01 B 线批 1）：/edit 无任何合法
-      // iframe/embed 需求（PDF 预览 iframe 在 /export 页），不显式关死则回落 default-src
-      // 'self' → 正文可内嵌同源页（如 /settings 的明文 Key）被同源脚本读出。
+      // frame-src/object-src 显式关死（BL-P7-03，2026-11-01 B 线批 1；S6-A2 维持 'none'）：
+      // 模板缩略图（S6-A2）用 srcdoc iframe 装载 /theme-preview 的装配输出——srcdoc 不产生导航
+      // URL、不受 frame-src 约束，且继承本页 CSP（script-src nonce 化 → 预览脚本死）；预览 HTML
+      // 服务端已剥脚本。正文内嵌同源页（如 /settings 的明文 Key）的通道保持关死。
       const csp = [
         "default-src 'self'",
         "script-src 'self' 'nonce-" + cspNonce + "' " + allowedEditorScriptHashes(html).join(' '),
@@ -4699,16 +4718,41 @@ async function handler(req, res) {
       // 这同时把模板残留的编辑器脚本（含 ⌘S doSave 保存通道）整体判死：脚本不执行、
       // connect-src 也禁——「预览页按保存把历史版本写回当前文档」的通道在两层被关死
       // （BL-P1-02≡BL-P7-01 + BL-P7-02，2026-11-01 B 线批 1）。
-      const previewCsp = [
-        "default-src 'none'",
-        "style-src 'unsafe-inline'",
-        "img-src 'self' data: blob: https:",
-        "font-src 'self' data:",
-        "base-uri 'none'",
-        "form-action 'none'",
-        "frame-ancestors 'none'"
-      ].join('; ');
-      return send(200, html.replace('<body>', '<body>' + banner), 'text/html; charset=utf-8', { 'Content-Security-Policy': previewCsp });
+      return send(200, html.replace('<body>', '<body>' + banner), 'text/html; charset=utf-8', { 'Content-Security-Policy': LOCKED_PREVIEW_CSP });
+    }
+    // ===== S6-A2：模板预览（只读）：当前正文 + 候选主题的装配输出 =====
+    // 零写路径（docs/ 与 docs-meta.json 字节零变化）；候选主题 = 显式 theme 参数（非 meta.theme），
+    // 预览不落盘、不改 meta——「重装配生效」由 /theme/apply 写 meta.theme 后的 S6-A1 服务/渲染装配承接。
+    // CSP 沿用 /snapshot/view 的锁定口径（LOCKED_PREVIEW_CSP）：预览不需要脚本/网络/框架 → 正文脚本整体判死。
+    if (req.method === 'GET' && url.pathname === '/theme-preview') {
+      const qid = url.searchParams.get('id') || '';
+      if (!VALID_ID.test(qid)) return send(400, 'invalid id', 'text/plain');
+      if (!fs.existsSync(docPath(qid))) return send(404, 'doc not found', 'text/plain');
+      const th = url.searchParams.get('theme') || '';
+      const avail = listThemes();
+      if (!avail.includes(th)) return send(400, `未知主题: ${th || '(空)'}（可用主题: ${avail.join(', ')}）`, 'text/plain');
+      let phtml = stripInjections(fs.readFileSync(docPath(qid), 'utf8'));
+      phtml = applyThemeNamed(phtml, th);
+      phtml = phtml.replace('contenteditable="true"', '').replace("sheet.contentEditable = 'true'", '');
+      // 预览是装配产物（非存档字节）：模板残留的编辑器脚本整体剥除（srcdoc 装载时不携带死脚本）；
+      // LOCKED_PREVIEW_CSP 仍随响应下发——直接以 URL 打开预览时由 CSP 兜底判死脚本。
+      phtml = phtml.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, '');
+      phtml = phtml.replace('<body>', '<body><style>.edit-toolbar,.page-line{display:none!important}</style>');
+      return send(200, phtml, 'text/html; charset=utf-8', { 'Content-Security-Policy': LOCKED_PREVIEW_CSP });
+    }
+    // ===== S6-A2：主题选择（确认交互由前端承载）：唯一写 = docs-meta.theme（updateMeta）=====
+    // 「以新主题重装配」不经本端点重写正文文件：S6-A1 的服务/渲染/快照装配都以 meta.theme 为数据源，
+    // meta 写入即生效（GET /edit 下一跳即新主题；编辑器前端 apply 成功后自行 reload）。
+    if (req.method === 'POST' && url.pathname === '/theme/apply') {
+      const body = await readBodyAuto(req);
+      const docId = String((body && body.id) || '');
+      if (!VALID_ID.test(docId)) return sendJson(400, { ok: false, error: 'invalid id' });
+      if (!fs.existsSync(docPath(docId))) return sendJson(404, { ok: false, error: 'doc not found' });
+      const th = String((body && body.theme) || '');
+      const avail = listThemes();
+      if (!avail.includes(th)) return sendJson(400, { ok: false, error: `未知主题: ${th || '(空)'}（可用主题: ${avail.join(', ')}）` });
+      updateMeta(root, docId, (m) => ({ ...(m || {}), theme: th }));
+      return sendJson(200, { ok: true, theme: th });
     }
     if (req.method === 'GET' && url.pathname === '/snapshots') {
       const dir = snapDir(id);

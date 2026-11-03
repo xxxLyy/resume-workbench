@@ -162,6 +162,21 @@
     + '.ed-typo .ed-reset{width:100%;min-height:32px;border:1px solid var(--ed-line);border-radius:var(--ed-radius);background:var(--ed-panel);color:var(--ed-ink);font-size:12px;cursor:pointer}'
     + '.ed-typo .ed-reset:hover{background:var(--ed-bg)}'
     + '.ed-typo .ed-note{font-size:11px;color:var(--ed-mut);line-height:1.6;margin-top:12px}'
+    // 模板页签（S6-A2）：主题卡 = 标签 + 受众一句 + scaled iframe 真实渲染（/theme-preview 经 srcdoc 装载）
+    + '.ed-theme{padding:14px 12px;font-size:12px}'
+    + '.ed-theme .ed-tcard{border:1px solid var(--ed-line);border-radius:var(--ed-radius);padding:10px;margin-bottom:12px;background:var(--ed-panel)}'
+    + '.ed-theme .ed-tcard.ed-tcur{border-color:var(--ed-accent)}'
+    + '.ed-theme .ed-tcard-head{display:flex;align-items:center;gap:6px;margin-bottom:4px}'
+    + '.ed-theme .ed-tname{font-weight:700;color:var(--ed-ink)}'
+    + '.ed-theme .ed-tbadge{font-size:11px;color:var(--ed-accent);border:1px solid var(--ed-accent);border-radius:999px;padding:0 6px;min-height:16px;line-height:15px}'
+    + '.ed-theme .ed-taud{color:var(--ed-mut);line-height:1.55;margin-bottom:8px}'
+    + '.ed-theme .ed-tthumb{position:relative;height:158px;overflow:hidden;border:1px solid var(--ed-line);border-radius:var(--ed-radius);background:var(--ed-bg)}'
+    + '.ed-theme .ed-tthumb iframe{width:794px;height:1123px;border:0;transform:scale(0.35);transform-origin:0 0;pointer-events:none;display:block}'
+    + '.ed-theme .ed-tthumb .ed-tload{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--ed-mut)}'
+    + '.ed-theme .ed-tcalm{font-size:11px;color:var(--ed-mut);line-height:1.6;margin-top:8px}'
+    + '.ed-theme .ed-tapply{width:100%;min-height:32px;margin-top:8px;border:1px solid var(--ed-line);border-radius:var(--ed-radius);background:var(--ed-panel);color:var(--ed-ink);font-size:12px;cursor:pointer}'
+    + '.ed-theme .ed-tapply:hover{background:var(--ed-bg)}'
+    + '.ed-theme .ed-tsem{font-size:11px;color:var(--ed-mut);line-height:1.6;margin-top:12px}'
     // 底栏：position:relative+z-index 抬升绘制层级——冻结主题 .sheet{position:relative;min-height:297mm}
     // （themes/resume-classic.css:10/:12）在矮视口让纸张溢出 grid 行，静态定位的底栏会被盖住、
     // 「↩ 撤销」（唯一定向撤销入口）不可点；非 .sheet 规则，不声明任何文字属性
@@ -1752,11 +1767,13 @@
     + '<button type="button" role="tab" data-pane="zone" aria-selected="false">区域</button>'
     + '<button type="button" role="tab" data-pane="ai" aria-selected="' + (JOB_INFO.hasJob ? 'false' : 'true') + '">AI 助手</button>'
     + '<button type="button" role="tab" data-pane="typo" aria-selected="false">排版</button>'
+    + '<button type="button" role="tab" data-pane="theme" aria-selected="false">模板</button>'
     + '</div>'
     + (JOB_INFO.hasJob ? '<div id="ed-pane-review" class="ed-pane on" role="tabpanel" aria-label="修改清单"></div>' : '')
     + '<div id="ed-pane-zone" class="ed-pane" role="tabpanel" aria-label="区域分析"></div>'
     + '<div id="ed-pane-ai" class="ed-pane' + (JOB_INFO.hasJob ? '' : ' on') + '" role="tabpanel" aria-label="AI 助手"></div>'
-    + '<div id="ed-pane-typo" class="ed-pane" role="tabpanel" aria-label="排版设置"></div>';
+    + '<div id="ed-pane-typo" class="ed-pane" role="tabpanel" aria-label="排版设置"></div>'
+    + '<div id="ed-pane-theme" class="ed-pane" role="tabpanel" aria-label="模板选择"></div>';
   mount(right);
 
   // ===== 批次C：右栏可拖拽分栏（拖柄 DOM 只能由注入层建）=====
@@ -1909,6 +1926,7 @@
     });
     if (name === 'review') window.dispatchEvent(new Event('ed-review-refresh'));
     if (name === 'zone') window.dispatchEvent(new Event('ed-zone-refresh'));
+    if (name === 'theme') buildThemePane();   // S6-A2：首次打开才建卡/取预览（懒加载，不吃首屏）
     if (window.__edApplyWidthTier) window.__edApplyWidthTier();   // S4a-T9：宽度档随活跃度联动
     persistSoon();                       // S2-T6：活动面板属会话状态
   }
@@ -2157,6 +2175,115 @@
   // 监听器必须在顶层注册恰一次：圈在 resetTypo() 里的话，每点一次「恢复默认排版」就叠加一个监听器，
   // 且从未点过恢复时程序改写排版面板不刷新（滑杆停在旧值）。
   window.addEventListener('ed-typo', function () { buildTypoPane(); });
+
+  // ===== 模板选择（S6-A2）：每主题一张卡 = 单/双栏标签 + 一句受众描述 + scaled iframe 真实渲染 =====
+  // 缩略图 = /theme-preview（服务端剥脚本 + 锁定 CSP + 零写）经 fetch→srcdoc iframe 装载：浏览器渲染真 HTML，
+  // 不做静态截图管线。srcdoc 不产生导航 URL → /edit 的 frame-src 'none'（BL-P7-03）零改动；
+  // srcdoc 文档继承本页 CSP（script-src nonce 化）→ 预览即便残留脚本也不执行。
+  // 切换语义（诚实口径）：正文与排版微调保留；主题自带维度（栏式/配色/章节样式）以新主题默认为准。
+  var THEME_META = {
+    classic: { label: '单栏', audience: '适合通用求职主简历：一页排满、内容紧凑、打印最稳。' },
+    dual: { label: '双栏', audience: '适合经历较多、想把一页排满的求职者：主栏经历、侧栏技能摘要。' },
+    magazine: { label: '单栏·展示', audience: '适合现场展示与设计向岗位：衬线刊头、留白与杂志版式。' }
+  };
+  var THEME_SWITCH_SEMANTICS = '正文与排版微调（字号/行距/页边距）会原样保留；主题自带的维度（栏式、配色、章节样式）以新主题默认为准。';
+  var THEME_DUAL_CALM = '双栏与单栏同为纯文本 PDF，文字可完整选中与复制，内容结构不变。';
+  var THEME_INFO = window.__THEME_INFO__ || { themes: [], current: '' };
+  var themePane = right.querySelector('#ed-pane-theme');
+  var themeBuilt = false;
+  function buildThemePane() {
+    var cur = THEME_INFO.current || '';
+    if (!themeBuilt) {
+      themeBuilt = true;
+      themePane.innerHTML = '';
+      var box = document.createElement('div');
+      box.className = 'ed-theme';
+      (Array.isArray(THEME_INFO.themes) ? THEME_INFO.themes : []).forEach(function (t) {
+        var meta = THEME_META[t] || { label: '主题', audience: '' };
+        var card = document.createElement('div');
+        card.className = 'ed-tcard' + (t === cur ? ' ed-tcur' : '');
+        card.setAttribute('data-theme', t);
+        var head = document.createElement('div');
+        head.className = 'ed-tcard-head';
+        head.innerHTML = '<span class="ed-tname">' + escHtml(meta.label) + '</span>'
+          + (t === cur ? '<span class="ed-tbadge">当前</span>' : '');
+        card.appendChild(head);
+        var aud = document.createElement('div');
+        aud.className = 'ed-taud';
+        aud.textContent = meta.audience;
+        card.appendChild(aud);
+        var thumb = document.createElement('div');
+        thumb.className = 'ed-tthumb';
+        var loading = document.createElement('div');
+        loading.className = 'ed-tload';
+        loading.textContent = '预览加载中…';
+        thumb.appendChild(loading);
+        var frame = document.createElement('iframe');
+        frame.setAttribute('title', '主题「' + meta.label + '」的当前简历预览');
+        frame.setAttribute('loading', 'lazy');
+        frame.setAttribute('tabindex', '-1');
+        thumb.appendChild(frame);
+        card.appendChild(thumb);
+        fetch('/theme-preview?id=' + encodeURIComponent(DOC_ID) + '&theme=' + encodeURIComponent(t))
+          .then(function (r) { return r.ok ? r.text() : Promise.reject(new Error('HTTP ' + r.status)); })
+          .then(function (html) {
+            thumb.removeChild(loading);
+            frame.srcdoc = html;   // srcdoc：无导航 URL（frame-src 'none' 不受阻）且继承本页 CSP
+          })
+          .catch(function () { loading.textContent = '预览加载失败'; });
+        if (t === 'dual') {
+          var calm = document.createElement('div');
+          calm.className = 'ed-tcalm';
+          calm.textContent = THEME_DUAL_CALM;
+          card.appendChild(calm);
+        }
+        var apply = document.createElement('button');
+        apply.type = 'button';
+        apply.className = 'ed-tapply';
+        apply.textContent = t === cur ? '当前主题' : '选用此模板';
+        if (t === cur) apply.disabled = true;
+        else {
+          apply.addEventListener('click', function () {
+            var ok = window.confirm('切换到「' + meta.label + '」主题？\n\n' + THEME_SWITCH_SEMANTICS
+              + '\n\n未保存的修改不会包含在切换里（可先 ⌘S 保存）。切换完成后页面会刷新。');
+            if (!ok) return;
+            fetch('/theme/apply', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id: DOC_ID, theme: t }) })
+              .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+              .then(function (r) {
+                if (r.ok && r.j && r.j.ok) location.reload();
+                else __status(saveState, 'err', (r.j && r.j.error) || '主题切换失败');
+              })
+              .catch(function () { __status(saveState, 'err', '主题切换失败：网络错误'); });
+          });
+        }
+        card.appendChild(apply);
+        box.appendChild(card);
+      });
+      var sem = document.createElement('div');
+      sem.className = 'ed-tsem';
+      sem.textContent = '切换语义：' + THEME_SWITCH_SEMANTICS;
+      box.appendChild(sem);
+      themePane.appendChild(box);
+    } else {
+      // 仅刷新「当前」标记与按钮可用态（meta.theme 可能在别处被改过）
+      var curNow = THEME_INFO.current;
+      themePane.querySelectorAll('.ed-tcard').forEach(function (c) {
+        var isCur = c.getAttribute('data-theme') === curNow;
+        c.classList.toggle('ed-tcur', isCur);
+        var badge = c.querySelector('.ed-tbadge');
+        var btn = c.querySelector('.ed-tapply');
+        if (isCur && !badge) {
+          var b = document.createElement('span');
+          b.className = 'ed-tbadge';
+          b.textContent = '当前';
+          c.querySelector('.ed-tcard-head').appendChild(b);
+        } else if (!isCur && badge) { badge.remove(); }
+        if (btn) { btn.disabled = isCur; btn.textContent = isCur ? '当前主题' : '选用此模板'; }
+      });
+    }
+  }
+
 
   // ===== 预览模式 =====
   var previewing = false;
