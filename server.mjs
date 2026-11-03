@@ -1939,11 +1939,34 @@ function listPage(showArchived = false) {
     ].filter(Boolean).join(' · ');
   const todoBits = [
     { p: 1, t: degradedCount && icon('circle-alert', 12) + ` ${degradedCount} 份待结构化` },
-    { p: 2, t: upcoming.length && icon('clock', 12) + ` ${upcoming.length} 份逾期/近期面试提醒` },
+    { p: 2, t: upcoming.length && `<a href="#upcomingAgenda" style="color:inherit">${icon('clock', 12)} ${upcoming.length} 份逾期/近期面试提醒</a>` },
     { p: 3, t: activeApps && icon('list-checks', 12) + ` ${activeApps} 份投递中` },
     { p: 4, t: pdfChip },
     { p: 5, t: cfg ? icon('bot', 12) + ` AI：${escHtml(cfg.name || '')}` : icon('bot', 12) + ' AI 未配置（岗位草稿仍可手动生成）' }
   ].filter((b) => b.t).sort((a, b) => a.p - b.p).map((b) => b.t);
+  // F4 近期日程聚合视图：条目视图从已计算的 upcoming 即时展开（同一 48h 窗口判定，数据零新算、零新字段）。
+  // 每条日程一行（同一投递的截止与多轮面试各自成行）：类型徽章 + 时间原样 + 公司·岗位 + 投递状态，
+  // 整行 <a href="/app?id=…">（行内全为 span/文本，无交互元素，徽章合法嵌套）；纯时间升序 =
+  // 已逾期（更早时间）自然排最前，行内标「已逾期」。upcoming 为空则整卡不渲染，不占版面。
+  const agendaItems = [];
+  for (const a of upcoming) {
+    const due = a.dueDate ? new Date(a.dueDate).getTime() : null;
+    if (due && due - nowMs < 48 * 3600 * 1000) agendaItems.push({ t: due, when: a.dueDate, app: a, kind: '截止', round: '' });
+    const ivs = Array.isArray(a.interviews) ? a.interviews : [];
+    ivs.forEach((iv, i) => {
+      const t = iv.time ? new Date(iv.time).getTime() : null;
+      if (t && t - nowMs < 48 * 3600 * 1000) agendaItems.push({ t, when: iv.time, app: a, kind: '面试', round: '·' + (iv.round || '第' + (i + 1) + '轮') });
+    });
+  }
+  agendaItems.sort((x, y) => x.t - y.t);
+  const agendaCard = agendaItems.length ? `<div class="card" id="upcomingAgenda" style="margin-top:12px"><b class="card-title">近期日程</b>
+      ${agendaItems.map((it) => `<a href="/app?id=${escAttr(it.app.id)}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 0;border-top:1px solid var(--line);color:inherit;font-weight:400;font-size:13px">
+        ${badge('', it.kind + escHtml(it.round))}${it.t < nowMs ? badge('warn', '已逾期') : ''}
+        <span style="font-size:12px;color:var(--mut)">${escHtml(it.when || '')}</span>
+        <span>${escHtml(String(it.app.company || ''))}·${escHtml(String(it.app.role || ''))}</span>
+        <span class="badge">${escHtml(String(it.app.status || ''))}</span>
+      </a>`).join('')}
+    </div>` : '';
   // 岗位状态徽章 = 全部派生（S1-T8）：已投递 ← applications.json（权威）；可投递 ← flow+冲突+stale 三条件；其余按 flow
   const allApps = loadApps();   // 投递表读一次（首页每张卡都要用）
   const jobStatusBadge = (id) => {
@@ -2095,6 +2118,7 @@ function listPage(showArchived = false) {
       </details>
     </div>
     <div class="card statusline" role="status">${todoBits.join('<span class="sep">·</span>')}</div>
+    ${agendaCard}
     <div class="searchrow">
       <input id="searchBox" placeholder="搜索文档（标题/id/标签）" aria-label="搜索文档">
       <button class="secondary" id="viewToggle">▤ 切换</button>

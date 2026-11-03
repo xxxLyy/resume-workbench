@@ -2501,3 +2501,10 @@ if node test-fixtures/reliability/test-ai-prep-persist.mjs; then
 else
   fail "面试准备建议持久化回归未通过 (exit $?)"
 fi
+
+# ===== 16s. F4 首页近期日程聚合视图：upcoming 复用展开（截止/面试条目 + 逾期排最前 + 整行 /app 链接与转义）+ 状态条锚链 + 空表无卡（独立隔离根，动态日期，非浏览器段）=====
+if node test-fixtures/reliability/test-home-agenda.mjs; then
+  echo '✅ 近期日程聚合回归（前两条入卡且终态排除 / 逾期排最前+类型徽章 / 链接与转义 / 空表无卡 / 状态条锚链文案不变）'
+else
+  fail "近期日程聚合回归未通过 (exit $?)"
+fi
