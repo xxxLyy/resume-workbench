@@ -2474,3 +2474,23 @@ if node test-fixtures/reliability/test-stats-loop-view.mjs; then
 else
   fail "评估↦投递闭环视图回归未通过 (exit $?)"
 fi
+
+# ===== 16q. F2 评估报告 angle/gaps 预填定制要求：promote 补传 brief（focus=[angle,...gaps] 经 normBrief）+ 409 幂等 + 上限截断（独立隔离根 + 本地 stub LLM，非浏览器段）=====
+if node test-fixtures/reliability/test-eval-promote-brief.mjs; then
+  echo '✅ 评估预填定制要求回归（promote 落 brief.focus / 空报告 focus=[] 仍 200 / 重复 promote 409 / normBrief 20 条上限）'
+else
+  fail "评估预填定制要求回归未通过 (exit $?)"
+fi
+
+# ===== 16q-2. F2 面板「本次重点（来自评估报告，可逐条删除）」行：逐条呈现 / 删除回写 / 删空行消失（浏览器段）=====
+if node test-fixtures/reliability/test-eval-promote-brief-ui.mjs; then
+  echo '✅ 评估预填定制要求面板回归（focus 行逐条呈现 + 删除回写反映 + 删空后行消失）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 评估预填定制要求面板回归未执行：Chromium 不可用'
+  else
+    fail "评估预填定制要求面板回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi

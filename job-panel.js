@@ -1668,6 +1668,61 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
   }
 
   // ===== 段二「修改清单」：既有渲染原样保留 =====
+  // ===== F2：评估报告 angle/gaps 预填的「本次重点」——只呈现与删除（不新增输入框）=====
+  // promote 时服务端已把 [angle,...gaps] 落进 job.brief.focus；这里逐条呈现，删除/清空调既有
+  // POST /job/brief 回写（该路由此前无前端消费方）。focus=[] 时不渲染行。
+  function renderBriefFocus() {
+    var b = job.brief || {};
+    var focus = Array.isArray(b.focus) ? b.focus : [];
+    if (!focus.length) return null;
+    var box = document.createElement('div');
+    box.className = 'jp-group';
+    var h = document.createElement('h4');
+    h.textContent = '本次重点（来自评估报告，可逐条删除）';
+    box.appendChild(h);
+    var save = function (next, what) {
+      api('/job/brief?id=' + DOC_ID, {
+        focus: next,
+        keepProjects: Array.isArray(b.keepProjects) ? b.keepProjects : [],
+        deemphasize: Array.isArray(b.deemphasize) ? b.deemphasize : [],
+        degree: b.degree, pages: b.pages, preset: b.preset
+      }).then(function (d) {
+        if (!d || !d.ok) { note((d && d.error) || '保存失败', 'warn'); return; }
+        job.brief = d.brief;
+        note(what, 'ok');
+        render();
+      });
+    };
+    focus.forEach(function (f, i) {
+      var row = document.createElement('div');
+      row.className = 'jp-meta';
+      row.setAttribute('data-brief-focus', String(i));
+      var t = document.createElement('span');
+      t.textContent = f;
+      row.appendChild(t);
+      var del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'jp-refbtn';
+      del.setAttribute('data-brief-del', String(i));
+      del.textContent = '删除';
+      del.style.marginLeft = '6px';
+      del.addEventListener('click', function () {
+        save(focus.filter(function (_, j) { return j !== i; }), '已删除 1 条重点');
+      });
+      row.appendChild(del);
+      box.appendChild(row);
+    });
+    var clear = document.createElement('button');
+    clear.type = 'button';
+    clear.className = 'jp-refbtn';
+    clear.setAttribute('data-brief-clear', '1');
+    clear.textContent = '清空';
+    clear.style.marginTop = '4px';
+    clear.addEventListener('click', function () { save([], '已清空本次重点'); });
+    box.appendChild(clear);
+    return box;
+  }
+
   function renderChanges() {
     var head = document.createElement('div');
     head.className = 'jp-head';
@@ -1703,6 +1758,8 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       head.appendChild(cmp);
     }
     root.appendChild(head);
+    var briefFocus = renderBriefFocus();   // F2：评估报告预填的本次重点（生成按钮区旁，仅呈现与删除）
+    if (briefFocus) root.appendChild(briefFocus);
 
     // P3：修改清单任务状态行——running → 批次进度（「第 x/y 批」/重试中「重试第 x/y 批」，时长 ticker 复用）；
     // done/error 且有失败批 → 「重试该批」入口（成功批已落账不受影响）。

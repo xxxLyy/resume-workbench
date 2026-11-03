@@ -3657,7 +3657,13 @@ async function handler(req, res) {
       const rec = list.find((e) => e && e.id === String(body.evalId || ''));
       if (!rec) return sendJson(404, { ok: false, error: '评估记录不存在' });
       if (rec.promotedTo) return sendJson(409, { ok: false, error: '该评估已转为岗位草稿', existing: rec.promotedTo });
-      const r = await createJobDraft(root, { from: body.from, company: rec.company, role: rec.role, jd: rec.jd, jdSource: '评估' });
+      // F2：评估报告 angle/gaps 预填岗位定制要求——blocks 两字段由 parseEvalReport 契约采集（eval.mjs 输出契约），
+      // focus = [angle, ...gaps] 过滤空串后经 normBrief 统一校验（trim / 20 条上限 / degree=refocus、pages=2 缺省），
+      // 随 createJobDraft 落 meta.job.brief；面板可逐条删除（POST /job/brief 回写），岗位生成 prompt 消费路径不变。
+      const blk = (rec.blocks && typeof rec.blocks === 'object' && !Array.isArray(rec.blocks)) ? rec.blocks : {};
+      const prefillFocus = [blk.angle, ...(Array.isArray(blk.gaps) ? blk.gaps : [])]
+        .filter((x) => typeof x === 'string' && x.trim());
+      const r = await createJobDraft(root, { from: body.from, company: rec.company, role: rec.role, jd: rec.jd, jdSource: '评估', brief: { focus: prefillFocus } });
       if (!r.ok) return sendJson(r.status, r.body);
       // 跨 await 后重新读表（AUD-14）：createJobDraft 可能要等 JD 抓取，
       // 这期间别的评估可能已落库或已被 promote → 用 await 前的旧列表写回会丢掉它们。
