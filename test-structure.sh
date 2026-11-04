@@ -46,6 +46,10 @@ node ./test-fixtures/reliability/test-copy-semantic-fixes.mjs
 # ===== R3 投递看板与设置页：label 可访问性 / 消除 prompt 链 / 设置空态说明卡（隔离根浏览器夹具；Chromium 缺失 exit 2）=====
 node ./test-apps-settings-forms.mjs
 
+# ===== 批1 首页任务台面：hero 退役 + 任务卡三态（草稿继续/从零建简历/为岗位定制简历）+ h1 首题 + 首屏次序
+#       +「继续上次任务」回退链契约（隔离根 HTTP 夹具，无浏览器依赖；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §2）=====
+node ./test-fixtures/reliability/test-home-taskbench.mjs
+
 # ===== VQA 视觉验收截图（零断言、退出 0）：7 个关键页 1280x900 全页图落 /tmp/shots-after，
 #       视觉判定走 DESIGN.md 对照（人工/视觉流程），本夹具只产出真实隔离实例渲染截图；Chromium 缺失 exit 2 =====
 node ./test-fixtures/reliability/test-visual-screens.mjs
@@ -4481,7 +4485,7 @@ assert(/function page\([^)]*active/.test(srv), 'page() 应保留 active 参数�
 // 统计块：原 statusline 横条拆成独立统计块
 assert(/class="stat-grid"/.test(srv), '首页应有统计块区 .stat-grid');
 assert((srv.match(/class="stat"/g) || []).length >= 3, '至少 3 个统计块');
-// 旧 hero 保留但不再独占首屏（内容区有 H1）
+// hero 已退役（2026-11-05 批 1）：h1「文档」= 页面第一标题，首屏 = 任务卡→统计行→搜索行→文档列表（行为面见 test-home-taskbench.mjs）
 assert(/<h1[^>]*>文档<\/h1>/.test(srv) || /class="mainarea"[\s\S]{0,400}<h1/.test(srv), '内容区应有 H1');
 // 窄屏 scroll-padding 档位（WCAG 2.4.11 Focus Not Obscured）：
 // 窄屏 topnav 折成两行时，默认 64px 不够，必须有媒体查询单独加一档。
@@ -5127,9 +5131,11 @@ assert(brand.includes('font-size:16px') && brand.includes('font-weight:800') && 
 const h1 = rule('.mainarea>h1,.page-head>h1');
 assert(h1 === 'font-size:20px;font-weight:700;letter-spacing:-.01em',
   '页题档应整条钉死 20px/700/-.01em（DESIGN.md §4.2；已删的 26px 死规则不得复活），实际: ' + h1);
-const hero = rule('.hero-title');
-assert(hero.includes('font-size:34px') && hero.includes('font-weight:800') && hero.includes('letter-spacing:.8px'),
-  'hero 档应钉 34px/800/+.8px（DESIGN.md §4.2），实际: ' + hero);
+// hero 档撤销（2026-11-05 批 1 §0.2：首页任务台面，hero 区退役；DESIGN.md §4.2 已登记三档收两档）
+// —— 旧钉值「.hero-title 34px/800/+.8px」反转为缺席断言：规则与注释字面量都不得残留（HERO_SVG 常量留作引导页插画）。
+const heroLeftover = (srv.match(/\.hero[-a-z]*\{|hero-title|hero-art|hero-txt|hero-acts/g) || []);
+assert(heroLeftover.length === 0,
+  'hero 档应已撤销（.hero* 规则与选择器字面量不得残留；DESIGN.md §4.2 撤销登记），残留: ' + heroLeftover.join(', '));
 // h2 二级档：此前落浏览器默认 1.5em（14px 正文下 ≈21px，比页题还大），收为 16px/700（登记取舍 21px→16px）
 const h2 = rule('.mainarea h2');
 assert(h2.startsWith('font-size:16px;font-weight:700'),
@@ -5151,7 +5157,7 @@ assert(btn.includes('min-height:32px'), '全局 button{min-height:32px} 是 §5.
 // ③ 注入层落点（DESIGN.md §5.3：badge 进 gap 容器必须 margin-right:0，否则双倍计距）
 assert(ed.includes('.ed-on .edit-toolbar .badge{margin:0}'),
   '编辑器工具栏 badge 已进 gap 容器，必须保留 margin:0（DESIGN.md §5.3 双倍计距守卫）');
-console.log('✅ E1 排版不变量（标题三档 + chip/badge 同档）逐字钉值');
+console.log('✅ E1 排版不变量（标题两档（hero 档已撤销） + chip/badge 同档）逐字钉值');
 EOF
 
 # —— E3：导出文本层自检「电话可提取」（B8 补齐，B 线批 7）——

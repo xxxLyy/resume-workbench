@@ -2854,11 +2854,10 @@ try {
   await narrow.goto(`${base}/`, { waitUntil: 'networkidle' });
   const ov = await narrow.evaluate(() => ({
     scrollW: document.documentElement.scrollWidth, inner: window.innerWidth,
-    heroArtHidden: (() => { const el = document.querySelector('.hero-art'); return !el || getComputedStyle(el).display === 'none'; })(),
+    // 2026-11-05 批 1：hero 区退役，heroArtHidden 采样（.hero-art）随元素一并移除——不再有可隐藏的插画位
     cols: (() => { const el = document.getElementById('doclist'); return el ? getComputedStyle(el).gridTemplateColumns.split(' ').length : 0; })()
   }));
   if (ov.scrollW > ov.inner + 1) bad(`首页窄屏横向溢出 scrollW=${ov.scrollW} inner=${ov.inner}`); else ok('首页窄屏无横向溢出');
-  if (!ov.heroArtHidden) bad('窄屏未隐藏 hero 插画'); else ok('窄屏隐藏 hero 插画');
   if (ov.cols > 1) bad(`窄屏文档列表仍 ${ov.cols} 栏`); else ok('窄屏文档列表单栏');
   // 14b [T3 遗留缺陷] 窄屏搜索行：视图切换按钮标签不得竖排（被挤到 min-content 后逐字换行）。
   //     判据用文本节点的客户端矩形数（一行一个矩形），比量高度更直接、不受按钮内边距影响。

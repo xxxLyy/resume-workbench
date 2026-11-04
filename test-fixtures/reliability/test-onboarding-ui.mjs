@@ -61,12 +61,13 @@ try {
   browser = await chromium.launch({ executablePath: bin, headless: true });
   const page = await browser.newPage();
 
-  // ===== ④a 零文档首页：显式「引导建档」入口存在（不自动进入向导）=====
+  // ===== ④a 零文档首页：显式「从零建简历」入口存在（不自动进入向导）
+  //      （2026-11-05 批 1：hero 退役 → 任务卡三态，空库主行动 = 从零建简历，§0.3 改名；ob 系列内部文案改名归改名卡）=====
   await page.goto(base + '/');
   assert.equal(page.url(), base + '/', '零文档访问首页不得自动跳转向导');
   const entryZero = await page.$('a[href="/onboarding/guided"]');
-  assert.ok(entryZero, '零文档首页应有显式「引导建档」入口');
-  assert.ok((await entryZero.textContent()).includes('引导建档'), '入口文案应含「引导建档」');
+  assert.ok(entryZero, '零文档首页应有显式「从零建简历」入口');
+  assert.ok((await entryZero.textContent()).includes('从零建简历'), '入口文案应含「从零建简历」（2026-11-05 批 1 §0.3 改名）');
 
   // ===== ① 完整流程：0.1→0.2→0.3（卡片流+STAR+事实层）→0.4 跳→0.5→0.6 跳→0.7 跳→0.8 完成 → /edit =====
   await page.goto(base + '/onboarding/guided');
@@ -172,7 +173,7 @@ try {
   await page.waitForURL(base + '/');
   assert.equal(page.url(), base + '/', '暂存退出应回首页（文档自然存在即暂存）');
   const entryDocs = await page.$('a[href="/onboarding/guided"]');
-  assert.ok(entryDocs, '有文档用户首页仍有显式「引导建档」入口（不自动弹向导）');
+  assert.ok(entryDocs, '有文档用户首页仍有显式「从零建简历」入口（任务卡次级行，S5 暂存续作可达；不自动弹向导）');
   assert.equal(page.url(), base + '/', '有文档访问首页不得自动跳转向导');
   await entryDocs.click();
   await page.waitForSelector('.ob-resume');

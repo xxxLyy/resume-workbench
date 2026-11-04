@@ -1582,8 +1582,7 @@ html{scroll-padding-top:64px}
    旧 .sidenav 左栏规则已随 DOM 移除（topnav 是唯一页头，见 page() 注释）。 */
 .home{margin:0 auto 40px;max-width:1400px}
 .mainarea{min-width:0}
-/* 内容区页标题（现档 20px/700/-.01em）：.mainarea 的直接子级，或 .page-head 容器内的 h1。
-   hero 里的大标题（.hero-title）不是 .mainarea 的直接子级，仍由自己的类覆盖。 */
+/* 内容区页标题（现档 20px/700/-.01em）：.mainarea 的直接子级，或 .page-head 容器内的 h1。 */
 .mainarea>h1,.page-head>h1{font-size:20px;font-weight:700;letter-spacing:-.01em}
 .mainarea>h1{margin:0 0 var(--space-3)}
 /* 页头统一容器：页题 + 右侧动作/计数两栏（视图切换链接、n= 一律移出 h1，h1 只放标题文字）。
@@ -1591,13 +1590,13 @@ html{scroll-padding-top:64px}
 .page-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap;margin:0 0 var(--space-3)}
 .page-head>h1{margin:0}
 .page-head .page-meta{font-size:13px;font-weight:400;color:var(--mut);font-variant-numeric:tabular-nums}
-/* 标题三档（A-VARS 登记的唯一档位表；新增标题必须归入其中一档，不得新增第四档）：
+/* 标题两档（A-VARS 登记的唯一档位表；新增标题必须归入其中一档，不得新增第三档）：
      ① brand .topnav .brand          16px / 800 / +0.4px
      ② 页题  .mainarea>h1,.page-head>h1  20px / 700 / -0.01em
-     ③ hero  .hero-title             34px / 800 / +0.8px
    层级只靠「字号 + 字重」拉开，字距只作微调（tracking 下限 -0.04em）。
-   —— 旧 h1{26px/800/+0.6px} 是死规则：全站 h1 都由 page() 包进 .mainarea，被上面两档覆盖，
-      删掉零渲染变化（--serif 与 --font 同族，font-family 也无差），只是消除「页题 26px」的误导。 */
+   —— 旧 ③ hero 大标题档（34px/800/+.8px）已随首页 hero 区退役删除（2026-11-05 批 1 §0.2，
+      DESIGN.md §4.2 撤销登记）：品牌身份归 topnav，页面第一标题 = h1「文档」。
+   —— 更早的 h1{26px/800/+0.6px} 也是死规则（全站 h1 都由 page() 包进 .mainarea，被上两档覆盖），同样已删。 */
 /* 二级标题档：此前全站无 h2 样式，落浏览器默认 1.5em（比页题还大） */
 .mainarea h2{font-size:16px;font-weight:700;margin:16px 0 8px}
 button{cursor:pointer;background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--radius);min-height:32px;padding:0 12px;font-weight:600;font-size:13px;transition:transform .12s,background .12s}
@@ -1647,11 +1646,11 @@ ul.doclist.list-view{grid-template-columns:1fr}
 .diff-line.del{background:var(--err-soft);text-decoration:line-through}
 .diff-line.ins{background:var(--ok-soft)}
 footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
-.hero{display:flex;gap:20px;align-items:center;justify-content:space-between;max-height:180px;margin:4px 0 14px}
-.hero-title{font-family:var(--serif);font-size:34px;font-weight:800;letter-spacing:.8px;margin:0 0 12px}
-.hero-acts{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-.hero-art{flex:0 0 200px;color:var(--accent);opacity:.9}
-.hero-art svg{width:100%;height:auto;max-height:150px}
+/* 任务卡（2026-11-05 批 1 §0.2：hero 退役后的首屏主行动，三态=草稿继续/从零建简历/为岗位定制简历）；
+   间距引用 §5.1 token，不新增间距档；主行动仍用 .cta 实底。 */
+.taskcard{margin:0 0 var(--space-3)}
+.taskcard .task-acts{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.taskcard .task-side{margin-top:var(--space-2);display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap}
 .cta{display:inline-block;background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--radius);padding:9px 16px;font-weight:700;font-size:14px;cursor:pointer}
 .cta:hover{transform:translateY(-1px);box-shadow:0 3px 9px rgba(0,0,0,.06)}
 .cta-alt{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:var(--radius);padding:9px 14px;font-weight:600;font-size:13px;cursor:pointer}
@@ -1664,7 +1663,6 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .searchrow input{flex:1 1 180px;min-width:0}
 .searchrow button,.searchrow a{flex:0 0 auto;white-space:nowrap}
 #jobCard[open] summary{margin-bottom:6px}
-@media (max-width:700px){.hero{flex-direction:column;align-items:flex-start;max-height:none}.hero-art{display:none}}
 .kb{display:flex;gap:10px;overflow-x:auto;align-items:flex-start;padding-bottom:8px}
 .kb-col{flex:1 1 0;min-width:180px}
 .kb-col.empty{flex:0 0 92px;min-width:92px}
@@ -1967,6 +1965,9 @@ function listPage(showArchived = false) {
   const pdfStale = pdfStates.filter((s) => s === 'stale').length;
   const pdfNone = pdfStates.length - pdfFresh - pdfStale;
   const jobDocs = infos.filter((d) => meta[d.id] && (meta[d.id].parent || meta[d.id].job));
+  // 母版 = 非岗位版文档（无 parent/job）。与 jobCard 空态（infos.length===0）刻意不同：
+  // 只剩已投递岗位稿时「有母版」不成立——此时任务卡应指回「从零建简历」而非开一张选不到母版的定制表单。
+  const hasMaster = infos.some((d) => { const m = meta[d.id] || {}; return !m.parent && !m.job; });
   const nowMs = Date.now();
   const upcoming = loadApps().filter((a) => {
     if (APP_TERMINAL.includes(a.status)) return false;
@@ -2090,20 +2091,30 @@ function listPage(showArchived = false) {
   for (const mt of loadMats()) for (const t of (Array.isArray(mt.tags) ? mt.tags : [])) if (typeof t === 'string' && t.trim()) tagCount.set(t.trim(), (tagCount.get(t.trim()) || 0) + 1);
   const tagChips = [...tagCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)
     .map(([t]) => `<button type="button" class="chip" data-tag="${escAttr(t)}">${escHtml(t)}</button>`).join('');
+  // 任务卡（2026-11-05 批 1 §0.2/§0.3）：hero 退役后的首屏主行动，三态由流水线状态派生——
+  // ① 有进行中岗位草稿 → 「▶ 继续处理」+ deliverableNow 口径徽章摘要（与下方草稿卡同一函数同口径）；
+  // ② 无母版（无非岗位版文档，归档同不计）→ 「＋ 从零建简历」（八步向导）；
+  // ③ 有母版无草稿 → 「为岗位定制简历」直达岗位表单（暂锚 #jobCard；/job/new 拆页卡落地后由该卡改指向新页）。
+  // 次级行（有文档态）：「继续上次任务」回退链保持既有契约（id/data-* 与内联脚本零变化）；
+  // 另保留「从零建简历」显式入口——S5 暂存续作契约要求有文档用户也能从首页重进向导（落地页渲染续作列表），
+  // hero 退役后若无此入口，暂存过的引导将不可达（test-onboarding-ui ③ 钉此动线）。
+  const latestDraft = drafts[0] || null;
+  const draftReady = latestDraft ? deliverableNow(latestDraft.id, meta[latestDraft.id] || {}, latestDraft) : false;
+  const taskMain = latestDraft
+    ? `<a class="cta" href="/edit?id=${escAttr(latestDraft.id)}">▶ 继续处理：${latestDraft.title}</a>`
+      + badge(draftReady ? 'ok' : 'warn', draftReady ? '可投递' : '草稿')
+      + `<span style="color:var(--mut);font-size:12px">${escHtml(((meta[latestDraft.id] || {}).company || '') + '·' + ((meta[latestDraft.id] || {}).role || ''))}</span>`
+    : hasMaster
+      ? `<a class="cta" href="#jobCard" id="taskJobCta">为岗位定制简历</a>`
+      : `<a class="cta" href="/onboarding/guided" title="八步从零建简历：可跳过、可暂存续作，已有简历可预填补缺">＋ 从零建简历</a>`;
   return page('简历工作台', `
-    <section class="hero">
-      <div class="hero-txt">
-        <h1 class="hero-title">简历工作台</h1>
-        <div class="hero-acts">
-          ${fallbackId
-            ? `<a id="continueBtn" class="cta" href="/edit?id=${encodeURIComponent(fallbackId)}" data-fallback="${escAttr(fallbackId)}" data-doc-ids='${jsonAttr(docIds)}' data-doc-titles='${jsonAttr(docTitles)}'>▶ 继续上次任务</a>`
-            : `<form method="post" action="/new" style="display:inline"><button class="cta" type="submit">＋ 新建第一份简历</button></form>`}
-          <button type="button" class="cta-alt" id="jobToggle" aria-expanded="false" aria-controls="jobCard">${icon('target', 13)} 针对岗位生成</button>
-          <a class="cta-alt" href="/onboarding/guided" title="八步引导建档：可跳过、可暂存续作，已有简历可预填补缺">${icon('compass', 13)} 引导建档</a>
-        </div>
-      </div>
-      <div class="hero-art" aria-hidden="true">${HERO_SVG}</div>
-    </section>
+    <div class="card taskcard" id="taskCard">
+      <div class="task-acts">${taskMain}</div>
+      ${fallbackId
+        ? `<div class="task-side"><a id="continueBtn" class="cta-alt" href="/edit?id=${encodeURIComponent(fallbackId)}" data-fallback="${escAttr(fallbackId)}" data-doc-ids='${jsonAttr(docIds)}' data-doc-titles='${jsonAttr(docTitles)}'>▶ 继续上次任务</a><a href="/onboarding/guided" title="八步从零建简历：可跳过、可暂存续作，已有简历可预填补缺">从零建简历</a></div>`
+        : ''}
+    </div>
+    ${corruptBanner()}
     <h1>文档</h1>
     <div class="stat-grid">
       <div class="stat"><b>${infos.length}</b><span>文档</span></div>
@@ -2112,7 +2123,15 @@ function listPage(showArchived = false) {
       <!--R2①：待办提醒=真待办（待结构化+逾期与面试提醒）；投递中/PDF/AI 配置是状态行，只呈现在 statusline 不计入。-->
       <div class="stat"><b>${degradedCount + upcoming.length}</b><span>待办提醒</span></div>
     </div>
-    ${corruptBanner()}
+    <div class="searchrow">
+      <input id="searchBox" placeholder="搜索文档（标题/id/标签）" aria-label="搜索文档">
+      <button class="secondary" id="viewToggle">▤ 切换</button>
+      <a class="secondary" style="border:1px solid var(--line);border-radius:var(--radius);padding:7px 12px;background:var(--panel);color:var(--ink);font-weight:600;font-size:13px" href="${showArchived ? '/' : '/?archived=1'}">${showArchived ? icon('archive', 13) + ' 隐藏已归档' : icon('archive', 13) + ' 显示已归档'}</a>
+    </div>
+    <ul class="doclist" id="doclist">${cards}${doclistEmpty ? (docInfoMap.size
+      ? `<li class="list-empty">没有可显示的文档——可能都已归档。<a href="/?archived=1">查看已归档</a></li>`
+      : `<li class="list-empty">还没有简历文档。点上方「从零建简历」开始，或 <a href="#up">上传 PDF 导入</a>。</li>`)
+      : ''}<li class="search-empty" style="display:none">没有匹配「<span class="q"></span>」的文档。<button type="button" class="secondary" id="clearSearch">清除搜索</button></li></ul>
     <details class="card" id="jobCard">
       <summary style="cursor:pointer;font-weight:700">${icon('target', 13)} 针对岗位生成简历</summary>
       ${infos.length === 0 ? `<div class="card" style="border-style:dashed"><b>还没有母版简历</b>
@@ -2163,15 +2182,6 @@ function listPage(showArchived = false) {
     </div>
     <div class="card statusline" role="status">${todoBits.join('<span class="sep">·</span>')}</div>
     ${agendaCard}
-    <div class="searchrow">
-      <input id="searchBox" placeholder="搜索文档（标题/id/标签）" aria-label="搜索文档">
-      <button class="secondary" id="viewToggle">▤ 切换</button>
-      <a class="secondary" style="border:1px solid var(--line);border-radius:var(--radius);padding:7px 12px;background:var(--panel);color:var(--ink);font-weight:600;font-size:13px" href="${showArchived ? '/' : '/?archived=1'}">${showArchived ? icon('archive', 13) + ' 隐藏已归档' : icon('archive', 13) + ' 显示已归档'}</a>
-    </div>
-    <ul class="doclist" id="doclist">${cards}${doclistEmpty ? (docInfoMap.size
-      ? `<li class="list-empty">没有可显示的文档——可能都已归档。<a href="/?archived=1">查看已归档</a></li>`
-      : `<li class="list-empty">还没有简历文档。可在页面上方 <a href="#up">上传 PDF 导入</a>，或回到顶部点「＋ 新建第一份简历」。</li>`)
-      : ''}<li class="search-empty" style="display:none">没有匹配「<span class="q"></span>」的文档。<button type="button" class="secondary" id="clearSearch">清除搜索</button></li></ul>
     <script>
       // 评估历史记录（首页卡最多 10 条）：内联进页面，客户端由 evalCardHtml 渲染报告。
       // jsonScript 转义 '<'：记录自带的结束标签不能闭合本脚本（本注释自身也不写出该标签）。
@@ -2344,15 +2354,15 @@ function listPage(showArchived = false) {
           if (!d.contains(e.target)) d.removeAttribute('open');
         });
       });
+      // 任务卡「为岗位定制简历」直达：展开岗位表单并聚焦公司字段（原 hero jobToggle 随 hero 退役删除）
       (function () {
-        var jt = document.getElementById('jobToggle'), jc = document.getElementById('jobCard');
-        if (jt && jc) jt.addEventListener('click', function () {
-          jc.open = !jc.open;
-          jt.setAttribute('aria-expanded', jc.open ? 'true' : 'false');
-          if (jc.open) { var f = document.getElementById('jobCompany'); if (f) f.focus(); }
+        var tj = document.getElementById('taskJobCta'), jc = document.getElementById('jobCard');
+        if (tj && jc) tj.addEventListener('click', function () {
+          jc.open = true;
+          var f = document.getElementById('jobCompany'); if (f) f.focus();
         });
         var btn = document.getElementById('continueBtn');
-        if (!btn) return;                                    // 无文档时渲染的是「新建第一份简历」，无此按钮
+        if (!btn) return;                                    // 空库不渲染次级行，无此按钮
         // 解析必须非致命：属性损坏时抛出的 SyntaxError 会中断整段内联脚本（含 localStorage 陈旧键清理）。
         // 兜底 = 服务端已渲染好的 mtime 链接与原文案，故此处直接 return，不走下面的隐藏分支。
         // 修复轮1 起 jsonAttr() 已保证属性不可能被 ' 截断，本分支只是纵深防御，正常路径永不触发。
