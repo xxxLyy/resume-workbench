@@ -2037,10 +2037,6 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       mkFoot('去导出检查 →', 'jp-primary', function () { setSec('export'); });
     }
     if (changes.length) mkFoot('下一条 ›', '', function () { stepItem(1); });
-    var hint = document.createElement('span');
-    hint.className = 'jp-meta';
-    hint.textContent = '筛选：' + ({ all: '全部', important: '仅重点', new: '仅本次变化' }[posFilter] || posFilter) + ' · j/k 上下条 · 位置自动恢复';
-    foot.appendChild(hint);
     root.appendChild(foot);
   }
 

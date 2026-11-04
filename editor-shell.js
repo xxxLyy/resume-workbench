@@ -161,7 +161,6 @@
     + '.ed-typo input[type=range]{width:100%}'
     + '.ed-typo .ed-reset{width:100%;min-height:32px;border:1px solid var(--ed-line);border-radius:var(--ed-radius);background:var(--ed-panel);color:var(--ed-ink);font-size:12px;cursor:pointer}'
     + '.ed-typo .ed-reset:hover{background:var(--ed-bg)}'
-    + '.ed-typo .ed-note{font-size:11px;color:var(--ed-mut);line-height:1.6;margin-top:12px}'
     // 排版密度预设 + 页数感知（A3）：三档预设置顶（命中高亮 aria-pressed，手动改滑杆即失选）；
     // 页数行如实显示（无渲染历史=尚未渲染，不臆造）；超页「切到紧凑档」是普通动作 → 中性描边（非 accent 主行动）
     + '.ed-typo .ed-presets{display:flex;gap:6px;margin-bottom:14px}'
@@ -172,21 +171,19 @@
     + '.ed-typo .ed-pagemore{min-height:26px;padding:0 10px;border:1px solid var(--ed-line);border-radius:var(--ed-radius);background:var(--ed-panel);color:var(--ed-ink);font-size:12px;cursor:pointer}'
     + '.ed-typo .ed-pagemore:hover{background:var(--ed-bg)}'
     + '.ed-typo .ed-pagenote{font-size:11px;color:var(--ed-mut);line-height:1.6;margin:6px 0 0}'
-    // 模板页签（S6-A2）：主题卡 = 标签 + 受众一句 + scaled iframe 真实渲染（/theme-preview 经 srcdoc 装载）
+    // 模板页签（S6-A2）：主题卡 = 标签 + scaled iframe 真实渲染（/theme-preview 经 srcdoc 装载；
+    // 静态说明句——受众句/安心注/页脚切换语义——已随 2026-11-04 文案减负移除，切换语义只留确认框）
     + '.ed-theme{padding:14px 12px;font-size:12px}'
     + '.ed-theme .ed-tcard{border:1px solid var(--ed-line);border-radius:var(--ed-radius);padding:10px;margin-bottom:12px;background:var(--ed-panel)}'
     + '.ed-theme .ed-tcard.ed-tcur{border-color:var(--ed-accent)}'
     + '.ed-theme .ed-tcard-head{display:flex;align-items:center;gap:6px;margin-bottom:4px}'
     + '.ed-theme .ed-tname{font-weight:700;color:var(--ed-ink)}'
     + '.ed-theme .ed-tbadge{font-size:11px;color:var(--ed-accent);border:1px solid var(--ed-accent);border-radius:999px;padding:0 6px;min-height:16px;line-height:15px}'
-    + '.ed-theme .ed-taud{color:var(--ed-mut);line-height:1.55;margin-bottom:8px}'
-    + '.ed-theme .ed-tthumb{position:relative;height:158px;overflow:hidden;border:1px solid var(--ed-line);border-radius:var(--ed-radius);background:var(--ed-bg)}'
+    + '.ed-theme .ed-tthumb{position:relative;height:158px;overflow:hidden;border:1px solid var(--ed-line);border-radius:var(--ed-radius);background:var(--ed-bg);margin-top:6px}'
     + '.ed-theme .ed-tthumb iframe{width:794px;height:1123px;border:0;transform:scale(0.35);transform-origin:0 0;pointer-events:none;display:block}'
     + '.ed-theme .ed-tthumb .ed-tload{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--ed-mut)}'
-    + '.ed-theme .ed-tcalm{font-size:11px;color:var(--ed-mut);line-height:1.6;margin-top:8px}'
     + '.ed-theme .ed-tapply{width:100%;min-height:32px;margin-top:8px;border:1px solid var(--ed-line);border-radius:var(--ed-radius);background:var(--ed-panel);color:var(--ed-ink);font-size:12px;cursor:pointer}'
     + '.ed-theme .ed-tapply:hover{background:var(--ed-bg)}'
-    + '.ed-theme .ed-tsem{font-size:11px;color:var(--ed-mut);line-height:1.6;margin-top:12px}'
     // 底栏：position:relative+z-index 抬升绘制层级——冻结主题 .sheet{position:relative;min-height:297mm}
     // （themes/resume-classic.css:10/:12）在矮视口让纸张溢出 grid 行，静态定位的底栏会被盖住、
     // 「↩ 撤销」（唯一定向撤销入口）不可点；非 .sheet 规则，不声明任何文字属性
@@ -2186,14 +2183,13 @@
         row.appendChild(more);
       }
     }
-    var footerNote = box.querySelector('.ed-note');
-    if (footerNote) box.insertBefore(row, footerNote); else box.appendChild(row);
+    box.appendChild(row);
     typoPageRowEl = row;
     if (typoPresetNote) {
       var note = document.createElement('div');
       note.className = 'ed-pagenote';
       note.textContent = typoPresetNote;
-      if (footerNote) footerNote.parentNode.insertBefore(note, footerNote); else box.appendChild(note);
+      box.appendChild(note);
     }
   }
   // 页数数据懒加载：首次切到「排版」页签时取（/layout-info 只读；再激活时重取——渲染/导出后页数会变）。
@@ -2293,10 +2289,6 @@
     box.appendChild(reset);
     // 页数感知行（A3）：数据懒加载后由 renderTypoPageRow 原位填充；取到前整行不出现。
     renderTypoPageRow(box);
-    var note = document.createElement('div');
-    note.className = 'ed-note';
-    note.textContent = '设置随文档保存，导出 PDF 与屏幕预览一致。修改正文排版不影响编辑器界面。';
-    box.appendChild(note);
     typoPane.appendChild(box);
   }
   buildTypoPane();
@@ -2305,18 +2297,18 @@
   // 且从未点过恢复时程序改写排版面板不刷新（滑杆停在旧值）。
   window.addEventListener('ed-typo', function () { buildTypoPane(); });
 
-  // ===== 模板选择（S6-A2）：每主题一张卡 = 单/双栏标签 + 一句受众描述 + scaled iframe 真实渲染 =====
+  // ===== 模板选择（S6-A2）：每主题一张卡 = 单/双栏标签 + scaled iframe 真实渲染 =====
   // 缩略图 = /theme-preview（服务端剥脚本 + 锁定 CSP + 零写）经 fetch→srcdoc iframe 装载：浏览器渲染真 HTML，
   // 不做静态截图管线。srcdoc 不产生导航 URL → /edit 的 frame-src 'none'（BL-P7-03）零改动；
   // srcdoc 文档继承本页 CSP（script-src nonce 化）→ 预览即便残留脚本也不执行。
   // 切换语义（诚实口径）：正文与排版微调保留；主题自带维度（栏式/配色/章节样式）以新主题默认为准。
+  // （2026-11-04 文案减负：受众句/双栏安心注/页脚切换语义移除，DESIGN.md §9——切换语义只在确认框出现）
   var THEME_META = {
-    classic: { label: '单栏', audience: '适合通用求职主简历：一页排满、内容紧凑、打印最稳。' },
-    dual: { label: '双栏', audience: '适合经历较多、想把一页排满的求职者：主栏经历、侧栏技能摘要。' },
-    magazine: { label: '单栏·展示', audience: '适合现场展示与设计向岗位：衬线刊头、留白与杂志版式。' }
+    classic: { label: '单栏' },
+    dual: { label: '双栏' },
+    magazine: { label: '单栏·展示' }
   };
   var THEME_SWITCH_SEMANTICS = '正文与排版微调（字号/行距/页边距）会原样保留；主题自带的维度（栏式、配色、章节样式）以新主题默认为准。';
-  var THEME_DUAL_CALM = '双栏与单栏同为纯文本 PDF，文字可完整选中与复制，内容结构不变。';
   var THEME_INFO = window.__THEME_INFO__ || { themes: [], current: '' };
   var themePane = right.querySelector('#ed-pane-theme');
   var themeBuilt = false;
@@ -2328,7 +2320,7 @@
       var box = document.createElement('div');
       box.className = 'ed-theme';
       (Array.isArray(THEME_INFO.themes) ? THEME_INFO.themes : []).forEach(function (t) {
-        var meta = THEME_META[t] || { label: '主题', audience: '' };
+        var meta = THEME_META[t] || { label: '主题' };
         var card = document.createElement('div');
         card.className = 'ed-tcard' + (t === cur ? ' ed-tcur' : '');
         card.setAttribute('data-theme', t);
@@ -2337,10 +2329,6 @@
         head.innerHTML = '<span class="ed-tname">' + escHtml(meta.label) + '</span>'
           + (t === cur ? '<span class="ed-tbadge">当前</span>' : '');
         card.appendChild(head);
-        var aud = document.createElement('div');
-        aud.className = 'ed-taud';
-        aud.textContent = meta.audience;
-        card.appendChild(aud);
         var thumb = document.createElement('div');
         thumb.className = 'ed-tthumb';
         var loading = document.createElement('div');
@@ -2360,12 +2348,6 @@
             frame.srcdoc = html;   // srcdoc：无导航 URL（frame-src 'none' 不受阻）且继承本页 CSP
           })
           .catch(function () { loading.textContent = '预览加载失败'; });
-        if (t === 'dual') {
-          var calm = document.createElement('div');
-          calm.className = 'ed-tcalm';
-          calm.textContent = THEME_DUAL_CALM;
-          card.appendChild(calm);
-        }
         var apply = document.createElement('button');
         apply.type = 'button';
         apply.className = 'ed-tapply';
@@ -2389,10 +2371,6 @@
         card.appendChild(apply);
         box.appendChild(card);
       });
-      var sem = document.createElement('div');
-      sem.className = 'ed-tsem';
-      sem.textContent = '切换语义：' + THEME_SWITCH_SEMANTICS;
-      box.appendChild(sem);
       themePane.appendChild(box);
     } else {
       // 仅刷新「当前」标记与按钮可用态（meta.theme 可能在别处被改过）

@@ -6,8 +6,10 @@
 //      CSP 沿用 /snapshot/view 的锁定口径（default-src 'none'）；
 //   ③ POST /theme/apply（sendJson）写 docs-meta.theme：选择后 meta.theme 变更且 GET /edit 重装配生效
 //      （data-theme 变更）；非法 theme/非法 id/缺文档 → 400/404；
-//   ④ 编辑器右栏「模板」入口：每主题一张卡 = 单/双栏标签 + 一句受众描述 + scaled iframe 真实渲染
-//      当前文档（iframe 加载成功：contentDocument 内有 .sheet）；双栏卡带一行事实安抚；
+//   ④ 编辑器右栏「模板」入口：每主题一张卡 = 单/双栏标签 + scaled iframe 真实渲染
+//      当前文档（iframe 加载成功：contentDocument 内有 .sheet）；
+//      静态说明句（受众句/双栏安心注/页脚切换语义）已随 2026-11-04 文案减负移除（DESIGN.md §9）——
+//      切换语义只留确认框（闸门时刻）；
 //   ⑤ 切换语义文案：确认框明示「正文与排版微调保留，主题维度以新主题默认为准」；
 //      无 ATS 恐吓/打分/警告弹窗措辞。
 // 隔离：mkdtemp 根 + 随机端口 + assembleTemplate 合成文档；真实数据禁写禁删；Chromium 缺失 → exit(2)（套件惯例）。
@@ -165,14 +167,13 @@ try {
     await page.waitForSelector('#ed-pane-theme.on', { timeout: 5000 });
     const cards = await page.$$('#ed-pane-theme .ed-tcard');
     assert.ok(cards.length >= 2, '每主题一张卡（实测 ' + cards.length + '）');
-    // 标签 + 受众一句
+    // 标签 + 静态说明句缺席（2026-11-04 文案减负：受众句/安心注/页脚切换语义移除，DESIGN.md §9）
     const paneText = await page.$eval('#ed-pane-theme', (el) => el.textContent);
     assert.ok(/双栏/.test(paneText) && /单栏/.test(paneText), '主题卡应含单/双栏标签');
-    assert.ok(/适合|用于|想|需要/.test(paneText), '主题卡应含一句受众描述');
-    // 双栏事实安抚 + 无 ATS 恐吓/打分
+    assert.ok(!/适合|用于|受众|纯文本|切换语义/.test(paneText), '静态说明句应已移除（受众句/双栏安心注/页脚切换语义），切换语义只留确认框');
+    // 无 ATS 恐吓/打分
     const dualCard = await page.$eval('#ed-pane-theme .ed-tcard[data-theme="dual"]', (el) => el.textContent);
-    assert.ok(/纯文本/.test(dualCard), '双栏卡应有一行事实安抚（纯文本 PDF）');
-    assert.ok(!/ATS|琥珀|评分|兼容度|百分|分/.test(paneText), '不得出现 ATS 恐吓/打分措辞');
+    assert.ok(!/ATS|琥珀|评分|兼容度|百分|分/.test(dualCard), '不得出现 ATS 恐吓/打分措辞');
     // iframe 真实渲染：每张卡一个 iframe 且加载出 .sheet
     const loaded = await page.waitForFunction(() => {
       const fs2 = [...document.querySelectorAll('#ed-pane-theme .ed-tthumb iframe')];
@@ -197,7 +198,7 @@ try {
     assert.ok(dlg.includes('正文') && dlg.includes('排版微调') && dlg.includes('主题'), '确认框应明示切换语义（正文与排版微调保留/主题维度以新主题为准）：' + dlg.slice(0, 200));
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForSelector('style[data-theme="dual"]', { state: 'attached', timeout: 10000 });   // <style> 永远不可见：等 attached
-    console.log('✅ ④⑤ 模板页签/主题卡/iframe 真渲染/双栏事实安抚/确认切换（meta.theme 变更 + 重载 data-theme=dual）');
+    console.log('✅ ④⑤ 模板页签/主题卡/iframe 真渲染/静态说明句缺席/确认切换（meta.theme 变更 + 重载 data-theme=dual）');
   } finally {
     await browser.close().catch(() => {});
   }
