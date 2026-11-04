@@ -1,4 +1,4 @@
-// test-visual-screens.mjs — 视觉验收截图夹具（VQA 卡）：对 7 个关键应用页截 1280x900 全页图。
+// test-visual-screens.mjs — 视觉验收截图夹具（VQA 卡）：对 8 个关键应用页截 1280x900 全页图。
 // 零断言、退出 0：本夹具只负责「在隔离实例上产出真实渲染截图」（/tmp/shots-after/*.png），
 // 视觉判定由人工/视觉验收流程对照 DESIGN.md 逐张进行（双区世界 / 导航唯一 / 溢出 / 对比 / 串味）。
 // 启动模式逐行照 test-gen-progress-ui.mjs：mkdtemp 隔离根 + 合成岗位草稿 + 本机桩 LLM（随机端口）
@@ -88,7 +88,7 @@ try {
   page.on('console', (m) => { if (m.type() === 'error') console.log('⚠️  console.error: ' + m.text()); });
   fs.mkdirSync(OUT_DIR, { recursive: true });
   const routes = [
-    ['home', '/'], ['onboarding', '/onboarding'], ['stats', '/stats'],
+    ['home', '/'], ['job-new', '/job/new'], ['onboarding', '/onboarding'], ['stats', '/stats'],
     ['materials', '/materials'], ['applications', '/applications'],
     ['evals', '/evals'], ['settings', '/settings']
   ];
@@ -98,7 +98,7 @@ try {
     await page.screenshot({ path: path.join(OUT_DIR, name + '.png'), fullPage: true });
     console.log('📸 ' + route + ' → ' + path.join(OUT_DIR, name + '.png'));
   }
-  console.log('✅ 7 张视觉验收截图完成（零断言，视觉判定走 DESIGN.md 对照）：' + OUT_DIR);
+  console.log('✅ 8 张视觉验收截图完成（零断言，视觉判定走 DESIGN.md 对照）：' + OUT_DIR);
 } finally {
   try { if (browser) await browser.close(); } catch {}
   cleanup();

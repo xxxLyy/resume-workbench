@@ -1662,7 +1662,6 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .searchrow{display:flex;gap:10px;align-items:center;margin:12px 0;flex-wrap:wrap}
 .searchrow input{flex:1 1 180px;min-width:0}
 .searchrow button,.searchrow a{flex:0 0 auto;white-space:nowrap}
-#jobCard[open] summary{margin-bottom:6px}
 .kb{display:flex;gap:10px;overflow-x:auto;align-items:flex-start;padding-bottom:8px}
 .kb-col{flex:1 1 0;min-width:180px}
 .kb-col.empty{flex:0 0 92px;min-width:92px}
@@ -1901,7 +1900,7 @@ const evalHistoryPayload = (records) => {
 // docExists（可选）= (docId) => boolean：调用方提供时，「已转适配」徽章在目标文档在盘时渲染为
 // /edit 链接（F1）；目标缺失或未提供判定（历史调用方/纯渲染切片）维持纯徽章，不做链接承诺。
 function evalHistoryRows(records, docExists) {
-  if (!records.length) return '<div style="color:var(--mut);font-size:13px">还没有评估记录。到首页「针对岗位生成」里点「先评估这个岗位」，评估结果会记在这里。</div>';
+  if (!records.length) return '<div style="color:var(--mut);font-size:13px">还没有评估记录。到<a href="/job/new">「为岗位定制简历」</a>页点「先评估这个岗位」，评估结果会记在这里。</div>';
   return records.map((rec) => {
     const rid = String((rec && rec.id) || '');
     const v = String((rec && rec.verdict) || '');
@@ -2094,7 +2093,7 @@ function listPage(showArchived = false) {
   // 任务卡（2026-11-05 批 1 §0.2/§0.3）：hero 退役后的首屏主行动，三态由流水线状态派生——
   // ① 有进行中岗位草稿 → 「▶ 继续处理」+ deliverableNow 口径徽章摘要（与下方草稿卡同一函数同口径）；
   // ② 无母版（无非岗位版文档，归档同不计）→ 「＋ 从零建简历」（八步向导）；
-  // ③ 有母版无草稿 → 「为岗位定制简历」直达岗位表单（暂锚 #jobCard；/job/new 拆页卡落地后由该卡改指向新页）。
+  // ③ 有母版无草稿 → 「为岗位定制简历」直达独立页 /job/new（§0.3 拆页：表单整体迁移，/job/create 与 /eval/create 契约零变化）。
   // 次级行（有文档态）：「继续上次任务」回退链保持既有契约（id/data-* 与内联脚本零变化）；
   // 另保留「从零建简历」显式入口——S5 暂存续作契约要求有文档用户也能从首页重进向导（落地页渲染续作列表），
   // hero 退役后若无此入口，暂存过的引导将不可达（test-onboarding-ui ③ 钉此动线）。
@@ -2105,7 +2104,7 @@ function listPage(showArchived = false) {
       + badge(draftReady ? 'ok' : 'warn', draftReady ? '可投递' : '草稿')
       + `<span style="color:var(--mut);font-size:12px">${escHtml(((meta[latestDraft.id] || {}).company || '') + '·' + ((meta[latestDraft.id] || {}).role || ''))}</span>`
     : hasMaster
-      ? `<a class="cta" href="#jobCard" id="taskJobCta">为岗位定制简历</a>`
+      ? `<a class="cta" href="/job/new">为岗位定制简历</a>`
       : `<a class="cta" href="/onboarding/guided" title="八步从零建简历：可跳过、可暂存续作，已有简历可预填补缺">＋ 从零建简历</a>`;
   return page('简历工作台', `
     <div class="card taskcard" id="taskCard">
@@ -2132,11 +2131,108 @@ function listPage(showArchived = false) {
       ? `<li class="list-empty">没有可显示的文档——可能都已归档。<a href="/?archived=1">查看已归档</a></li>`
       : `<li class="list-empty">还没有简历文档。点上方「从零建简历」开始，或 <a href="#up">上传 PDF 导入</a>。</li>`)
       : ''}<li class="search-empty" style="display:none">没有匹配「<span class="q"></span>」的文档。<button type="button" class="secondary" id="clearSearch">清除搜索</button></li></ul>
-    <details class="card" id="jobCard">
-      <summary style="cursor:pointer;font-weight:700">${icon('target', 13)} 针对岗位生成简历</summary>
-      ${infos.length === 0 ? `<div class="card" style="border-style:dashed"><b>还没有母版简历</b>
-        <p style="font-size:13px;color:var(--mut);margin:6px 0 10px">「针对岗位生成」需要一份母版简历：先新建一份，或在页面上方上传 PDF 导入，再回到这里针对岗位生成可投递的两页版本。</p>
-        <div style="display:flex;gap:8px;flex-wrap:wrap"><form method="post" action="/new" style="display:inline"><button class="cta" type="submit">＋ 新建空白简历</button></form><a class="cta-alt" href="#up">${icon('file-text', 13)} 上传 PDF 导入</a></div>
+    ${drafts.length ? `<div class="card" style="margin-top:12px"><b class="card-title">继续处理岗位草稿</b>
+      ${drafts.map((d) => { const dl = deliverableNow(d.id, meta[d.id] || {}, d);   // 每草稿只算一次：原写法在同一模板串里调两次，2N 次同步解析卡首屏
+        return `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><span><b>${d.title}</b> ${badge(dl ? 'ok' : 'warn', dl ? '可投递' : '草稿')}<span style="color:var(--mut);font-size:12px">${escHtml(((meta[d.id] || {}).company || '') + '·' + ((meta[d.id] || {}).role || ''))} · ${d.mtime}</span></span><a href="/edit?id=${escAttr(d.id)}"><button>继续处理</button></a></div>`; }).join('')}
+    </div>` : ''}
+    ${evalHomeCard}
+    <div class="card" style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <form method="post" action="/new"><button class="secondary">＋ 新建空白文档</button></form>
+      <!-- 次级行入口按钮（批 1 §0.2/§0.3）：岗位定制表单已整体迁出 → /job/new，这里只留入口（非表单）。样式与搜索行次级链接同款。 -->
+      <a class="secondary" style="border:1px solid var(--line);border-radius:var(--radius);padding:7px 12px;background:var(--panel);color:var(--ink);font-weight:600;font-size:13px" href="/job/new">${icon('target', 13)} 为岗位定制简历</a>
+      <details class="import-box" style="flex:1;min-width:220px"><summary style="cursor:pointer;font-weight:700">${icon('file-text', 13)} 导入 PDF</summary>
+        <form id="up" style="margin-top:8px">
+          <input type="file" id="upfile" accept="application/pdf" aria-label="选择 PDF 文件">
+          <button>导入</button><span id="upmsg" role="status"></span>
+        </form>
+      </details>
+    </div>
+    <div class="card statusline" role="status">${todoBits.join('<span class="sep">·</span>')}</div>
+    ${agendaCard}
+    <script>
+      // 评估历史记录（首页卡最多 10 条）：内联进页面，客户端由 evalCardHtml 渲染报告。
+      // jsonScript 转义 '<'：记录自带的结束标签不能闭合本脚本（本注释自身也不写出该标签）。
+      var EVAL_RECORDS = ${jsonScript(evalHistoryPayload(evalHomeRecords))};
+      document.getElementById('up').addEventListener('submit', async function (e) {
+        e.preventDefault();
+        var f = document.getElementById('upfile').files[0];
+        if (!f) return;
+        document.getElementById('upmsg').textContent = ' 导入中（LLM 结构化需几十秒）…';
+        var r = await fetch('/upload?name=' + encodeURIComponent(f.name), { method: 'POST', body: f });
+        if (r.redirected) { location.href = r.url; return; }
+        document.getElementById('upmsg').textContent = ' ' + (await r.text());
+      });
+      // 评估历史卡：报告渲染器（EVAL_CARD_JS 的 evalCardHtml）与历史接线（EVAL_HISTORY_JS）保留——
+      // 「评估历史」卡回看报告用。生成侧 UI（/eval/create 表单按钮）已随岗位表单整体迁出 → /job/new。
+      ${EVAL_CARD_JS}
+      ${EVAL_HISTORY_JS}
+      document.getElementById('searchBox').addEventListener('input', function () {
+        var q = this.value.toLowerCase();
+        var any = false;   // A4：空态行（list-empty/search-empty）不参与过滤，否则关键词清空后无匹配行残留
+        document.querySelectorAll('#doclist > li:not(.search-empty):not(.list-empty)').forEach(function (li) {
+          var hit = !q || li.textContent.toLowerCase().includes(q);
+          li.style.display = hit ? '' : 'none';
+          if (hit) any = true;
+        });
+        var nm = document.querySelector('#doclist > li.search-empty');
+        if (nm) {
+          var show = q && !any;
+          nm.style.display = show ? '' : 'none';
+          if (show) nm.querySelector('.q').textContent = this.value;
+        }
+      });
+      document.getElementById('clearSearch').addEventListener('click', function () {
+        var sb = document.getElementById('searchBox'); sb.value = ''; sb.dispatchEvent(new Event('input'));
+      });
+      document.getElementById('viewToggle').onclick = function () {
+        document.getElementById('doclist').classList.toggle('list-view');
+      };
+      document.addEventListener('click', function (e) {
+        document.querySelectorAll('details.more[open]').forEach(function (d) {
+          if (!d.contains(e.target)) d.removeAttribute('open');
+        });
+      });
+      // 任务卡「为岗位定制简历」已改为直接链接 /job/new（拆页），无需展开脚本；本 IIFE 只剩 continueBtn 回退链。
+      (function () {
+        var btn = document.getElementById('continueBtn');
+        if (!btn) return;                                    // 空库不渲染次级行，无此按钮
+        // 解析必须非致命：属性损坏时抛出的 SyntaxError 会中断整段内联脚本（含 localStorage 陈旧键清理）。
+        // 兜底 = 服务端已渲染好的 mtime 链接与原文案，故此处直接 return，不走下面的隐藏分支。
+        // 修复轮1 起 jsonAttr() 已保证属性不可能被 ' 截断，本分支只是纵深防御，正常路径永不触发。
+        var ids = null, titles = null;
+        try { ids = JSON.parse(btn.getAttribute('data-doc-ids') || '[]'); } catch (e) { ids = null; }
+        try { titles = JSON.parse(btn.getAttribute('data-doc-titles') || '{}'); } catch (e) { titles = null; }
+        if (!Array.isArray(ids) || !titles || typeof titles !== 'object') return;
+        var fb = btn.getAttribute('data-fallback') || '';
+        var last = '';
+        try { last = localStorage.getItem('resume-last-active-doc') || ''; } catch (e) { last = ''; }
+        if (last && ids.indexOf(last) < 0) { try { localStorage.removeItem('resume-last-active-doc'); } catch (e) {} last = ''; }
+        var pick = last || fb;
+        if (!pick || ids.indexOf(pick) < 0) { btn.style.display = 'none'; return; }   // 不展示无效入口
+        btn.href = '/edit?id=' + encodeURIComponent(pick);
+        btn.textContent = (last ? '▶ 继续：' : '▶ 最近编辑：') + (titles[pick] || pick);
+      })();
+    </script>`, 'docs');
+}
+
+// ===== /job/new「为岗位定制简历」（批 1 §0.3 拆页）=====
+// 首页岗位表单整体迁移到此：字段 id/label/默认值/客户端校验/提交与评估接线自 listPage 原样迁入，
+// POST /job/create 与 /eval/create 契约零变化（§0.3 裁决）。首页只留入口按钮（任务卡主行动 + 次级行按钮）。
+// 不进 topnav（导航六链接不变，UI-4）；active 传 'docs'（由首页进入，归属「文档」高亮）。
+function jobNewPage() {
+  const meta = loadMeta();
+  // 母版下拉口径与拆出前 listPage infos 完全一致（在盘且未归档的全部文档，jobInfo 派生不筛选）。
+  const infos = docIdsOnDisk().map((did) => docInfo(did, meta[did])).filter(Boolean).filter((d) => !((meta[d.id] || {}).archivedAt));
+  // S4a-T5：重点 chips 建议值 = 素材 tags 聚合（与拆出前同一推导，零口径漂移）
+  const tagCount = new Map();
+  for (const mt of loadMats()) for (const t of (Array.isArray(mt.tags) ? mt.tags : [])) if (typeof t === 'string' && t.trim()) tagCount.set(t.trim(), (tagCount.get(t.trim()) || 0) + 1);
+  const tagChips = [...tagCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)
+    .map(([t]) => `<button type="button" class="chip" data-tag="${escAttr(t)}">${escHtml(t)}</button>`).join('');
+  return page('为岗位定制简历', `
+    <h1>为岗位定制简历</h1>
+    ${infos.length === 0 ? `<div class="card" style="border-style:dashed"><b>还没有母版简历</b>
+        <p style="font-size:13px;color:var(--mut);margin:6px 0 10px">「为岗位定制简历」需要一份母版简历：先新建一份，或到<a href="/#up">首页上传 PDF 导入</a>，再回到这里为岗位定制可投递的两页版本。</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><form method="post" action="/new" style="display:inline"><button class="cta" type="submit">＋ 新建空白简历</button></form><a class="cta-alt" href="/#up">${icon('file-text', 13)} 上传 PDF 导入</a></div>
       </div>` : `<form id="jobForm" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;align-items:end">
         <label style="font-size:12px">公司<input id="jobCompany" required style="width:100%"></label>
         <label style="font-size:12px">岗位<input id="jobRole" required style="width:100%"></label>
@@ -2163,41 +2259,12 @@ function listPage(showArchived = false) {
           </div>
         </details>
         <div style="grid-column:1/-1"><button type="submit">生成岗位草稿</button><button type="button" class="secondary" id="evalBtn">${icon('compass', 13)} 先评估这个岗位</button><span id="jobMsg" role="status" style="font-size:12px;color:var(--mut)"></span><span id="evalMsg" role="status" style="font-size:12px;color:var(--mut)"></span></div>
-      </form>`}
-      <div id="evalResult"></div>
-    </details>
-    ${drafts.length ? `<div class="card" style="margin-top:12px"><b class="card-title">继续处理岗位草稿</b>
-      ${drafts.map((d) => { const dl = deliverableNow(d.id, meta[d.id] || {}, d);   // 每草稿只算一次：原写法在同一模板串里调两次，2N 次同步解析卡首屏
-        return `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><span><b>${d.title}</b> ${badge(dl ? 'ok' : 'warn', dl ? '可投递' : '草稿')}<span style="color:var(--mut);font-size:12px">${escHtml(((meta[d.id] || {}).company || '') + '·' + ((meta[d.id] || {}).role || ''))} · ${d.mtime}</span></span><a href="/edit?id=${escAttr(d.id)}"><button>继续处理</button></a></div>`; }).join('')}
-    </div>` : ''}
-    ${evalHomeCard}
-    <div class="card" style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-      <form method="post" action="/new"><button class="secondary">＋ 新建空白文档</button></form>
-      <details class="import-box" style="flex:1;min-width:220px"><summary style="cursor:pointer;font-weight:700">${icon('file-text', 13)} 导入 PDF</summary>
-        <form id="up" style="margin-top:8px">
-          <input type="file" id="upfile" accept="application/pdf" aria-label="选择 PDF 文件">
-          <button>导入</button><span id="upmsg" role="status"></span>
-        </form>
-      </details>
-    </div>
-    <div class="card statusline" role="status">${todoBits.join('<span class="sep">·</span>')}</div>
-    ${agendaCard}
+      </form>
+      <div id="evalResult"></div>`}
     <script>
-      // 评估历史记录（首页卡最多 10 条）：内联进页面，客户端由 evalCardHtml 渲染报告。
-      // jsonScript 转义 '<'：记录自带的结束标签不能闭合本脚本（本注释自身也不写出该标签）。
-      var EVAL_RECORDS = ${jsonScript(evalHistoryPayload(evalHomeRecords))};
-      document.getElementById('up').addEventListener('submit', async function (e) {
-        e.preventDefault();
-        var f = document.getElementById('upfile').files[0];
-        if (!f) return;
-        document.getElementById('upmsg').textContent = ' 导入中（LLM 结构化需几十秒）…';
-        var r = await fetch('/upload?name=' + encodeURIComponent(f.name), { method: 'POST', body: f });
-        if (r.redirected) { location.href = r.url; return; }
-        document.getElementById('upmsg').textContent = ' ' + (await r.text());
-      });
-      // S4a-T5 要求卡：chips 切换 / 幅度与页数段选 / 预设（localStorage，不进 meta）
+      // 要求卡接线（自首页迁入，逻辑零变化）：chips 切换 / 幅度与页数段选 / 预设（localStorage，不进 meta）
       (function () {
-        if (!document.getElementById('briefFocusChips')) return;   // A3 空态：无母版时不渲染岗位表单，预设逻辑一并跳过
+        if (!document.getElementById('briefFocusChips')) return;   // 空态：无母版时不渲染岗位表单，预设逻辑一并跳过
         var lines = function (id) { return document.getElementById(id).value.split(/[\\n]+/).map(function (s) { return s.trim(); }).filter(Boolean); };
         document.getElementById('briefFocusChips').addEventListener('click', function (e) {
           var b = e.target.closest('.chip'); if (!b) return;
@@ -2256,7 +2323,7 @@ function listPage(showArchived = false) {
           var p = loadPresets(); delete p[sel.value]; savePresets(p); refreshPresets();
         });
       })();
-      var jobFormEl = document.getElementById('jobForm');   // A3 空态：无母版时表单不渲染，绑定随之跳过（顶层不能 return，用 if 包裹）
+      var jobFormEl = document.getElementById('jobForm');   // 空态：无母版时表单不渲染，绑定随之跳过（顶层不能 return，用 if 包裹）
       if (jobFormEl) jobFormEl.addEventListener('submit', async function (e) {
         e.preventDefault();
         var msg = document.getElementById('jobMsg');
@@ -2277,15 +2344,14 @@ function listPage(showArchived = false) {
           if (d && d.existing) { if (confirm('已存在同一母版+岗位的草稿（' + d.existing + '）。打开它？')) location.href = '/edit?id=' + d.existing; return; }
           if (d && d.ok && d.id) { location.href = '/edit?id=' + d.id; return; }
           var jobErr = (d && d.error) || (await r.text());
-          if (jobErr.indexOf('invalid from') >= 0) jobErr = '请先选择母版简历';   // A3 兜底：服务端校验直出英文会让首用路径断链
+          if (jobErr.indexOf('invalid from') >= 0) jobErr = '请先选择母版简历';   // 兜底：服务端校验直出英文会让首用路径断链
           __status(msg, 'err', jobErr);
           if (jobErr.indexOf('未配置大模型') >= 0) msg.appendChild(Object.assign(document.createElement('a'), { href: '/settings', textContent: ' 去设置 →' }));   // A2：真实入口可点击
         } catch (err) { __status(msg, 'err', err.message); }
       });
-      // ===== 岗位评估 UI：/eval/create → 报告卡片 → /eval/promote =====
+      // ===== 岗位评估 UI（自首页迁入，逻辑零变化）：/eval/create → 报告卡片 → /eval/promote =====
       // 报告内容全部来自模型：渲染前逐字段转义（模型输出直接进 innerHTML = XSS）。
       ${EVAL_CARD_JS}
-      ${EVAL_HISTORY_JS}
       (function () {
         var btn = document.getElementById('evalBtn');
         var box = document.getElementById('evalResult');
@@ -2327,57 +2393,6 @@ function listPage(showArchived = false) {
             location.href = '/edit?id=' + encodeURIComponent(d.id);
           } catch (err) { __status(msg, 'err', err.message); t.disabled = false; }
         });
-      })();
-      document.getElementById('searchBox').addEventListener('input', function () {
-        var q = this.value.toLowerCase();
-        var any = false;   // A4：空态行（list-empty/search-empty）不参与过滤，否则关键词清空后无匹配行残留
-        document.querySelectorAll('#doclist > li:not(.search-empty):not(.list-empty)').forEach(function (li) {
-          var hit = !q || li.textContent.toLowerCase().includes(q);
-          li.style.display = hit ? '' : 'none';
-          if (hit) any = true;
-        });
-        var nm = document.querySelector('#doclist > li.search-empty');
-        if (nm) {
-          var show = q && !any;
-          nm.style.display = show ? '' : 'none';
-          if (show) nm.querySelector('.q').textContent = this.value;
-        }
-      });
-      document.getElementById('clearSearch').addEventListener('click', function () {
-        var sb = document.getElementById('searchBox'); sb.value = ''; sb.dispatchEvent(new Event('input'));
-      });
-      document.getElementById('viewToggle').onclick = function () {
-        document.getElementById('doclist').classList.toggle('list-view');
-      };
-      document.addEventListener('click', function (e) {
-        document.querySelectorAll('details.more[open]').forEach(function (d) {
-          if (!d.contains(e.target)) d.removeAttribute('open');
-        });
-      });
-      // 任务卡「为岗位定制简历」直达：展开岗位表单并聚焦公司字段（原 hero jobToggle 随 hero 退役删除）
-      (function () {
-        var tj = document.getElementById('taskJobCta'), jc = document.getElementById('jobCard');
-        if (tj && jc) tj.addEventListener('click', function () {
-          jc.open = true;
-          var f = document.getElementById('jobCompany'); if (f) f.focus();
-        });
-        var btn = document.getElementById('continueBtn');
-        if (!btn) return;                                    // 空库不渲染次级行，无此按钮
-        // 解析必须非致命：属性损坏时抛出的 SyntaxError 会中断整段内联脚本（含 localStorage 陈旧键清理）。
-        // 兜底 = 服务端已渲染好的 mtime 链接与原文案，故此处直接 return，不走下面的隐藏分支。
-        // 修复轮1 起 jsonAttr() 已保证属性不可能被 ' 截断，本分支只是纵深防御，正常路径永不触发。
-        var ids = null, titles = null;
-        try { ids = JSON.parse(btn.getAttribute('data-doc-ids') || '[]'); } catch (e) { ids = null; }
-        try { titles = JSON.parse(btn.getAttribute('data-doc-titles') || '{}'); } catch (e) { titles = null; }
-        if (!Array.isArray(ids) || !titles || typeof titles !== 'object') return;
-        var fb = btn.getAttribute('data-fallback') || '';
-        var last = '';
-        try { last = localStorage.getItem('resume-last-active-doc') || ''; } catch (e) { last = ''; }
-        if (last && ids.indexOf(last) < 0) { try { localStorage.removeItem('resume-last-active-doc'); } catch (e) {} last = ''; }
-        var pick = last || fb;
-        if (!pick || ids.indexOf(pick) < 0) { btn.style.display = 'none'; return; }   // 不展示无效入口
-        btn.href = '/edit?id=' + encodeURIComponent(pick);
-        btn.textContent = (last ? '▶ 继续：' : '▶ 最近编辑：') + (titles[pick] || pick);
       })();
     </script>`, 'docs');
 }
@@ -3691,6 +3706,10 @@ async function handler(req, res) {
         return base;
       });
       return redirect('/');
+    }
+    // ===== /job/new「为岗位定制简历」（批 1 §0.3 拆页）：表单页，提交契约零变化（仍 POST /job/create 与 /eval/create）=====
+    if (req.method === 'GET' && url.pathname === '/job/new') {
+      return send(200, jobNewPage());
     }
     // ===== 岗位草稿（独立文档；不依赖模型；同岗位不重复建）=====
     if (req.method === 'POST' && url.pathname === '/job/create') {
@@ -5738,7 +5757,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         && !(e && e.promotedTo) && (e && e.sourceState) === 'recorded');
       const remindHtml = notDelivered.length ? `<div style="margin-top:10px">${badge('warn', '评估了却没投 ' + notDelivered.length + ' 条', 'circle-alert')}${notDelivered.map((e) => `<div style="font-size:12px;color:var(--mut);margin-top:4px">${escHtml(String(e.company || ''))}·${escHtml(String(e.role || ''))} · ${escHtml(evalTimeText(e.createdAt))}</div>`).join('')}</div>` : '';
       const loopCard = `<div class="card" style="margin-top:12px"><b class="card-title">评估 ↦ 投递</b>
-      ${evalLoopRows || '<div style="color:var(--mut);font-size:13px;margin-top:6px">还没有评估记录。到首页「针对岗位生成」里点「先评估这个岗位」，评估结果会记在这里。</div>'}
+      ${evalLoopRows || '<div style="color:var(--mut);font-size:13px;margin-top:6px">还没有评估记录。到<a href="/job/new">「为岗位定制简历」</a>页点「先评估这个岗位」，评估结果会记在这里。</div>'}
       ${remindHtml}</div>`;
       return send(200, page('复盘', `<div class="page-head"><h1>复盘统计</h1><span class="page-meta">n=${n}</span></div>${warn}
     ${loopCard}

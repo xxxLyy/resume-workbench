@@ -299,9 +299,11 @@ wait_ready "$SRV" "$B/" "$TEST_DIR/server.log" "简历平台: http://localhost:$
 
 # ===== 1. 首页与文档创建 =====
 curl -sf "$B/" | grep -q '简历工作台' || fail '首页缺标题'
-curl -sf "$B/" | grep -q '针对岗位生成简历' || fail '首页缺岗位生成入口'
+# 批 1 拆页：岗位表单迁 /job/new，首页只留入口按钮；空库时新页渲染空态（A3 契约）
+curl -sf "$B/" | grep -q '为岗位定制简历' || fail '首页缺岗位定制入口'
+curl -sf "$B/job/new" | grep -q '还没有母版简历' || fail '/job/new 空库缺空态'
 curl -sf "$B/" | grep -q 'BENTO-V1' || fail '首页缺设计系统'
-echo '✅ 首页（岗位生成入口 + 设计系统）'
+echo '✅ 首页（岗位定制入口 + 设计系统）'
 NEWLOC=$(curl -s -X POST "$B/new" -o /dev/null -w '%{redirect_url}')
 DOCID=$(echo "$NEWLOC" | sed 's/.*id=//')
 [ -n "$DOCID" ] && [ -f "$RESUME_ROOT/docs/$DOCID.html" ] || fail '/new 未建文档'
@@ -341,8 +343,9 @@ curl -s -X POST "$B/delete?id=$RD_ID" -o /dev/null || fail 'ReDoS 临时文档�
 grep -q 'contenteditable' <(curl -sf "$B/edit?id=$DOCID") || fail '主文档 $DOCID 被本次用例破坏'
 echo "✅ stripInjections 回溯放大已修复（10 万未闭合标记 ${RD_EL}s < 6s，服务未冻结）"
 
-# S2-T3: 首页结构（任务卡 / 一行状态摘要 / 折叠岗位表单 / 继续上次任务）
+# S2-T3: 首页结构（任务卡 / 一行状态摘要 / 次级入口行 / 继续上次任务）+ /job/new 表单迁移
 # 2026-11-05 批 1：hero 区退役（标记与死 CSS 同删，DESIGN.md §4.2 撤销登记），h1「文档」升为页面第一标题；
+# 岗位表单整体迁出 → /job/new（§0.3 拆页），首页只留入口按钮；首页表单结构类断言随迁到 /job/new（下方 JOBNEW_HTML 段）。
 # 任务卡三态/首屏次序/回退链行为细断言见 test-fixtures/reliability/test-home-taskbench.mjs（test-structure.sh 调用）。
 # 放在文档创建之后：有文档（无草稿）时任务卡走「为岗位定制简历」态，continueBtn/data-doc-ids 在场（回退链契约如此）
 HOME_HTML=$(curl -s "$B/")
@@ -351,13 +354,16 @@ echo "$HOME_HTML" | grep -qF '<h1>文档</h1>' || fail '首页缺 h1「文档」
 echo "$HOME_HTML" | grep -qF 'id="taskCard"' || fail '首页缺任务卡（首屏主行动）'
 echo "$HOME_HTML" | grep -qF 'id="continueBtn"' || fail '首页缺「继续上次任务」入口'
 echo "$HOME_HTML" | grep -qF 'data-doc-ids=' || fail '继续按钮缺 data-doc-ids（回退链无依据）'
-echo "$HOME_HTML" | grep -qF '<details class="card" id="jobCard"' || fail '岗位表单未收进 <details> 折叠'
-echo "$HOME_HTML" | grep -qF 'id="jobCompany"' || fail '岗位表单公司字段丢失（业务契约破坏）'
-echo "$HOME_HTML" | grep -qF 'id="jobJd"' || fail '岗位表单 JD 字段丢失'
-echo "$HOME_HTML" | grep -qF 'id="jobForm"' || fail '岗位表单 id 丢失（既有脚本依赖）'
+echo "$HOME_HTML" | grep -qF 'href="/job/new"' || fail '首页缺「为岗位定制简历」入口（/job/new 拆页）'
+if echo "$HOME_HTML" | grep -qE 'id="jobForm"|id="jobCard"'; then fail '岗位表单应已整体迁出首页（/job/new 承接）'; fi
+# 表单结构契约随迁（原首页四钉：表单骨架 id/公司/JD 字段/表单 id 全保留）
+JOBNEW_HTML=$(curl -s "$B/job/new")
+echo "$JOBNEW_HTML" | grep -qF 'id="jobForm"' || fail '/job/new 缺岗位表单 id（既有脚本依赖）'
+echo "$JOBNEW_HTML" | grep -qF 'id="jobCompany"' || fail '/job/new 岗位表单公司字段丢失（业务契约破坏）'
+echo "$JOBNEW_HTML" | grep -qF 'id="jobJd"' || fail '/job/new 岗位表单 JD 字段丢失'
 [ "$(printf '%s' "$HOME_HTML" | grep -cF 'class="card statusline"')" = "1" ] || fail '状态摘要应为一行（0 处或多处）'
 if printf '%s' "$HOME_HTML" | grep -qE 'https?://[^"'"'"']*\.(png|jpg|jpeg|svg)'; then fail '首页出现外链图片'; fi
-echo '✅ S2-T3 首页结构（任务卡/折叠岗位表单/一行状态摘要/继续上次任务）'
+echo '✅ S2-T3 首页结构（任务卡/次级行入口/一行状态摘要/继续上次任务）+ /job/new 表单迁移'
 
 # S4a-T1b F1: 首页 PDF 单摘要 chip 三态（已同步/较旧/未生成，零项省略）；空列表隐藏 chip；独立「份 PDF 较旧」行撤除
 # 夹具 = 当前唯一文档 DOCID，走 未生成→最新→较旧→归档筛选→空列表 全周期；结尾还原内容与归档态。
@@ -636,11 +642,11 @@ rm -f "$TEST_DIR/llm-slow"
 [ "$(cat "$TEST_DIR/t5-gen409.code")" = "409" ] || fail "S4a-T5 转交修 a 应 409 得 $(cat "$TEST_DIR/t5-gen409.code")"
 grep -q '任务超时' "$TEST_DIR/t5-gen409.json" || fail "S4a-T5 转交修 a：同步 409 应如实标任务超时: $(cat "$TEST_DIR/t5-gen409.json")"
 grep -q '已被取消或取代' "$TEST_DIR/t5-gen409.json" && fail 'S4a-T5 转交修 a：真超时不应再称已被取消或取代'
-# 首页要求卡（服务端直渲染 + 预设键）
-curl -sf "$B/" | grep -q '本次定制要求' || fail '首页缺要求卡折叠区'
-curl -sf "$B/" | grep -q 'briefFocusChips' || fail '首页缺重点 chips'
-curl -sf "$B/" | grep -q 's4a-presets' || fail '首页缺预设存储键'
-echo '✅ S4a-T5 要求卡（create/brief 端点 + 默认值 + 校验 + 旧草稿兼容 + 生成消费 + 首页表单 + 转交修 a）'
+# 要求卡 UI（服务端直渲染 + 预设键）：批 1 拆页后随表单在 /job/new，首页不再承载
+curl -sf "$B/job/new" | grep -q '本次定制要求' || fail '/job/new 缺要求卡折叠区'
+curl -sf "$B/job/new" | grep -q 'briefFocusChips' || fail '/job/new 缺重点 chips'
+curl -sf "$B/job/new" | grep -q 's4a-presets' || fail '/job/new 缺预设存储键'
+echo '✅ S4a-T5 要求卡（create/brief 端点 + 默认值 + 校验 + 旧草稿兼容 + 生成消费 + /job/new 表单 + 转交修 a）'
 
 # ===== 9. 生成建议（假 LLM）：只带已确认素材；状态入库可持久化 =====
 R=$(curl -s -X POST "$B/job/generate?id=$JOBLOC" -H 'Content-Type: application/json' -d '{}')

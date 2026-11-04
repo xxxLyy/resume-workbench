@@ -2880,8 +2880,8 @@ try {
   const wide = await ctx14.newPage();
   await wide.goto(`${base}/`, { waitUntil: 'networkidle' });
   // 2026-11-04 文案减负：.hero-sub 与岗位卡流程句(.card p) 已移除（DESIGN.md §9）；
-  // 13px+ 档采样位改为 .statusline(13px/1.7) 与 #jobCard summary(继承 body 14px/1.6)
-  const read = await wide.evaluate(() => ['.statusline', '#jobCard summary', '.doc-card', '.doclist .doc-card b'].map((s) => {
+  // 13px+ 档采样位改为 .statusline(13px/1.7) 与 .import-box summary(继承 body 14px/1.6；岗位表单迁出后首页同类的 summary 元素)
+  const read = await wide.evaluate(() => ['.statusline', '.import-box summary', '.doc-card', '.doclist .doc-card b'].map((s) => {
     const el = document.querySelector(s);
     if (!el) return { sel: s, missing: true };
     const cs = getComputedStyle(el), fs = parseFloat(cs.fontSize);
@@ -3344,19 +3344,18 @@ try {
     if (undone) ok('S3D ⌘Z 撤销区域改写'); else bad('S3D ⌘Z 撤销失败');
     await ctx.close();
   }
-  // ===== S4a-T5 修复轮：首页内联脚本完整性（script 块终止但 curl 全绿的回归门）=====
+  // ===== S4a-T5 修复轮：/job/new 内联脚本完整性（script 块终止但 curl 全绿的回归门；表单自首页拆页迁入）=====
   {
     const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     const page = await ctx.newPage();
     const consoleErrors = [];
     page.on('pageerror', (e) => consoleErrors.push(String(e && e.message || e)));
     page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
-    await page.goto(base + '/');
-    await page.click('#jobCard > summary');                                  // 展开岗位表单
-    await page.evaluate(() => { document.querySelector('#jobCard details').open = true; });   // 要求卡自身也是折叠态（默认收起）
+    await page.goto(base + '/job/new');
+    await page.evaluate(() => { document.querySelector('#jobForm details').open = true; });   // 要求卡自身是折叠态（默认收起）
     await page.waitForSelector('#briefFocusChips');
-    if (consoleErrors.length) bad('T5 首页内联脚本抛未捕获异常（页数段选/预设/提交全失效）', consoleErrors[0]);
-    else ok('T5 首页内联脚本无未捕获异常');
+    if (consoleErrors.length) bad('T5 /job/new 内联脚本抛未捕获异常（页数段选/预设/提交全失效）', consoleErrors[0]);
+    else ok('T5 /job/new 内联脚本无未捕获异常');
     // 页数段选：点击「1 页」→ aria-pressed 迁移（segPick 绑定生效的直接证据）
     await page.click('#briefPages button[data-pages="1"]');
     const pressed = await page.evaluate(() => ({

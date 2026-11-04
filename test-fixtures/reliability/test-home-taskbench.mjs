@@ -5,7 +5,7 @@
 //     无 .hero* 死 CSS；<h1>文档</h1> 升为页面第一标题（且全页唯一 h1）。
 //   ② 任务卡三态（首屏主行动，按流水线状态派生）：
 //      A 空库（无文档）→「＋ 从零建简历」→ /onboarding/guided（tooltip 八步口径）；
-//      B 有母版无草稿 →「为岗位定制简历」直达岗位表单（#jobCard；/job/new 拆页落地后由该卡改指向）；
+//      B 有母版无草稿 →「为岗位定制简历」直达独立页 /job/new（拆页卡已落地：表单整体迁移，首页只留入口）；
 //      C 有进行中岗位草稿 →「▶ 继续处理：<草稿题>」+ deliverableNow 口径徽章摘要（与草稿卡同款）。
 //   ③ 首屏次序：任务卡 → h1 文档 → 统计行 → 搜索行 → 文档列表；岗位表单/状态行/日程等退到文档列表之后。
 //   ④ 「继续上次任务」回退链契约保持：有文档时 continueBtn + data-fallback/data-doc-ids/data-doc-titles 在场；
@@ -114,8 +114,8 @@ try {
     assert.ok(h1Doc < statAt, 'h1 应在统计行之前');
     assert.ok(statAt < searchAt, '统计行应在搜索行之前（搜索行上第一屏）');
     assert.ok(searchAt < listAt, '搜索行应紧贴文档列表（同上第一屏）');
-    // 次级区退到文档列表之后：岗位表单/状态行/导入行/近期日程
-    for (const [name, needle] of [['岗位表单', 'id="jobCard"'], ['状态摘要', 'class="card statusline"'], ['导入行', 'class="import-box"'], ['近期日程', 'upcomingAgenda']]) {
+    // 次级区退到文档列表之后：状态行/导入行/近期日程（岗位表单已整体迁出 → /job/new，见 B 段迁出断言）
+    for (const [name, needle] of [['状态摘要', 'class="card statusline"'], ['导入行', 'class="import-box"'], ['近期日程', 'upcomingAgenda']]) {
       const at = idx(html, needle);
       if (at >= 0) assert.ok(at > listAt, `${name}应退到文档列表之后（首屏只留任务台面），实际 index=${at} < ${listAt}`);
     }
@@ -134,7 +134,9 @@ try {
     assert.equal((html.match(/<h1[\s>]/g) || []).length, 1, '有文档后首页仍应只有一个 h1');
     const tc = taskCardOf(html);
     assert.ok(tc.includes('为岗位定制简历'), `有母版无草稿任务卡主行动应为「为岗位定制简历」，片段：${tc.slice(0, 200)}`);
-    assert.ok(tc.includes('href="#jobCard"'), '「为岗位定制简历」应直达本页岗位表单（#jobCard；/job/new 拆页后由该卡改指向）');
+    assert.ok(tc.includes('href="/job/new"'), '「为岗位定制简历」应直达独立页 /job/new（拆页卡落地）');
+    // 拆页：岗位表单整体迁出首页（/job/new 承接，行为面见 test-job-new-page.mjs）
+    assert.ok(!html.includes('id="jobCard"') && !html.includes('id="jobForm"'), '岗位表单应整体迁出首页（/job/new 承接）');
     assert.ok(!taskActsOf(tc).includes('从零建简历'), '有母版时主行动不应再是「从零建简历」');
     assert.ok(!tc.includes('继续处理'), '无草稿时任务卡不应出现「继续处理」');
     // S5 暂存续作可达：有文档态次级行保留「从零建简历」显式入口（hero 退役后唯一常驻向导入口）

@@ -50,7 +50,7 @@ node ./test-apps-settings-forms.mjs
 #       +「继续上次任务」回退链契约（隔离根 HTTP 夹具，无浏览器依赖；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §2）=====
 node ./test-fixtures/reliability/test-home-taskbench.mjs
 
-# ===== VQA 视觉验收截图（零断言、退出 0）：7 个关键页 1280x900 全页图落 /tmp/shots-after，
+# ===== VQA 视觉验收截图（零断言、退出 0）：8 个关键页 1280x900 全页图落 /tmp/shots-after，
 #       视觉判定走 DESIGN.md 对照（人工/视觉流程），本夹具只产出真实隔离实例渲染截图；Chromium 缺失 exit 2 =====
 node ./test-fixtures/reliability/test-visual-screens.mjs
 
@@ -2109,13 +2109,13 @@ const COLD = /#F4F5F8|#202737|#697186|#DCE0E8|#5B5DE8|#EEEFFE|#409eff|#2563eb|#d
 fs.readFileSync(F, 'utf8').split('\n').forEach((ln, i) => {
   if (COLD.test(ln)) fail(`${F}:${i + 1} 冷色/靛蓝残留: ${ln.trim().slice(0, 90)}`);
 });
-// 路由集合不变（任何新增 pathname 字面量都会红）。初值 = S2 开工前实测冻结的 54 个字面量；S4a-T10 登记 /export/layout-apply、S4a-T11 登记 /favicon.ico（56），批次2-T2 登记 /eval/create、/eval/promote（58，登记非放宽），2026-11-01 登记 /evals（评估历史独立页，59，登记非放宽），S5 登记 /onboarding、/onboarding/guided、/onboarding/step（引导向导页壳+步进 API，62，登记非放宽），S5F 登记 /onboarding/star-suggest（STAR AI 建议卡，63，登记非放宽；设计 dev-docs/2026-11-02-s5-design.md），S4b-A P3 登记 /job/gen-retry（批次重试端点，64，登记非放宽）
+// 路由集合不变（任何新增 pathname 字面量都会红）。初值 = S2 开工前实测冻结的 54 个字面量；S4a-T10 登记 /export/layout-apply、S4a-T11 登记 /favicon.ico（56），批次2-T2 登记 /eval/create、/eval/promote（58，登记非放宽），2026-11-01 登记 /evals（评估历史独立页，59，登记非放宽），S5 登记 /onboarding、/onboarding/guided、/onboarding/step（引导向导页壳+步进 API，62，登记非放宽），S5F 登记 /onboarding/star-suggest（STAR AI 建议卡，63，登记非放宽；设计 dev-docs/2026-11-02-s5-design.md），S4b-A P3 登记 /job/gen-retry（批次重试端点，64，登记非放宽），批 1 拆页卡登记 /job/new（为岗位定制简历独立页，65，登记非放宽）
 const sm = fs.readFileSync(F, 'utf8');
 const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','/ai/prep','/ai/review','/ai/rewrite','/ai/test',
   '/ai/zone-analyze','/ai/zone-rewrite',
   '/api/extract','/app','/app/add','/app/archive-regenerate','/app/del','/app/ics','/app/update','/applications',
   '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf',
-  '/job-panel.js','/job/brief','/job/changes','/job/create','/job/feedback-del','/job/generate','/job/gen-cancel','/job/gen-retry','/job/gen-start','/layout-info','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',
+  '/job-panel.js','/job/brief','/job/changes','/job/create','/job/feedback-del','/job/generate','/job/gen-cancel','/job/gen-retry','/job/gen-start','/job/new','/layout-info','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',
   '/materials','/new','/onboarding','/onboarding/guided','/onboarding/star-suggest','/onboarding/step','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings','/eval/create','/eval/promote','/evals',
   '/snapshot/baseline','/snapshot/note','/snapshot/pdf','/snapshot/view','/snapshots','/stats','/tag',
   '/theme-preview','/theme/apply',
@@ -3996,13 +3996,14 @@ try {
   const R = seedRoot('ui', true);
   const s = await startSrv(R);
   try {
-    // ===== ① UI 结构：首页含 /eval/create 调用 + 转义函数 + 耗时提示 =====
+    // ===== ① UI 结构：评估生成 UI 自首页迁出 → /job/new（批 1 拆页）；首页保留历史卡渲染器 =====
     const home = await (await fetch(s.B + '/')).text();
-    assert(home.includes('/eval/create'), '首页应含 /eval/create 调用');
-    assert(home.includes('/eval/promote'), '首页应含 /eval/promote 调用');
-    assert(/1[-–—]5\s*分钟/.test(home), '首页应显示评估耗时提示（1-5 分钟）');
+    const jobNew = await (await fetch(s.B + '/job/new')).text();
+    assert(jobNew.includes('/eval/create'), '/job/new 应含 /eval/create 调用（评估 UI 自首页迁入）');
+    assert(jobNew.includes('/eval/promote'), '/job/new 应含 /eval/promote 调用');
+    assert(/1[-–—]5\s*分钟/.test(jobNew), '/job/new 应显示评估耗时提示（1-5 分钟）');
     const mk = home.match(/\/\*EVAL_CARD_JS_START\*\/([\s\S]*?)\/\*EVAL_CARD_JS_END\*\//);
-    assert(!!mk, '首页应带 EVAL_CARD_JS 标记块（可独立执行的报告渲染器）');
+    assert(!!mk, '首页应带 EVAL_CARD_JS 标记块（可独立执行的报告渲染器；历史卡回看用）');
     const cardSrc = mk[1];
     assert(/function esc\s*\(/.test(cardSrc), '报告渲染器应有转义函数 esc()');
     assert(/&lt;/.test(cardSrc) && /&amp;/.test(cardSrc), '转义函数应产出 HTML 实体');
@@ -4010,8 +4011,8 @@ try {
       assert(new RegExp('esc\\([^)]*' + f + '\\b').test(cardSrc), '模型字段 ' + f + ' 应被 esc() 包裹');
     }
     // /eval/promote 的响应字段（id）必须被 UI 消费 → 跳编辑器
-    assert(/\/eval\/promote[\s\S]{0,900}?d\.id/.test(home), 'UI 应消费 /eval/promote 响应的 id 字段');
-    assert(/\/eval\/promote[\s\S]{0,900}?\/edit\?id=/.test(home), 'UI 应把 promote 结果拼成 /edit?id= 跳转');
+    assert(/\/eval\/promote[\s\S]{0,900}?d\.id/.test(jobNew), 'UI 应消费 /eval/promote 响应的 id 字段');
+    assert(/\/eval\/promote[\s\S]{0,900}?\/edit\?id=/.test(jobNew), 'UI 应把 promote 结果拼成 /edit?id= 跳转');
 
     // ===== ② XSS：模型载荷经 stub → 服务端 → 客户端渲染器，输出必须全是实体 =====
     setMode('xss');

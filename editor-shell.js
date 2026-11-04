@@ -1459,7 +1459,7 @@
       warnWrap.className = 'ed-matpop-sec';
       var warn = document.createElement('div');
       warn.className = 'ed-matpop-warn';
-      warn.textContent = '此素材尚未确认，不会参与「针对岗位生成」；手动插入不受限制。';
+      warn.textContent = '此素材尚未确认，不会参与「为岗位定制简历」；手动插入不受限制。';
       var confBtn = document.createElement('button');
       confBtn.type = 'button';
       confBtn.textContent = '确认可用于生成';
@@ -1507,7 +1507,7 @@
   jobpop.id = 'ed-jobpop';
   jobpop.setAttribute('role', 'dialog');
   jobpop.setAttribute('aria-modal', 'true');
-  jobpop.setAttribute('aria-label', '创建岗位草稿');
+  jobpop.setAttribute('aria-label', '为岗位定制简历');
   mount(jobpop);
   var jobpopLastFocus = null;
   function closeJobPop() {
@@ -1533,7 +1533,7 @@
     jobpopLastFocus = jobBtn;
     jobpop.innerHTML = '';
     var h = document.createElement('h3');
-    h.innerHTML = __icon('target') + ' 针对岗位生成简历草稿';
+    h.innerHTML = __icon('target') + ' 为岗位定制简历';
     var note = document.createElement('div');
     note.className = 'ed-jp-note';
     note.textContent = '基于当前文档创建独立草稿（不修改母版）。未配置模型也可先创建；配置后可在右侧「审阅」面板生成并审阅建议。定制要求（重点/保留/不强调/幅度/页数）可在下方「本次定制要求」按需填写，默认重点调整/2 页。';
@@ -1553,7 +1553,7 @@
     jobField('岗位', inRole);
     jobField('JD 链接（可留空）', inLink);
     jobField('JD 文本（可留空，稍后补）', inJd);
-    // 本次定制要求（可选）：与首页「针对岗位生成」表单同形状的 brief（server.mjs briefFromForm/normBrief 消费），
+    // 本次定制要求（可选）：与 /job/new「为岗位定制简历」表单同形状的 brief（server.mjs normBrief 消费），
     // 折叠进弹层——编辑器内一条链走完，不再要求到首页填写。DOM 全在 #ed-jobpop 内（SHELL-INJECT 注释对内，/save 剥离）。
     var briefDet = document.createElement('details');
     var briefSum = document.createElement('summary');
