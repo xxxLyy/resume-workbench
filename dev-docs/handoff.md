@@ -1182,3 +1182,15 @@ Flash 23 条要点见各提交信息与 `b47-report` 工作流报告；收口时
 - 路线图 S6「内置 3 套起步」中的 `resume-compact` 未建：themes/ 现存 classic/dual/magazine 三件（2026-09-23-roadmap:197 vs 目录实况），是否补齐待用户拍板。
 - 承接旧账不变：全站 CSP `script-src 'unsafe-inline'` 需内联 handler 委托化重构后移除；B12 基线重置一次性后果（既有快照/PDF 首访判旧）沿用上轮口径，重新生成/冻结即可，非缺陷。
 - 终验 `test-structure.sh` 唯一 ❌ 为段 X Chromium 探测契约的预期输出（「无缓存｜修复: 运行一次 node render.mjs 触发探测」文案契约，EXIT=0 不受影响），既有口径非缺陷。
+
+## 文案减负轮（2026-11-04）：次级说明文案收口——「让布局自己解释」（起点 `main@e6b7434`）
+
+用户设计指令：「避免不必要的次级标签与描述，让布局自己解释。」经 AskUserQuestion 拍板：基线必收（重复/装饰性约 10 处）+ 页题副标题五处 + 主题卡受众句与安心注 + 复盘卡口径小字；「不自动发送」类诚实括号**保留**。规范落地为 **DESIGN.md §9**（默认不加四类 / 豁免保留四类 / 逐条取舍表），§4.1 的 `.ed-note` 示例随类删除同步修订。
+
+- `fix(server)`：首页 hero-sub（CSS 同删，hero-title 下边距 6→12px 补位）、岗位卡流程句、「先评估」静态预告（行动时文案保留）、导入 helper（`#upfile` 补 aria-label，可访问名不回退）、素材库/设置/快照/对比页题下说明句（对比页保留「含隐藏看」切换控件）、复盘两卡口径小字、/evals 与看板与对比×2 的「返回首页」×4、快照页「← 返回编辑」。
+- `fix(editor)`：主题卡受众句（THEME_META 去 audience）+ 双栏安心注 + 模板页脚切换语义（确认框保留——闸门时刻才是正确位置）+ 排版脚注 `.ed-note`；死 CSS 同删（.ed-taud/.ed-tcalm/.ed-tsem/.ed-typo .ed-note），`.ed-tthumb` 补 margin-top:6px；审阅面板筛选复述行（帮助行「接受会修改正文…」保留）。
+- 断言同提交：test-theme-picker-ui（受众句/安抚句/页脚语义反转为**缺席断言**，先红后绿）；test-editor 可读性采样 `.hero-sub`/`.card p` → `.statusline`/`#jobCard summary`（13px+ 档覆盖不降）；test.sh 兼容回归两钉值重锚（diff 口径句→「含隐藏看」控件在场；快照语义句→`<h1>历史版本</h1>` 在场）。
+
+**验证**：夹具先红（受众句在场 ❌）→ 实现后绿；`RESUME_TEST_STRICT=1 npm run test:all` **EXIT=0（679✅，唯一 ❌ 为段 X Chromium 探测契约既有口径）**；静态 grep 被删文案与死 CSS 类 0 命中；7766 重启（79263→81645）后真实浏览器只读点验 18/18（无空洞；诚实文案/隐私语义/空态指引全在；模板页签三卡+缩略图 iframe 正常）。发现并登记：linghaoxiang 母版为 legacy 主题 → 模板页签无「当前」卡（A2 既有行为，非本轮引入，未动）。
+
+**边界**：素材确认语义改由行动位承载（素材弹层警告 + 生成时「只用已确认素材」提示），静态页题句删除。ECC 钩子本轮零旁路（无桩字面量）。
