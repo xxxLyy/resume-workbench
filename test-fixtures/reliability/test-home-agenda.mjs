@@ -111,7 +111,10 @@ try {
   const idxOver = cardHtml.indexOf('2026-01-01-000000-001');
   const idxIv = cardHtml.indexOf('2026-01-01-000000-002');
   assert.ok(idxOver >= 0 && idxIv > idxOver, '③ 已逾期条目应排在明日面试之前（时间升序）');
-  assert.ok(cardHtml.includes(overdueDue.slice(0, 10)), '③ 条目应显示时间（原样字段）');
+  // 2026-11-04 视觉收尾（DESIGN.md §9.4/§10）：时间改人话格式（fmtWhen），界面不再出现 ISO 原始串
+  const od = new Date(overdueDue);
+  assert.ok(cardHtml.includes((od.getMonth() + 1) + '月' + od.getDate() + '日'), '③ 条目应显示时间（人话格式 M月D日）');
+  assert.ok(!/T\d{2}:\d{2}/.test(cardHtml), '③ 界面不得出现 ISO 原始时间串（fmtWhen 契约）');
   assert.ok(cardHtml.includes('面试公司·测试'), '③ 行应含公司·岗位');
 
   // ② 整行链接 + escAttr/escHtml 转义

@@ -121,14 +121,20 @@ try {
   // ① 主 join：promotedTo 在盘 → /edit 链接 + 投递事实（status/appliedAt/面试轮次）
   assert.ok(html.includes('<a href="/edit?id=job1"'), '① promotedTo 在盘的行应有 /edit 链接');
   assert.ok(html.includes('面试 2 轮'), '① 投递事实应含面试轮次数（interviews.length=2）');
-  assert.ok(html.includes('投于 2026-10-05 10:00'), '① 投递事实应含 appliedAt');
+  // 2026-11-04 视觉收尾（DESIGN.md §9.4）：投于时间走 fmtWhen 人话格式，期望值按同口径动态计算（防跨年时间炸弹）
+  const fmtExpected = (raw) => {
+    const d = new Date(raw);
+    const y = d.getFullYear() === new Date().getFullYear() ? '' : d.getFullYear() + '年';
+    return y + (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  };
+  assert.ok(html.includes('投于 ' + fmtExpected('2026-10-05 10:00')), '① 投递事实应含 appliedAt（人话格式）');
   assert.ok(/投递 1 条：[^<]*面试中/.test(html), '① 主 join 应渲染对应投递 status（面试中），实际无「投递 1 条：…面试中」');
   // ① 已删文档降级：不渲染链接，渲染降级文案
   assert.ok(html.includes('原文档已删除'), '① promotedTo 指向已删文档的行应降级为「原文档已删除」');
   assert.ok(!html.includes('/edit?id=gone-doc'), '① 已删文档不得渲染 /edit 链接');
   // 兜底 join：公司·岗位 trim 后精确相等 → 命中 app2 且标「同名匹配」
   assert.ok(html.includes('同名匹配'), '兜底 join 命中的行应标「同名匹配」');
-  assert.ok(html.includes('投于 2026-10-06 09:00'), '兜底 join 应渲染 app2 的 appliedAt');
+  assert.ok(html.includes('投于 ' + fmtExpected('2026-10-06 09:00')), '兜底 join 应渲染 app2 的 appliedAt（人话格式）');
   // 兜底不误配：戊公司的投递与任何评估都不同名
   assert.ok(!html.includes('戊公司'), '兜底 join 不得把不同名的投递误配进闭环卡');
   // ② 提醒区：verdict=apply 未转（evC）计入；evA 已转 / evB promotedTo 非空 / evD skip 均不计 → 恰 1 条

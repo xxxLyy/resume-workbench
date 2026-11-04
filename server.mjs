@@ -111,6 +111,17 @@ const WRITE_ON_GET = new Set(['/pdf', '/export', '/job/changes', '/snapshot/pdf'
 const EDITOR_ONLY_BODY_CLASS = new Set(['ed-on', 'ed-preview', 'ed-focus']);
 const APP_STATUSES = ['已投递', '笔试', '面试中', 'offer', '已拒', '搁置'];
 const APP_TERMINAL = ['offer', '已拒', '搁置'];
+// 显示层映射（2026-11-04 视觉收尾轮，DESIGN.md §10）：存量数据与 /app/update 接口值仍为 'offer'，仅界面文案中文化
+const statusLabel = (s) => (s === 'offer' ? '录用' : s);
+// 界面时间一律人话格式（DESIGN.md §10）：ISO 串（含 datetime-local 的 T 分隔）不出现在页面上；非法值如实原样返回
+const fmtWhen = (raw) => {
+  if (!raw) return '';
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return String(raw);
+  const hasTime = String(raw).includes(':');
+  const hm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  return (d.getFullYear() === new Date().getFullYear() ? '' : d.getFullYear() + '年') + (d.getMonth() + 1) + '月' + d.getDate() + '日' + (hasTime ? ' ' + hm : '');
+};
 const docPath = (id) => path.join(root, 'docs', id + '.html');
 // 磁盘上的文档 id 清单：只取通过 VALID_ID 的。
 // 文件名是外部输入（备份恢复 / 手工放置）→ 非法 id 绝不能进任何渲染点：
@@ -1563,9 +1574,9 @@ html{scroll-padding-top:64px}
 .topnav{display:flex;justify-content:space-between;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-lg);box-shadow:var(--shadow);padding:10px 18px;margin:16px auto 20px;max-width:1400px;position:sticky;top:12px;z-index:50;flex-wrap:wrap;gap:8px}
 .topnav .brand{display:inline-flex;align-items:center;gap:6px;font-family:var(--serif);letter-spacing:.4px;font-weight:800;font-size:16px;color:var(--ink)}
 .topnav .brand svg{width:17px;height:17px;flex:none}
-.topnav .links a{display:inline-flex;align-items:center;gap:5px;margin-left:16px;color:var(--mut);font-weight:600}
+.topnav .links a{display:inline-flex;align-items:center;gap:5px;margin-left:16px;color:var(--mut);font-weight:600;padding-bottom:2px;border-bottom:2px solid transparent}
 .topnav .links a svg{width:15px;height:15px;flex:none}
-.topnav .links a.on{color:var(--accent)}
+.topnav .links a.on{color:var(--accent);border-bottom-color:var(--accent)}
 .topnav .links a:hover{color:var(--ink)}
 /* 批次B → 导航唯一后（2026-11-03）：.home 只剩内容区，单列流式定宽居中。
    旧 .sidenav 左栏规则已随 DOM 移除（topnav 是唯一页头，见 page() 注释）。 */
@@ -1579,7 +1590,7 @@ html{scroll-padding-top:64px}
    窄屏靠 flex-wrap 自然折行；右侧动作靠 justify-content 右对齐。 */
 .page-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap;margin:0 0 var(--space-3)}
 .page-head>h1{margin:0}
-.page-head .page-meta{font-size:13px;font-weight:400;color:var(--mut)}
+.page-head .page-meta{font-size:13px;font-weight:400;color:var(--mut);font-variant-numeric:tabular-nums}
 /* 标题三档（A-VARS 登记的唯一档位表；新增标题必须归入其中一档，不得新增第四档）：
      ① brand .topnav .brand          16px / 800 / +0.4px
      ② 页题  .mainarea>h1,.page-head>h1  20px / 700 / -0.01em
@@ -1625,7 +1636,7 @@ button:focus-visible,input:focus-visible,a:focus-visible,textarea:focus-visible,
 .badge.ok{background:var(--success-bg);color:var(--success)}.badge.warn{background:var(--warning-bg);color:var(--warning)}.badge.err{background:var(--danger-bg);color:var(--danger)}.badge.ai{background:var(--card-2);color:var(--foreground)}.badge.mute{background:var(--card-2);color:var(--muted)}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:12px 0}
 .stat{border-radius:var(--radius);padding:12px 14px;box-shadow:var(--shadow);border:1px solid var(--line)}
-.stat b{font-size:22px;display:block}
+.stat b{font-size:22px;display:block;font-variant-numeric:tabular-nums}
 .stat span{font-size:12px;color:var(--mut)}
 .stat.s1{background:var(--ai-soft)}.stat.s2{background:var(--accent-soft)}.stat.s3{background:var(--ok-soft)}.stat.s4{background:var(--warn-soft)}
 ul.doclist{list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
@@ -1997,9 +2008,9 @@ function listPage(showArchived = false) {
   const agendaCard = agendaItems.length ? `<div class="card" id="upcomingAgenda" style="margin-top:12px"><b class="card-title">近期日程</b>
       ${agendaItems.map((it) => `<a href="/app?id=${escAttr(it.app.id)}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 0;border-top:1px solid var(--line);color:inherit;font-weight:400;font-size:13px">
         ${badge('', it.kind + escHtml(it.round))}${it.t < nowMs ? badge('warn', '已逾期') : ''}
-        <span style="font-size:12px;color:var(--mut)">${escHtml(it.when || '')}</span>
+        <span style="font-size:12px;color:var(--mut)">${escHtml(fmtWhen(it.when))}</span>
         <span>${escHtml(String(it.app.company || ''))}·${escHtml(String(it.app.role || ''))}</span>
-        <span class="badge">${escHtml(String(it.app.status || ''))}</span>
+        <span class="badge">${escHtml(statusLabel(String(it.app.status || '')))}</span>
       </a>`).join('')}
     </div>` : '';
   // 岗位状态徽章 = 全部派生（S1-T8）：已投递 ← applications.json（权威）；可投递 ← flow+冲突+stale 三条件；其余按 flow
@@ -2643,23 +2654,23 @@ async function saveJsonProtocol(req, id, url) {
 const OB_STEPS = ['0.1', '0.2', '0.3', '0.4', '0.5', '0.6', '0.7', '0.8'];
 const OB_LABELS = { '0.1': '基本信息', '0.2': '摘要', '0.3': '经历（STAR）', '0.4': '项目', '0.5': '技能', '0.6': '教育', '0.7': '照片（可选）', '0.8': '预览完成' };
 const OB_COPY = {
-  '0.1': '先留下名字和联系方式，简历的骨架就有了。',
-  '0.2': '用几句话说清你是谁、想去哪里。',
-  '0.3': '一段经历一张卡，逐条套 STAR，也可以先跳过。',
-  '0.4': '项目单独摆出来，写法和经历一样。',
-  '0.5': '会什么就写什么，一行一条。',
-  '0.6': '学校、专业与时间，一段一张卡。',
-  '0.7': '证件照完全可选，不选也不影响后续。',
-  '0.8': '预览与微调复用编辑器，完成后与手建文档完全同权。'
+  '0.1': '先留下名字和联系方式，简历的骨架就有了',
+  '0.2': '用几句话说清你是谁、想去哪里',
+  '0.3': '一段经历一张卡，逐条套 STAR，也可以先跳过',
+  '0.4': '项目单独摆出来，写法和经历一样',
+  '0.5': '会什么就写什么，一行一条',
+  '0.6': '学校、专业与时间，一段一张卡',
+  '0.7': '证件照完全可选，不选也不影响后续',
+  '0.8': '预览与微调复用编辑器，完成后与手建文档完全同权'
 };
 // 每步右侧说明（左栏插画+情绪文案之下的操作说明）
 const OB_HINT = {
-  '0.1': '联系方式与求职意向都可以留空，之后随时回编辑器补。',
-  '0.2': '摘要放在简历最显眼的位置，写不好可以先跳过。',
-  '0.3': '要点可逐条套 STAR（情境/任务/行动/结果，允许只填部分或跳过），也可用「AI 套 STAR」生成建议——建议只回填卡片，确认提交后才写入；事实层（事实/条件/个人贡献/来源）如实记录并标注来源，表达层可后补。',
-  '0.4': '项目卡片与经历同款：名称、角色、时间加要点。',
-  '0.5': '技能按行拆分，每行一条。',
-  '0.6': '教育经历按段录入，最新的在前更好。',
+  '0.1': '联系方式与求职意向都可以留空，之后随时回编辑器补',
+  '0.2': '摘要放在简历最显眼的位置，写不好可以先跳过',
+  '0.3': '要点可逐条套 STAR（情境/任务/行动/结果，允许只填部分或跳过），也可用「AI 套 STAR」生成建议——建议只回填卡片，确认提交后才写入；事实层（事实/条件/个人贡献/来源）如实记录并标注来源，表达层可后补',
+  '0.4': '项目卡片与经历同款：名称、角色、时间加要点',
+  '0.5': '技能按行拆分，每行一条',
+  '0.6': '教育经历按段录入，最新的在前更好',
   '0.7': '照片会存入本地数据目录（photos/，已排除 Git）；模板照片位待模板库（S6）提供。完全可选，可直接跳过。',
   '0.8': '点「打开编辑器」可预览微调（复用编辑器）；确认完成后走既有导出链路。全程未填内容也会产出一份合法空白文档。'
 };
@@ -2913,7 +2924,7 @@ function obUnfinishedList() {
     const nxt = (m.onboarding.next && OB_LABELS[m.onboarding.next]) || m.onboarding.next || '0.1';
     items.push(`<a class="ob-resume-item" href="/onboarding?docId=${escAttr(oid)}"><b>${escHtml(title)}</b><span>进行到 ${escHtml(nxt)}</span></a>`);
   }
-  return items.length ? `<div class="ob-card ob-resume"><div class="ob-done-title">继续上次引导</div><p class="ob-note">以下引导暂存过，点开从上次的步骤继续。</p>${items.join('')}</div>` : '';
+  return items.length ? `<div class="ob-card ob-resume"><div class="ob-done-title">继续上次引导</div><p class="ob-note">以下引导暂存过，点开从上次的步骤继续</p>${items.join('')}</div>` : '';
 }
 // 条目卡（0.3 经历 / 0.4 项目 / 0.6 教育）：一块散料一张卡，各带编辑；kindLabel 驱动 STAR/事实层子表单。
 // canAi = 已有文档承载时才渲染「AI 套 STAR」建议按钮（S5F：建议只进卡片输入框，确认提交后才写入）。
@@ -3126,8 +3137,8 @@ function onboardingPage(state) {
   } else if (cur === '0.8') {
     formInner = `<div class="ob-card">
       <div class="ob-done-title">预览完成</div>
-      <p class="ob-note">${docId ? '预览与微调复用编辑器：' : '全程未填内容也会产出一份合法空白文档。'}${docId ? `<a href="/edit?id=${escAttr(docId)}">打开编辑器</a>（改完回来确认完成）` : ''}</p>
-      <p class="ob-note">确认完成后走既有导出链路；产出文档与手建文档完全同权。</p>
+      <p class="ob-note">${docId ? '预览与微调复用编辑器：' : '全程未填内容也会产出一份合法空白文档'}${docId ? `<a href="/edit?id=${escAttr(docId)}">打开编辑器</a>（改完回来确认完成）` : ''}</p>
+      <p class="ob-note">确认完成后走既有导出链路；产出文档与手建文档完全同权</p>
     </div>`;
   }
   const hidden = `<input type="hidden" name="step" value="${escAttr(cur)}">${docId ? `<input type="hidden" name="docId" value="${escAttr(docId)}">` : ''}`;
@@ -3136,15 +3147,15 @@ function onboardingPage(state) {
     // R2④：跳过是次级动作 → button.secondary（:1542），不与主行动同实底
     : `<button type="submit">确认并下一步</button><button type="submit" name="skip" value="1" class="secondary">跳过这步</button>`;
   const form = finished
-    ? `<div class="ob-card"><div class="ob-done-title">引导完成</div><p class="ob-note">文档与手建文档完全同权，可继续编辑与导出。</p><p><a href="/edit?id=${escAttr(docId)}">打开编辑器</a> · <a href="/export?id=${escAttr(docId)}">导出 PDF</a></p></div>`
+    ? `<div class="ob-card"><div class="ob-done-title">引导完成</div><p class="ob-note">文档与手建文档完全同权，可继续编辑与导出</p><p><a href="/edit?id=${escAttr(docId)}">打开编辑器</a> · <a href="/export?id=${escAttr(docId)}">导出 PDF</a></p></div>`
     : `<form method="post" action="/onboarding/step" class="ob-form">${hidden}${formInner}<div class="ob-actions">${actions}<a href="/" title="已确认内容已存入文档，随时回来继续">暂存退出</a></div></form>${isEntryStep ? OB_CARDS_JS : ''}${cur === '0.7' ? OB_PHOTO_JS : ''}`;
   // R2⑤：横幅区分 forward（from=step 步进回跳）/resume（后续再进来）两态；
   // last 落在 skipped 数组里（跳过的步也会推进 last）→ 显示「已跳过 X」，不得谎称「最近确认」。
   const lastMark = (ob && ob.last) ? `（${skipped.has(ob.last) ? '已跳过' : '最近确认'} ${escHtml(OB_LABELS[ob.last] || ob.last)}）` : '';
   const banner = docId
     ? (state.mode === 'forward'
-        ? `<p class="ob-note">已进入下一步${lastMark}，从当前步继续即可。</p>`
-        : `<p class="ob-note">已恢复未完成的引导${lastMark}，从当前步继续即可。</p>`)
+        ? `<p class="ob-note">已进入下一步${lastMark}，从当前步继续即可</p>`
+        : `<p class="ob-note">已恢复未完成的引导${lastMark}，从当前步继续即可</p>`)
     : `<p class="ob-note">八步都是可跳过的组织方式：每步可跳过、可暂存续作；已有简历可预填、只补缺失项。首个有内容的确认步才建档，空输入不产生文件。</p>`;
   const illust = curIdx === 0 || finished ? HERO_SVG : OB_PAGE_SVG;
   return page('引导建档', `
@@ -4904,7 +4915,7 @@ async function handler(req, res) {
           const due = a.dueDate && (new Date(a.dueDate).getTime() - nowMs) < 48 * 3600 * 1000 && new Date(a.dueDate).getTime() >= nowMs - 24 * 3600 * 1000 ? '<span class="badge warn" role="img" aria-label="临近截止" title="临近截止">' + icon('circle-alert', 11) + '</span>' : '';
           const archiveBadge = a.archive && a.archive.status === 'failed' ? badge('err', '存档缺失') : '';
           // data-ch 是属性上下文：channel 由 /app/add、/app/update 原样落库（用户可控）→ 必须 escAttr
-          return `<tr data-ch="${escAttr(a.channel || '')}"><td><b>${escHtml(a.company)}</b></td><td>${escHtml(a.role)}</td><td>${escHtml(a.channel || '')}</td><td>${escHtml(a.status)}</td><td>${escHtml(a.appliedAt || '')}</td><td>${escHtml(a.nextStep || '')}</td><td>${escHtml(a.dueDate || '')}${due}</td><td>${archiveBadge}<a href="/app?id=${escAttr(a.id)}">详情</a></td></tr>`;
+          return `<tr data-ch="${escAttr(a.channel || '')}"><td><b>${escHtml(a.company)}</b></td><td>${escHtml(a.role)}</td><td>${escHtml(a.channel || '')}</td><td>${escHtml(statusLabel(a.status))}</td><td>${escHtml(fmtWhen(a.appliedAt))}</td><td>${escHtml(a.nextStep || '')}</td><td>${escHtml(fmtWhen(a.dueDate))}${due}</td><td>${archiveBadge}<a href="/app?id=${escAttr(a.id)}">详情</a></td></tr>`;
         };
         return send(200, page('投递看板·表格', `<div class="page-head"><h1>投递看板</h1><a href="/applications" style="font-size:13px;font-weight:400">⇄ 看板视图</a></div>
       ${corruptBanner()}
@@ -4948,12 +4959,12 @@ async function handler(req, res) {
           <div class="card-title" style="color:var(--ink)">${escHtml(a.company)}${due}</div>
           <div style="color:var(--mut);font-size:12px">${escHtml(a.role)}</div>
           <div style="font-size:12px;color:var(--mut);margin:2px 0"><a href="/edit?id=${escAttr(a.docId)}">${escHtml(a.docId)}</a> ${badge(a.jd ? 'ok' : 'warn', 'JD')}${arch}${a.channel ? `<span class="badge">${escHtml(a.channel)}</span>` : ''}</div>
-          ${a.nextStep || a.dueDate ? `<div style="font-size:12px;color:var(--mut)">${a.nextStep ? '下一步：' + escHtml(a.nextStep) : ''}${a.dueDate ? ' 截止：' + escHtml(a.dueDate) : ''}</div>` : ''}
+          ${a.nextStep || a.dueDate ? `<div style="font-size:12px;color:var(--mut)">${a.nextStep ? '下一步：' + escHtml(a.nextStep) : ''}${a.dueDate ? ' 截止：' + escHtml(fmtWhen(a.dueDate)) : ''}</div>` : ''}
           ${a.note ? `<div style="font-size:12px;color:var(--mut)">${escHtml(a.note)}</div>` : ''}
           <div style="margin-top:4px;font-size:12px">
             ${idx > 0 ? `<button class="secondary" style="padding:2px 8px" onclick="appPatch(${jsStr(a.id)},{status:APP_STATUSES[${idx - 1}]})">◀</button>` : ''}
             ${idx < APP_STATUSES.length - 1 && !APP_TERMINAL.includes(a.status) ? `<button class="secondary" style="padding:2px 8px" onclick="appPatch(${jsStr(a.id)},{status:APP_STATUSES[${idx + 1}]})">▶</button>` : ''}
-            <select style="font-size:12px;padding:2px" aria-label="状态" onchange="if(this.value)appPatch(${jsStr(a.id)},{status:this.value})"><option value="">⇅</option>${APP_STATUSES.map((s) => `<option value="${s}"${s === a.status ? ' selected' : ''}>${s}</option>`).join('')}</select>
+            <select style="font-size:12px;padding:2px" aria-label="状态" onchange="if(this.value)appPatch(${jsStr(a.id)},{status:this.value})"><option value="">⇅</option>${APP_STATUSES.map((s) => `<option value="${s}"${s === a.status ? ' selected' : ''}>${escHtml(statusLabel(s))}</option>`).join('')}</select>
             <a href="/app?id=${escAttr(a.id)}">详情</a>
             <button class="secondary" style="padding:2px 8px" aria-label="快速编辑" onclick="appEdit(${jsStr(a.id)})">${icon('pencil', 13)}</button>
             <button class="danger" style="padding:2px 8px;min-height:28px" aria-label="删除投递" onclick="appDel(${jsStr(a.id)})">${icon('trash-2', 13)}</button>
@@ -4970,7 +4981,7 @@ async function handler(req, res) {
       };
       const cols = APP_STATUSES.map((st) => {
         const items = apps.filter((a) => a.status === st);
-        return `<div class="kb-col${items.length ? '' : ' empty'}"><div class="group-head">${st} <span style="color:var(--mut);font-weight:600">${items.length}</span></div>${items.map(appCard).join('') || '<div style="color:var(--mut);font-size:12px;padding:4px 8px">（空）</div>'}</div>`;
+        return `<div class="kb-col${items.length ? '' : ' empty'}"><div class="group-head">${escHtml(statusLabel(st))} <span style="color:var(--mut);font-weight:600;font-variant-numeric:tabular-nums">${items.length}</span></div>${items.map(appCard).join('') || '<div style="color:var(--mut);font-size:12px;padding:4px 8px">（空）</div>'}</div>`;
       }).join('');
       return send(200, page('投递看板', `<div class="page-head"><h1>投递看板</h1><a href="/applications?view=table" style="font-size:13px;font-weight:400">⇄ 表格视图</a></div>
     ${corruptBanner()}
@@ -5059,13 +5070,13 @@ async function handler(req, res) {
     <div class="card">
       <b style="font-size:16px">${escHtml(app.company)}</b> ${escHtml(app.role)} ${dueBadge}
       <div style="font-size:13px;color:var(--mut);margin-top:6px">
-        状态：<span class="badge">${escHtml(app.status)}</span>
+        状态：<span class="badge">${escHtml(statusLabel(app.status))}</span>
         ${app.channel ? `渠道：<span class="badge">${escHtml(app.channel)}</span>` : ''}
         ${(() => { const u = safeUrl(app.link); return u ? `<a href="${escAttr(u)}" target="_blank" rel="noopener">岗位链接</a>` : (app.link ? '<span class="mut">岗位链接协议不安全，未渲染</span>' : ''); })()}
         简历：<a href="/edit?id=${escAttr(app.docId)}">${escHtml(app.docId)}</a>
-        ${app.appliedAt ? `投递日期：${escHtml(app.appliedAt)}` : ''}
+        ${app.appliedAt ? `投递日期：${escHtml(fmtWhen(app.appliedAt))}` : ''}
         ${app.nextStep ? `下一步：${escHtml(app.nextStep)}` : ''}
-        ${app.dueDate ? `截止：${escHtml(app.dueDate)}` : ''}
+        ${app.dueDate ? `截止：${escHtml(fmtWhen(app.dueDate))}` : ''}
         ${app.snapTs ? `当时快照：<a href="/snapshot/view?id=${escAttr(app.docId)}&ts=${escAttr(app.snapTs)}">${escHtml(app.snapTs)}</a>` : ''}
         ${archiveLine}
       </div>
@@ -5075,7 +5086,7 @@ async function handler(req, res) {
     <div class="card" style="margin-top:12px">
       <b>面试记录</b> <button class="secondary" style="padding:2px 8px;font-size:12px" onclick="ivAdd()">＋</button>
       <div id="ivList">${interviews.map((iv, i) => `<div style="border-left:3px solid var(--accent);padding:8px;margin:8px 0;background:var(--bg)">
-        <b>${escHtml(iv.round || '第' + (i + 1) + '轮')}</b> <span style="color:var(--mut);font-size:12px">${escHtml(iv.time || '')}</span>
+        <b>${escHtml(iv.round || '第' + (i + 1) + '轮')}</b> <span style="color:var(--mut);font-size:12px">${escHtml(fmtWhen(iv.time))}</span>
         <a href="/app/ics?id=${escAttr(app.id)}&i=${i}" target="_blank" style="font-size:12px;margin-left:8px">${icon('calendar', 13)} ICS</a>
         ${iv.questions ? `<div style="font-size:13px;margin-top:4px"><b>问题：</b>${escHtml(iv.questions)}</div>` : ''}
         ${iv.answer ? `<div style="font-size:13px"><b>回答要点：</b>${escHtml(iv.answer)}</div>` : ''}
@@ -5216,7 +5227,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         · 模型：可手填；也可先「测试连接」，成功后从下方可点列表里选<br>
         · 思考程度 reasoning_effort：留空=不传该参数；部分厂商不认这个字段，硬传会 400
       </div>
-      <p style="font-size:13px;color:var(--mut);margin-bottom:0">测试连接流程：点「添加配置」→ 填 Base URL 与 API Key → 点该卡里的「测试连接」→ 出现可点选的模型按钮 → 选一个 → 点上方「保存」。</p>
+      <p style="font-size:13px;color:var(--mut);margin-bottom:0">测试连接流程：点「添加配置」→ 填 Base URL 与 API Key → 点该卡里的「测试连接」→ 出现可点选的模型按钮 → 选一个 → 点上方「保存」</p>
     </div>`;
       return send(200, page('设置', `<h1>设置</h1>
     ${corruptBanner()}
@@ -5225,14 +5236,14 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     <p><button type="button" id="addBtn">${icon('plus', 13)} 添加配置</button> <button type="button" id="saveBtn">保存</button> <a href="/">返回首页</a> <span id="msg"></span></p>
     <div class="card" style="margin-top:var(--space-3)">
       <b class="card-title">${icon('save', 13)} 备份与恢复</b>
-      <p style="font-size:13px;color:var(--mut)">备份含 docs/snapshots/pdfs 与四个 JSON（docs-meta/applications/materials/evaluations），<b>不含 config.json（密钥不进备份）</b>。</p>
+      <p style="font-size:13px;color:var(--mut)">备份含 docs/snapshots/pdfs 与四个 JSON（docs-meta/applications/materials/evaluations），<b>不含 config.json（密钥不进备份）</b></p>
       <p><a href="/backup"><button>下载备份</button></a> <span style="font-size:12px;color:var(--mut)">恢复默认「合并」：本地独有记录保留，同 id 冲突以备份为准，预览里逐条列出</span></p>
       <form id="restoreForm"><input type="file" id="restoreFile" accept=".tar.gz,.tgz" aria-label="选择备份文件（.tar.gz）">
         <label style="font-size:13px"><input type="radio" name="rmode" value="merge" checked> 合并（推荐）</label>
         <label style="font-size:13px"><input type="radio" name="rmode" value="replace"> 替换（清空现有后导入）</label>
         <button type="submit">恢复</button><span id="restoreMsg"></span></form>
       <div id="restorePreview" style="font-size:13px;margin-top:8px"></div>
-      <p style="font-size:12px;color:var(--mut)">每次恢复前自动生成回退点（backups/），失败可一键回退。</p>
+      <p style="font-size:12px;color:var(--mut)">每次恢复前自动生成回退点（backups/），失败可一键回退</p>
       <div id="undoBox"></div>
     </div>
     <script>var DATA = ${JSON.stringify({ active, profiles }).replace(/</g, '\\u003c')}</script>
@@ -5674,7 +5685,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const byDocLabel = (k) => { const di = docInfo(k, meta[k]); return di ? `${di.title}（${escAttr(k)}）` : escHtml(k); };
       const interviewed = apps.filter((a) => ['面试中', 'offer'].includes(a.status) || (Array.isArray(a.interviews) && a.interviews.length)).length;
       const n = apps.length;
-      const funnelBar = funnel.map(([s, c]) => `<div style="display:flex;align-items:center;margin:6px 0"><span style="width:70px;font-size:12px">${s}</span><div style="flex:1;background:var(--bg);border-radius:4px;height:20px"><div style="background:var(--accent);height:100%;border-radius:4px;width:${n ? (c / n * 100) : 0}%"></div></div><span style="width:30px;text-align:right;font-size:12px">${c}</span></div>`).join('');
+      // 分布条（2026-11-04 视觉收尾，DESIGN.md §10）：单系数据不上 accent——非零行用中性 mut，accent 只留给行动；计数右对齐定宽 + tabular-nums
+      const funnelBar = funnel.map(([s, c]) => `<div style="display:flex;align-items:center;margin:6px 0"><span style="width:70px;font-size:12px">${escHtml(statusLabel(s))}</span><div style="flex:1;background:var(--bg);border-radius:4px;height:20px"><div style="background:var(--mut);height:100%;border-radius:4px;width:${n ? (c / n * 100) : 0}%"></div></div><span style="width:30px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums">${c}</span></div>`).join('');
       const warn = n < 10 ? `<div class="badge warn" style="margin-bottom:10px">${icon('circle-alert', 11)}样本量小（n=${n}），仅供参考</div>` : '';
       // —— F1 评估 ↦ 投递 闭环卡（读时派生 join：零落库、零新文件、零写回）——
       // join 口径：promotedTo→docId→deliveredRefs 为主（deliveredRefs 按 docId 过滤 applications.json，
@@ -5692,7 +5704,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         const refBits = refs.map((a) => {
           const ivs = Array.isArray(a.interviews) ? a.interviews.length : 0;
           return escHtml(String((a && a.status) || '未填状态'))
-            + ((a && a.appliedAt) ? '（投于 ' + escHtml(String(a.appliedAt)) + '）' : '')
+            + ((a && a.appliedAt) ? '（投于 ' + escHtml(fmtWhen(String(a.appliedAt))) + '）' : '')
             + (ivs ? ' · 面试 ' + ivs + ' 轮' : '');
         }).join('；');
         const refsHtml = refs.length
@@ -5722,9 +5734,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     ${loopCard}
     <div class="card"><b class="card-title">状态分布</b>${funnelBar}</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px">
-      <div class="card"><b class="card-title">按渠道</b>${Object.entries(byCh).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
-      <div class="card"><b class="card-title">按简历版本</b>${Object.entries(byDoc).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${byDocLabel(k)}</span><span>${v}</span></div>`).join('')}</div>
-      <div class="card"><b class="card-title">按岗位方向</b>${Object.entries(byTag).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
+      <div class="card"><b class="card-title">按渠道</b>${Object.entries(byCh).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span style="font-variant-numeric:tabular-nums">${v}</span></div>`).join('')}</div>
+      <div class="card"><b class="card-title">按简历版本</b>${Object.entries(byDoc).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${byDocLabel(k)}</span><span style="font-variant-numeric:tabular-nums">${v}</span></div>`).join('')}</div>
+      <div class="card"><b class="card-title">按岗位方向</b>${Object.entries(byTag).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span style="font-variant-numeric:tabular-nums">${v}</span></div>`).join('')}</div>
     </div>
     <div class="card" style="margin-top:12px"><b class="card-title">面试参与</b><p style="font-size:13px">${interviewed}/${n} 有面试安排或已进入面试（${n ? Math.round(interviewed / n * 100) : 0}%）；预约不等于完成。</p></div>`, 'stats'));
     }
