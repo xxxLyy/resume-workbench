@@ -1637,8 +1637,7 @@ ul.doclist.list-view{grid-template-columns:1fr}
 .diff-line.ins{background:var(--ok-soft)}
 footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .hero{display:flex;gap:20px;align-items:center;justify-content:space-between;max-height:180px;margin:4px 0 14px}
-.hero-title{font-family:var(--serif);font-size:34px;font-weight:800;letter-spacing:.8px;margin:0 0 6px}
-.hero-sub{color:var(--mut);font-size:13px;line-height:1.6;margin:0 0 12px;max-width:46ch}
+.hero-title{font-family:var(--serif);font-size:34px;font-weight:800;letter-spacing:.8px;margin:0 0 12px}
 .hero-acts{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .hero-art{flex:0 0 200px;color:var(--accent);opacity:.9}
 .hero-art svg{width:100%;height:auto;max-height:150px}
@@ -2084,7 +2083,6 @@ function listPage(showArchived = false) {
     <section class="hero">
       <div class="hero-txt">
         <h1 class="hero-title">简历工作台</h1>
-        <p class="hero-sub">一份母版，针对每个岗位生成可投递的两页 PDF。数据全在本地。</p>
         <div class="hero-acts">
           ${fallbackId
             ? `<a id="continueBtn" class="cta" href="/edit?id=${encodeURIComponent(fallbackId)}" data-fallback="${escAttr(fallbackId)}" data-doc-ids='${jsonAttr(docIds)}' data-doc-titles='${jsonAttr(docTitles)}'>▶ 继续上次任务</a>`
@@ -2106,7 +2104,6 @@ function listPage(showArchived = false) {
     ${corruptBanner()}
     <details class="card" id="jobCard">
       <summary style="cursor:pointer;font-weight:700">${icon('target', 13)} 针对岗位生成简历</summary>
-      <p style="font-size:13px;line-height:1.6;color:var(--mut);margin:6px 0">拿到 JD → 生成独立岗位草稿（不改母版）→ 审阅修改清单 → 导出两页 PDF。不配置模型也可手动生成草稿。</p>
       ${infos.length === 0 ? `<div class="card" style="border-style:dashed"><b>还没有母版简历</b>
         <p style="font-size:13px;color:var(--mut);margin:6px 0 10px">「针对岗位生成」需要一份母版简历：先新建一份，或在页面上方上传 PDF 导入，再回到这里针对岗位生成可投递的两页版本。</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap"><form method="post" action="/new" style="display:inline"><button class="cta" type="submit">＋ 新建空白简历</button></form><a class="cta-alt" href="#up">${icon('file-text', 13)} 上传 PDF 导入</a></div>
@@ -2136,7 +2133,6 @@ function listPage(showArchived = false) {
           </div>
         </details>
         <div style="grid-column:1/-1"><button type="submit">生成岗位草稿</button><button type="button" class="secondary" id="evalBtn">${icon('compass', 13)} 先评估这个岗位</button><span id="jobMsg" role="status" style="font-size:12px;color:var(--mut)"></span><span id="evalMsg" role="status" style="font-size:12px;color:var(--mut)"></span></div>
-        <div style="grid-column:1/-1;font-size:12px;color:var(--mut)">${icon('lightbulb', 13)} 「先评估」先用大模型判断这个岗位值不值得投（max 思考，通常需要 1–5 分钟），评估通过后再一键转成岗位适配草稿。</div>
       </form>`}
       <div id="evalResult"></div>
     </details>
@@ -2149,7 +2145,7 @@ function listPage(showArchived = false) {
       <form method="post" action="/new"><button class="secondary">＋ 新建空白文档</button></form>
       <details class="import-box" style="flex:1;min-width:220px"><summary style="cursor:pointer;font-weight:700">${icon('file-text', 13)} 导入 PDF</summary>
         <form id="up" style="margin-top:8px">
-          <span style="color:var(--mut)">选择 PDF 文件导入为新文档</span><input type="file" id="upfile" accept="application/pdf">
+          <input type="file" id="upfile" accept="application/pdf" aria-label="选择 PDF 文件">
           <button>导入</button><span id="upmsg" role="status"></span>
         </form>
       </details>
@@ -3763,7 +3759,6 @@ async function handler(req, res) {
     <div class="card">
       <div id="evalHistory">${evalHistoryRows(records, (did) => fs.existsSync(docPath(did)))}</div>
       <span id="evalHistoryMsg" role="status" style="font-size:12px;color:var(--mut)"></span>
-      <p style="font-size:12px;color:var(--mut);margin-top:10px"><a href="/">返回首页</a></p>
     </div>
     <script>
       var EVAL_RECORDS = ${jsonScript(evalHistoryPayload(records))};
@@ -4564,8 +4559,7 @@ async function handler(req, res) {
       </div>`;
       return send(200, page('素材库', `<h1>素材库</h1>
     ${corruptBanner()}
-    <p style="font-size:13px;color:var(--mut)">事实层确认后才建议用于生成：只有「已确认」的素材会参与岗位草稿生成；旧素材默认待确认，需你预览后确认。${unconfirmed ? ` 当前 ${unconfirmed} 条未确认。` : ''}
-    ${unconfirmed ? `<button class="secondary" onclick="matConfirmAll()">全部标记已确认（先预览再用）</button>` : ''}</p>
+    ${unconfirmed ? `<p style="margin:0 0 4px"><button class="secondary" onclick="matConfirmAll()">全部标记已确认（先预览再用）</button></p>` : ''}
     <input id="matSearch" placeholder="搜索素材（标题/标签/内容）" style="width:100%;margin-bottom:10px" aria-label="搜索素材">
     <details class="card"><summary style="cursor:pointer;font-weight:700">＋ 新增素材</summary>
       <form id="matForm" style="margin-top:10px">
@@ -4826,7 +4820,6 @@ async function handler(req, res) {
         </li>`;
       }).join('');
       return send(200, page('历史版本', `<h1>历史版本</h1>
-    <p>快照 = 保存前的旧版本，当前版本不在列表中。被投递或导出记录引用的快照不会被配额清理。 <a href="/edit?id=${id}">← 返回编辑</a></p>
     <ul class="doclist" style="grid-template-columns:1fr">${items || '<li>暂无快照</li>'}</ul>
     <script>
       function snapNote(id, ts) {
@@ -4886,7 +4879,7 @@ async function handler(req, res) {
       const toRaw = url.searchParams.get('to') || '';
       if (!toRaw) {
         const others = docIdsOnDisk().filter((id) => id !== base.id);
-        return send(200, page('对比', `<h1>选对比对象</h1><p>${escHtml(base.label)} 与谁对比？</p><ul class="doclist">${others.map((o) => `<li class="card"><a href="/diff?base=${escAttr(base.label)}&to=${escAttr(o)}">${escHtml(o)}</a></li>`).join('')}</ul><p><a href="/">返回首页</a></p>`, 'docs'));
+        return send(200, page('对比', `<h1>选对比对象</h1><p>${escHtml(base.label)} 与谁对比？</p><ul class="doclist">${others.map((o) => `<li class="card"><a href="/diff?base=${escAttr(base.label)}&to=${escAttr(o)}">${escHtml(o)}</a></li>`).join('')}</ul>`, 'docs'));
       }
       const to = parseRef(toRaw);
       if (!to) return send(404, 'doc not found', 'text/plain');
@@ -4897,8 +4890,8 @@ async function handler(req, res) {
         docToLines(fs.readFileSync(to.file, 'utf8'), { includeHidden })
       ).map((d) => `<div class="diff-line ${d.type}">${escHtml(d.text)}</div>`).join('\n');
       return send(200, page('对比', `<h1>对比：${escHtml(base.label)} ↔ ${escHtml(to.label)}</h1>
-    <p style="font-size:12px;color:var(--mut)">正文对比：${includeHidden ? '含隐藏内容' : '不含隐藏内容（隐藏章节/条目默认不参与）'}${includeHidden ? ` · <a href="/diff?base=${escAttr(base.label)}&to=${escAttr(toRaw)}">按默认口径看</a>` : ` · <a href="/diff?base=${escAttr(base.label)}&to=${escAttr(toRaw)}&hidden=1">含隐藏看</a>`}</p>
-    <div class="diff">${rows}</div><p><a href="/">返回首页</a></p>`, 'docs'));
+    <p style="font-size:12px;color:var(--mut)">${includeHidden ? `<a href="/diff?base=${escAttr(base.label)}&to=${escAttr(toRaw)}">按默认口径看</a>` : `<a href="/diff?base=${escAttr(base.label)}&to=${escAttr(toRaw)}&hidden=1">含隐藏看</a>`}</p>
+    <div class="diff">${rows}</div>`, 'docs'));
     }
     // ===== 投递看板 =====
     if (req.method === 'GET' && url.pathname === '/applications') {
@@ -4981,7 +4974,6 @@ async function handler(req, res) {
       }).join('');
       return send(200, page('投递看板', `<div class="page-head"><h1>投递看板</h1><a href="/applications?view=table" style="font-size:13px;font-weight:400">⇄ 表格视图</a></div>
     ${corruptBanner()}
-    <p><a href="/">返回首页</a></p>
     <details class="card" id="appAddBox"><summary style="cursor:pointer;font-weight:700">＋ 新增投递（记录已发生的投递，不自动发送）</summary>
     <!--R3②：裸字段重排为向导 .ob-field 同款 label 包裹模式（每个控件有可访问名）；id 与提交载荷不变（/app/add 契约零变化）-->
     <style>
@@ -5228,7 +5220,6 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     </div>`;
       return send(200, page('设置', `<h1>设置</h1>
     ${corruptBanner()}
-    <p>OpenAI 兼容格式，火山方舟可直接用（baseURL 填 <code>https://ark.cn-beijing.volces.com/api/v3</code>）。配置存本地 config.json，不进任何仓库、不进备份。</p>
     ${profiles.length ? '' : settingsGuide}
     <div id="cards"></div>
     <p><button type="button" id="addBtn">${icon('plus', 13)} 添加配置</button> <button type="button" id="saveBtn">保存</button> <a href="/">返回首页</a> <span id="msg"></span></p>
@@ -5725,12 +5716,11 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         && !(e && e.promotedTo) && (e && e.sourceState) === 'recorded');
       const remindHtml = notDelivered.length ? `<div style="margin-top:10px">${badge('warn', '评估了却没投 ' + notDelivered.length + ' 条', 'circle-alert')}${notDelivered.map((e) => `<div style="font-size:12px;color:var(--mut);margin-top:4px">${escHtml(String(e.company || ''))}·${escHtml(String(e.role || ''))} · ${escHtml(evalTimeText(e.createdAt))}</div>`).join('')}</div>` : '';
       const loopCard = `<div class="card" style="margin-top:12px"><b class="card-title">评估 ↦ 投递</b>
-      <div style="font-size:11px;color:var(--mut);margin:4px 0">只呈现已记录的评估结论与投递事实（读时对照，不做推断）</div>
       ${evalLoopRows || '<div style="color:var(--mut);font-size:13px;margin-top:6px">还没有评估记录。到首页「针对岗位生成」里点「先评估这个岗位」，评估结果会记在这里。</div>'}
       ${remindHtml}</div>`;
       return send(200, page('复盘', `<div class="page-head"><h1>复盘统计</h1><span class="page-meta">n=${n}</span></div>${warn}
     ${loopCard}
-    <div class="card"><b class="card-title">状态分布</b><div style="font-size:11px;color:var(--mut);margin:4px 0">当前状态计数（非阶段漏斗；有面试记录即计入面试口径）</div>${funnelBar}</div>
+    <div class="card"><b class="card-title">状态分布</b>${funnelBar}</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px">
       <div class="card"><b class="card-title">按渠道</b>${Object.entries(byCh).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span>${v}</span></div>`).join('')}</div>
       <div class="card"><b class="card-title">按简历版本</b>${Object.entries(byDoc).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${byDocLabel(k)}</span><span>${v}</span></div>`).join('')}</div>

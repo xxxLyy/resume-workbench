@@ -797,8 +797,9 @@ curl -s -X POST "$B/duplicate?id=$DOCID&to=zz-copy" -o /dev/null
 curl -s -X POST "$B/delete?id=zz-copy" -o /dev/null
 [ -f "$RESUME_ROOT/docs/zz-copy.html" ] && fail '删除失败'
 curl -sf "$B/diff?base=$DOCID&to=$JOBLOC" | grep -q 'diff-line' || fail 'diff 渲染失败'
-curl -sf "$B/diff?base=$DOCID&to=$JOBLOC" | grep -q '不含隐藏内容' || fail 'diff 未标注隐藏口径'
-curl -sf "$B/snapshots?id=$DOCID" | grep -q '当前版本不在列表中' || fail '快照页语义缺失'
+# 2026-11-04 文案减负（DESIGN.md §9）：口径句移除，隐藏口径由「含隐藏看」切换控件承载
+curl -sf "$B/diff?base=$DOCID&to=$JOBLOC" | grep -q '含隐藏看' || fail 'diff 缺隐藏口径切换'
+curl -sf "$B/snapshots?id=$DOCID" | grep -q '<h1>历史版本</h1>' || fail '快照页缺失'
 curl -sf "$B/stats" | grep -q '状态分布' || fail '统计页缺状态分布'
 curl -sf "$B/applications?view=table" | grep -q '<table' || fail '表格视图缺失'
 CODE=$(curl -s -X POST "$B/settings" -H 'Content-Type: application/json' -d '{"active":5,"profiles":[{"name":"a","baseURL":"http://x","apiKey":"k","model":"m"}]}' -o /dev/null -w '%{http_code}')

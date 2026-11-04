@@ -2880,7 +2880,9 @@ try {
   const ctx14 = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const wide = await ctx14.newPage();
   await wide.goto(`${base}/`, { waitUntil: 'networkidle' });
-  const read = await wide.evaluate(() => ['.hero-sub', '.statusline', '.card p', '.doc-card', '.doclist .doc-card b'].map((s) => {
+  // 2026-11-04 文案减负：.hero-sub 与岗位卡流程句(.card p) 已移除（DESIGN.md §9）；
+  // 13px+ 档采样位改为 .statusline(13px/1.7) 与 #jobCard summary(继承 body 14px/1.6)
+  const read = await wide.evaluate(() => ['.statusline', '#jobCard summary', '.doc-card', '.doclist .doc-card b'].map((s) => {
     const el = document.querySelector(s);
     if (!el) return { sel: s, missing: true };
     const cs = getComputedStyle(el), fs = parseFloat(cs.fontSize);
