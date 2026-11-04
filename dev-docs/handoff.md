@@ -1140,3 +1140,45 @@ Flash 23 条要点见各提交信息与 `b47-report` 工作流报告；收口时
 - 承接旧账仍开放：全站应用页 CSP 已补（`c1e03bc`）但 `script-src 'unsafe-inline'` 保留——需重构全部内联 handler 为委托监听后移除（多小时、全站按钮回归）。
 - ECC pre-commit 对桩配置字面量的误报未根治（本轮 8 次旁路）；后续统一夹具桩值形态或给钩子加白名单。
 - 若用户报告既有快照/PDF「突然判旧」，为 B12 基线重置的一次性后果，重新生成/冻结即可，非缺陷。
+
+## 精进轮（2026-11-04）：竞品功能引入 + 内部优化审计（不过度）+ 视觉验收（起点 `main@8b51e91`，收口 `main@f600e34`）
+
+本轮由动态工作流逐卡实施（每卡：夹具先红/阴性对照 → 实现 → 后绿 → 单独提交），**8 卡全部 passed，共 8 个提交**（02:41–07:19）。终验四套件 EXIT=0（产物 `/tmp/s4a-t7-{structure,testsh,render,privacy}.log`，07:31–07:39，晚于末次代码改动、含下述未提交 editor-shell.js 修复状态）：`test-structure.sh` 唯一 ❌ 为段 X Chromium 探测契约预期输出（既有口径，EXIT=0 不受影响）、其中 R2/R3 源级钉值与 S6-A1/A2、A3、A4 各段均 ✅；`test.sh` 444✅/0❌；render ATS 文本层字符量 109；privacy-check.sh「隐私检查通过」——R3/A4/VQA 卡内「privacy-check 未重跑」的保留意见由终验补齐。R1 专属夹具未挂套件，本登记会话补跑 `node test-shell-review-fixes.mjs` → EXIT=0（覆盖工作区含未提交改动状态）。用户背景：竞品功能引入 + 内部优化审计（不过度）+ 视觉验收，要求完整成品。
+
+### 1. 逐卡结果（8/8 passed）
+
+| 卡 | 内容 | 提交 | 文件 | 证据要点（先红→后绿） |
+|---|---|---|---|---|
+| R1 | 编辑器壳与审阅面板：幽灵菜单与空态死翻页钮修复 | `0321fd5` | editor-shell.js、job-panel.js、test-shell-review-fixes.mjs🆕 | 先红两段：①hidden 菜单 computed display=flex（探针实测 .ed-nav-menu 加载即 112×106px 可见，与卡片审计口径一致）；②changes 为空时 footer 仍渲染 3 个翻页钮（‹ 上一条/去导出检查 →/下一条 ›）。后绿：hidden 菜单 display=none/矩形 0、⋯开-Esc关语义不变、空态无翻页钮且有主行动、非空态翻页钮仍在、无页面异常 |
+| R2 | server.mjs 文案与按钮语义修复包（首页待办计数·设置死引用·向导/导出页按钮语义） | `7494a12` | server.mjs、test-structure.sh、test-copy-semantic-fixes.mjs🆕 | 先红：空库（零文档零投递）待办提醒=1（状态行计入）+ 源级钉值红（待办=degradedCount+upcoming）。后绿：空库待办=0/1 待结构化=1、六处 409 无死文案且带 /settings、横幅两态+已跳过、确认按钮 secondary 去括号、导出对象、字符量告警带阈值原因；终验含源级钉值十项 ✅ |
+| R3 | 投递看板与设置页：裸表单/prompt 链改造与 label 可访问性 | `eebcfb8` | server.mjs、test-structure.sh、test-fixtures/reliability/test-page-writes.mjs、test-apps-settings-forms.mjs🆕 | 先红两段：两页 10 个匿名控件（company/role/docId/channel/appliedAt/dueDate/link/nextStep/jd/note）+ 对 HEAD 源码断言 prompt( 实存。后绿：控件全有可访问名、投递卡无 prompt( 且行内编辑（预填/编辑后保留/取消收起）与 /app/update·/app/add 契约不变、设置 h1=设置、空态说明卡在场/配置后消失；ECC 误报旁路 1 次 |
+| A1 | S6 模板库 A：新增主题 CSS 与按 meta.theme 装配 | `7fe2b4c` | themes/resume-dual.css🆕、themes/resume-magazine.css🆕、server.mjs、DESIGN.md、test-structure.sh、test-themes-assemble.mjs🆕 | 先红：装配 HTML 仍 data-theme="classic"。后绿：/edit 服务 HTML、假渲染器捕获的渲染输入、冻结快照三路径均按 meta.theme 装配（styleHash=sha1(主题文件)，freeze 口径）、未知主题报错不写盘、classic 零回归、legacy 保留；DESIGN.md 登记 themes/ 加法解冻边界 |
+| A2 | S6 模板库 B：主题选择 UI（单标签+受众一句+真实渲染缩略图+切换语义） | `c7e8991` | server.mjs、editor-shell.js、test-structure.sh、test-theme-picker-ui.mjs🆕 | 两段红：/theme-preview 404 → 路由落地后「模板」页签缺失。后绿：预览只读（docs/docs-meta 前后 sha1 不变）+ CSP default-src 'none'、id/theme 闸门 400/404、apply 确认写 meta 重装配、iframe 真渲染缩略图、双栏事实安抚 |
+| A3 | 排版密度三档预设 + 页数感知收紧建议（只建议不删内容） | `4db2745` | editor-shell.js、server.mjs、test-structure.sh、test-typo-presets.mjs🆕 | 两段红：/layout-info 404 → 无预设 UI。后绿：三档按钮（紧凑/标准/宽松）联动五滑杆+aria-pressed+typo-custom 落值、无渲染历史显示「尚未渲染」、/layout-info 只读（docs-meta 字节零变化）、一键紧凑内容零变化、页数感知收紧建议只给建议不删内容 |
+| A4 | AI 反馈接线与偏好透明化（prefs 随生成提交 + 记忆管理 + 采纳率摘要） | `84bbfb6` | job-panel.js、server.mjs、test-structure.sh、test-feedback-prefs.mjs🆕 | 三段红：/job/feedback-del 404 → 夹具断言位修正（feedbackBlock 在 user 块）→ 现状生成空 body 精确复现。后绿：prefs 随生成进下次 prompt（桩 LLM 捕获【过往反馈】与新偏好）、环形 20 条单删/清空、400/404/409 守卫、小节管理与采纳率摘要、空态；ECC 误报旁路 1 次 |
+| VQA | 视觉验收：关键页截图对照 DESIGN.md 并修显著问题 | `f600e34` | test-fixtures/reliability/test-visual-screens.mjs🆕、test-structure.sh | 夹具照 test-gen-progress-ui.mjs:21-74 模式起服（隔离根+合成岗位草稿+本机桩 LLM 随机端口+Chromium 缺失 exit(2)），7 路由 1280×900 fullPage 出图 /tmp/shots-after，挂入 test-structure.sh（R3 浏览器夹具后）；ECC 误报旁路 1 次 |
+
+🆕=本轮新增文件。ECC pre-commit 旁路 3 次（`eebcfb8`/`84bbfb6`/`f600e34`）：钩子把夹具桩配置字面量（apiKey 字段「stub…not-real」占位，baseURL 均为本地测试服务器或 example.invalid）误报为密钥，按流程 `ECC_SKIP_PRECOMMIT=1` 旁路并在提交信息登记原因；其余 5 卡钩子未拦截。历次提交前 `git status --short` 核对均仅含请求文件+固有 4 份未跟踪 dev-docs。R3 请求清单中的 `test-page-writes.mjs` 根路径不存在，按 `git ls-files`/`find` 确认唯一对应 `test-fixtures/reliability/test-page-writes.mjs` 暂存（路径差异如实登记）。
+
+### 2. 调研淘汰要点（本轮取舍，防翻案）
+
+- **themes/ 解冻=加法边界**（`7fe2b4c` 登记 DESIGN.md 冻结件表）：`template.html`/`render.mjs` 维持冻结；themes/ 只允许**新增主题文件**，`resume-classic.css` 现有内容为渲染契约不改动。双栏（resume-dual）/杂志（resume-magazine）均以新增文件落地，淘汰「改 classic 重排印」路线。
+- **模板库不做市场形态**：路线图既定 S6=模板库而非模板市场（§3.1「顺延并改名；定唯一数据来源」），且竞品证据仅「证据 A（f44 帧模板网格）实证，B 未提及」（2026-09-23-roadmap:49）。本轮落地=2 套新增主题 + /theme-preview 真渲染缩略图 + 单页签选择，未做主题商店/在线模板分发类复杂形态。
+- **A2 切换语义收口**：预览只读（前后 sha1 不变断言钉死）、切换需确认才写 meta.theme 重装配；且「模板」页签只给母版——岗位草稿右栏是 S4a 定稿的合并入口（审阅/区域/AI 助手/排版四页签），不进模板动线（editor-shell.js 注释引 s4a-design §右栏）。淘汰「草稿内随时换主题」与「无预览静默切换」两种动线。
+- **A3 页数感知=只建议不删内容**（卡名与提交信息钉死）：收紧只给建议档位与联动预设，绝不自动删改用户正文；/layout-info 只读（docs-meta.json 字节零变化断言）。
+- **A4 反馈透明化**：job.feedback 环形 ≤20 条（server.mjs:3885-3886），随生成提交、可单删/清空、采纳率摘要可见——淘汰「黑箱记忆/不可见偏好」。
+- **R 线审计边界（不过度）**：只修显著语义缺陷（幽灵菜单、死翻页钮、死文案、prompt 链、匿名控件），不借机做全站 CSP 重构——`script-src 'unsafe-inline'` 承接上轮开放旧账维持不动。
+
+### 3. 视觉验收结论
+
+- 夹具与运行方式见上表 VQA 行；零断言对照夹具，人工对照 DESIGN.md。
+- 本登记会话复核修后 7 张截图（/tmp/shots-after，07:46 重拍，含下述页签修复后状态）：首页（topnav 唯一、stat-grid 四块、空库待办提醒=0）、设置（全控件带 label、h1=设置、备份恢复合并/替换单选组）、投递看板（六列+（空）占位+「记录已发生的投递，不自动发送」语义）、引导建档（八步胶囊+进行中态+确认并下一步/跳过这步/暂停退出三键）、复盘统计/素材库/评估历史空态均有指引文案与去向链接——无死白页、无幽灵浮层、无重复导航。原生文件选择框（Choose File）为浏览器控件非缺陷。
+- 验收发现并修复一处显著问题：岗位草稿右栏出现「模板」页签，与 S4a 定稿右栏四页签冲突 → editor-shell.js:1777-1791 改为仅母版渲染该页签（+4/-2）。**该修复落在 `f600e34` 之后（07:26）、未随卡提交**；终验（07:31–07:39）与复检截图均覆盖此状态，全绿。
+
+### 4. 剩余事项
+
+- **工作区待提交两件**：①editor-shell.js（模板页签仅母版修复，见 §3，已被终验与本登记会话 `node test-shell-review-fixes.mjs` EXIT=0 覆盖）；②本节登记（handoff.md 本身）。本登记轮按委托只写本文件、不提交 git。
+- ECC pre-commit 对桩 apiKey 字面量的误报未根治（本轮 3 次旁路，累计 11 次）；后续统一夹具桩值形态或给钩子加白名单。
+- 路线图 S6「内置 3 套起步」中的 `resume-compact` 未建：themes/ 现存 classic/dual/magazine 三件（2026-09-23-roadmap:197 vs 目录实况），是否补齐待用户拍板。
+- 承接旧账不变：全站 CSP `script-src 'unsafe-inline'` 需内联 handler 委托化重构后移除；B12 基线重置一次性后果（既有快照/PDF 首访判旧）沿用上轮口径，重新生成/冻结即可，非缺陷。
+- 终验 `test-structure.sh` 唯一 ❌ 为段 X Chromium 探测契约的预期输出（「无缓存｜修复: 运行一次 node render.mjs 触发探测」文案契约，EXIT=0 不受影响），既有口径非缺陷。
