@@ -1777,13 +1777,15 @@
     + '<button type="button" role="tab" data-pane="zone" aria-selected="false">区域</button>'
     + '<button type="button" role="tab" data-pane="ai" aria-selected="' + (JOB_INFO.hasJob ? 'false' : 'true') + '">AI 助手</button>'
     + '<button type="button" role="tab" data-pane="typo" aria-selected="false">排版</button>'
-    + '<button type="button" role="tab" data-pane="theme" aria-selected="false">模板</button>'
+    // 模板页签只给母版：岗位草稿右栏是 S4a 定稿的合并入口（恰为 审阅/区域/AI 助手/排版，见 s4a-design §右栏），
+    // 主题切换属母版维度的装配选择，不进草稿审阅动线
+    + (JOB_INFO.hasJob ? '' : '<button type="button" role="tab" data-pane="theme" aria-selected="false">模板</button>')
     + '</div>'
     + (JOB_INFO.hasJob ? '<div id="ed-pane-review" class="ed-pane on" role="tabpanel" aria-label="修改清单"></div>' : '')
     + '<div id="ed-pane-zone" class="ed-pane" role="tabpanel" aria-label="区域分析"></div>'
     + '<div id="ed-pane-ai" class="ed-pane' + (JOB_INFO.hasJob ? '' : ' on') + '" role="tabpanel" aria-label="AI 助手"></div>'
     + '<div id="ed-pane-typo" class="ed-pane" role="tabpanel" aria-label="排版设置"></div>'
-    + '<div id="ed-pane-theme" class="ed-pane" role="tabpanel" aria-label="模板选择"></div>';
+    + (JOB_INFO.hasJob ? '' : '<div id="ed-pane-theme" class="ed-pane" role="tabpanel" aria-label="模板选择"></div>');
   mount(right);
 
   // ===== 批次C：右栏可拖拽分栏（拖柄 DOM 只能由注入层建）=====
