@@ -1207,3 +1207,67 @@ Flash 23 条要点见各提交信息与 `b47-report` 工作流报告；收口时
 6. **短文案去句号**：设置页三处 + 引导页（OB_COPY 八句、OB_HINT 单句六条、横幅/完成卡/续作卡）收口；双句段落保留句号（照片步、0.7/0.8 hint、无文档横幅）。
 
 **验证**：node --check 过；残留原始渲染 grep 0 命中；test-home-agenda 不钉原始时间串、无测试钉 'offer'（事前核实）；四套件与浏览器点验见提交信息。审计中裁决不动项（hero 副标题/Choose File/字重三档/圆角/编辑器暖橙/页脚）登记于 §10 防翻案。
+
+## 批 1 轮（2026-11-05～11-06）：UI 改版 + IA 重整（起点 `main@8be458d`，收口 `main@46a4e10`）
+
+> 总纲：`dev-docs/2026-11-05-roadmap-batch-plan.md` §2（批 1 = 首页任务台面 / `/job/new` 拆页 / 改名 / 模板前置 / 复盘层级 / 编辑器顶栏）。本批 10 笔提交，起点 `8be458d`（批内并行约定文档），收口 `46a4e10`。
+
+### 1. 逐卡结果（10 笔提交，全部「先红→后绿」+ 断言与实现同提交）
+
+> 表内「前置①–③」三笔（`d26c818` / `239f3e4` / `fe54eb0`）落地于 b1c1–b1c7 扇出编号之前，同属批 1 范围；其余七笔与扇出卡 b1c1–b1c7 一一对应，提交哈希经 `git rev-parse` 逐个核验一致。
+
+| 卡 | 提交 | 内容 | 先红→后绿证据（独立复核口径） |
+|---|---|---|---|
+| 前置① | `d26c818` | 首页任务台面：hero 区整块退役（`.hero*` 标记与死 CSS 同删），首屏主行动改任务卡三态 | 先红：E1 旧 hero 钉值反转为缺席断言；后绿：hero 零残留 / 三态 / 首屏次序（任务卡→h1→统计行→搜索行→文档列表）/ 回退链契约 / 死引用「＋ 新建第一份简历」清零 |
+| b1c1 | `0b21d92` | 任务台面收尾：gap 容器内徽章右距归零、间距换 token、主行动 hover 删投影 | 先红：gap 退回 10px → 夹具红；`.cta:hover` 加回 `box-shadow` → 夹具红；删 `.task-acts .badge{margin-right:0}` → `test-structure.sh` E1 红；全局 `.badge{margin-right:0}` → 新夹具 ④ 红（`实际=0px`）。后绿：登记 §5.1/§5.3/§3.1 |
+| 前置② | `239f3e4` | 新页 `/job/new`「为岗位定制简历」：首页岗位表单整体迁移，提交/评估契约零变化 | 后绿：表单字段 id/校验/`POST /job/create`/`POST /eval/create` 契约零漂移；首页只留入口按钮 |
+| 前置③ | `fe54eb0` | 改名落地：「引导建档」→「从零建简历」（向导 h1/page title/继续卡/完成卡/完成按钮/ob 横幅） | 先红：旧「引导」串在页在场；后绿：页面零「引导」+ 横幅两态 + 完成按钮/完成卡/继续卡新名 + 源级零残留 |
+| b1c2 | `fe6afdf` | `/job/new` 拆页收尾：首页入口按钮间距换 token、空态说明不复述页题 | 先红：空态说明复原页题复述 → 夹具红（`❌ 空态说明不得复述页题「为岗位定制简历」（§9.1-2）`）；入口内边距退回 `7px 12px` → 夹具红（`❌ 入口按钮内边距应引用 --space-* token（§5.1）`）。后绿：登记 §5.1/§9.3 |
+| b1c3 | `67d708b` | 改名收尾：ob 系列 409 错误句与横幅旧词「建档」清零 | 先红：横幅复原「才建档」/页壳 409/完成态 409/STAR 409 复原旧句 → 四条夹具红；**只改运行时文案、绕开源级清单** → H 段运行时断言仍红（两条）。后绿：横幅改「首个有内容的确认步才创建文档」+ 源级零残留清单扩围 |
+| b1c4 | `fe380e2` | 从零建简历 0.8 选模板：三张主题卡 + 同装配缩略图 + 一步写 `meta.theme` | 先红：0.8 无模板卡 → 夹具红；缩放退回固定 `.35` → ⑧段红（`❌ classic 卡缩略图在 1024px 视口不得横向裁切（缩放后 277.9px > 框宽 197px）`）。后绿：逐视口（1440/1280/1024/900/768/375）缩略图无裁切；登记 §10.1 |
+| b1c5 | `a38bf32` | 首页评估历史卡撤除：评估归 `/evals`，入口落 `/job/new` 页题右侧 | 先红：新夹具 `❌ 首页不得再出现「评估历史」卡（评估归 /evals）` EXIT=1；`test-stats-loop-view` ④ 红 EXIT=1。后绿：首页负向缺席 + `/evals` 能力正向只增不减；登记 §10.2 |
+| b1c6 | `da5ccf9` | 复盘层级重排：评估↦投递扩主卡 2/3、状态分布+面试参与并侧卡 1/3、三分布收窄 | 先红：改动前树（`git archive HEAD`）跑本夹具 → `❌ ⑥ 复盘页应有 .stats-grid 栅格容器（主卡 2/3 + 侧卡 1/3）` EXIT=1。后绿：栅格 2fr:1fr / 侧卡合并两段 / 三分布收进主列 / 零阴影；登记 §10.3 + §5.1 |
+| b1c7 | `46a4e10` | 编辑器顶栏控件同档：保存/历史/预览/岗位草稿/左右栏开关统一 32px 档，仅「导出 PDF」留实底 | 先红：改动前树跑本夹具 → `❌ 现代文档：历史（#histBtn）与保存（#saveBtn）不同档：bg 实际=rgb(255, 252, 245)，参照=rgba(0, 0, 0, 0)` EXIT=1。后绿：六控件 32px 同档中性描边、顶栏 13 button 唯一 accent 实底 = `#pdfBtn`；登记 §10.4 |
+
+**收口轮独立复核（本次收口会话执行，非卡片自述）**：`git archive 8be458d`（批前树）解包到 `/tmp/b1-pre` 并拷入本批 7 份新夹具，逐个实跑——**七份全红**（各自命中本批目标断言，非环境错误）：`test-home-task-badge`（等 `.task-acts .badge` 超时，红在任务卡尚未存在）/ `test-home-taskbench`（`hero 退役后首页不得再含「class="hero"」`）/ `test-job-new-page`（`/job/new 空库应 200，实际 404`）/ `test-onboarding-rename`（`page title 应为「从零建简历」，实际：<title>引导建档</title>`）/ `test-onboarding-theme-cards`（`0.8 应有 classic 模板卡`）/ `test-home-eval-card-removed`（`首页不得再出现「评估历史」卡`）/ `test-editor-toolbar-tier`（`历史（#histBtn）与保存（#saveBtn）不同档`）；同一批夹具在当前工作树**全绿 exit 0**。
+
+### 2. 批门轮次
+
+- `RESUME_TEST_STRICT=1 npm run test:all` → **EXIT=0**（收口会话独立跑一次，四段严格跑：test.sh + test-structure.sh + test-render.sh + privacy-check.sh）。日志唯一 ❌ = 段 X Chromium 探测契约的**既有预期输出**（`❌ Chromium 选择 — 无缓存｜修复: 运行一次 node render.mjs 触发探测`，不影响 EXIT=0，与上一轮登记口径一致）。
+- 卡内自跑：b1c5 / b1c6 / b1c7 三卡各自报 `RESUME_TEST_STRICT=1 npm run test:all` EXIT=0；b1c1–b1c4 各自跑本卡相关子脚本（`test.sh` / `test-structure.sh` / `test-render.sh` / `privacy-check.sh` 与本卡夹具，均 exit 0），完整批门由收口轮统一补跑（收口轮未采信卡片自述，另行实跑）。
+- 门内本批夹具全在场且绿：任务卡徽章间距 / `/job/new` 拆页（含空态、入口 token）/ 编辑器顶栏同档 / 0.8 三张模板卡 / §0.3 改名落地 / 首页任务台面 / 首页评估历史卡撤除 / EV-8 ② 隔离实例 / F1 复盘层级 ⑥ / B1C6 源级钉值。
+- 红线复核：`template.html` / `render.mjs` / `themes/` 零 diff；`package.json` / `package-lock.json` 零 diff（无新增 npm 依赖）；真实数据目录 mtime 零变化（`docs-meta.json` Nov 3 00:52、`config.json` Nov 4 00:59、`applications.json` Oct 19、`materials.json` Sep 11、两份 `docs/*.html` Sep 26、`.chromium-choice.json` Sep 23，全部早于本轮）；ECC pre-commit 钩子全批零旁路（未用 `ECC_SKIP_PRECOMMIT=1`）。
+- **收口后复跑**（本轮 §4 补登 DESIGN.md §10.5–§10.7 与本文件章节之后）：`RESUME_TEST_STRICT=1 bash test-structure.sh` → **EXIT=0**（唯一 ❌ 仍为段 X Chromium 探测契约既有口径）；`bash privacy-check.sh` → **EXIT=0**（新增两文件零隐私模式命中）。补登内容为纯文档（DESIGN.md / handoff.md），不触代码与断言。
+
+### 3. 7766 重启与只读点验结论
+
+- **重启**：`kill $(lsof -nP -tiTCP:7766 -sTCP:LISTEN)` → 旧 PID `70520`（启于 05:10:52）→ 新 PID `87684`（启于 05:18:49，晚于 HEAD 提交 05:10:30），launchd `com.lhx.resume-server.plist`（KeepAlive）自动拉起，服务确为最新提交。
+- **HTTP 状态**：`/` 200（38,381B）、`/stats` 200（24,069B）、`/materials` 200（30,035B）、`/settings` 200（35,761B）、`/evals` 200（26,704B）、`/applications` 200（30,415B）、`/onboarding/guided` 200（28,970B）、`/job/new` 200（39,112B）——**本批新增路由 `/job/new` 200**。
+- **内容承接本批改动**（首页实测）：`hero-title` / `hero-art` 命中 0；`#taskCard` 任务卡在场，主行动「为岗位定制简历」直达 `/job/new`，次级行「▶ 最近编辑：old-resume + 从零建简历」（服务端「继续上次任务」经 `server.mjs:2227` 客户端改写）；`h1` = 文档；首页「评估历史」/ `evalHistory` / `EVAL_RECORDS` 命中 0（`EVAL_CARD_JS` 仅以源码注释出现，渲染器本体已随评估 UI 迁到 `/job/new`）；`/job/new` 页题「为岗位定制简历」+ 页题右侧「评估历史 →」；`/stats` `.stats-main` / `.stats-side` / `.stats-dists` 齐备。
+- **headless Chromium 只读点验**（playwright-core + `chromium.mjs` resolveChromium；探针 `/tmp/probe-b1-batch1.mjs`，全程只发 GET，页面级拦截非 GET 请求）：**66 项检查全通过，0 失败**——① 首页 16 项（hero 零残留 / h1 首题 / 三态入口 / 首屏次序 / 评估卡缺席 / topnav 六锚点 / `.cta` 静态与 hover 均零投影且保留 `translateY` / gap 容器徽章右距 0px / 行内容器徽章仍 6px / 次级行入口按钮内边距 8px 12px = `--space-2 --space-3`）；② `/job/new` 7 项（页题 / 评估历史入口 13px-400 / 表单六字段齐全 / 空态说明不复述页题）；③ `/onboarding/guided` 5 项（page title 与 h1 均「从零建简历」，可见文本零「引导」零「建档」）；④ `/stats` 7 项（2fr:1fr 双列实测 925.328px / 462.656px、侧卡含「状态分布」+「面试参与」、三分布在主列内、零阴影、375px 塌陷单列）；⑤ `/evals` 5 项（topnav 六锚点 / 无 sidenav /「文档」高亮唯一 / `EVAL_RECORDS` 载荷在场）；⑥ `/edit` 两份真实文档各 8 项（`linghaoxiang` 与 `old-resume`：六控件 `min-height` 32px、实渲染高度 32px 全等、背景边框四项逐项相同且非透明、顶栏内 accent 实底有且仅有 `#pdfBtn`、六动作控件零 `ed-ghost`、顶栏共 13 button）；⑦ `/job/new` 空态分支（隔离临时根 + 随机端口）：空态卡「还没有母版简历」在场 + 去向指引保留 + 不复述页题。**只读纪律**：全程非 GET 请求 0 条、页面 JS 异常 0 条、console error 0 条。
+- **点验口径修正（首轮探针自身写错，已按代码改正后复跑）**：① topnav「六链接」= `<nav class="topnav">` 内全部锚点 6 个（brand + 5 项），与 `test-structure.sh:4267` 的计数口径一致——探针首轮只数 `.links a`（5）误报；② 任务卡次级行文案由客户端改写为「▶ 继续：/最近编辑：」，服务端文案「▶ 继续上次任务」并非最终渲染；③ §5.1 登记的 token 内边距落在**首页次级行入口按钮**，不是 `/job/new` 的「评估历史 →」文字链接（后者 13px/400，无内边距）；④ `/job/new` 提交钮无 id（`<button type="submit">生成岗位草稿</button>`）；⑤ 空态说明「不复述页题」应只看 `<p>`，首轮误把 `.mainarea` 内的 `h1` 一并计入。
+- **未覆盖项（如实登记）**：真实根 `evaluations.json` 不存在（无评估记录），故 `/evals` 页在真实数据下为空态，行级能力（查看报告 / 转入适配按钮、`data-eval-hist`）无法在 7766 上实测——该能力由隔离夹具 `test-home-eval-card-removed.mjs`（b1c5）与 `test-stats-loop-view.mjs` 的 `/evals` 正向断言覆盖；0.8 选模板三张卡位于向导第 0.8 步，**推进向导需 POST 写状态**，只读纪律下未在 7766 上实测，由隔离夹具 `test-onboarding-theme-cards.mjs`（b1c4，①–⑧ 段含逐视口无裁切量测）覆盖。
+
+### 4. DESIGN.md 登记核对（收口轮补登）
+
+计划 §2「DESIGN.md 登记：§2 密度表、§4.2（hero-title 34px 档撤销→登记）、§5 间距表、§10 追加本轮裁决与改名表」逐项核对：
+
+| 应登记项 | 落地情况 |
+|---|---|
+| §2 密度表 | **无需改**：本批未新增字号档（新增 `font-size` 全部落在 §4.1 既有 12px / 13px 档），编辑器顶栏控件字号 `12px` 未动（高度档见 §10.4，不属密度表口径） |
+| §4.2 hero-title 34px 档撤销 | ✅ 随 `d26c818` 落地（DESIGN.md §4.2「hero 档已撤销」条 + 标题档由三档收两档 + §10 防翻案行同步） |
+| §5 间距表 | ✅ 随 `0b21d92`（§5.1 任务卡操作行 10px→`--space-2`）、`fe6afdf`（§5.1 次级行入口按钮 `7px 12px`→`--space-2 --space-3`）、`da5ccf9`（§5.1 复盘页被触碰间距全量换 token，含「面试参与」段 `<p>` 外边距 13px→8px 实测）、`0b21d92`（§5.3 gap 容器徽章右距归零）落地 |
+| §10 本轮裁决 | ✅ §10.1 缩略图口径 / §10.2 评估归 `/evals` / §10.3 复盘层级 / §10.4 编辑器顶栏同档 |
+| §10 **改名表** | ❌ **缺**——`fe54eb0` 与 `67d708b` 两笔改名提交**均未改 DESIGN.md**，§10 无改名表（旧名/新名/落点无记载） |
+| §10 首页任务台面 / `/job/new` 拆页 裁决 | ❌ **缺**——任务卡三态与 `/job/new` 拆页只散见于 §4.2 / §5.1 / §9.3 / §10.2 的旁述，未成规范文本 |
+
+**收口轮补登（本节未提交，交提交员）**：DESIGN.md 新增 §10.5（首页任务台面·任务卡三态）、§10.6（`/job/new` 拆页）、§10.7（改名表），按**追加**而非重编号（§10.1 被 `server.mjs:1366/2733/4874` 与 `test-structure.sh:48` 等处引用，重编号会打断既有引用）。
+
+### 5. 剩余事项 / 建议后续卡
+
+- **入口位置待用户确认**：b1c5 把 `/evals` 入口放在 `/job/new` 页题右侧（评估在该页以「先评估这个岗位」发起），topnav 六链接口径未变（批 3「网申包」落地时导航才增至 7 项）。这是用户可见的产品选择，已登记 §10.2，**收口时未擅自改**，请用户拍板。
+- **迁入页间距口径待登记员定口径**：`/job/new` 的岗位表单沿用存量字面间距（`gap:8px` / `padding:8px 12px` / `gap:6px` 等），b1c2 按「存量不刷全站，只在触碰到的规则里换」+ 零变化契约豁免，未换 token。「迁入新页算存量还是新写」的口径本批**未擅自登记**，留待登记员。
+- **`homeBtn` 的 `ed-ghost` 类未摘**：b1c7 实测带/不带该类渲染逐项相同（模板 `.secondary` 兜底规则后写胜出），零视觉差；摘除属一行改动，留后续卡。
+- **存量项未顺手改（§5.1 存量不刷）**：「面试参与」段 `<p>` 缺 `tabular-nums`；顶栏模板自带的 4 个 26px 按钮；§4.1「图标钮 11px」与实际 12px 的口径差；`.stats-side` 只有标记无 CSS 规则（宽度由 `.stats-grid` 的 `2fr 1fr` 轨道决定，是夹具定位锚）。
+- **搜索行与次级行入口按钮已不同款**：搜索行同类次级链接仍是字面 `7px 12px`，首页次级行入口按钮已是 `8px 12px`（§5.1 已登记差异）；要恢复「同款」须两处同改，收口归后续卡。
+- **ECC 钩子桩值误报**：批 5 根治前，本批零旁路（未用 `ECC_SKIP_PRECOMMIT=1`）。
