@@ -229,3 +229,17 @@ FIELDS（editor-shell.js） → typoCss(v) → #typo-custom（落盘进 <head>�
 | 日程/看板/详情/表格时间 | `fmtWhen()` 人话格式（见 §9.4） |
 
 **审计中裁决不动**（有定案在先，防翻案）：hero 副标题不恢复（§9.1-4；hero 区整体已于 2026-11-05 批 1 退役）；`Choose File` 原生控件非缺陷（精进轮 VQA 裁决）；标题档 700/800 字重（§4.2；2026-11-05 起 hero 档撤销为两档）；圆角 4/6px+胶囊（§5.2）；编辑器暖橙分散与暖阴影（双区规则 §2/§3.2 语义内）；页脚「数据在 ~/resume」（产品身份）。
+
+### 10.1 缩略图/预览内嵌口径（2026-11-05 批 1 登记）
+
+> 本节是**规范文本**，不受 §9 次级文案规则约束。
+
+- **装配单一实现**：`themePreviewHtml(源正文, 主题)` 是缩略图装配的唯一出处（`server.mjs`）。GET `/theme-preview?id=&theme=` 的响应体与卡片内嵌的 srcdoc **逐字节相等**——两处只调本函数，不各自拼装。
+- **0.8 选模板**（从零建简历的完成步，与编辑器「模板」页签**不是同一处 UI**：向导里选主题，向导完成后仍可进编辑器换主题）：三张卡 = 主题名 + 场景短语（通用 / 经历多一页排满 / 展示向）+ 真渲染缩略图 + 选中态；classic 默认可跳过。卡头单行不折行——卡内 radio 须中和 `.ob-form input{width:100%}`（表单框样式会把原生单选钮撑成整行宽，把主题名挤成折行，见 §8「先 grep 确认选择器真的命中」）。
+- **缩略图内嵌方式**：srcdoc 内嵌 `/theme-preview` 同装配（端点带 frame-ancestors 'none' 不可被嵌；与编辑器模板页签同思路）。
+- **缩略图缩放**：随框宽自适应（`scale = min(--ob-thumb-scale, (框宽-2px)/页宽)`，框为 `container-type:inline-size`）——卡宽随机型栅格 `auto-fit minmax(200px,1fr)` 随视口收窄，固定缩放会在 ≤1250px 视口把页面右栏裁掉，而版式对比正是缩略图的唯一目的；框高固定，可见页顶比例随之变大。缩放后宽 ≤ 框宽（逐视口量测钉在 `test-onboarding-theme-cards.mjs` ⑧段）。
+- **卡头字号/字重**：`.ob-tname` 13px/700、`.ob-scene` 12px/`--muted`——均为 §4.1 既有档（面板正文与输入 / 紧凑控件与元数据），**不新增字号档**；与编辑器同角色写法一致（`editor-shell.js` `.ed-jobtitle{font-size:13px;font-weight:700}`）；区块标题复用既有 `.ob-done-title`（16px/700，§4.2 二级标题档）。
+- **写入时机**：确认完成时随文档一步写 `meta.theme`（与 `/theme/apply` 同口径：只写 theme 字段），落点 `/edit` 即新主题装配，无二次刷新；未知主题 400 且零写。
+- **无文档会话**（全程跳过、0.8 才建档）：缩略图取空白模板装配——此时没有可 GET 的对应文档，逐字节相等只对「已有文档」成立。
+- **备查（勿当缺陷回退）**：① 写 `meta.theme` 时 `meta.styleHash` 仍是 classic 的哈希（`obCreateDoc` 先展开 `themeRegistration('classic')`），磁盘 HTML 仍是 `data-theme="classic"`，但 `GET /edit` 走 `applyDocTheme` 即新主题装配、导出同源——与 `/theme/apply` 只写 theme 字段的口径完全一致。② 卡内 srcdoc 继承 `/onboarding` 页的 CSP（`script-src 'self' 'unsafe-inline'`），**不是** `/theme-preview` 的 `LOCKED_PREVIEW_CSP`；实测不可利用（`themePreviewHtml` 剥除全部 `<script>` 块，残余面仅用户自己正文里的内联事件属性）；本口径未新增可被嵌端点。
+- 后续同类缩略图/预览一律沿用此口径，不再逐次拍板；某处确需可被嵌端点属安全面扩大，必须单独向用户明示授权，不得默认放宽。

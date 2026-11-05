@@ -1363,6 +1363,19 @@ function applyThemeNamed(html, t) {
   }
   return html;                                           // 无主样式块：无从装配，原样（与「无主样式」容忍口径一致）
 }
+// /theme-preview 的唯一装配实现（DESIGN.md §10.1 口径）：入参 = 源正文 HTML（文档正文或空白模板装配）
+// + 主题名；出参 = 预览 HTML（只读态 + 剥脚本 + 隐藏编辑器条）。
+// 「装配单一实现」= 端点响应体与向导 0.8 卡片内嵌的 srcdoc 必须逐字节相等 → 两处只调本函数，不各自拼装。
+function themePreviewHtml(srcHtml, theme) {
+  let phtml = stripInjections(String(srcHtml || ''));
+  phtml = applyThemeNamed(phtml, theme);
+  phtml = phtml.replace('contenteditable="true"', '').replace("sheet.contentEditable = 'true'", '');
+  // 预览是装配产物（非存档字节）：模板残留的编辑器脚本整体剥除（srcdoc 装载时不携带死脚本）；
+  // 锁定 CSP 仍随端点响应下发——直接以 URL 打开预览时由 CSP 兜底判死脚本。
+  phtml = phtml.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, '');
+  phtml = phtml.replace('<body>', '<body><style>.edit-toolbar,.page-line{display:none!important}</style>');
+  return phtml;
+}
 
 // 当前文档陈旧状态单出口（staleInfo）：当前 HTML + 当前 meta 冻结出 renderInputId，
 // 对照 meta.lastRenderInputId 与 PDF 存在性 → none/stale/fresh。mtime 不作正确性依据（仅日志/展示）。
@@ -2716,6 +2729,45 @@ const OB_PHOTO_MAX = 5 * 1024 * 1024;
 const OB_PHOTO_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
 const OB_PAGE_SVG = svgAsset('hero-page.svg');
 
+// ===== 0.8 选模板（批 1 §0.3：完成步「选一套模板」= 三张卡 = 主题名 + 场景短语 + 真渲染缩略图 + 选中态）=====
+// 场景短语是短标签（通用 / 经历多一页排满 / 展示向），非受众长句（DESIGN.md §9.1-3 边界内）。
+// 缩略图 = /theme-preview 同装配 srcdoc 内嵌（端点带 frame-ancestors 'none' 不可被嵌；与编辑器模板页签同思路），
+// 装配走单一实现 themePreviewHtml()（DESIGN.md §10.1）→ 卡内嵌内容与 GET /theme-preview 响应体逐字节相等。
+const OB_THEME_CARDS = [
+  { theme: 'classic', name: '经典单栏', scene: '通用' },
+  { theme: 'dual', name: '双栏紧凑', scene: '经历多一页排满' },
+  { theme: 'magazine', name: '杂志展示', scene: '展示向' }
+];
+// 空白文档装配（0.8 建档与 0.8 缩略图共用同一份内容口径；DOC_ID 只进脚本，脚本在预览里被剥除）
+function obBlankDocHtml(docId) {
+  return assembleTemplate('classic')
+    .replaceAll('{{NAME}}', () => '未命名').replaceAll('{{CONTACT}}', () => '').replaceAll('{{INTENT}}', () => '')
+    .replaceAll('{{SUMMARY}}', () => '点击开始编辑…').replaceAll('{{SKILLS}}', () => '<p>技能…</p>')
+    .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => '').replaceAll('{{EDU}}', () => '')
+    .replaceAll('{{DOC_ID}}', () => docId);
+}
+// 缩略图源：已有文档用文档正文；无文档会话（全程跳过）用空白模板装配（0.8 收口即建这份文档）
+function obPreviewSourceHtml(docId) {
+  if (docId && fs.existsSync(docPath(docId))) return fs.readFileSync(docPath(docId), 'utf8');
+  return obBlankDocHtml('doc');
+}
+// 模板卡区（选中态 = radio，classic 默认可跳过；卡片标签承载主题名与场景短语）
+function obThemeCardsHtml(docId) {
+  const avail = listThemes();
+  const src = obPreviewSourceHtml(docId);
+  const cards = OB_THEME_CARDS.filter((c) => avail.includes(c.theme)).map((c) => {
+    const preview = themePreviewHtml(src, c.theme);
+    const checked = c.theme === 'classic' ? ' checked' : '';
+    return `<label class="ob-tcard" data-theme="${escAttr(c.theme)}">`
+      + `<span class="ob-thead"><input type="radio" name="theme" value="${escAttr(c.theme)}"${checked}>`
+      + `<span class="ob-tname">${escHtml(c.name)}</span><span class="ob-scene">${escHtml(c.scene)}</span></span>`
+      + `<span class="ob-tthumb"><iframe title="${escAttr(c.name)} 模板预览" srcdoc="${escAttr(preview)}" tabindex="-1"></iframe></span>`
+      + `</label>`;
+  }).join('');
+  if (!cards) return '';
+  return `<div class="ob-tpick"><div class="ob-done-title">选一套模板</div><div class="ob-tcards">${cards}</div></div>`;
+}
+
 const obLinesHtml = (v) => String(v ?? '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
   .map((s) => `<p>${escHtml(s)}</p>`).join('');
 // entry → HTML。STAR（0.3 经历步，逐条可跳过）：填了的部分按「情境/任务/行动/结果」行并入要点（表达层）；
@@ -2880,10 +2932,10 @@ function parseObStarSuggestions(text, count) {
 }
 // 建档（与 /new 同款分配与登记；差异仅：内容由向导组装 + onboarding 进度与区域初绑同事务落 meta）
 const obNewDocId = () => { let i = 0, newId; do { newId = i === 0 ? 'doc' : 'doc-' + i; i++; } while (fs.existsSync(docPath(newId))); return newId; };
-function obCreateDoc(newId, newHtml, onboardingRec) {
+function obCreateDoc(newId, newHtml, onboardingRec, themeName) {
   fs.writeFileSync(docPath(newId), newHtml);
   updateMeta(root, newId, (m) => {
-    const base = { ...(m || {}), ...themeRegistration('classic'), kind: 'master', flow: 'draft', archivedAt: null, onboarding: onboardingRec };
+    const base = { ...(m || {}), ...themeRegistration('classic'), ...(themeName ? { theme: themeName } : {}), kind: 'master', flow: 'draft', archivedAt: null, onboarding: onboardingRec };
     Object.assign(base, zoneSync(newHtml, base));
     return base;
   });
@@ -2893,7 +2945,7 @@ function obCreateDoc(newId, newHtml, onboardingRec) {
 // → 根锁 + 文档锁 → beginTx/atomicWrite/updateMeta/commitTx（异常双恢复）→ dropSupersededTx。
 // updateMeta 内 rev+1 + zoneSync（区域初绑/同步）。不打快照（同 autosave 口径，避免步进刷爆配额）。
 // onboardingRec 与正文同事务落 meta（内容与进度原子一致）。
-async function obWriteDoc(id, rawHtml, onboardingRec) {
+async function obWriteDoc(id, rawHtml, onboardingRec, themeName) {
   let html = stripInjections(rawHtml);
   html = normalizeZids(html);
   if (!looksLikeDoc(html)) return { status: 400, body: { ok: false, error: '向导写入被拒：载荷剥离后不含任何 HTML 元素' } };
@@ -2914,6 +2966,7 @@ async function obWriteDoc(id, rawHtml, onboardingRec) {
           base.rev = (Number(base.rev) || 0) + 1;
           Object.assign(base, zoneSync(norm.html, base));   // S3：zones 同步（正文为准）
           base.onboarding = onboardingRec;
+          if (themeName) base.theme = themeName;             // 0.8 选模板：与进度同事务落 meta
           return base;
         });
         commitTx(root, txId);
@@ -3169,7 +3222,7 @@ function onboardingPage(state) {
       <div class="ob-done-title">预览完成</div>
       <p class="ob-note">${docId ? '预览与微调复用编辑器：' : '全程未填内容也会产出一份合法空白文档'}${docId ? `<a href="/edit?id=${escAttr(docId)}">打开编辑器</a>（改完回来确认完成）` : ''}</p>
       <p class="ob-note">确认完成后走既有导出链路；产出文档与手建文档完全同权</p>
-    </div>`;
+    </div>${obThemeCardsHtml(docId)}`;
   }
   const hidden = `<input type="hidden" name="step" value="${escAttr(cur)}">${docId ? `<input type="hidden" name="docId" value="${escAttr(docId)}">` : ''}`;
   const actions = cur === '0.8'
@@ -3240,6 +3293,24 @@ function onboardingPage(state) {
 .ob-fallback summary{cursor:pointer;color:var(--muted);font-size:12px}
 .ob-resume .ob-resume-item{display:flex;justify-content:space-between;gap:var(--space-3);padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius);margin-bottom:var(--space-2);font-weight:400}
 .ob-resume .ob-resume-item span{color:var(--muted);font-size:13px;white-space:nowrap}
+/* 0.8 选模板：三张卡（主题名 + 场景短语 + 真渲染缩略图 + 选中态）。
+   缩略图 = A4 页面按比例缩放进固定框（尺寸字面值只落在本行的自定义属性上，规则里只引用变量）；
+   缩放随框宽自适应（框宽/页宽，上限 --ob-thumb-scale）——卡宽随机型栅格随视口收窄，固定缩放会在
+   ≤1250px 视口把页面右栏裁掉（缩略图是「双栏紧凑 vs 杂志展示」的唯一对比依据，2026-11-06 复核阻断项）；
+   框高固定，可见页顶比例随之变大；零投影：选中态 = 边框色 + 底色差（DESIGN.md §3.1 阴影例外仅 --shadow-up）。 */
+.ob-tpick{--ob-page-w:794px;--ob-page-h:1123px;--ob-thumb-h:158px;--ob-thumb-scale:.35;margin:var(--space-4) 0}
+.ob-tcards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:var(--space-3)}
+.ob-tcard{display:flex;flex-direction:column;gap:var(--space-2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--space-3);background:var(--card);cursor:pointer}
+.ob-tcard:has(input:checked){border-color:var(--foreground);background:var(--card-2)}
+.ob-thead{display:flex;align-items:center;gap:var(--space-2)}
+/* 中和 .ob-form input{width:100%;padding:8px 10px;border:1px solid var(--border)} 对卡内单选钮的作用：
+   radio 是原生控件不吃表单框样式（被撑成整行宽会把主题名挤成折行——2026-11-06 复核阻断项）。 */
+.ob-tcard input[type=radio]{width:auto;padding:0;border:0;flex:0 0 auto}
+.ob-tname{font-size:13px;font-weight:700;white-space:nowrap}
+.ob-scene{font-size:12px;color:var(--muted);white-space:nowrap}
+/* 缩略图框 = 容器（container-type: inline-size → 100cqw 取框内容宽）；内层 iframe 固定 A4 尺寸再按比例缩放。 */
+.ob-tthumb{display:block;height:var(--ob-thumb-h);overflow:hidden;border:1px solid var(--border);border-radius:var(--radius);background:var(--card-2);container-type:inline-size}
+.ob-tthumb iframe{width:var(--ob-page-w);height:var(--ob-page-h);border:0;transform:scale(min(var(--ob-thumb-scale), calc((100cqw - 2px) / var(--ob-page-w))));transform-origin:0 0;pointer-events:none;display:block}
 @media (max-width:860px){.ob-shell{grid-template-columns:1fr}.ob-side{position:static}}
 </style>`);
 }
@@ -3528,6 +3599,18 @@ async function handler(req, res) {
       }
       const merged = obMergeStep(step, p, prefill, skipFlag);
       const nextStep = OB_STEPS[obIdx + 1] || null;
+      // 0.8 选模板：主题随「完成」一步写 meta.theme（/theme/apply 同口径：只写 theme 字段）。
+      // 载荷来源：页壳 radio（顶层 theme）或 JSON 调用方（顶层 / payload 均可）；不带 = 不写（classic 默认可跳过）。
+      let themeName = '';
+      if (step === '0.8') {
+        const themeRaw = (p && p.theme != null) ? p.theme : body.theme;
+        const themeWant = String(themeRaw == null ? '' : themeRaw).trim();
+        if (themeWant) {
+          const avail = listThemes();
+          if (!avail.includes(themeWant)) return sendJson(400, { ok: false, error: `未知主题: ${themeWant}（可用主题: ${avail.join(', ')}）` });
+          themeName = themeWant;
+        }
+      }
       // 照片（可选，UI 走 0.7 照片步）：载荷带 photo 均收（API 不限步）；有文档才承载；
       // 存用户数据目录 photos/（启动时自写 .gitignore 排除 Git）；注入模板属 S5F 后续卡
       let photoSaved = null;
@@ -3564,13 +3647,9 @@ async function handler(req, res) {
         // 0.8 预览完成是显式收口：全程跳过也产出一份合法空白文档（与 /new 同款）——用户显式完成不是「空输入脏文档」
         if (step === '0.8') {
           const blankId = obNewDocId();
-          const blankHtml0 = assembleTemplate('classic')
-            .replaceAll('{{NAME}}', () => '未命名').replaceAll('{{CONTACT}}', () => '').replaceAll('{{INTENT}}', () => '')
-            .replaceAll('{{SUMMARY}}', () => '点击开始编辑…').replaceAll('{{SKILLS}}', () => '<p>技能…</p>')
-            .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => '').replaceAll('{{EDU}}', () => '')
-            .replaceAll('{{DOC_ID}}', () => blankId);
+          const blankHtml0 = obBlankDocHtml(blankId);
           const newHtml = normalizeZids(stripInjections(blankHtml0));
-          obCreateDoc(blankId, newHtml, nextRec);
+          obCreateDoc(blankId, newHtml, nextRec, themeName);   // 选模板随建档一步写 meta.theme
           return isForm ? redirect(`/edit?id=${blankId}`) : sendJson(200, { ok: true, step, docId: blankId, created: true, nextStep: null, editUrl: '/edit?id=' + blankId });
         }
         // 其余步：合并预填后仍无内容 → 不建档（空输入不产出脏文档；首步确认前不建文档）。
@@ -3611,13 +3690,13 @@ async function handler(req, res) {
         }
       }
       if (wrote) {
-        const w = await obWriteDoc(docId, html, nextRec);
+        const w = await obWriteDoc(docId, html, nextRec, themeName);
         if (w.status !== 200) return sendJson(w.status, w.body);
       } else {
         // 进度推进（无正文变化 → 不动正文、不 bump rev）：与写路径同锁口径
         try {
           await withDocLock(root, docId, async () => {
-            updateMeta(root, docId, (m) => ({ ...(m || {}), onboarding: nextRec }));
+            updateMeta(root, docId, (m) => ({ ...(m || {}), ...(themeName ? { theme: themeName } : {}), onboarding: nextRec }));
           });
         } catch (e) {
           if (e instanceof LockHeld) return sendJson(409, { ok: false, retry: true, error: '该文档正在被另一操作处理，请稍后重试' });
@@ -4793,13 +4872,8 @@ async function handler(req, res) {
       const th = url.searchParams.get('theme') || '';
       const avail = listThemes();
       if (!avail.includes(th)) return send(400, `未知主题: ${th || '(空)'}（可用主题: ${avail.join(', ')}）`, 'text/plain');
-      let phtml = stripInjections(fs.readFileSync(docPath(qid), 'utf8'));
-      phtml = applyThemeNamed(phtml, th);
-      phtml = phtml.replace('contenteditable="true"', '').replace("sheet.contentEditable = 'true'", '');
-      // 预览是装配产物（非存档字节）：模板残留的编辑器脚本整体剥除（srcdoc 装载时不携带死脚本）；
-      // LOCKED_PREVIEW_CSP 仍随响应下发——直接以 URL 打开预览时由 CSP 兜底判死脚本。
-      phtml = phtml.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, '');
-      phtml = phtml.replace('<body>', '<body><style>.edit-toolbar,.page-line{display:none!important}</style>');
+      // 装配走单一实现 themePreviewHtml()（DESIGN.md §10.1）：与向导 0.8 卡片内嵌的 srcdoc 逐字节相等
+      const phtml = themePreviewHtml(fs.readFileSync(docPath(qid), 'utf8'), th);
       return send(200, phtml, 'text/html; charset=utf-8', { 'Content-Security-Policy': LOCKED_PREVIEW_CSP });
     }
     // ===== S6-A2：主题选择（确认交互由前端承载）：唯一写 = docs-meta.theme（updateMeta）=====

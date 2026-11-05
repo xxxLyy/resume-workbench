@@ -43,6 +43,11 @@ node ./test-fixtures/reliability/test-onboarding-api.mjs
 # ===== R2 文案与按钮语义修复包：首页待办计数 / 409 死引用 / 向导横幅两态 / 导出页语义（隔离根 HTTP，无浏览器依赖）=====
 node ./test-fixtures/reliability/test-copy-semantic-fixes.mjs
 
+# ===== 批1 §0.3 从零建简历 0.8 步选模板：三张卡（主题名+场景短语+真渲染缩略图+选中态）
+#       + 缩略图与 /theme-preview 同装配逐字节相等 + 确认完成随文档一步写 meta.theme（隔离根 + 浏览器段；Chromium 缺失 exit 2）
+#       计划 dev-docs/2026-11-05-roadmap-batch-plan.md §2，DESIGN.md §10.1 =====
+node ./test-fixtures/reliability/test-onboarding-theme-cards.mjs
+
 # ===== 批1 §0.3 改名落地：引导建档→从零建简历（向导 h1/page title/继续卡/完成卡/完成按钮/ob 横幅）
 #       + /job/new 页题复核钉（隔离根 HTTP 夹具，无浏览器依赖；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §2）=====
 node ./test-fixtures/reliability/test-onboarding-rename.mjs
