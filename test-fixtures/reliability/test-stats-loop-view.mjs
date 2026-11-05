@@ -154,10 +154,11 @@ try {
   assert.ok(/<a href="\/edit\?id=job1"[^>]*>\s*<span class="badge ok"[^>]*>[^]*?已转适配/.test(evHtml),
     '④ 在盘目标的「已转适配」应为包着徽章的 /edit 链接');
   assert.ok(!evHtml.includes('/edit?id=gone-doc'), '④ promotedTo 指向已删文档时不得渲染链接（维持纯徽章）');
-  // 首页评估历史卡共用 evalHistoryRows：链接行为一致
+  // 首页评估历史卡已撤除（批 1 §0.3「评估归 /evals」）：首页不再渲染评估行，
+  // 「已转适配」徽章链接化只在 /evals 页断言（评估历史唯一落点）。
   const home = await s1.get('/');
-  assert.ok(/<a href="\/edit\?id=job1"[^>]*>\s*<span class="badge ok"[^>]*>[^]*?已转适配/.test(home.html),
-    '④ 首页评估历史卡（共用渲染函数）同样链接化');
+  assert.ok(!home.html.includes('已转适配'), '④ 首页不再渲染评估历史行（批 1 §0.3 评估归 /evals）');
+  assert.ok(!home.html.includes('evalHistory'), '④ 首页不应再有评估历史容器（批 1 §0.3）');
 
   // ================= rootNoEval：有投递、无 evaluations.json（读侧缺省 []）→ 闭环卡空态指引（③）=================
   const rootNoEval = mkRoot('noeval');

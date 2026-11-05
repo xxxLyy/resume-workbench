@@ -59,6 +59,10 @@ node ./test-apps-settings-forms.mjs
 #       +「继续上次任务」回退链契约（隔离根 HTTP 夹具，无浏览器依赖；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §2）=====
 node ./test-fixtures/reliability/test-home-taskbench.mjs
 
+# ===== 批1 §0.3 首页评估历史卡撤除（评估归 /evals）：首页负向断言（无评估卡/评估行/死载荷）+ /evals 能力不变
+#       + /evals 入口可达（/job/new 页题右侧）（隔离根 HTTP 夹具，无浏览器依赖）=====
+node ./test-fixtures/reliability/test-home-eval-card-removed.mjs
+
 # ===== VQA 视觉验收截图（零断言、退出 0）：8 个关键页 1280x900 全页图落 /tmp/shots-after，
 #       视觉判定走 DESIGN.md 对照（人工/视觉流程），本夹具只产出真实隔离实例渲染截图；Chromium 缺失 exit 2 =====
 node ./test-fixtures/reliability/test-visual-screens.mjs
@@ -4005,14 +4009,19 @@ try {
   const R = seedRoot('ui', true);
   const s = await startSrv(R);
   try {
-    // ===== ① UI 结构：评估生成 UI 自首页迁出 → /job/new（批 1 拆页）；首页保留历史卡渲染器 =====
+    // ===== ① UI 结构：评估生成 UI 自首页迁出 → /job/new（批 1 拆页）；报告渲染器随评估历史卡撤除首页（批 1 §0.3）=====
     const home = await (await fetch(s.B + '/')).text();
     const jobNew = await (await fetch(s.B + '/job/new')).text();
     assert(jobNew.includes('/eval/create'), '/job/new 应含 /eval/create 调用（评估 UI 自首页迁入）');
     assert(jobNew.includes('/eval/promote'), '/job/new 应含 /eval/promote 调用');
     assert(/1[-–—]5\s*分钟/.test(jobNew), '/job/new 应显示评估耗时提示（1-5 分钟）');
-    const mk = home.match(/\/\*EVAL_CARD_JS_START\*\/([\s\S]*?)\/\*EVAL_CARD_JS_END\*\//);
-    assert(!!mk, '首页应带 EVAL_CARD_JS 标记块（可独立执行的报告渲染器；历史卡回看用）');
+    // 报告渲染器（标记块，可独立执行）：评估发起页 /job/new 与评估历史页 /evals 各自携带；
+    // 首页随「评估历史」卡撤除（批 1 §0.3，评估归 /evals）不再携带——缺席断言。
+    const evalsPage = await (await fetch(s.B + '/evals')).text();
+    const mk = jobNew.match(/\/\*EVAL_CARD_JS_START\*\/([\s\S]*?)\/\*EVAL_CARD_JS_END\*\//);
+    assert(!!mk, '/job/new 应带 EVAL_CARD_JS 标记块（可独立执行的报告渲染器；刚评估完的报告卡用）');
+    assert(/\/\*EVAL_CARD_JS_START\*\//.test(evalsPage), '/evals 应带 EVAL_CARD_JS 标记块（评估报告渲染器）');
+    assert(!/\/\*EVAL_CARD_JS_START\*\//.test(home), '首页评估历史卡已撤除（批 1 §0.3），首页不应再带报告渲染器');
     const cardSrc = mk[1];
     assert(/function esc\s*\(/.test(cardSrc), '报告渲染器应有转义函数 esc()');
     assert(/&lt;/.test(cardSrc) && /&amp;/.test(cardSrc), '转义函数应产出 HTML 实体');
@@ -4097,9 +4106,10 @@ try {
 console.log('✅ EV-7 评估 UI 入口 + 报告卡片转义（XSS）+ restore 预览 evals 计数');
 EOF
 
-# —— EV-8：评估历史（首页卡 + /evals 独立页）：转义 / 按钮可见性 / 只出元数据 / 导航零变化 ——
+# —— EV-8：评估历史（/evals 独立页；批 1 §0.3 起首页评估历史卡已撤除，评估归 /evals）：
+#      转义 / 按钮可见性 / 只出元数据 / 导航零变化 / 首页撤除（负向）——
 # ① 纯渲染字符串断言：把 server.mjs 里的评估历史渲染函数抠出来单跑（转义 / 来源缺失的旧记录隐藏按钮 / 列表不回显报告正文）
-# ② 隔离实例断言：临时 RESUME_ROOT + 合成 evaluations.json（含 XSS 载荷）+ 随机端口 → 首页卡与 /evals 页
+# ② 隔离实例断言：临时 RESUME_ROOT + 合成 evaluations.json（含 XSS 载荷）+ 随机端口 → 首页（缺席断言）+ /evals 页（能力不变）+ /job/new 入口
 node --input-type=module << 'EOF'
 import fs from 'node:fs';
 import os from 'node:os';
@@ -4124,7 +4134,7 @@ const escHtml = new Function(escSrc + '\nreturn escHtml;')();
 const escAttr = new Function(escSrc + '\nreturn escAttr;')();
 const badgeSrc = srv.slice(srv.indexOf('const BADGE_ICON'), srv.indexOf('// 客户端状态提示'));
 const badge = new Function('icon', badgeSrc + '\nreturn badge;')(icon);
-// —— 评估历史渲染函数（首页卡与 /evals 页共用同一份）——
+// —— 评估历史渲染函数（/evals 页专用；批 1 §0.3 起首页评估历史卡已撤除）——
 const hStart = srv.indexOf('const EVAL_VERDICT_TEXT');
 const hEnd = srv.indexOf('function docInfo(');
 assert(hStart > 0 && hEnd > hStart, '应能定位 evalHistoryRows 源码区间');
@@ -4201,13 +4211,15 @@ try {
   if (!up) fail('测试服务启动失败: ' + serr.slice(0, 500));
 
   const home = await (await fetch(`http://127.0.0.1:${port}/`)).text();
-  assert(home.includes('评估历史'), '首页应含「评估历史」卡');
-  assert(home.includes('甲公司'), '首页应含该条 company·role');
-  assert(home.includes('&lt;script&gt;'), '首页的 XSS 载荷应渲染为实体');
-  assert(!home.includes('<script>alert(1)'), '首页不得含裸标签');
-  assert(!home.includes('<img src=x onerror'), '首页不得含裸 img 标签');
-  assert(home.includes('href="/evals"'), '首页应含 /evals 入口');
-  // 首页不得新增裸 <script> 标签（报告渲染器与接线都在既有 script 块内）
+  // 首页评估历史卡撤除（批 1 §0.3：评估归 /evals）——负向断言（缺席，不是放宽）：
+  // 首页不得再出现评估历史卡 / 评估行按钮 / 评估记录内联载荷 / 评估元数据回显 / /evals 入口。
+  assert(!home.includes('评估历史'), '首页不得再含「评估历史」卡（评估归 /evals）');
+  assert(!home.includes('evalHistory'), '首页不得再含评估历史容器或接线（evalHistory）');
+  assert(!home.includes('EVAL_RECORDS'), '首页不得再内联评估记录载荷（EVAL_RECORDS 死代码清零）');
+  assert(!home.includes('甲公司'), '首页不得再回显评估记录的公司·岗位');
+  assert(!home.includes('查看报告'), '首页不得再含「查看报告」按钮');
+  assert(!home.includes('href="/evals"'), '首页不再承担 /evals 入口（入口迁至 /job/new）');
+  // 首页不得新增裸 <script> 标签（评估渲染器与接线随卡撤除，标签数不变）
   const scriptTags = (home.match(/<script/g) || []).length;
   assert(scriptTags === 3, '首页 <script> 标签数应为 3（未新增），实际 ' + scriptTags);
 
@@ -4216,12 +4228,22 @@ try {
   const evh = await ev.text();
   assert(evh.includes('评估历史') && evh.includes('甲公司'), '/evals 应含历史行');
   assert(/<h1>评估历史<\/h1>/.test(evh), '/evals 页题应为 h1');
+  // /evals 页能力不变：XSS 转义 + 逐条按钮 + 内联载荷
+  assert(evh.includes('&lt;script&gt;'), '/evals 的 XSS 载荷应渲染为实体');
+  assert(!evh.includes('<script>alert(1)'), '/evals 不得含裸标签');
+  assert(!evh.includes('<img src=x onerror'), '/evals 不得含裸 img 标签');
+  assert(evh.includes('data-eval-hist="report"') && evh.includes('data-eval-hist="promote"'),
+    '/evals 应保留「查看报告」/「转入适配」按钮');
+  assert(evh.includes('EVAL_RECORDS'), '/evals 应保留评估记录内联载荷（客户端渲染报告）');
   // 导航视觉零变化：topnav 仍 6 个链接；导航唯一（sidenav 已移除，不回归）
   const nav = (evh.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
   assert((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length === 6, '/evals 的 topnav 链接数应仍为 6');
   assert(!evh.includes('class="sidenav"'), '导航唯一：/evals 不应再有 .sidenav（用户裁决 2026-11-03）');
   assert(/<a href="\/" class="on">/.test(nav), '/evals topnav「文档」应高亮（active=docs）');
-  console.log('✅ EV-8 ② 隔离实例：首页卡 + /evals 页（转义 / 入口 / 导航零变化）');
+  // /evals 入口可达（首页卡撤除后）：入口在 /job/new 页题右侧（topnav 六链接口径不变）
+  const jn = await (await fetch(`http://127.0.0.1:${port}/job/new`)).text();
+  assert(jn.includes('href="/evals"'), '/job/new 应提供 /evals 入口（首页卡撤除后 /evals 不得成孤页）');
+  console.log('✅ EV-8 ② 隔离实例：首页撤除评估卡（负向）+ /evals 能力不变（转义 / 按钮 / 导航零变化）+ /job/new 入口');
 } finally {
   await stop();
 }

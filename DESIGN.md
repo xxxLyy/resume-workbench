@@ -243,3 +243,13 @@ FIELDS（editor-shell.js） → typoCss(v) → #typo-custom（落盘进 <head>�
 - **无文档会话**（全程跳过、0.8 才建档）：缩略图取空白模板装配——此时没有可 GET 的对应文档，逐字节相等只对「已有文档」成立。
 - **备查（勿当缺陷回退）**：① 写 `meta.theme` 时 `meta.styleHash` 仍是 classic 的哈希（`obCreateDoc` 先展开 `themeRegistration('classic')`），磁盘 HTML 仍是 `data-theme="classic"`，但 `GET /edit` 走 `applyDocTheme` 即新主题装配、导出同源——与 `/theme/apply` 只写 theme 字段的口径完全一致。② 卡内 srcdoc 继承 `/onboarding` 页的 CSP（`script-src 'self' 'unsafe-inline'`），**不是** `/theme-preview` 的 `LOCKED_PREVIEW_CSP`；实测不可利用（`themePreviewHtml` 剥除全部 `<script>` 块，残余面仅用户自己正文里的内联事件属性）；本口径未新增可被嵌端点。
 - 后续同类缩略图/预览一律沿用此口径，不再逐次拍板；某处确需可被嵌端点属安全面扩大，必须单独向用户明示授权，不得默认放宽。
+
+### 10.2 评估历史归 /evals（2026-11-05 批 1 登记）
+
+> 计划 §0.3「首页评估历史卡撤除（评估归 /evals）」：首页改任务台面后，首页不再承载评估历史。
+
+- **首页无评估历史**：首页不再渲染评估历史卡（卡标题 / `#evalHistory` 容器 / 评估行「查看报告」「转入适配」按钮），不再内联评估记录载荷（`EVAL_RECORDS`），不再挂报告渲染器（`EVAL_CARD_JS`）与历史接线（`EVAL_HISTORY_JS`）——评估历史的**唯一落点是 `/evals` 页**（死代码同删，§6.5）。
+- **入口落 `/job/new` 页题右侧**：评估在 `/job/new`（为岗位定制简历）以「先评估这个岗位」发起，故 `/evals` 入口放该页页题右侧（`.page-head` 右位，13px/400，与投递看板「⇄ 看板视图」同款写法；空库态与有母版态都在场）。**topnav 六链接口径不变**——`/evals` 不进导航（批 3「网申包」落地时导航才增至 7 项，UI-4 断言同步在批 3 改）。
+- **`/evals` 页能力不变**：全量列表 + 逐条「查看报告」/「转入适配」+「来源缺失」「已转适配」徽章 + XSS 转义 + 导航零变化（topnav 6 链接 / 无 sidenav /「文档」高亮）——本轮只撤入口，不改页面能力。
+- 可见差异：首页少一卡（计划内）；`/job/new` 页题右侧多一个「评估历史 →」链接，页题本身仍是 20px/700 档（`.page-head>h1` 与 `.mainarea>h1` 同规则），页题与首个内容块间距仍 12px（`.page-head` 与 `.mainarea>h1` 同为 `var(--space-3)`）。
+- 断言同提交：`test-structure.sh` EV-8 ② 迁为「首页负向缺席断言 + `/evals` 能力正向断言 + `/job/new` 入口可达」；新增隔离夹具 `test-fixtures/reliability/test-home-eval-card-removed.mjs`（先红后绿）。

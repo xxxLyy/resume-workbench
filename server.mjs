@@ -1810,7 +1810,7 @@ const jsonAttr = (v) => JSON.stringify(v).replace(/'/g, '\\u0027');
 // 不转 &：值多已过 escHtml（& < > 以实体存在），此处再转会变成 &amp;amp;
 const jsonScript = (v) => JSON.stringify(v).replace(/</g, '\\u003c');
 
-// ===== 岗位评估：报告渲染器 + 历史列表接线（首页卡与 /evals 页共用同一份）=====
+// ===== 岗位评估：报告渲染器 + 历史列表接线（/evals 页与 /job/new 页共用同一份）=====
 // EVAL_CARD_JS：客户端报告渲染器。**必须能独立执行**（test-structure.sh EV-7 会把本块抽出来单跑）——
 // 图标在服务端内联进块内，不依赖页面级全局（vendors/icons.mjs 仍是唯一来源）。
 // 本块只定义变量与函数：**顶层不得碰 document**（单跑时没有 DOM）。
@@ -1863,9 +1863,9 @@ function evalCardHtml(rec, opts) {
 }
 /*EVAL_CARD_JS_END*/`;
 
-// EVAL_HISTORY_JS：评估历史列表的客户端接线（首页卡与 /evals 页共用同一段）。
+// EVAL_HISTORY_JS：评估历史列表的客户端接线（/evals 页用；批 1 §0.3 起首页评估历史卡已撤除）。
 // 「查看报告」= 把页面内联的记录交给 evalCardHtml 渲染；「转入适配」= POST /eval/promote。
-// 作用域限定在 #evalHistory 容器内：首页「刚评估完」那条流程（#evalResult）另有自己的处理器，互不干扰。
+// 作用域限定在 #evalHistory 容器内：/job/new 页「刚评估完」那条流程（#evalResult）另有自己的处理器，互不干扰。
 const EVAL_HISTORY_JS = `
 (function () {
   var box = document.getElementById('evalHistory');
@@ -1900,7 +1900,7 @@ const EVAL_HISTORY_JS = `
   });
 })();`;
 
-// ===== 评估历史（首页卡与 /evals 页共用同一渲染函数）=====
+// ===== 评估历史（/evals 页专用渲染函数；批 1 §0.3 起首页评估历史卡已撤除）=====
 // 列表**只出元数据**（评分 / 结论 / 公司·岗位 / 时间 / 状态），不回显报告正文；
 // 报告正文由 evalCardHtml 在客户端渲染（记录经 jsonScript 内联进页面，见 EVAL_RECORDS）。
 const EVAL_VERDICT_TEXT = { apply: '建议投', caution: '谨慎', skip: '不建议' };
@@ -1933,7 +1933,7 @@ function evalHistoryRows(records, docExists) {
       + (rec.sourceState !== 'recorded' ? badge('warn', '来源缺失', 'circle-alert') : '');
     // 动作列对齐：行容器 space-between 右对齐，按钮数不同的行会把「查看报告」挤到不同横坐标（实测两行左缘差 83px，扫读找不到同一列）。
     // 无「转入适配」的行放一枚同款隐形占位（visibility:hidden 保持同宽、disabled 且不带 data-eval-hist，
-    // 不可点不可聚焦也不进测试断言口径）——动作组逐行等宽，「查看报告」在首页卡与 /evals 页各行列对齐。
+    // 不可点不可聚焦也不进测试断言口径）——动作组逐行等宽，「查看报告」在 /evals 页各行列对齐。
     const promoteBtn = canPromote
       ? `<button type="button" data-eval-hist="promote" data-eval-id="${escAttr(rid)}" data-eval-from="${escAttr(srcDoc)}">转入适配</button>`
       : `<button type="button" disabled style="visibility:hidden">转入适配</button>`;
@@ -2093,14 +2093,6 @@ function listPage(showArchived = false) {
   const fallbackId = byMtime.length ? byMtime[0].id : '';
   const docIds = byMtime.map((d) => d.id);
   const docTitles = Object.fromEntries(byMtime.map((d) => [d.id, d.title]));
-  // 评估历史（首页卡）：读时视图 evalRecordView（旧记录的 sourced 降级为 missing，历史分数不重算）。
-  // 首页只列最近 10 条；全量在 /evals 页。列表只出元数据，报告正文由客户端 evalCardHtml 渲染。
-  const evalHomeRecords = loadEvals().map(evalRecordView);
-  const evalHomeCard = evalHomeRecords.length ? `<div class="card" style="margin-top:var(--space-3)">
-      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><b class="card-title">评估历史</b><a href="/evals">查看全部 →</a></div>
-      <div id="evalHistory">${evalHistoryRows(evalHomeRecords.slice(0, 10), (did) => fs.existsSync(docPath(did)))}</div>
-      <span id="evalHistoryMsg" role="status" style="font-size:12px;color:var(--mut)"></span>
-    </div>` : '';
   // S4a-T5：重点 chips 建议值 = 素材 tags 聚合（首版不做历史 brief 聚合）
   const tagCount = new Map();
   for (const mt of loadMats()) for (const t of (Array.isArray(mt.tags) ? mt.tags : [])) if (typeof t === 'string' && t.trim()) tagCount.set(t.trim(), (tagCount.get(t.trim()) || 0) + 1);
@@ -2151,7 +2143,6 @@ function listPage(showArchived = false) {
       ${drafts.map((d) => { const dl = deliverableNow(d.id, meta[d.id] || {}, d);   // 每草稿只算一次：原写法在同一模板串里调两次，2N 次同步解析卡首屏
         return `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><span><b>${d.title}</b> ${badge(dl ? 'ok' : 'warn', dl ? '可投递' : '草稿')}<span style="color:var(--mut);font-size:12px">${escHtml(((meta[d.id] || {}).company || '') + '·' + ((meta[d.id] || {}).role || ''))} · ${d.mtime}</span></span><a href="/edit?id=${escAttr(d.id)}"><button>继续处理</button></a></div>`; }).join('')}
     </div>` : ''}
-    ${evalHomeCard}
     <div class="card" style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <form method="post" action="/new"><button class="secondary">＋ 新建空白文档</button></form>
       <!-- 次级行入口按钮（批 1 §0.2/§0.3）：岗位定制表单已整体迁出 → /job/new，这里只留入口（非表单）。
@@ -2168,9 +2159,6 @@ function listPage(showArchived = false) {
     <div class="card statusline" role="status">${todoBits.join('<span class="sep">·</span>')}</div>
     ${agendaCard}
     <script>
-      // 评估历史记录（首页卡最多 10 条）：内联进页面，客户端由 evalCardHtml 渲染报告。
-      // jsonScript 转义 '<'：记录自带的结束标签不能闭合本脚本（本注释自身也不写出该标签）。
-      var EVAL_RECORDS = ${jsonScript(evalHistoryPayload(evalHomeRecords))};
       document.getElementById('up').addEventListener('submit', async function (e) {
         e.preventDefault();
         var f = document.getElementById('upfile').files[0];
@@ -2180,10 +2168,8 @@ function listPage(showArchived = false) {
         if (r.redirected) { location.href = r.url; return; }
         document.getElementById('upmsg').textContent = ' ' + (await r.text());
       });
-      // 评估历史卡：报告渲染器（EVAL_CARD_JS 的 evalCardHtml）与历史接线（EVAL_HISTORY_JS）保留——
-      // 「评估历史」卡回看报告用。生成侧 UI（/eval/create 表单按钮）已随岗位表单整体迁出 → /job/new。
-      ${EVAL_CARD_JS}
-      ${EVAL_HISTORY_JS}
+      // 评估记录列表已整体迁出首页（批 1 §0.3：评估归 /evals）：本页不再内联评估记录载荷，
+      // 也不再挂报告渲染器（EVAL_CARD_JS）与历史接线（EVAL_HISTORY_JS）——该列表的唯一落点是 /evals 页。
       document.getElementById('searchBox').addEventListener('input', function () {
         var q = this.value.toLowerCase();
         var any = false;   // A4：空态行（list-empty/search-empty）不参与过滤，否则关键词清空后无匹配行残留
@@ -2237,6 +2223,8 @@ function listPage(showArchived = false) {
 // 首页岗位表单整体迁移到此：字段 id/label/默认值/客户端校验/提交与评估接线自 listPage 原样迁入，
 // POST /job/create 与 /eval/create 契约零变化（§0.3 裁决）。首页只留入口按钮（任务卡主行动 + 次级行按钮）。
 // 不进 topnav（导航六链接不变，UI-4）；active 传 'docs'（由首页进入，归属「文档」高亮）。
+// 页题右侧「评估历史 →」= /evals 入口（批 1 §0.3：首页评估历史卡撤除后，评估归 /evals；
+// 评估在本页发起（先评估这个岗位），故入口落本页题右侧；topnav 六链接口径不变，入口不进导航）。
 function jobNewPage() {
   const meta = loadMeta();
   // 母版下拉口径与拆出前 listPage infos 完全一致（在盘且未归档的全部文档，jobInfo 派生不筛选）。
@@ -2247,7 +2235,7 @@ function jobNewPage() {
   const tagChips = [...tagCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)
     .map(([t]) => `<button type="button" class="chip" data-tag="${escAttr(t)}">${escHtml(t)}</button>`).join('');
   return page('为岗位定制简历', `
-    <h1>为岗位定制简历</h1>
+    <div class="page-head"><h1>为岗位定制简历</h1><a href="/evals" style="font-size:13px;font-weight:400">评估历史 →</a></div>
     ${infos.length === 0 ? `<div class="card" style="border-style:dashed"><b>还没有母版简历</b>
         <p style="font-size:13px;color:var(--mut);margin:6px 0 10px">需要一份母版简历：先新建一份，或到<a href="/#up">首页上传 PDF 导入</a>，再回到这里为岗位定制可投递的两页版本。</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap"><form method="post" action="/new" style="display:inline"><button class="cta" type="submit">＋ 新建空白简历</button></form><a class="cta-alt" href="/#up">${icon('file-text', 13)} 上传 PDF 导入</a></div>
@@ -3873,9 +3861,10 @@ async function handler(req, res) {
       return sendJson(200, { ok: true, id: r.id });
     }
     // ===== 评估历史（独立页）：全量列表 + 逐条展开报告 =====
-    // 服务端渲染全量元数据（与首页卡共用 evalHistoryRows），报告正文经 jsonScript 内联，
-    // 客户端由 evalCardHtml 渲染 —— 首页卡与本页共用同一套渲染函数与接线脚本。
-    // 不进 topnav / 侧栏（导航视觉零变化）：入口是首页「评估历史」卡里的「查看全部 →」。
+    // 服务端渲染全量元数据（evalHistoryRows），报告正文经 jsonScript 内联，
+    // 客户端由 evalCardHtml 渲染 —— 本页是评估历史的唯一落点（批 1 §0.3：首页评估历史卡已撤除）。
+    // 不进 topnav / 侧栏（导航视觉零变化）：入口是 /job/new 页题右侧的「评估历史 →」
+    // （评估在 /job/new 发起，入口落本页题右侧；topnav 六链接口径不变）。
     // active 传 'docs'：本页由首页进入，归属「文档」，侧栏保持「文档」高亮。
     if (req.method === 'GET' && url.pathname === '/evals') {
       const records = loadEvals().map(evalRecordView);
