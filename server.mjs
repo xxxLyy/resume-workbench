@@ -2141,8 +2141,10 @@ function listPage(showArchived = false) {
     ${evalHomeCard}
     <div class="card" style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <form method="post" action="/new"><button class="secondary">＋ 新建空白文档</button></form>
-      <!-- 次级行入口按钮（批 1 §0.2/§0.3）：岗位定制表单已整体迁出 → /job/new，这里只留入口（非表单）。样式与搜索行次级链接同款。 -->
-      <a class="secondary" style="border:1px solid var(--line);border-radius:var(--radius);padding:7px 12px;background:var(--panel);color:var(--ink);font-weight:600;font-size:13px" href="/job/new">${icon('target', 13)} 为岗位定制简历</a>
+      <!-- 次级行入口按钮（批 1 §0.2/§0.3）：岗位定制表单已整体迁出 → /job/new，这里只留入口（非表单）。
+           内边距按 §5.1 引用 token（原字面 7px→--space-2 = 8px，1px 差已登记于 DESIGN.md §5.1 可见差异）。
+           注意：搜索行同类次级链接仍是字面 7px 12px，两者现已不同款——要恢复「同款」须两处同改（收口归后续卡）。 -->
+      <a class="secondary" style="border:1px solid var(--line);border-radius:var(--radius);padding:var(--space-2) var(--space-3);background:var(--panel);color:var(--ink);font-weight:600;font-size:13px" href="/job/new">${icon('target', 13)} 为岗位定制简历</a>
       <details class="import-box" style="flex:1;min-width:220px"><summary style="cursor:pointer;font-weight:700">${icon('file-text', 13)} 导入 PDF</summary>
         <form id="up" style="margin-top:8px">
           <input type="file" id="upfile" accept="application/pdf" aria-label="选择 PDF 文件">
@@ -2234,7 +2236,7 @@ function jobNewPage() {
   return page('为岗位定制简历', `
     <h1>为岗位定制简历</h1>
     ${infos.length === 0 ? `<div class="card" style="border-style:dashed"><b>还没有母版简历</b>
-        <p style="font-size:13px;color:var(--mut);margin:6px 0 10px">「为岗位定制简历」需要一份母版简历：先新建一份，或到<a href="/#up">首页上传 PDF 导入</a>，再回到这里为岗位定制可投递的两页版本。</p>
+        <p style="font-size:13px;color:var(--mut);margin:6px 0 10px">需要一份母版简历：先新建一份，或到<a href="/#up">首页上传 PDF 导入</a>，再回到这里为岗位定制可投递的两页版本。</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap"><form method="post" action="/new" style="display:inline"><button class="cta" type="submit">＋ 新建空白简历</button></form><a class="cta-alt" href="/#up">${icon('file-text', 13)} 上传 PDF 导入</a></div>
       </div>` : `<form id="jobForm" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;align-items:end">
         <label style="font-size:12px">公司<input id="jobCompany" required style="width:100%"></label>

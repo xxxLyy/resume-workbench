@@ -9,6 +9,8 @@
 //     meta.parent 继承；/eval/create 未配置 LLM → 409 JSON 带 settingsPath='/settings'（R2② 契约原样）。
 //   E 名称统一与截图路由：server.mjs/editor-shell.js 旧名「针对岗位生成」零残留；弹层标题改「为岗位定制简历」；
 //     视觉截图夹具 routes 含 ['job-new', '/job/new']。
+//   F DESIGN.md 红线自查（本卡新写代码）：首页次级行入口按钮间距引用 --space-* token 且不留字面 px 间距（§5.1）。
+//     （§9.1-2 空态不复述页题的钉在 A 段——空态只在空库渲染，须在播种母版前断言）
 // 纪律：隔离 RESUME_ROOT（mkdtemp）+ 随机端口 + 合成数据；不读真实简历、不碰 7766、不调真实模型；仓库零写入。
 // 隐私门禁：合成数据不含 13 位数字（门禁 1[3-9]\d{9} 不适用）。
 // 退出码契约：0=全部通过；1=任一断言失败（本夹具不依赖 Chromium，无 2 分支）。
@@ -91,6 +93,15 @@ try {
     assert.ok(html.includes('href="/#up"'), '空态导入指引应指向首页上传锚点 /#up（新页自身无上传区）');
     assert.ok(!html.includes('id="jobForm"'), '空库不渲染岗位表单（A3 空态既有契约）');
     assert.ok(html.includes('class="on"'), '/job/new 应由 page() 渲染并带当前项高亮（active=docs）');
+    // §9.1-2：空态说明不得复述页题（h1 已说清「为岗位定制简历」）；门控说明与去向指引保留（§9.2-1/§9.2-4）
+    // 取样定位：剥掉 <script> 块（页内 EVAL_CARD_JS 的模板串不是渲染内容）后，扫描全部服务端渲染的
+    // <p style=...> 段落——不依赖「首个匹配」的位置，页面壳新增更早的段落也不会误指对象；
+    // 空态说明段的文案指纹「需要一份母版简历」已由上方断言单独钉住。
+    const renderedParas = html.replace(/<script[\s\S]*?<\/script>/g, '').match(/<p style="[^"]*">[\s\S]*?<\/p>/g) || [];
+    assert.ok(renderedParas.length > 0, '/job/new 空态应有一段说明文字');
+    const titleEcho = renderedParas.filter((p) => p.includes('为岗位定制简历'));
+    assert.deepEqual(titleEcho, [],
+      '空态说明不得复述页题「为岗位定制简历」（§9.1-2），实际：' + titleEcho.join(' || '));
   }
 
   // ===== B. 有母版：表单整体迁移（字段/校验/接线与拆出前零变化）=====
@@ -175,6 +186,21 @@ try {
     const ev = await postJson('/eval/create', { from: 'jnmaster', company: '合成公司', role: '前端', jd: '负责高并发服务' });
     assert.equal(ev.status, 409, '/eval/create 未配置 LLM 应 409');
     assert.ok(ev.json && ev.json.ok === false && ev.json.settingsPath === '/settings', '/eval/create 409 应带 settingsPath=/settings：' + ev.text.slice(0, 160));
+  }
+
+  // ===== F. DESIGN.md 红线自查（本卡新写代码）：间距 token =====
+  {
+    // F1 首页次级行入口按钮：间距用 --space-* token，style 内不留字面 px 间距
+    // （DESIGN.md §5.1「新写的间距一律引用 token」；7px→8px = --space-2，可见差异登记于 §5.1）
+    const home = await get('/');
+    const homeHtml = home.text;
+    const entry = homeHtml.match(/<a class="secondary"[^>]*href="\/job\/new"[^>]*>/);
+    assert.ok(entry, '次级行入口应为 <a class="secondary" href="/job/new">（入口按钮，非表单）');
+    assert.ok(entry[0].includes('padding:var(--space-2) var(--space-3)'),
+      '入口按钮内边距应引用 --space-* token（§5.1），实际：' + entry[0]);
+    const spacingLiteral = entry[0].match(/(?:padding|margin|gap)(?:-(?:top|right|bottom|left))?:[^;"]*?\d+px/g) || [];
+    assert.deepEqual(spacingLiteral, [],
+      '入口按钮样式不得留字面 px 间距（§5.1），实际：' + JSON.stringify(spacingLiteral));
   }
 
   // ===== E. 名称统一 + 编辑器弹层标题 + 视觉截图夹具路由（源级钉）=====

@@ -2530,3 +2530,10 @@ else
     fail "任务卡徽章间距回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
   fi
 fi
+
+# ===== 16u. 批1 /job/new「为岗位定制简历」拆页卡：表单整体迁移 + 空态/契约零变化/首页只留入口 + §9.1-2 空态不复述页题 + 入口间距 token（隔离 HTTP 夹具）=====
+if node test-fixtures/reliability/test-job-new-page.mjs; then
+  echo '✅ /job/new 拆页回归（空态不渲染表单/字段与提交契约零变化/首页只留入口按钮/空态不复述页题/入口内边距用 token）'
+else
+  fail "「/job/new」拆页回归未通过 (exit $?)"
+fi
