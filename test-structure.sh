@@ -43,6 +43,10 @@ node ./test-fixtures/reliability/test-onboarding-api.mjs
 # ===== R2 文案与按钮语义修复包：首页待办计数 / 409 死引用 / 向导横幅两态 / 导出页语义（隔离根 HTTP，无浏览器依赖）=====
 node ./test-fixtures/reliability/test-copy-semantic-fixes.mjs
 
+# ===== 批1 §0.3 改名落地：引导建档→从零建简历（向导 h1/page title/继续卡/完成卡/完成按钮/ob 横幅）
+#       + /job/new 页题复核钉（隔离根 HTTP 夹具，无浏览器依赖；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §2）=====
+node ./test-fixtures/reliability/test-onboarding-rename.mjs
+
 # ===== R3 投递看板与设置页：label 可访问性 / 消除 prompt 链 / 设置空态说明卡（隔离根浏览器夹具；Chromium 缺失 exit 2）=====
 node ./test-apps-settings-forms.mjs
 
@@ -5285,7 +5289,7 @@ assert(/\.ob-add\{[^}]*justify-self:start/.test(srv), '.ob-add 应非全宽（gr
 assert(srv.includes('<button type="submit" name="skip" value="1" class="secondary">跳过这步</button>'),
   '「跳过这步」应为 secondary（次级动作不得与主行动同实底）');
 // ⑤ 横幅区分 forward/resume 两态；skipped 数组内的步显示「已跳过」
-assert(srv.includes('已恢复未完成的引导') && srv.includes('已进入下一步'), '向导横幅应区分 resume（已恢复）/forward（已进入下一步）两态');
+assert(srv.includes('已恢复未完成的从零建简历') && srv.includes('已进入下一步'), '向导横幅应区分 resume（已恢复）/forward（已进入下一步）两态（§0.3 改名：引导→从零建简历）');
 assert(srv.includes("skipped.has(ob.last) ? '已跳过' : '最近确认'"), 'last 落在 skipped 数组时应显示「已跳过」而非「最近确认」');
 // ⑥ 确认可投递：无定义的 button.ok 降为 secondary，括号状态说明移出按钮文案（徽章已承载）
 assert(!srv.includes('class="ok"'), '不得再引用无定义的 button.ok 类');

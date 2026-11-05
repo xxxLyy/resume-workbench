@@ -178,7 +178,8 @@ try {
   await entryDocs.click();
   await page.waitForSelector('.ob-resume');
   const resumeItem = await page.$('.ob-resume-item');
-  assert.ok(resumeItem, '重进向导应出现「继续上次引导」续作列表');
+  assert.ok(resumeItem, '重进向导应出现「继续从零建简历」续作列表（2026-11-05 批 1 §0.3 改名）');
+  assert.equal(await page.textContent('.ob-resume .ob-done-title'), '继续从零建简历', '继续卡标题应为「继续从零建简历」（§0.3 改名）');
   assert.ok((await resumeItem.textContent()).includes('暂存同学'), '续作列表应展示暂存文档的标题');
   const resumeHref = await resumeItem.getAttribute('href');
   const resumeId = new URL(resumeHref, base).searchParams.get('docId');

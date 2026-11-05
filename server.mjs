@@ -2096,7 +2096,7 @@ function listPage(showArchived = false) {
   // ③ 有母版无草稿 → 「为岗位定制简历」直达独立页 /job/new（§0.3 拆页：表单整体迁移，/job/create 与 /eval/create 契约零变化）。
   // 次级行（有文档态）：「继续上次任务」回退链保持既有契约（id/data-* 与内联脚本零变化）；
   // 另保留「从零建简历」显式入口——S5 暂存续作契约要求有文档用户也能从首页重进向导（落地页渲染续作列表），
-  // hero 退役后若无此入口，暂存过的引导将不可达（test-onboarding-ui ③ 钉此动线）。
+  // hero 退役后若无此入口，暂存过的从零建简历会话将不可达（test-onboarding-ui ③ 钉此动线）。
   const latestDraft = drafts[0] || null;
   const draftReady = latestDraft ? deliverableNow(latestDraft.id, meta[latestDraft.id] || {}, latestDraft) : false;
   const taskMain = latestDraft
@@ -2669,7 +2669,7 @@ async function saveJsonProtocol(req, id, url) {
   return out;
 }
 
-// ===== S5 引导建档向导（设计：dev-docs/2026-11-02-s5-design.md；S5U 前端卡定稿步序）=====
+// ===== S5 从零建简历向导（设计：dev-docs/2026-11-02-s5-design.md；S5U 前端卡定稿步序）=====
 // 核心决策：向导进度不新建文件 —— 首个「合并预填后仍有内容」的确认步创建一份真实草稿文档
 // （kind=master / flow=draft，与 /new 产出同权），此后每步确认写入该文档；暂存 = 文档自然存在。
 // 「空输入不产出脏文档」由「首步确认前不建文档」保证；无文档阶段的进度由客户端持有。
@@ -2949,7 +2949,7 @@ function obUnfinishedList() {
     const nxt = (m.onboarding.next && OB_LABELS[m.onboarding.next]) || m.onboarding.next || '0.1';
     items.push(`<a class="ob-resume-item" href="/onboarding?docId=${escAttr(oid)}"><b>${escHtml(title)}</b><span>进行到 ${escHtml(nxt)}</span></a>`);
   }
-  return items.length ? `<div class="ob-card ob-resume"><div class="ob-done-title">继续上次引导</div><p class="ob-note">以下引导暂存过，点开从上次的步骤继续</p>${items.join('')}</div>` : '';
+  return items.length ? `<div class="ob-card ob-resume"><div class="ob-done-title">继续从零建简历</div><p class="ob-note">以下是暂存的从零建简历，点开从上次的步骤继续</p>${items.join('')}</div>` : '';
 }
 // 条目卡（0.3 经历 / 0.4 项目 / 0.6 教育）：一块散料一张卡，各带编辑；kindLabel 驱动 STAR/事实层子表单。
 // canAi = 已有文档承载时才渲染「AI 套 STAR」建议按钮（S5F：建议只进卡片输入框，确认提交后才写入）。
@@ -3168,11 +3168,11 @@ function onboardingPage(state) {
   }
   const hidden = `<input type="hidden" name="step" value="${escAttr(cur)}">${docId ? `<input type="hidden" name="docId" value="${escAttr(docId)}">` : ''}`;
   const actions = cur === '0.8'
-    ? `<button type="submit">完成引导</button>`
+    ? `<button type="submit">完成从零建简历</button>`
     // R2④：跳过是次级动作 → button.secondary（:1542），不与主行动同实底
     : `<button type="submit">确认并下一步</button><button type="submit" name="skip" value="1" class="secondary">跳过这步</button>`;
   const form = finished
-    ? `<div class="ob-card"><div class="ob-done-title">引导完成</div><p class="ob-note">文档与手建文档完全同权，可继续编辑与导出</p><p><a href="/edit?id=${escAttr(docId)}">打开编辑器</a> · <a href="/export?id=${escAttr(docId)}">导出 PDF</a></p></div>`
+    ? `<div class="ob-card"><div class="ob-done-title">从零建简历完成</div><p class="ob-note">文档与手建文档完全同权，可继续编辑与导出</p><p><a href="/edit?id=${escAttr(docId)}">打开编辑器</a> · <a href="/export?id=${escAttr(docId)}">导出 PDF</a></p></div>`
     : `<form method="post" action="/onboarding/step" class="ob-form">${hidden}${formInner}<div class="ob-actions">${actions}<a href="/" title="已确认内容已存入文档，随时回来继续">暂存退出</a></div></form>${isEntryStep ? OB_CARDS_JS : ''}${cur === '0.7' ? OB_PHOTO_JS : ''}`;
   // R2⑤：横幅区分 forward（from=step 步进回跳）/resume（后续再进来）两态；
   // last 落在 skipped 数组里（跳过的步也会推进 last）→ 显示「已跳过 X」，不得谎称「最近确认」。
@@ -3180,11 +3180,11 @@ function onboardingPage(state) {
   const banner = docId
     ? (state.mode === 'forward'
         ? `<p class="ob-note">已进入下一步${lastMark}，从当前步继续即可</p>`
-        : `<p class="ob-note">已恢复未完成的引导${lastMark}，从当前步继续即可</p>`)
+        : `<p class="ob-note">已恢复未完成的从零建简历${lastMark}，从当前步继续即可</p>`)
     : `<p class="ob-note">八步都是可跳过的组织方式：每步可跳过、可暂存续作；已有简历可预填、只补缺失项。首个有内容的确认步才建档，空输入不产生文件。</p>`;
   const illust = curIdx === 0 || finished ? HERO_SVG : OB_PAGE_SVG;
-  return page('引导建档', `
-<h1>引导建档</h1>
+  return page('从零建简历', `
+<h1>从零建简历</h1>
 <div class="ob-shell" data-ob data-ob-doc="${escAttr(docId)}" data-ob-next="${escAttr(finished ? '' : cur)}">
   <div class="ob-side">
     <div class="ob-illust">${illust}<p>${escHtml(OB_COPY[cur] || '')}</p></div>
@@ -3456,7 +3456,7 @@ async function handler(req, res) {
       updateMeta(root, newId, (m) => ({ ...(m || {}), ...themeRegistration('classic'), kind: 'master', flow: 'draft', archivedAt: null }));
       return redirect(`/edit?id=${newId}`);
     }
-    // ===== S5 引导建档向导（设计：dev-docs/2026-11-02-s5-design.md）=====
+    // ===== S5 从零建简历向导（设计：dev-docs/2026-11-02-s5-design.md）=====
     // GET 页壳：无 docId = 新会话；带 docId = 暂存续作（渲染进度 + 当前步表单）。/onboarding/guided 为 roadmap 原文别名。
     if (req.method === 'GET' && (url.pathname === '/onboarding' || url.pathname === '/onboarding/guided')) {
       const qid = url.searchParams.get('docId') || '';

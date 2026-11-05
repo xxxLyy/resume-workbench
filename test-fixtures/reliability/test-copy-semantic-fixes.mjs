@@ -105,7 +105,7 @@ try {
     const docId = (JSON.parse(r1.text)).docId;
     assert.ok(docId, '0.1 建档应返回 docId');
     const resume1 = await get('/onboarding?docId=' + docId);
-    assert.ok(resume1.text.includes('已恢复未完成的引导'), 'resume 态横幅应为「已恢复未完成的引导」');
+    assert.ok(resume1.text.includes('已恢复未完成的从零建简历'), 'resume 态横幅应为「已恢复未完成的从零建简历」（2026-11-05 批 1 §0.3 改名）');
     assert.ok(resume1.text.includes('最近确认'), '0.1 确认后 resume 横幅应含「最近确认」（该步不在 skipped）');
     assert.ok(!resume1.text.includes('已跳过'), '未跳过任何步时 resume 横幅不得出现「已跳过」');
     const fwd1 = await get('/onboarding?docId=' + docId + '&from=step');
