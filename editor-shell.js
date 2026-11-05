@@ -55,6 +55,11 @@
     + '.ed-on .edit-toolbar .save-state[data-state="dirty"]{color:var(--ed-warn);background:var(--ed-warn-soft)}'
     + '.ed-on .edit-toolbar .save-state[data-state="saving"]{color:var(--ed-accent-strong);background:var(--ed-accent-soft)}'
     + '.ed-on .edit-toolbar .save-state[data-state="error"]{color:var(--ed-err);background:var(--ed-err-soft)}'
+    // 顶栏控件档（批1 §0.2 裁决 + DESIGN.md §2「其余操作区一律中性描边」）：
+    // 本条即顶栏动作控件的唯一档位来源——min-height:32px + 中性描边（--ed-panel 底 / 1px --ed-line 边 / --ed-ink 字）。
+    // 保存/历史/预览/岗位草稿/左右栏开关一律落在本档；仅「导出 PDF」（ed-primary）保留主行动实底，
+    // 双区规则不变（编辑器 --ed-accent 暖橙，应用页 --accent 近黑）。
+    // ed-ghost 档只留给顶栏里不承担动作的次级控件（如「?」快捷键提示钮），不得挂到动作控件上。
     + '.ed-on .edit-toolbar button{min-height:32px;padding:0 12px;border-radius:var(--ed-radius);font-size:12px;font-weight:600;transition:transform .12s,box-shadow .12s,background .12s;'
     + 'background:var(--ed-panel);color:var(--ed-ink);border:1px solid var(--ed-line)}'
     + '.ed-on .edit-toolbar button:hover{transform:translateY(-1px);box-shadow:0 3px 9px rgba(60,45,25,.12)}'
@@ -192,7 +197,8 @@
     + '#ed-status .ed-undobtn{border:1px solid var(--ed-line);background:var(--ed-panel);color:var(--ed-ink);border-radius:999px;font-size:12px;min-height:24px;padding:0 10px;cursor:pointer}'
     + '#ed-status .ed-undobtn:hover{background:var(--ed-bg)}'
     // 折叠开关（顶栏注入的图标按钮）
-    + '.ed-iconbtn{min-width:28px;min-height:28px;padding:0 6px;display:inline-flex;align-items:center;justify-content:center}'
+    // 图标钮（顶栏左右栏开关等）：高度档随顶栏控件档（min-height:32px），宽度按图标钮尺寸
+    + '.ed-iconbtn{min-width:28px;min-height:32px;padding:0 6px;display:inline-flex;align-items:center;justify-content:center}'
     // 选区工具条（4 动作，取代原 #ai-sel-btn 单钮；由 ai-panel 供电时隐藏旧钮）
     + '#ed-seltb{position:absolute;z-index:99;display:none;gap:2px;background:var(--ed-ink);color:var(--ed-panel);border-radius:var(--ed-radius);padding:4px;box-shadow:0 4px 12px rgba(0,0,0,.18);font-size:12px}'
     + '#ed-seltb button{min-height:26px;padding:0 8px;border:none;border-radius:var(--ed-radius);background:transparent;color:var(--ed-panel);font-size:11px;cursor:pointer;white-space:nowrap}'
@@ -328,7 +334,11 @@
     if (bel) frozenOrig[FROZEN_BTN[bi]] = bel.outerHTML;
   }
   if (pdfBtn) { pdfBtn.classList.remove('secondary'); pdfBtn.classList.add('ed-primary'); pdfBtn.innerHTML = __icon('file-text') + ' 导出 PDF'; pdfBtn.title = '导出前检查并下载 PDF'; }
-  if (saveBtn) { saveBtn.classList.add('ed-ghost'); saveBtn.innerHTML = __icon('save') + ' 保存'; saveBtn.title = '保存（⌘/Ctrl+S，打历史快照）'; }
+  // 顶栏动作控件同档（批1 §0.2 裁决 + DESIGN.md §2「其余操作区一律中性描边」）：
+  // 保存/历史/预览/岗位草稿/左右栏开关一律落「顶栏控件档」（注入层 .ed-on .edit-toolbar button 唯一档位来源：
+  // min-height:32px + 中性描边），不得挂 ed-ghost 透明档；仅「导出 PDF」（ed-primary）保留主行动实底，
+  // 双区规则不变（编辑器 --ed-accent 暖橙 / 应用页 --accent 近黑）。
+  if (saveBtn) { saveBtn.innerHTML = __icon('save') + ' 保存'; saveBtn.title = '保存（⌘/Ctrl+S，打历史快照）'; }
   if (histBtn) { histBtn.classList.remove('secondary'); histBtn.innerHTML = __icon('clock') + ' 历史'; histBtn.title = '版本历史'; }
   if (homeBtn) {
     homeBtn.textContent = '‹ 工作台'; homeBtn.title = '返回工作台'; homeBtn.classList.add('ed-ghost');
@@ -428,7 +438,7 @@
   if (toolbar && !ltBtn) {
     ltBtn = document.createElement('button');
     ltBtn.type = 'button';
-    ltBtn.className = 'ed-iconbtn ed-ghost ed-left-toggle';
+    ltBtn.className = 'ed-iconbtn ed-left-toggle';
     ltBtn.setAttribute('data-ed-inj', '1');
     ltBtn.setAttribute('aria-label', '章节与素材面板');
     ltBtn.title = '章节与素材';
@@ -438,7 +448,7 @@
   if (toolbar && !rtBtn) {
     rtBtn = document.createElement('button');
     rtBtn.type = 'button';
-    rtBtn.className = 'ed-iconbtn ed-ghost ed-right-toggle';
+    rtBtn.className = 'ed-iconbtn ed-right-toggle';
     rtBtn.setAttribute('data-ed-inj', '1');
     rtBtn.setAttribute('aria-label', '辅助面板');
     rtBtn.title = '审阅 / 区域 / AI 助手 / 排版';
@@ -450,7 +460,7 @@
   if (toolbar && !jobBtn && !JOB_INFO.hasJob) {
     jobBtn = document.createElement('button');
     jobBtn.type = 'button';
-    jobBtn.className = 'ed-ghost ed-jobbtn';
+    jobBtn.className = 'ed-jobbtn';
     jobBtn.setAttribute('data-ed-inj', '1');
     jobBtn.textContent = '＋ 岗位草稿';
     jobBtn.title = '基于当前简历创建独立岗位草稿（不改母版）';

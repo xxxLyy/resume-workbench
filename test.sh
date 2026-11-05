@@ -2537,3 +2537,16 @@ if node test-fixtures/reliability/test-job-new-page.mjs; then
 else
   fail "「/job/new」拆页回归未通过 (exit $?)"
 fi
+
+# ===== 16v. 批1 编辑器顶栏控件同档：保存/历史/预览/岗位草稿/左右栏开关统一 32px 高度档 + 中性描边，仅「导出 PDF」保留主行动实底（浏览器段，真渲染量测；源级钉值见 test-structure.sh S2-B2）=====
+if node test-fixtures/reliability/test-editor-toolbar-tier.mjs; then
+  echo '✅ 编辑器顶栏控件同档回归（六控件 min-height 32px / 实渲染高度同档 / 中性描边同档 / 仅导出 PDF 实底；现代+存量两份文档一致）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 编辑器顶栏控件同档回归未执行：Chromium 不可用'
+  else
+    fail "编辑器顶栏控件同档回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi

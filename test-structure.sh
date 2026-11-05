@@ -2301,7 +2301,34 @@ for (const f of Object.keys(FILES)) {
   const hits = src.match(RGBA_RE) || [];
   for (const h of hits) if (!RGBA_OK.includes(h)) fail(`${f} 未登记的 rgba 家族: ${h}…)` + '（新家族请在 RGBA_OK 登记，勿绕过）');
 }
-console.log('✅ S2-B2 编辑器与面板设计变量统一');
+// —— 批1 b1c7 顶栏同档（注入层扫描同步）：编辑器顶栏动作控件同档，仅「导出 PDF」保留主行动实底 ——
+// 计划 dev-docs/2026-11-05-roadmap-batch-plan.md §2「编辑器顶栏（editor-shell.js）」+ §0.2 UI 裁决；
+// 规则依据 DESIGN.md §2 双区规则表「主行动 = 橙实心 --ed-accent，只给 pdfBtn / primary；其余操作区一律中性描边」。
+// 行为面（真渲染量测）走 test-fixtures/reliability/test-editor-toolbar-tier.mjs；此处钉注入层源级不变量，
+// 防「六个控件又分两档」（ed-ghost 透明档 vs 中性描边档）在源头回归。
+const edSrc = fs.readFileSync('editor-shell.js', 'utf8');
+// ① 顶栏控件档的高度来源唯一：.ed-on .edit-toolbar button 整条规则带 min-height:32px（图标钮同档）
+if (!edSrc.includes(".ed-on .edit-toolbar button{min-height:32px;")) fail('editor-shell.js: 顶栏控件档 min-height:32px 应写在 .ed-on .edit-toolbar button 整条规则上');
+if (!edSrc.includes(".ed-iconbtn{min-width:28px;min-height:32px;")) fail('editor-shell.js: 图标钮档高应与顶栏控件档一致（min-height:32px），不得单独开档');
+// ② 六个动作控件不得挂 ed-ghost 透明档（ed-ghost 只留给不承担动作的次级控件：? 快捷键钮 / AI 生成指示）
+for (const bad of [
+  "saveBtn.classList.add('ed-ghost')",
+  "jobBtn.className = 'ed-ghost ed-jobbtn'",
+  "ltBtn.className = 'ed-iconbtn ed-ghost ed-left-toggle'",
+  "rtBtn.className = 'ed-iconbtn ed-ghost ed-right-toggle'"
+]) if (edSrc.includes(bad)) fail(`editor-shell.js: 顶栏动作控件不得挂 ed-ghost 透明档（${bad}）`);
+// ③ ed-ghost 档本身仍须有活对象（§6.5 死规则纪律：注入层不写页面上不存在的选择器）
+if (!/className = '[^']*ed-ghost[^']*'|classList\.add\('ed-ghost'\)/.test(edSrc)) {
+  fail('editor-shell.js: ed-ghost 档应保留给不承担动作的次级控件（如 ? 快捷键钮）；若已无活对象则该 CSS 规则须同删');
+}
+// ④ 顶栏实底 accent 只给「导出 PDF」（双区规则不变）：顶栏上下文内不得有第二个 accent 实底规则
+const tbAccent = [...edSrc.matchAll(/\.ed-on \.edit-toolbar[^'"]*\{[^'"]*background:var\(--ed-accent\)[^'"]*\}/g)].map((m) => m[0]);
+for (const rule of tbAccent) {
+  if (!/#pdfBtn/.test(rule) && !/\.primary/.test(rule) && !/ed-primary/.test(rule)) {
+    fail('editor-shell.js: 顶栏内 accent 实底只给「导出 PDF」（#pdfBtn/.primary/ed-primary），发现其它规则: ' + rule.slice(0, 120));
+  }
+}
+console.log('✅ S2-B2 编辑器与面板设计变量统一（+ 顶栏动作控件同档源级钉值：六控件中性描边 32px 档，仅导出 PDF 实底）');
 EOF
 
 # —— S3-A：zid 纪律（打点单位 / 幂等 / 去重 / section-title 不打）——
