@@ -2939,7 +2939,7 @@ async function obWriteDoc(id, rawHtml, onboardingRec) {
   }
   return out;
 }
-// 未完成的引导文档清单（暂存退出 → 重进恢复的入口）：meta.onboarding 存在且未 finished
+// 未完成的从零建简历文档清单（暂存退出 → 重进恢复的入口）：meta.onboarding 存在且未 finished
 function obUnfinishedList() {
   const meta = loadMeta();
   const items = [];
@@ -3186,7 +3186,7 @@ function onboardingPage(state) {
     ? (state.mode === 'forward'
         ? `<p class="ob-note">已进入下一步${lastMark}，从当前步继续即可</p>`
         : `<p class="ob-note">已恢复未完成的从零建简历${lastMark}，从当前步继续即可</p>`)
-    : `<p class="ob-note">八步都是可跳过的组织方式：每步可跳过、可暂存续作；已有简历可预填、只补缺失项。首个有内容的确认步才建档，空输入不产生文件。</p>`;
+    : `<p class="ob-note">八步都是可跳过的组织方式：每步可跳过、可暂存续作；已有简历可预填、只补缺失项。首个有内容的确认步才创建文档，空输入不产生文件。</p>`;
   const illust = curIdx === 0 || finished ? HERO_SVG : OB_PAGE_SVG;
   return page('从零建简历', `
 <h1>从零建简历</h1>
@@ -3473,7 +3473,7 @@ async function handler(req, res) {
       if (!VALID_ID.test(qid)) return send(400, 'invalid docId', 'text/plain');
       if (!fs.existsSync(docPath(qid))) return send(404, 'doc not found', 'text/plain');
       const qm = loadMeta()[qid] || null;
-      if (!qm || !qm.onboarding || typeof qm.onboarding !== 'object') return send(409, '该文档不是引导文档（无向导进度）', 'text/plain');
+      if (!qm || !qm.onboarding || typeof qm.onboarding !== 'object') return send(409, '该文档不在从零建简历流程中（无向导进度）', 'text/plain');
       // R2⑤：from=step（步进 PRG 回跳）= forward 态；其余入口（首页恢复/直接续作）= resume 态
       return send(200, onboardingPage({ docId: qid, ob: qm.onboarding, mode: url.searchParams.get('from') === 'step' ? 'forward' : 'resume' }));
     }
@@ -3509,8 +3509,8 @@ async function handler(req, res) {
         if (!fs.existsSync(docPath(docId))) return sendJson(404, { ok: false, error: 'doc not found' });
         const dm = loadMeta()[docId] || null;
         obRec = dm && dm.onboarding && typeof dm.onboarding === 'object' ? dm.onboarding : null;
-        if (!obRec) return sendJson(409, { ok: false, error: '该文档不是引导文档，不能按向导步进（请直接在编辑器中修改）' });
-        if (obRec.finished) return sendJson(409, { ok: false, error: '该文档已完成引导（后续修改请直接在编辑器中进行）' });
+        if (!obRec) return sendJson(409, { ok: false, error: '该文档不在从零建简历流程中，不能按向导步进（请直接在编辑器中修改）' });
+        if (obRec.finished) return sendJson(409, { ok: false, error: '该文档已完成从零建简历（后续修改请直接在编辑器中进行）' });
         const lastIdx = obRec.last ? OB_STEPS.indexOf(obRec.last) : -1;
         if (lastIdx >= 0 && obIdx < lastIdx) {
           return sendJson(409, { ok: false, error: `步骤 ${step} 已越过当前进度（${obRec.last} 已确认，不能回退；请直接在编辑器中修改）` });
@@ -3642,7 +3642,7 @@ async function handler(req, res) {
       if (!fs.existsSync(docPath(sDocId))) return sendJson(404, { ok: false, error: 'doc not found' });
       const sMeta = loadMeta()[sDocId] || null;
       const sOb = sMeta && sMeta.onboarding && typeof sMeta.onboarding === 'object' ? sMeta.onboarding : null;
-      if (!sOb || sOb.finished) return sendJson(409, { ok: false, error: '该文档不在引导中，不能请求 STAR 建议' });
+      if (!sOb || sOb.finished) return sendJson(409, { ok: false, error: '该文档不在从零建简历流程中，不能请求 STAR 建议' });
       const entries = (Array.isArray(body.entries) ? body.entries : [])
         .filter((e) => e && typeof e === 'object').slice(0, 20)
         .map((e) => ({

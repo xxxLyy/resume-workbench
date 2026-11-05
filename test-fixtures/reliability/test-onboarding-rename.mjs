@@ -1,14 +1,16 @@
 // test-onboarding-rename.mjs — 批 1 §0.3 改名落地：「引导建档」→「从零建简历」（向导 h1/page title/
 // 继续卡/完成卡/完成按钮/ob 横幅）；「针对岗位生成」→「为岗位定制简历」（/job/new 页题，拆页卡已落，此处复核钉）。
 // 断言逐条独立（纪律：断言与新文案同提交，不许为过关放宽断言）：
-//   A 新会话页：page title 与 h1 均为「从零建简历」，页面零「引导」字样（ob 系列内部文案全部统一）；
+//   A 新会话页：page title 与 h1 均为「从零建简历」，页面零「引导」「建档」字样（ob 系列内部文案全部统一）；
 //   B resume 态横幅：「已恢复未完成的从零建简历（最近确认 …）」，旧「已恢复未完成的引导」零残留；
 //   C forward 态横幅：「已进入下一步」保留（R2⑤ 两态语义不变，只换名）；
 //   D 0.8 完成步：按钮「完成从零建简历」，旧「完成引导」零残留；
 //   E 完成卡（finished）：标题「从零建简历完成」，旧「引导完成」零残留；
 //   F 继续卡（暂存续作列表）：「继续从零建简历」+ 条目展示暂存文档标题，旧「继续上次引导」零残留；
-//   G 源级钉：server.mjs 五个旧串零残留、五个新串在场（API 409 错误句不在本卡改名清单，见卡报告）；
+//   G 源级钉：server.mjs 旧串零残留（含 ob 系列 409/400 错误句）、新串在场；
 //     /job/new 页题与 h1 为「为岗位定制简历」（拆页卡 239f3e4 已落，复核钉防回退）。
+//   H ob 系列错误文案（§0.3「ob 系列内部文案全部统一」）：非向导文档/已完成向导的 409 错误句
+//     旧名「引导」零残留，一律用「从零建简历」口径；运行时（HTTP 409 体）与源级双重钉。
 // 约束：隔离 RESUME_ROOT（mkdtemp）+ 随机端口 + 合成数据；不读真实简历、不碰 7766、不调模型、零浏览器依赖。
 // 退出码契约：0=全部通过；1=任一断言失败。
 import assert from 'node:assert/strict';
@@ -67,6 +69,8 @@ try {
     assert.ok(/<h1>从零建简历<\/h1>/.test(p.text), '向导 h1 应为「从零建简历」，实际：' + (p.text.match(/<h1>[^<]*<\/h1>/) || ['(无)'])[0]);
     assert.ok(p.text.includes('八步都是可跳过的组织方式'), '无文档说明横幅应保留八步口径');
     assert.ok(!p.text.includes('引导'), '新会话向导页应零「引导」字样（ob 系列内部文案全部统一）：' + (p.text.split('引导')[0].slice(-120)));
+    // 旧产品词「建档」在 ob 系列可见文案里零残留（无文档说明横幅原句「首个有内容的确认步才建档」已改「才创建文档」）
+    assert.ok(!p.text.includes('建档'), '新会话向导页应零「建档」旧产品词（§0.3 名称统一）：' + (p.text.split('建档')[0].slice(-120)));
   }
 
   // ===== B resume 态横幅：已恢复未完成的从零建简历（最近确认 …）=====
@@ -125,17 +129,52 @@ try {
   // ===== G 源级钉：server.mjs 旧串零残留 / 新串在场；/job/new 页题复核钉 =====
   {
     const srv = fs.readFileSync(path.join(APP_ROOT, 'server.mjs'), 'utf8');
-    for (const old of ['引导建档', '继续上次引导', '引导完成', '已恢复未完成的引导']) {
+    // 旧串清单随本轮补齐而加长：ob 系列错误句（不是引导文档/已完成引导/不在引导中）与横幅旧产品词「才建档」一并纳入
+    for (const old of ['引导建档', '继续上次引导', '引导完成', '已恢复未完成的引导', '完成引导', '不是引导文档', '已完成引导', '不在引导中', '才建档']) {
       assert.ok(!srv.includes(old), `server.mjs 旧串「${old}」应零残留（§0.3 改名统一）`);
     }
-    assert.ok(!/>完成引导</.test(srv), 'server.mjs 旧按钮文案「完成引导」应零残留（用标记界定，避免误伤 409 错误句「已完成引导」——该句不在本卡改名清单）');
     for (const neu of ['<h1>从零建简历</h1>', '已恢复未完成的从零建简历', '继续从零建简历', '从零建简历完成', '>完成从零建简历<']) {
       assert.ok(srv.includes(neu), `server.mjs 应含新串「${neu}」`);
     }
     assert.ok(srv.includes("page('为岗位定制简历'"), '/job/new 页题应为「为岗位定制简历」（拆页卡已落，复核钉）');
   }
 
-  console.log('✅ §0.3 改名落地：向导 h1/page title=从零建简历 + 页面零「引导」+ 横幅两态（恢复/下一步）+ 完成按钮/完成卡/继续卡新名 + 源级零残留 + /job/new 页题复核');
+  // ===== H ob 系列错误文案：运行时 + 源级双重钉（§0.3「ob 系列内部文案全部统一」）=====
+  {
+    // ① 已完成向导的文档再步进 → 409 + 新名文案
+    const rr = await stepPost({ step: '0.1', docId });
+    assert.equal(rr.status, 409, '已完成向导的文档再步进应 409，实际：' + rr.status);
+    const rrErr = String((rr.json && rr.json.error) || '');
+    assert.ok(rrErr.includes('该文档已完成从零建简历'), '完成态 409 文案应统一为「该文档已完成从零建简历」，实际：' + rrErr);
+    assert.ok(!rrErr.includes('引导'), '完成态 409 文案不应再出现旧名「引导」，实际：' + rrErr);
+
+    // ② 非向导文档（POST /new 建的普通文档）→ 页壳 409 与步进 409 均新名文案
+    const nr = await fetch(base + '/new', { method: 'POST', redirect: 'manual' });
+    const plainId = ((nr.headers.get('location') || '').match(/id=([^&]+)/) || [])[1] || '';
+    assert.ok(plainId, 'POST /new 应建出普通文档（取 id 走门控路径），实际 location=' + (nr.headers.get('location') || '(无)'));
+    const pg = await get('/onboarding?docId=' + plainId);
+    assert.equal(pg.status, 409, '普通文档进向导页应 409，实际：' + pg.status);
+    assert.ok(pg.text.includes('该文档不在从零建简历流程中（无向导进度）'), '页壳 409 文案应统一新名，实际：' + pg.text.slice(0, 120));
+    assert.ok(!pg.text.includes('引导'), '页壳 409 文案不应再出现旧名「引导」，实际：' + pg.text.slice(0, 120));
+    const ps = await stepPost({ step: '0.1', docId: plainId });
+    assert.equal(ps.status, 409, '普通文档按步进应 409，实际：' + ps.status);
+    const psErr = String((ps.json && ps.json.error) || '');
+    assert.ok(psErr.includes('该文档不在从零建简历流程中，不能按向导步进'), '步进 409 文案应统一新名，实际：' + psErr);
+    assert.ok(!psErr.includes('引导'), '步进 409 文案不应再出现旧名「引导」，实际：' + psErr);
+
+    // ③ 源级钉：四条错误句新名在场、旧名零残留（STAR 建议句在无模型时先被 NO_LLM 截断，只做源级钉）
+    const srv = fs.readFileSync(path.join(APP_ROOT, 'server.mjs'), 'utf8');
+    for (const neu of [
+      '该文档不在从零建简历流程中（无向导进度）',
+      '该文档不在从零建简历流程中，不能按向导步进（请直接在编辑器中修改）',
+      '该文档已完成从零建简历（后续修改请直接在编辑器中进行）',
+      '该文档不在从零建简历流程中，不能请求 STAR 建议'
+    ]) {
+      assert.ok(srv.includes(neu), `server.mjs 应含新错误文案「${neu}」`);
+    }
+  }
+
+  console.log('✅ §0.3 改名落地：向导 h1/page title=从零建简历 + 页面零「引导」+ 横幅两态（恢复/下一步）+ 完成按钮/完成卡/继续卡新名 + 源级零残留 + ob 系列 409 错误句新名（运行时+源级）+ /job/new 页题复核');
 } catch (e) {
   console.error('❌ ' + (e && e.message || e));
   process.exitCode = 1;

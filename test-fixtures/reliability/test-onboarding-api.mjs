@@ -1,9 +1,9 @@
-// test-onboarding-api.mjs — S5 引导建档向导·服务端（设计 dev-docs/2026-11-02-s5-design.md）
+// test-onboarding-api.mjs — S5 从零建简历向导·服务端（设计 dev-docs/2026-11-02-s5-design.md）
 // 合同：
 //   ① 空输入不产出脏文档：无文档首步空载荷 → 不建档（docs/ 零新增文件），响应 docId:null；
 //   ② 逐步写档：每步确认写入同一份真实草稿文档（kind=master/flow=draft，与手建同权）；
 //   ③ 跳步：合法（显式 skip 与空载荷等价），skipped 如实记录，被跳区域保持模板默认；
-//   ④ 步序门：回退 409 / 未知步 400 / 非引导文档 409 / finished 后 409 / 坏 docId 400；
+//   ④ 步序门：回退 409 / 未知步 400 / 非向导文档 409 / finished 后 409 / 坏 docId 400；
 //   ⑤ 暂存退出重进恢复：GET /onboarding?docId= 渲染进度（data-ob-next），按 docId 续作成功；
 //   ⑥ 预填只补缺失：prefillFrom 提取母版文本结构，payload 已填字段胜出，prefilled 如实登记，母版字节零改动；
 //   ⑦ 产出文档 GET /edit 可开且含 DOC_ID；首页可见；0.6 照片存 photos/ 且带 Git 排除。
@@ -149,7 +149,7 @@ try {
   const badStep = await stepPost({ step: '0.9', payload: {} });
   assert.equal(badStep.status, 400, '未知步应 400');
   const notOb = await stepPost({ step: '0.1', payload: { name: 'x' }, docId: SRC });
-  assert.equal(notOb.status, 409, '非引导文档（无 onboarding 记录）应 409，实际：' + notOb.status);
+  assert.equal(notOb.status, 409, '非向导文档（无 onboarding 记录）应 409，实际：' + notOb.status);
   const badId = await stepPost({ step: '0.1', payload: {}, docId: 'BAD_ID!' });
   assert.equal(badId.status, 400, '非法 docId 应 400');
   const missDoc = await stepPost({ step: '0.2', payload: { summary: 'x' }, docId: 'no-such-doc' });
