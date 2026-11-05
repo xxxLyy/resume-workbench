@@ -63,6 +63,12 @@ node ./test-fixtures/reliability/test-home-taskbench.mjs
 #       + /evals 入口可达（/job/new 页题右侧）（隔离根 HTTP 夹具，无浏览器依赖）=====
 node ./test-fixtures/reliability/test-home-eval-card-removed.mjs
 
+# ===== 批2 确定性内容检查（S4a ⑪ 补课 · 卡片 b2c1）：六类（名称写法/日期格式与倒序/联系方式/链接/重复段落/占位符）
+#       + 三级分类（需修复/建议核对/风格建议；「熟悉/精通」重复仅风格建议）+ 阴性对照零误报
+#       + 导出页检查卡新分区与审阅段单一通道同源（隔离根 + 浏览器段；Chromium 缺失 exit 2；
+#       计划 dev-docs/2026-11-05-roadmap-batch-plan.md §3 批 2）=====
+node ./test-fixtures/reliability/test-content-check.mjs
+
 # ===== VQA 视觉验收截图（零断言、退出 0）：8 个关键页 1280x900 全页图落 /tmp/shots-after，
 #       视觉判定走 DESIGN.md 对照（人工/视觉流程），本夹具只产出真实隔离实例渲染截图；Chromium 缺失 exit 2 =====
 node ./test-fixtures/reliability/test-visual-screens.mjs

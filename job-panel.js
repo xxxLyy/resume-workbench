@@ -1669,6 +1669,23 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       done.className = 'jp-meta';
       done.innerHTML = checks.reviewComplete ? __icon('circle-check') + ' 整体审阅完成（跨全部批次：无待处理/稍后处理/待核对项）。' : '整体审阅未完成（仍有待处理/稍后处理/待核对项）。';
       box.appendChild(done);
+      // 批 2 · S4a ⑪：确定性内容检查（纯规则零 AI；三级；不阻塞导出）
+      // 数据来自 checks.content —— 与导出页检查卡同一实现、同一结果（单一通道，服务端 exportChecks 一次算出）。
+      var cc = checks.content || { fix: [], verify: [], style: [] };
+      var ccHead = document.createElement('div');
+      ccHead.className = 'jp-meta';
+      ccHead.setAttribute('data-cc', 'head');
+      ccHead.textContent = '确定性内容检查（纯规则，不阻塞导出）';
+      box.appendChild(ccHead);
+      [['fix', '需修复'], ['verify', '建议核对'], ['style', '风格建议']].forEach(function (pair) {
+        var arr = Array.isArray(cc[pair[0]]) ? cc[pair[0]] : [];
+        var line = document.createElement('div');
+        line.className = 'jp-meta';
+        line.setAttribute('data-cc', pair[0]);
+        line.textContent = pair[1] + ' ' + arr.length + ' 条'
+          + (arr.length ? '：' + arr.map(function (it) { return it.text; }).join('；') : '（无）');
+        box.appendChild(line);
+      });
     }
     root.appendChild(box);
     var exp = document.createElement('a');

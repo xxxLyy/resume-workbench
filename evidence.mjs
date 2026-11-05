@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto';
 import { parasOf, ZONE_LABELS } from './zone.mjs';
 import { DATE_TOKEN_RE, pageSuggestions, FACT_LABELS, factGuard } from './job.mjs';
+import { contentChecks } from './content-check.mjs';
 
 const sha1 = (s) => createHash('sha1').update(s).digest('hex');
 
@@ -331,7 +332,9 @@ export function guardOps(ops, ctx = {}) {
 }
 
 // ===== 导出检查（设计 §5.3：三级分类 + 两级完成的整体完成判定）=====
-// ctx = { mats, paras?, lines?, projects? }——style 走 job.mjs pageSuggestions（数据级，渲染级排版诊断在导出页另算）。
+// ctx = { mats, paras?, lines?, projects?, html? }——style 走 job.mjs pageSuggestions（数据级，渲染级排版诊断在导出页另算）。
+// content = 确定性内容检查（批 2 · S4a ⑪ 补课）：content-check.mjs 纯规则零 AI，分「需修复/建议核对/风格建议」三级；
+//   与排版诊断不同，它是数据级检查 → 导出页检查卡与审阅 Tab 校验段共用同一实现、同一结果（单一通道）。
 export function exportChecks(job, ctx = {}) {
   const changes = (job && Array.isArray(job.changes)) ? job.changes : [];
   // 阻断：pending 与 skipped 的 conflict 都算未解决（skipped 仅表稍后处理，不解冲突）
@@ -345,10 +348,13 @@ export function exportChecks(job, ctx = {}) {
     && Array.isArray(c.consistency) && c.consistency.length > 0);
   const style = pageSuggestions(ctx.lines || [], { projects: ctx.projects || 0 });
   const open = changes.filter((c) => c && (c.status === 'pending' || c.status === 'skipped')).length;
+  // 确定性内容检查：纯规则零 AI；不参与门控（不阻塞导出、不改完成判定）
+  const content = contentChecks(ctx.html || '');
   return {
     blocking,
     check: { thin, stale, toVerify },
     style,
+    content,
     canExport: blocking.length === 0,
     reviewComplete: open === 0 && blocking.length === 0 && toVerify.length === 0   // 整体完成（job 级）：无 pending 且无 skipped + 冲突清零 + 待核对空
   };

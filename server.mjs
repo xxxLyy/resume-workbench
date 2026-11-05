@@ -1126,7 +1126,8 @@ function jobViewLive(id, m) {
     return { ...e, refs, stale: refs.length > 0 && refs.every((r) => !r.fresh) };
   });
   // S4a-T10：导出检查三级（阻止/建议核对/风格）与两级完成——与导出页共用同一纯函数，状态取即时视图（非落盘快照）
-  out.checks = exportChecks(out, { mats, paras });
+  // 批 2：html 一并透传 → 确定性内容检查（content-check.mjs）与导出页检查卡同一实现、同一结果（单一通道）
+  out.checks = exportChecks(out, { mats, paras, html });
   // S4B-3 面试追问 stale：① 正文哈希变了 ② 证据表重新生成（只换 meta 不改正文，必须靠证据批次判定）
   //     两者任一发生，chains 里的 zid / evIndex 都可能已指向别处（2026-10-18 OCR 高危项）
   const ivBase = (m && m.job && m.job.interviewBaseHash) || null;
@@ -6408,7 +6409,16 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const suggestions = pageSuggestions(lines, { projects }).map((s) => `<li>${escHtml(s.text)}</li>`).join('');
       // S4a-T10：排版诊断（渲染级，半自动 3 轮；结构性事实表述；下限内不再压缩；超页二出路）+ 导出检查三级（与审阅 Tab 同源 jobViewLive）
       const jobLive = jobViewLive(id, meta);
-      const expChecks = exportChecks(jobLive, { mats: loadMats(), paras: parasOf(fs.readFileSync(docPath(id), 'utf8')) });
+      const expChecks = exportChecks(jobLive, { mats: loadMats(), paras: parasOf(docHtml), html: docHtml });
+      // 批 2 · S4a ⑪：确定性内容检查（三级：需修复 / 建议核对 / 风格建议；纯规则零 AI；不参与导出门控）
+      // 与审阅 Tab 第三段同一实现（content-check.mjs）——单一通道，两侧同结果。
+      const cc = expChecks.content || { fix: [], verify: [], style: [] };
+      const ccSection = [['fix', '需修复', 'var(--err)'], ['verify', '建议核对', 'var(--warn)'], ['style', '风格建议', 'var(--mut)']]
+        .map(([k, label, color]) => {
+          const arr = Array.isArray(cc[k]) ? cc[k] : [];
+          const body = arr.length ? arr.map((it) => escHtml(it.text)).join('；') : '（无）';
+          return `<div data-cc="${k}" style="font-size:13px;margin:var(--space-2) 0"><span style="color:${color}">${label} ${arr.length} 条</span>：${body}</div>`;
+        }).join('');
       const typoVals = (() => {
         const t = String(meta.typo || '');
         const num = (re, d) => { const m = t.match(re); return m ? parseFloat(m[1]) : d; };
@@ -6509,6 +6519,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         return parts.length ? parts.join('；') + '（不阻塞导出）' : '无';
       })()}</div>
       <div style="font-size:13px;margin:6px 0">整体审阅完成：${expChecks.reviewComplete ? icon('circle-check', 13) + ' 是（可进入投递）' : '否（仍有待处理/稍后处理/待核对项——不阻塞导出）'}</div>
+      <div style="font-size:13px;margin:var(--space-3) 0 0">确定性内容检查<span style="color:var(--mut)">（纯规则，不阻塞导出）</span></div>
+      ${ccSection}
     </div>
     ${suggestions ? `<div class="card" style="margin-top:12px"><b class="card-title">超过两页的可读处理建议</b><ol style="font-size:13px">${suggestions}</ol><p style="font-size:12px;color:var(--mut)">不需要靠缩小字号硬塞：优先去重、精简、隐藏低相关项目；也可以保留更多页。</p></div>` : ''}
     <div class="card" style="margin-top:12px">
