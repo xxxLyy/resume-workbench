@@ -5,6 +5,7 @@
 //   ③ 无评估记录时空态指引文案；
 //   ④ /evals 页「已转适配」为带 href 链接、promotedTo 指向已删文档时无链接；
 //   ⑤ 有评估无投递时闭环卡仍渲染（早退口径 = apps 与 evals 均为空才早退）。
+//   ⑥ 复盘层级（批 1 §0.2）：主卡 2/3 + 侧卡 1/3；状态分布与面试参与合并进侧卡；三分布网格收窄到主列。
 // join 口径：promotedTo→docId→deliveredRefs 为主；公司·岗位 trim 后精确相等作兜底行并标「同名匹配」。
 // 红线：只呈现既有评估结论与投递状态事实，断言页面不含任何转化率/匹配率/录用概率包装；
 //       动态文本（公司/岗位/状态/时间）注入探针必须被转义。
@@ -21,6 +22,23 @@ import { assembleTemplate } from '../../template.mjs';
 
 const APP_ROOT = new URL('../../', import.meta.url).pathname.replace(/\/$/, '');
 const fail = (m) => { console.error('❌ ' + m); process.exit(1); };
+
+// 最小 HTML 块提取：取 marker 自身所在的 <div>…</div>（自 marker 起始的 <div 起做开闭计数配对）。
+// marker 必须是完整的 <div …> 开标签——否则不猜（返回 null 让断言红），防静默退化为取外层祖先。
+// 不引第三方解析器（零新依赖纪律）；marker 命中不到返回 null（断言按「块不存在」红）。
+const divBlock = (html, marker) => {
+  const at = html.indexOf(marker);
+  if (at < 0) return null;
+  if (!marker.startsWith('<div')) return null;
+  const re = /<div\b|<\/div>/g;
+  re.lastIndex = at;
+  let depth = 0, m;
+  while ((m = re.exec(html))) {
+    if (m[0] === '</div>') { if (--depth === 0) return html.slice(at, m.index + 6); }
+    else depth++;
+  }
+  return null;
+};
 
 const roots = [];
 const servers = [];
@@ -146,6 +164,30 @@ try {
   // 红线：不新增任何转化率/匹配率/录用概率包装
   assert.ok(!/转化率|匹配率|录用概率|成功率/.test(html), '红线：闭环卡不得出现比率/概率包装');
 
+  // ===== ⑥ 复盘层级重排（批 1 §0.2）：主卡 2/3 + 侧卡 1/3；状态分布+面试参与合并侧卡；三分布网格收窄 =====
+  // 结构口径：.stats-grid（2fr 1fr）→ 主列 .stats-main（评估 ↦ 投递卡 + 三分布网格 .stats-dists）｜侧卡 .stats-side（状态分布 + 面试参与）
+  const gridBlock = divBlock(html, '<div class="stats-grid">');
+  const mainBlock = divBlock(html, '<div class="stats-main">');
+  const sideBlock = divBlock(html, '<div class="card stats-side">');
+  const distBlock = divBlock(html, '<div class="stats-dists">');
+  assert.ok(gridBlock, '⑥ 复盘页应有 .stats-grid 栅格容器（主卡 2/3 + 侧卡 1/3）');
+  assert.ok(mainBlock && mainBlock.includes('评估 ↦ 投递'), '⑥ 主卡应落在主列 .stats-main 内（承载「评估 ↦ 投递」）');
+  assert.ok(sideBlock && sideBlock.includes('状态分布') && sideBlock.includes('面试参与'),
+    '⑥ 侧卡应合并「状态分布」与「面试参与」（同卡两段）');
+  assert.ok(sideBlock && !sideBlock.includes('评估 ↦ 投递'), '⑥ 侧卡不得承载主卡内容');
+  assert.ok(mainBlock && !mainBlock.includes('状态分布') && !mainBlock.includes('面试参与'),
+    '⑥ 主列不得混入侧卡内容（状态分布/面试参与不在主卡里）');
+  assert.ok(distBlock && distBlock.includes('按渠道') && distBlock.includes('按简历版本') && distBlock.includes('按岗位方向'),
+    '⑥ 三分布网格应含按渠道 / 按简历版本 / 按岗位方向三卡');
+  assert.ok(mainBlock && mainBlock.includes('stats-dists'), '⑥ 三分布网格应收窄进主列（2/3）内，不再满宽铺开');
+  assert.ok(gridBlock.indexOf('stats-main') < gridBlock.indexOf('stats-side'),
+    '⑥ 主列应排在侧卡之前（阅读顺序：主卡 → 侧卡）');
+  // 栅格比例与列数（应用页样式表随页下发，CSS 口径在此钉住）
+  assert.ok(/\.stats-grid\{[^}]*grid-template-columns:2fr 1fr/.test(html), '⑥ 主卡:侧卡 轨道应为 2fr:1fr');
+  assert.ok(/\.stats-dists\{[^}]*grid-template-columns:repeat\(3,/.test(html), '⑥ 三分布网格应为三列');
+  // 旧满宽分布网格退场（收窄后不再用整页 auto-fit 220px 轨道）
+  assert.ok(!html.includes('minmax(220px,1fr)'), '⑥ 旧满宽三分布网格（minmax(220px,1fr)）应退场');
+
   // ===== ④ /evals 页「已转适配」徽章链接化 =====
   const ev = await s1.get('/evals');
   assert.equal(ev.status, 200, '/evals 应 200');
@@ -189,7 +231,7 @@ try {
   const st4 = await s3.get('/stats');
   assert.ok(st4.html.includes('先去投递看板添加记录'), 'apps 与 evals 均空时才走早退页');
 
-  console.log('✅ F1 评估↦投递闭环视图：主 join 链接与投递事实（①）/ 已删降级（①）/ 同名兜底 / 提醒区（②）/ 空态指引（③）/ /evals 徽章链接化（④）/ 有评估无投递不早退（⑤）/ 转义与零比率包装');
+  console.log('✅ F1 评估↦投递闭环视图：主 join 链接与投递事实（①）/ 已删降级（①）/ 同名兜底 / 提醒区（②）/ 空态指引（③）/ /evals 徽章链接化（④）/ 有评估无投递不早退（⑤）/ 复盘层级 2fr:1fr 主卡+合并侧卡+三分布收窄（⑥）/ 转义与零比率包装');
 } catch (e) {
   cleanup();
   fail(e && e.message || String(e));

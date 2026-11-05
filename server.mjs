@@ -1631,6 +1631,16 @@ button:focus-visible,input:focus-visible,a:focus-visible,textarea:focus-visible,
 .card-title{font-family:var(--font);font-size:14px;font-weight:800}
 /* doc-card 的 16px 是有意层级（文档标题比卡片标题大一号），单独登记，不是第四档。 */
 .doc-card .card-title{font-size:16px}
+/* 复盘层级（2026-11-05 批 1 §0.2）：主卡 2/3 + 侧卡 1/3。
+   主列（.stats-main）承载主卡「评估 ↦ 投递」+ 三分布网格（收窄在 2/3 内，不再满宽铺开）；
+   侧卡（.stats-side）合并「状态分布」与「面试参与」两段。
+   间距一律走 §5.1 token；静态层级零阴影（阴影例外仅 --shadow-up 限 .doc-card:hover，§3.1）。 */
+.stats-grid{display:grid;grid-template-columns:2fr 1fr;gap:var(--space-3);align-items:start;margin-top:var(--space-3)}
+.stats-main{display:flex;flex-direction:column;gap:var(--space-3)}
+.stats-dists{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-3)}
+.stats-sec{border-top:1px solid var(--line);margin-top:var(--space-3);padding-top:var(--space-3)}
+@media (max-width:860px){.stats-grid{grid-template-columns:1fr}}
+@media (max-width:560px){.stats-dists{grid-template-columns:1fr}}
 /* 徽章与胶囊同档：字号 12px、内边距 3px 11px，与 .chip 完全一致，两枚胶囊只剩 1px 边框差。
    margin-right:6px 保留 —— 它是徽章后分隔的唯一机制（全站 43 处在用，删则粘连）。
    注意：徽章自带右距；放进 flex/gap 容器必须给 .badge{margin-right:0}，否则双倍计距。 */
@@ -5783,8 +5793,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const interviewed = apps.filter((a) => ['面试中', 'offer'].includes(a.status) || (Array.isArray(a.interviews) && a.interviews.length)).length;
       const n = apps.length;
       // 分布条（2026-11-04 视觉收尾，DESIGN.md §10）：单系数据不上 accent——非零行用中性 mut，accent 只留给行动；计数右对齐定宽 + tabular-nums
-      const funnelBar = funnel.map(([s, c]) => `<div style="display:flex;align-items:center;margin:6px 0"><span style="width:70px;font-size:12px">${escHtml(statusLabel(s))}</span><div style="flex:1;background:var(--bg);border-radius:4px;height:20px"><div style="background:var(--mut);height:100%;border-radius:4px;width:${n ? (c / n * 100) : 0}%"></div></div><span style="width:30px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums">${c}</span></div>`).join('');
-      const warn = n < 10 ? `<div class="badge warn" style="margin-bottom:10px">${icon('circle-alert', 11)}样本量小（n=${n}），仅供参考</div>` : '';
+      const funnelBar = funnel.map(([s, c]) => `<div style="display:flex;align-items:center;margin:var(--space-2) 0"><span style="width:70px;font-size:12px">${escHtml(statusLabel(s))}</span><div style="flex:1;background:var(--bg);border-radius:var(--radius);height:20px"><div style="background:var(--mut);height:100%;border-radius:var(--radius);width:${n ? (c / n * 100) : 0}%"></div></div><span style="width:30px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums">${c}</span></div>`).join('');
+      const warn = n < 10 ? `<div class="badge warn" style="margin-bottom:var(--space-3)">${icon('circle-alert', 11)}样本量小（n=${n}），仅供参考</div>` : '';
       // —— F1 评估 ↦ 投递 闭环卡（读时派生 join：零落库、零新文件、零写回）——
       // join 口径：promotedTo→docId→deliveredRefs 为主（deliveredRefs 按 docId 过滤 applications.json，
       // 文档在不在盘不影响投递事实）；未转适配时公司·岗位 trim 后精确相等作兜底并标「同名匹配」
@@ -5805,14 +5815,14 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
             + (ivs ? ' · 面试 ' + ivs + ' 轮' : '');
         }).join('；');
         const refsHtml = refs.length
-          ? `<div style="font-size:12px;color:var(--mut);margin-top:2px">投递 ${refs.length} 条：${refBits}</div>`
-          : '<div style="font-size:12px;color:var(--mut);margin-top:2px">暂无投递记录</div>';
+          ? `<div style="font-size:12px;color:var(--mut);margin-top:var(--space-hair)">投递 ${refs.length} 条：${refBits}</div>`
+          : '<div style="font-size:12px;color:var(--mut);margin-top:var(--space-hair)">暂无投递记录</div>';
         const destHtml = !pid ? '<span style="font-size:12px;color:var(--mut)">未转适配</span>'
           : onDisk(pid) ? `<a href="/edit?id=${escAttr(pid)}">已转适配 →</a>`
           : '<span style="font-size:12px;color:var(--mut)">原文档已删除</span>';
         const v = String((rec && rec.verdict) || '');
-        return `<div style="border-top:1px solid var(--line);padding:8px 0">
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        return `<div style="border-top:1px solid var(--line);padding:var(--space-2) 0">
+      <div style="display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap">
         ${badge('ai', ((rec && rec.score) == null ? '—' : String(rec.score)) + ' / 5')}${badge(EVAL_VERDICT_CLS[v] || 'mute', EVAL_VERDICT_TEXT[v] || '未定')}
         <span style="font-size:13px">${escHtml(String((rec && rec.company) || ''))}·${escHtml(String((rec && rec.role) || ''))}</span>
         <span style="font-size:12px;color:var(--mut)">${escHtml(evalTimeText(rec && rec.createdAt))}</span>
@@ -5823,19 +5833,25 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       // 提醒区：评估了却没投 = 建议投/谨慎 且未转适配 且评估来源已记录（legacy/invalid 来源不参与提醒）
       const notDelivered = evals.filter((e) => ['apply', 'caution'].includes(String((e && e.verdict) || ''))
         && !(e && e.promotedTo) && (e && e.sourceState) === 'recorded');
-      const remindHtml = notDelivered.length ? `<div style="margin-top:10px">${badge('warn', '评估了却没投 ' + notDelivered.length + ' 条', 'circle-alert')}${notDelivered.map((e) => `<div style="font-size:12px;color:var(--mut);margin-top:4px">${escHtml(String(e.company || ''))}·${escHtml(String(e.role || ''))} · ${escHtml(evalTimeText(e.createdAt))}</div>`).join('')}</div>` : '';
-      const loopCard = `<div class="card" style="margin-top:12px"><b class="card-title">评估 ↦ 投递</b>
-      ${evalLoopRows || '<div style="color:var(--mut);font-size:13px;margin-top:6px">还没有评估记录。到<a href="/job/new">「为岗位定制简历」</a>页点「先评估这个岗位」，评估结果会记在这里。</div>'}
+      const remindHtml = notDelivered.length ? `<div style="margin-top:var(--space-3)">${badge('warn', '评估了却没投 ' + notDelivered.length + ' 条', 'circle-alert')}${notDelivered.map((e) => `<div style="font-size:12px;color:var(--mut);margin-top:var(--space-1)">${escHtml(String(e.company || ''))}·${escHtml(String(e.role || ''))} · ${escHtml(evalTimeText(e.createdAt))}</div>`).join('')}</div>` : '';
+      // 主卡（2/3 列）：评估 ↦ 投递闭环
+      const loopCard = `<div class="card"><b class="card-title">评估 ↦ 投递</b>
+      ${evalLoopRows || '<div style="color:var(--mut);font-size:13px;margin-top:var(--space-2)">还没有评估记录。到<a href="/job/new">「为岗位定制简历」</a>页点「先评估这个岗位」，评估结果会记在这里。</div>'}
       ${remindHtml}</div>`;
+      // 侧卡（1/3 列）：状态分布 + 面试参与合并为一张卡的两段（批 1 §0.2 复盘层级重排）
+      const sideCard = `<div class="card stats-side"><b class="card-title">状态分布</b>${funnelBar}
+      <div class="stats-sec"><b class="card-title">面试参与</b><p style="font-size:13px;margin:var(--space-2) 0 0">${interviewed}/${n} 有面试安排或已进入面试（${n ? Math.round(interviewed / n * 100) : 0}%）；预约不等于完成。</p></div></div>`;
+      // 三分布网格：收窄进主列（2/3）内，不再满宽铺开（批 1 §0.2）
+      const distCards = `<div class="stats-dists">
+      <div class="card"><b class="card-title">按渠道</b>${Object.entries(byCh).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:var(--space-2) 0"><span>${escHtml(k)}</span><span style="font-variant-numeric:tabular-nums">${v}</span></div>`).join('')}</div>
+      <div class="card"><b class="card-title">按简历版本</b>${Object.entries(byDoc).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:var(--space-2) 0"><span>${byDocLabel(k)}</span><span style="font-variant-numeric:tabular-nums">${v}</span></div>`).join('')}</div>
+      <div class="card"><b class="card-title">按岗位方向</b>${Object.entries(byTag).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:var(--space-2) 0"><span>${escHtml(k)}</span><span style="font-variant-numeric:tabular-nums">${v}</span></div>`).join('')}</div>
+    </div>`;
       return send(200, page('复盘', `<div class="page-head"><h1>复盘统计</h1><span class="page-meta">n=${n}</span></div>${warn}
-    ${loopCard}
-    <div class="card"><b class="card-title">状态分布</b>${funnelBar}</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px">
-      <div class="card"><b class="card-title">按渠道</b>${Object.entries(byCh).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span style="font-variant-numeric:tabular-nums">${v}</span></div>`).join('')}</div>
-      <div class="card"><b class="card-title">按简历版本</b>${Object.entries(byDoc).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${byDocLabel(k)}</span><span style="font-variant-numeric:tabular-nums">${v}</span></div>`).join('')}</div>
-      <div class="card"><b class="card-title">按岗位方向</b>${Object.entries(byTag).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:6px 0"><span>${escHtml(k)}</span><span style="font-variant-numeric:tabular-nums">${v}</span></div>`).join('')}</div>
-    </div>
-    <div class="card" style="margin-top:12px"><b class="card-title">面试参与</b><p style="font-size:13px">${interviewed}/${n} 有面试安排或已进入面试（${n ? Math.round(interviewed / n * 100) : 0}%）；预约不等于完成。</p></div>`, 'stats'));
+    <div class="stats-grid">
+      <div class="stats-main">${loopCard}${distCards}</div>
+      ${sideCard}
+    </div>`, 'stats'));
     }
     // ===== 备份 =====
     if (req.method === 'GET' && url.pathname === '/backup') {

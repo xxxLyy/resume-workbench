@@ -5376,3 +5376,36 @@ assert(/<input type="file" id="restoreFile"[^>]*aria-label="/.test(srv), '备份
 assert(srv.includes('guide.hidden = state.profiles.length > 0'), 'render() 应随配置状态显隐说明卡（删光配置后重新出现）');
 console.log('✅ R3 投递看板与设置页表单/可访问性源级钉值');
 EOF
+
+# ===== 批 1 · B1C6 复盘层级重排：主卡 2/3 + 侧卡 1/3 + 三分布网格收窄（源级钉值；行为面走 test-stats-loop-view.mjs）=====
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const assert = (c, m) => { if (!c) { console.error('❌ B1C6 ' + m); process.exit(1); } };
+const srv = readFileSync('./server.mjs', 'utf8');
+// ① 栅格：主卡 2/3 + 侧卡 1/3；窄屏塌陷为单列
+const gridRule = (srv.match(/\.stats-grid\{[^}]*\}/) || [''])[0];
+assert(/grid-template-columns:2fr 1fr/.test(gridRule), '复盘栅格应为 2fr 1fr（主卡 2/3 + 侧卡 1/3）：' + gridRule);
+assert(srv.includes('@media (max-width:860px){.stats-grid{grid-template-columns:1fr}}'), '复盘栅格应在 860px 塌陷为单列');
+// ② 三分布网格：三列 + 收窄进主列；侧卡合并
+const distRule = (srv.match(/\.stats-dists\{[^}]*\}/) || [''])[0];
+assert(/grid-template-columns:repeat\(3,/.test(distRule), '三分布网格应为三列：' + distRule);
+assert(srv.includes('<div class="stats-main">') && srv.includes('<div class="stats-dists">'), '三分布网格应收在主列 .stats-main 内（收窄）');
+assert(srv.includes('<div class="card stats-side">'), '侧卡应为 .stats-side（状态分布 + 面试参与合并）');
+// ③ 旧满宽分布网格退场
+assert(!srv.includes('minmax(220px,1fr)'), '旧满宽三分布网格（minmax(220px,1fr)）应退场');
+// ④ 纪律：新写规则的间距一律走 --space-* token（§5.1），静态层级零阴影（§3.1 阴影例外仅 --shadow-up 限 .doc-card:hover）
+const rules = ['.stats-grid', '.stats-main', '.stats-dists', '.stats-sec']
+  .map((s) => (srv.match(new RegExp(s.replace('.', '\\.') + '\\{[^}]*\\}')) || [''])[0]).join(' ');
+const spacingLit = (text) => (text.match(/\b(?:margin|padding|gap)(?:-[a-z]+)?\s*:\s*[^;}"]*\d+(?:\.\d+)?px/g) || []);
+assert(spacingLit(rules).length === 0, '复盘新规则间距一律走 --space-* token，不得写字面 px：' + spacingLit(rules).join(' | '));
+assert(!/box-shadow/.test(rules), '复盘新规则不得有 box-shadow（§3.1）：' + rules);
+// ⑤ /stats 路由段（重排后的主体；早退空态页的存量 padding:40px 本轮未触碰，不在扫描面）：
+//    间距一律 token（不留字面 px 间距）
+const i0 = srv.indexOf('const funnel = APP_STATUSES.map', srv.indexOf("url.pathname === '/stats'"));
+const i1 = srv.indexOf('// ===== 备份 =====', i0);
+assert(i0 > 0 && i1 > i0, '应能定位 /stats 路由段');
+const statsBlk = srv.slice(i0, i1);
+const lit = spacingLit(statsBlk);
+assert(lit.length === 0, '/stats 段间距一律走 --space-* token，不得写字面 px：' + lit.join(' | '));
+console.log('✅ B1C6 复盘层级源级钉值（2fr:1fr 栅格 / 三分布收窄进主列 / 侧卡合并 / token 间距 / 零阴影）');
+EOF
