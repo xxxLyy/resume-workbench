@@ -69,6 +69,11 @@ node ./test-fixtures/reliability/test-home-eval-card-removed.mjs
 #       计划 dev-docs/2026-11-05-roadmap-batch-plan.md §3 批 2）=====
 node ./test-fixtures/reliability/test-content-check.mjs
 
+# ===== 批2 文本层预览（卡片 b2c2）：导出页折叠区「机器读到的样子」原样展示服务端 pdftotext 结果（逐字相等）
+#       + 无分数无结论 + 字符量告警口径沿用（单一实现/单一阈值）+ 读不出/无 PDF 时诚实空态
+#       （隔离根 + 浏览器段；Chromium 缺失 exit 2；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §3 批 2）=====
+node ./test-fixtures/reliability/test-text-layer-preview.mjs
+
 # ===== VQA 视觉验收截图（零断言、退出 0）：8 个关键页 1280x900 全页图落 /tmp/shots-after，
 #       视觉判定走 DESIGN.md 对照（人工/视觉流程），本夹具只产出真实隔离实例渲染截图；Chromium 缺失 exit 2 =====
 node ./test-fixtures/reliability/test-visual-screens.mjs

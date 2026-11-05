@@ -6356,6 +6356,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const mark = (ok) => `<span style="color:var(--${ok ? 'ok' : 'warn'})">${icon(ok ? 'check' : 'circle-alert', 12)}</span>`;
       let pages = 0;   // 块外 3254 的 layout 门控要用到，声明须在 pdfStat 分支之前
       let fullText = '';       // 全文 pdftotext 的输出（文本层自检的输入；原来只取 .length 丢弃文本）
+      let totalChars = 0;      // 全文文本层字符量（渲染检查行与「机器读到的样子」折叠区共用同一口径）
       let budgetCut = false;   // 分页提取预算耗尽 → 文本层结论不可靠（见 layerCheck）
       if (pdfStat) {
         try { pages = parseInt(execFileSync('pdfinfo', [pdfPath(id)], { timeout: 10000 }).toString().match(/Pages:\s*(\d+)/)?.[1] || '0', 10); } catch { pages = 0; }
@@ -6376,12 +6377,12 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         // 全文 pdftotext：原来只取 .length（文本被丢掉），这里保留文本本身供下面的文本层自检用。
         // 进程调用次数与超时都不变（仍是这一次全文调用，30s）。
         try { fullText = execFileSync('pdftotext', [pdfPath(id), '-'], { timeout: 30000 }).toString('utf8'); } catch { fullText = ''; }
-        const totalChars = fullText.length;
+        totalChars = fullText.length;
         rows.push(`${mark(pages > 0)} 实际页数：${pages || '读取失败'}${pages === 2 ? '（符合两页目标）' : pages > 2 ? '（超过两页，见下方建议）' : ''}`);
         if (budgetCut) rows.push(`${mark(false)} 分页文本提取：超出 ${EXTRACT_BUDGET_MS / 1000}s 总预算，只提取了前 ${pageTexts.length}/${pages} 页（结论不完整）`);
         rows.push(`${mark(!blank.length)} 空白页检查：${blank.length ? `疑似空白页：${blank.join('、')}` : '无'}`);
         rows.push(`${mark(!orphan.length)} 孤立标题检查：${orphan.length ? orphan.map((p) => `第${p}页末疑似孤立标题`).join('；') : '无'}`);
-        rows.push(`${mark(totalChars >= 200)} 文本层字符量：${totalChars}${totalChars < 200 ? '（<200：图文简历可忽略，否则检查文本层）' : ''}`);   // R2⑧：告警带阈值与原因
+        rows.push(`${mark(totalChars >= TEXT_LAYER_MIN_CHARS)} ${textLayerCharNote(totalChars)}`);   // R2⑧：告警带阈值与原因（口径唯一出处 = textLayerCharNote）
         
       }
       // ===== 文本层自检：姓名 / 邮箱 / 电话在 PDF 文本层里能不能被提取到 =====
@@ -6406,6 +6407,21 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       rows.push(layerCheck('姓名可提取', nameExpect, '姓名'));
       rows.push(layerCheck('邮箱可提取', emailExpect, '邮箱'));
       rows.push(layerCheck('电话可提取', phoneExpect, '电话'));
+      // ===== 批 2 b2c2：文本层预览 —— 折叠区「机器读到的样子」=====
+      // 服务端 pdftotext 的结果**原样**展示：机器（ATS）真正读到的就是这些字符。
+      // 只展示，不打分、不给结论、不出「通过」徽章（批 2 §0.1 诚实边界）；不新增提取调用（复用上面那一次全文提取）。
+      // 字符量口径沿用既有「渲染检查」行：同一实现（textLayerCharNote）→ 同一阈值 200、同一告警文案。
+      const layerPreviewText = pdfStat ? String(fullText || '') : '';
+      const layerPreviewBody = !pdfStat
+        ? '<p style="font-size:13px;color:var(--mut);margin:var(--space-2) 0 0">还没有 PDF——生成后这里会显示机器读到的文本层</p>'
+        : !layerPreviewText
+          ? '<p style="font-size:13px;color:var(--mut);margin:var(--space-2) 0 0">PDF 文本层未取到</p>'
+          : `<pre data-layer-preview style="font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;margin:var(--space-2) 0 0;padding:var(--space-3);border:1px solid var(--line);border-radius:var(--radius);background:var(--card-2)">${escHtml(layerPreviewText)}</pre>`;
+      const layerPreview = `<details id="textLayerPreview" class="card" style="margin-top:var(--space-3)">
+        <summary style="cursor:pointer;font-weight:700">机器读到的样子</summary>
+        ${pdfStat ? `<div style="font-size:12px;color:var(--mut);margin-top:var(--space-2)">${escHtml(textLayerCharNote(totalChars))}</div>` : ''}
+        ${layerPreviewBody}
+      </details>`;
       const suggestions = pageSuggestions(lines, { projects }).map((s) => `<li>${escHtml(s.text)}</li>`).join('');
       // S4a-T10：排版诊断（渲染级，半自动 3 轮；结构性事实表述；下限内不再压缩；超页二出路）+ 导出检查三级（与审阅 Tab 同源 jobViewLive）
       const jobLive = jobViewLive(id, meta);
@@ -6504,6 +6520,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         <div>· 下载/记录投递：都先 POST /export 创建不可变导出记录（幂等键 renderInputId，同内容重复点击不再记录），产物存 pdfs/history/，经 /history-pdf?exportId=… 下载<br>· 投递存档：绑定所选导出的冻结快照，之后改稿不影响它（绝不重冻后来的正文）<br>· 下方预览为「最新版」便利文件（可被覆盖）；导出记录与投递存档不指向它</div></details>
     </div>
     ${rows.length ? `<div class="card" style="margin-top:12px"><b class="card-title">渲染检查</b>${rows.map((r) => `<div style="margin:6px 0">${r}</div>`).join('')}</div>` : ''}
+    ${layerPreview}
     ${layoutBlock}
     <div class="card" style="margin-top:12px"><b class="card-title">导出检查（内容侧，与审阅 Tab 同源即时状态）</b>
       <div style="font-size:13px;margin:6px 0">建议核对：${(() => {
@@ -6614,6 +6631,11 @@ function countProjects(docFile) {
     return Math.max(0, (p.html.match(/class="entry-head"/g) || []).length);
   } catch { return 0; }
 }
+// 文本层字符量口径（唯一出处 · 批 2 b2c2）：阈值 200 + 告警文案。
+// 导出页「渲染检查」行与「机器读到的样子」折叠区共用这一个实现 → 口径沿用：只有一套阈值、一套文案，
+// 不存在第二处判据（源级钉值：告警文案在 server.mjs 只出现一次）。
+const TEXT_LAYER_MIN_CHARS = 200;
+const textLayerCharNote = (n) => `文本层字符量：${n}${n < TEXT_LAYER_MIN_CHARS ? `（<${TEXT_LAYER_MIN_CHARS}：图文简历可忽略，否则检查文本层）` : ''}`;
 function sanitizeFileName(s) {
   return String(s).replace(/[\\/:*?"<>|\s]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').slice(0, 80) || 'resume';
 }
