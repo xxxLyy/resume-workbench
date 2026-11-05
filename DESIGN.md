@@ -48,6 +48,7 @@
 - 状态三色已定案（A1）：`--success #15803D` / `--warning #A25711` / `--danger #B91C1C`，各自配 `*-bg` 浅底，on 各自浅底均 ≥4.5:1（AA）。
 - `--accent` 是近黑，不是品牌色。彩色只承载状态。
 - 阴影例外仅一处已登记：`--shadow-up`（悬停投影，只用于 `.doc-card:hover`，`server.mjs:1271`）。静态层级仍然零阴影（1px 边框 + 背景差）；再要投影先在本文件登记用途。
+- **可见差异（2026-11-05 批 1 登记）**：主行动 `.cta:hover` 的悬停投影已删除（保留 `translateY(-1px)` 位移）——与 R2⑩ `button:hover` 删影留位移同款先例（`.cta` 是当时漏网的同类规则）；应用页静态层级零投影，阴影例外仍仅 `--shadow-up`。
 
 ### 3.2 编辑器 `--ed-*`（`editor-shell.js:40`，`body.ed-on{--ed-…}` 单行）
 
@@ -112,6 +113,7 @@ FIELDS（editor-shell.js） → typoCss(v) → #typo-custom（落盘进 <head>�
 - 4px 基：应用页 token `--space-1:4px` / `--space-2:8px` / `--space-3:12px` / `--space-4:16px` / `--space-6:24px`，微档 `--space-hair:2px`。
 - **新写的间距一律引用 token**；存量值**不刷全站**，只在触碰到的规则里换（避免视觉回归面失控）。
 - 页题与首个内容块的间距：全站单值 12px（`.mainarea>h1` 的 `margin-bottom`）。首页因 `.stat-grid` 自带 `margin-top:12px` 而折叠为同值，视觉不变。
+- **可见差异（2026-11-05 批 1 登记）**：首页任务卡操作行 `.taskcard .task-acts` 的间距由原 `.hero-acts` 的字面 10px 换为 `--space-2`（8px，2px 差）——该规则本轮被触碰，按「触碰即换 token」处理，不新增间距档。
 
 ### 5.2 圆角
 
@@ -125,6 +127,7 @@ FIELDS（editor-shell.js） → typoCss(v) → #typo-custom（落盘进 <head>�
 - 两枚胶囊同款：字号 12px、上下内边距 3px、左右 11px。等高还差一条：`.chip` 是 `button`，会被全局 `button{min-height:32px}` 撑到 32px——**已收** `.chip{min-height:26px}`（`server.mjs`），胶囊高度回到自身盒模型，与 `.badge`（≈25.2px）高差 ≤1px。
 - **可见差异（已登记）**：全站胶囊高度 32px→26px（缩 6px）。这是「两枚胶囊同档」的代价，非误改——同档的验收线是两枚胶囊高差 ≤2px，不碰 chip 则 32px 对 ≈25.2px 差 6.8px 过不了线，收 26px 后差 0.8px 达线（过 2px 线的登记取舍）；26px 仍高于 WCAG 2.2 的 24px 最小目标尺寸。
 - `.badge` 自带 `margin-right`（徽章后分隔的唯一机制）；放进 `gap` 容器时**必须**给 `.badge{margin-right:0}`，否则双倍计距。
+- **可见差异（2026-11-05 批 1 登记）**：首页任务卡操作行 `.taskcard .task-acts`（gap 容器）内的徽章自带右距归零——徽章后距由 14px（gap 8px + 6px 双倍计距）收为 8px，与容器 gap 同档（批 1 新增 gap 容器时漏配，2026-11-05 复核发现并修）；行内容器里的徽章（草稿卡等）右距仍为 6px，徽章后分隔机制不变。真渲染量测见 `test-fixtures/reliability/test-home-task-badge.mjs`。
 
 ---
 

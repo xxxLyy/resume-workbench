@@ -5156,6 +5156,12 @@ const badge = rule('.badge');
 assert(badge.includes('padding:3px 11px;font-size:12px'),
   '.badge 应与 .chip 同款 12px + 3px 11px（同档前提，高差才 ≤1px），实际: ' + badge);
 assert(!badge.includes('min-height'), '.badge 高度由盒模型决定（≈25.2px），不得挂 min-height');
+// gap 容器内的徽章必须归零自带右距（DESIGN.md §5.3：徽章自带 margin-right 是徽章后分隔的唯一机制，
+// 放进 gap 容器会变成 gap+6px 双倍计距）。首页任务卡操作行 .taskcard .task-acts 是批 1 新增的 gap 容器，
+// 故在此钉死归零规则；行内容器里的徽章仍保留 6px 右距（真渲染量测见 test-home-task-badge.mjs）。
+const taskBadge = rule('.taskcard .task-acts .badge');
+assert(taskBadge.includes('margin-right:0'),
+  '任务卡 gap 容器内徽章须 margin-right:0（§5.3 双倍计距禁令），实际: ' + taskBadge);
 const btn = rule('button');
 assert(btn.includes('min-height:32px'), '全局 button{min-height:32px} 是 §5.3 chip 收口的对抗前提，不得静默改动');
 

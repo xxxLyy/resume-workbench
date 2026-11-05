@@ -1649,10 +1649,13 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 /* 任务卡（2026-11-05 批 1 §0.2：hero 退役后的首屏主行动，三态=草稿继续/从零建简历/为岗位定制简历）；
    间距引用 §5.1 token，不新增间距档；主行动仍用 .cta 实底。 */
 .taskcard{margin:0 0 var(--space-3)}
-.taskcard .task-acts{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.taskcard .task-acts{display:flex;gap:var(--space-2);flex-wrap:wrap;align-items:center}
+/* 徽章在 gap 容器内必须归零自带右距（DESIGN.md §5.3：否则 gap+6px 双倍计距）；
+   只作用于本容器——行内容器里的徽章仍靠 6px 右距分隔（徽章后分隔的唯一机制，全站 43 处在用）。 */
+.taskcard .task-acts .badge{margin-right:0}
 .taskcard .task-side{margin-top:var(--space-2);display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap}
 .cta{display:inline-block;background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--radius);padding:9px 16px;font-weight:700;font-size:14px;cursor:pointer}
-.cta:hover{transform:translateY(-1px);box-shadow:0 3px 9px rgba(0,0,0,.06)}
+.cta:hover{transform:translateY(-1px)}
 .cta-alt{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:var(--radius);padding:9px 14px;font-weight:600;font-size:13px;cursor:pointer}
 .statusline{margin-top:12px;font-size:13px;line-height:1.7;color:var(--mut)}
 .statusline .sep{margin:0 8px;color:var(--line)}

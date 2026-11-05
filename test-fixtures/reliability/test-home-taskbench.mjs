@@ -11,6 +11,9 @@
 //   ④ 「继续上次任务」回退链契约保持：有文档时 continueBtn + data-fallback/data-doc-ids/data-doc-titles 在场；
 //     空库不渲染（既有契约）。
 //   ⑤ 死引用清零：文档列表空态文案不再指向已删除的「＋ 新建第一份简历」。
+//   ⑥ 源级钉值（CSS 在页面 <style> 内联，随首页响应一并核对）：
+//      任务卡操作行间距必须是 §5.1 token（不得字面 px）；主行动 .cta:hover 必须零投影、只留位移
+//      （§3.1 阴影例外仅 --shadow-up；hover 删影留位移与 R2⑩ button:hover 同款）。
 // 约束：隔离 RESUME_ROOT（mkdtemp）+ 随机端口 + 合成文档；不读真实简历、不碰 7766、不调真实模型。
 // 隐私门禁：合成数据不含 13 位数字（门禁 1[3-9]\d{9} 不适用）。
 // 退出码契约：0=全部通过；1=任一断言失败（本夹具不依赖 Chromium，无 2 分支）。
@@ -170,7 +173,32 @@ try {
     assert.ok(draftCardRow.includes('>草稿<'), '草稿卡同款徽章应同口径（草稿）：' + draftCardRow.slice(0, 120));
   }
 
-  console.log('✅ 首页任务台面（hero 退役 + 任务卡三态 + h1 首题 + 首屏次序 + 回退链契约）');
+  // ===== D. 源级钉值：任务卡 CSS（间距 token + 主行动 hover 零投影）=====
+  // 这两条是 2026-11-05 复核后定案的样式（DESIGN.md §5.1 间距 token / §3.1 零阴影例外表），
+  // 页面行为面（徽章间距）另有浏览器夹具 test-home-task-badge.mjs；此处钉的是规则本身，
+  // 防「字面 px 间距」与「未登记硬编码 box-shadow」被改回来（§3.1/§5.1 红线）。
+  {
+    const html = (await get('/')).text;
+    const css = (html.match(/<style>([\s\S]*?)<\/style>/) || ['', ''])[1];
+    const cssRule = (sel) => {
+      const m = css.match(new RegExp('(?:^|\\})\\s*' + sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\{([^}]*)\\}'));
+      return m ? m[1] : '';
+    };
+    // 任务卡操作行：间距必须引用 §5.1 token，且不得出现字面 px
+    const actsCss = cssRule('.taskcard .task-acts');
+    assert.ok(actsCss.includes('gap:var(--space-2)'),
+      '任务卡操作行间距须用 §5.1 token var(--space-2)，实际: ' + actsCss);
+    assert.ok(!/gap:\s*\d/.test(actsCss),
+      '任务卡操作行不得出现字面 px 间距（§5.1 新写间距一律用 token），实际: ' + actsCss);
+    // 主行动 .cta:hover：零投影、保留位移（hover 删影留位移，与 R2⑩ button:hover 同款）
+    const ctaHover = cssRule('.cta:hover');
+    assert.ok(ctaHover.includes('translateY(-1px)'),
+      '.cta:hover 应保留位移反馈（删影留位移），实际: ' + ctaHover);
+    assert.ok(!ctaHover.includes('box-shadow'),
+      '.cta:hover 不得有 box-shadow（§3.1 阴影例外仅 --shadow-up），实际: ' + ctaHover);
+  }
+
+  console.log('✅ 首页任务台面（hero 退役 + 任务卡三态 + h1 首题 + 首屏次序 + 回退链契约 + 任务卡 CSS 源级钉值）');
 } catch (e) {
   console.error('❌ ' + (e && e.message));
   process.exitCode = 1;

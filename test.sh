@@ -2517,3 +2517,16 @@ if node test-fixtures/reliability/test-home-agenda.mjs; then
 else
   fail "近期日程聚合回归未通过 (exit $?)"
 fi
+
+# ===== 16t. 批1 首页任务卡徽章间距：gap 容器内徽章自带右距归零（DESIGN.md §5.3 双倍计距禁令）+ 草稿卡行内徽章仍 6px（浏览器段，真渲染量测）=====
+if node test-fixtures/reliability/test-home-task-badge.mjs; then
+  echo '✅ 任务卡徽章间距回归（gap 容器内 margin-right 归零 / 徽章后距 = gap / 草稿卡行内徽章保留 6px）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 任务卡徽章间距回归未执行：Chromium 不可用'
+  else
+    fail "任务卡徽章间距回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi
