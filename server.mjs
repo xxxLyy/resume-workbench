@@ -39,6 +39,7 @@ import { loadApplyProfilesView, loadApplyProfiles, setField, setFieldSource, bin
 import { startCopyTask, runCopyTask, copyTaskState, cancelCopyTask, confirmCopyDraft, discardCopyDraft, finishCopyTask, isCopyKey, stageLabel, NO_MODEL_HINT, COPY_TTL_MS } from './apply-gen.mjs';   // AI 文案字段生成任务层（批 3 卡片 b3c3）：genTasks 口径（进度/取消/真实用量）
 import { followUpState, followUpDays, normalizeFollowUpDays, followUpTask, followUpDraft, startFollowUpTask, followUpStateOf, cancelFollowUpTask, discardFollowUpDraft, runFollowUpTask, failFollowUpTask, followUpSource, FOLLOW_UP_TTL_MS, FOLLOW_UP_NO_MODEL_HINT } from './followup.mjs';   // 跟进助手（批 3 卡片 b3c4）：无回应满 N 天 → 跟进语草稿（只生成不发送）
 import { hideFieldsInHtml, shareExpectations, findResidues, absentKeys, addShareRecord, sharePdfPath, SHARE_ID_RE } from './share-copy.mjs';   // 分享副本（批 3 卡片 b3c5）：勾选隐藏字段 → 独立预览/PDF + 文本层无残留校验
+import { PRACTICE_CAP, PRACTICE_NO_MODEL_HINT, buildPracticeSession, appendPracticeSession, savePracticeAnswer, normalizeAnswerText, startPracticeFeedbackTask, cancelPracticeFeedbackTask, runPracticeFeedbackTask, failPracticeFeedbackTask, findSession, practiceSessions, practiceSessionView, sessionSummary } from './practice.mjs';   // 练习会话 API（批 4 卡片 b4c1）：出题复用 kind=interview 产物 + 逐题作答 + AI 对照证据表反馈（无百分位无排名）+ 历史随投递截 20
 import { ICONS } from './vendors/icons.mjs';  // Lucide 图标数据（纯数据文件，零 npm 依赖）
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -5613,6 +5614,141 @@ async function handler(req, res) {
       if (!/^[0-9-]+$/.test(id)) return sendJson(400, { ok: false, error: 'invalid id' });
       try { discardFollowUpDraft(followUpLedger, id); }
       catch (e) { return sendJson((e && e.httpCode) || 400, { ok: false, error: String((e && e.message) || e), code: (e && e.code) || '' }); }
+      return sendJson(200, { ok: true });
+    }
+    // ===== 练习会话（批 4 卡片 b4c1）：出题复用 kind=interview 产物 + 逐题作答 + AI 对照证据表反馈 =====
+    // 账本适配器（followUpLedger 同款）：applications.json 的唯一写者仍是 server.mjs —— 写时重新读表、
+    // **只回写本卡的 practice 字段**，不拿旧副本覆盖别人刚改的备注/状态/面试记录/followUp。
+    const practiceLedger = {
+      read(id) {
+        const a = loadApps().find((x) => x.id === id);
+        return a ? { app: a } : null;
+      },
+      write(next) {
+        const apps = loadApps();
+        const i = apps.findIndex((x) => x.id === next.id);
+        if (i < 0) return false;
+        apps[i] = { ...apps[i], practice: next.practice };
+        saveApps(apps);
+        return true;
+      },
+    };
+    // 出题（零模型调用）：只读该投递关联岗位草稿的 meta.job.interview 既有产物（interviewSourceView
+    // 读视图）快照成练习会话；链题仅在追问仍绑定当前证据批次时快照对应要求行 req。
+    // 没有关联简历 / 不是岗位草稿 / 没有面试追问 / 没有可用要点 → 409 明确拒绝，不留空会话。
+    if (req.method === 'POST' && url.pathname === '/app/practice/start') {
+      const body = await readBodyAuto(req);
+      const id = String(body.id || '');
+      if (!/^[0-9-]+$/.test(id)) return sendJson(400, { ok: false, error: 'invalid id' });
+      const rec = practiceLedger.read(id);
+      if (!rec) return sendJson(404, { ok: false, error: '投递记录不存在' });
+      const app = rec.app;
+      const docId = String(app.docId || '');
+      if (!docId) return sendJson(409, { ok: false, error: '这条投递还没有关联简历，练习出题无从取材' });
+      const meta = loadMeta()[docId];
+      const j = (meta && meta.job) ? meta.job : null;
+      if (!j) return sendJson(409, { ok: false, error: '还没有可练习的面试追问：这条投递关联的简历不是岗位草稿（练习出题复用岗位草稿的「面试追问」产物）' });
+      const iv = (j.interview && typeof j.interview === 'object') ? j.interview : null;
+      if (!iv) return sendJson(409, { ok: false, error: '还没有可练习的面试追问：这份岗位草稿还没生成「面试追问」，请先在编辑器里生成后再来练习' });
+      let html = null;
+      try { html = fs.readFileSync(docPath(docId), 'utf8'); } catch {}
+      if (html == null) return sendJson(409, { ok: false, error: '这条投递关联的简历不在本机，练习出题无从取材（请先在投递详情里确认简历）' });
+      const paras = parasOf(html);
+      const ivView = interviewSourceView(iv, { paras });
+      const evGenBound = (typeof j.interviewEvidenceGen === 'number' && j.interviewEvidenceGen !== Number(j.evidenceGen || 0));
+      const bindingFresh = !evGenBound;   // 与 S4B-3 stale 判定同口径：字段缺失视为仍绑定（宽容读），字段在且不同 → 已换批
+      const interviewStale = !!(j.interviewBaseHash && (
+        j.interviewBaseHash !== contentHash(html) || evGenBound));
+      const session = buildPracticeSession({
+        docId, company: String(app.company || ''), role: String(app.role || ''),
+        interviewView: ivView, evidence: Array.isArray(j.evidence) ? j.evidence : [],
+        bindingFresh, interviewStale,
+        interviewGen: Number.isInteger(j.interviewGen) ? j.interviewGen : null,
+        evidenceGen: Number.isInteger(j.evidenceGen) ? j.evidenceGen : null,
+      });
+      if (!session) return sendJson(409, { ok: false, error: '还没有可练习的面试追问：这份岗位草稿的「面试追问」没有任何可用要点，请先在编辑器里重新生成' });
+      const appended = appendPracticeSession(practiceLedger, id, session);
+      if (!appended.ok) return sendJson(appended.status || 404, { ok: false, error: appended.error });
+      return sendJson(200, { ok: true, pid: session.pid });
+    }
+    // 练习历史（摘要视图）：最新在前（appendPracticeSession 已保证），上限 PRACTICE_CAP=20（F3 同款）。
+    if (req.method === 'GET' && url.pathname === '/app/practice/history') {
+      const id = String(url.searchParams.get('id') || '');
+      if (!/^[0-9-]+$/.test(id)) return sendJson(400, { ok: false, error: 'invalid id' });
+      const rec = practiceLedger.read(id);
+      if (!rec) return sendJson(404, { ok: false, error: '投递记录不存在' });
+      return sendJson(200, { ok: true, sessions: practiceSessions(rec.app).map(sessionSummary), cap: PRACTICE_CAP });
+    }
+    // 单个会话全量状态（轮询用）：practiceSessionView 只加派生的 expired 标记，**零写盘**——
+    // 过期 running 的写盘收敛统一交给完成判定的 TTL 分支，读取路径不做写（并发闸已忽略过期残留，不会死锁）。
+    if (req.method === 'GET' && url.pathname === '/app/practice/state') {
+      const id = String(url.searchParams.get('id') || '');
+      const pid = String(url.searchParams.get('pid') || '');
+      if (!/^[0-9-]+$/.test(id)) return sendJson(400, { ok: false, error: 'invalid id' });
+      if (!pid) return sendJson(400, { ok: false, error: 'pid 必填' });
+      const rec = practiceLedger.read(id);
+      if (!rec) return sendJson(404, { ok: false, error: '投递记录不存在' });
+      const session = findSession(rec.app, pid);
+      if (!session) return sendJson(404, { ok: false, error: '练习会话不存在或已被清理（历史保留最近 ' + PRACTICE_CAP + ' 次）' });
+      return sendJson(200, { ok: true, session: practiceSessionView(session) });
+    }
+    // 逐题文本作答：形状错即拒（空/超长 400）；重交 = 最近一次为准。
+    if (req.method === 'POST' && url.pathname === '/app/practice/answer') {
+      const body = await readBodyAuto(req);
+      const id = String(body.id || '');
+      const pid = String(body.pid || '');
+      const qid = String(body.qid || '');
+      if (!/^[0-9-]+$/.test(id)) return sendJson(400, { ok: false, error: 'invalid id' });
+      if (!pid || !qid) return sendJson(400, { ok: false, error: 'pid 与 qid 必填' });
+      const norm = normalizeAnswerText(body.text);
+      if (!norm.ok) return sendJson(400, { ok: false, error: norm.error });
+      const saved = savePracticeAnswer(practiceLedger, id, pid, qid, norm.text);
+      if (!saved.ok) return sendJson(saved.status || 404, { ok: false, error: saved.error });
+      return sendJson(200, { ok: true });
+    }
+    // 反馈生成（走既有 genTasks 口径）：先作答才生成；先借 AI 槽再登记任务（不留 running 假任务）；
+    // 并发闸：同一条投递跨会话只允许 1 个 running。
+    if (req.method === 'POST' && url.pathname === '/app/practice/feedback/start') {
+      const body = await readBodyAuto(req);
+      const id = String(body.id || '');
+      const pid = String(body.pid || '');
+      const qid = String(body.qid || '');
+      if (!/^[0-9-]+$/.test(id)) return sendJson(400, { ok: false, error: 'invalid id' });
+      if (!pid || !qid) return sendJson(400, { ok: false, error: 'pid 与 qid 必填' });
+      if (!hasLLM(root)) return sendJson(409, { ok: false, error: PRACTICE_NO_MODEL_HINT });
+      let lease;
+      try { lease = aiPool.borrow(); }
+      catch (e) { return sendJson((e && e.httpCode) || 429, { ok: false, error: (e && e.message) || 'AI 排队已满，请稍候' }); }
+      const model = (() => { try { const c = loadProfiles(root); return (c && c.profiles && c.profiles[c.active]) ? c.profiles[c.active].model : null; } catch { return null; } })();
+      let taskId = null, reject = null;
+      try {
+        const st = startPracticeFeedbackTask(practiceLedger, id, pid, qid, { model });
+        taskId = st.taskId; reject = st.reject;
+      } catch (e) {
+        try { lease.release(); } catch {}
+        return sendJson((e && e.httpCode) || 400, { ok: false, error: String((e && e.message) || e), code: (e && e.code) || '' });
+      }
+      if (reject) { try { lease.release(); } catch {} return sendJson(reject.status, { ok: false, error: reject.error }); }
+      runPracticeFeedbackTask(root, practiceLedger, id, pid, qid, taskId, { lease })
+        .catch((e) => {
+          // 任何异常都要收敛任务态：否则账本里会留下永远 running 的假任务
+          try { failPracticeFeedbackTask(practiceLedger, id, pid, qid, taskId, '任务失败：' + ((e && e.message) || e)); } catch {}
+        })
+        .finally(() => { try { lease.release(); } catch {} });
+      return sendJson(200, { ok: true, taskId, status: 'running' });
+    }
+    // 取消反馈生成：taskId 匹配当前 running 才置 cancelled；在途结果被完成判定丢弃（零落账）。
+    if (req.method === 'POST' && url.pathname === '/app/practice/feedback/cancel') {
+      const body = await readBodyAuto(req);
+      const id = String(body.id || '');
+      const pid = String(body.pid || '');
+      const qid = String(body.qid || '');
+      const taskId = String(body.taskId || '');
+      if (!/^[0-9-]+$/.test(id) || !pid || !qid || !taskId) return sendJson(400, { ok: false, error: 'id、pid、qid 与 taskId 必填' });
+      let cancelled = false;
+      try { cancelled = cancelPracticeFeedbackTask(practiceLedger, id, pid, qid, taskId); }
+      catch (e) { return sendJson((e && e.httpCode) || 400, { ok: false, error: String((e && e.message) || e), code: (e && e.code) || '' }); }
+      if (!cancelled) return sendJson(409, { ok: false, error: '任务已结束或已被新任务取代（taskId 不匹配当前 running）' });
       return sendJson(200, { ok: true });
     }
     // ===== 素材库（确认状态）=====

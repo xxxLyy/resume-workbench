@@ -118,6 +118,16 @@ node ./test-fixtures/reliability/test-followup-assistant.mjs
 #         计划 dev-docs/2026-11-05-roadmap-batch-plan.md §4 批 3，DESIGN.md §10.14）=====
 node ./test-fixtures/reliability/test-share-copy.mjs
 
+# ===== 批4 练习会话 API（卡片 b4c1）：出题复用岗位草稿既有「面试追问」kind=interview 产物（零模型调用，
+#       没有产物/不是岗位草稿 409 明确拒绝）+ 逐题文本作答（形状错即拒/重交最近一次为准）
+#       + AI 对照证据表反馈（答到的事实/缺的指标/夸大倾向/逐题改进建议；走 genTasks 口径：
+#       真实阶段/真实用量/可取消/取消迟到零落账/并发闸；无评分/无百分位/无排名字段；
+#       反馈不落 docs/meta——正文与岗位草稿 meta 逐字节不变；作答反馈期间被改 → 不落账）
+#       + 练习历史随投递持久化（app.practice 截 20，F3 同款：最新在前；history 摘要视图）
+#       （隔离根 + 随机端口 + 合成岗位草稿/投递 + 本机假 LLM；纯 API 夹具无浏览器段；
+#         计划 dev-docs/2026-11-05-roadmap-batch-plan.md §5 批 4，DESIGN.md §10.15）=====
+node ./test-fixtures/reliability/test-practice-session.mjs
+
 # ===== VQA 视觉验收截图（零断言、退出 0）：8 个关键页 1280x900 全页图落 /tmp/shots-after，
 #       视觉判定走 DESIGN.md 对照（人工/视觉流程），本夹具只产出真实隔离实例渲染截图；Chromium 缺失 exit 2 =====
 node ./test-fixtures/reliability/test-visual-screens.mjs
@@ -2182,7 +2192,9 @@ const sm = fs.readFileSync(F, 'utf8');
 const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','/ai/prep','/ai/review','/ai/rewrite','/ai/test',
   '/ai/zone-analyze','/ai/zone-rewrite',
   '/apply-profile','/apply/bind','/apply/copy/cancel','/apply/copy/confirm','/apply/copy/discard','/apply/copy/start','/apply/copy/state','/apply/export','/apply/field','/apply/package','/apply/source',
-  '/api/extract','/app','/app/add','/app/archive-regenerate','/app/del','/app/followup/cancel','/app/followup/discard','/app/followup/start','/app/followup/state','/app/ics','/app/update','/applications',
+  '/api/extract','/app','/app/add','/app/archive-regenerate','/app/del','/app/followup/cancel','/app/followup/discard','/app/followup/start','/app/followup/state','/app/ics',
+  '/app/practice/answer','/app/practice/feedback/cancel','/app/practice/feedback/start','/app/practice/history','/app/practice/start','/app/practice/state',
+  '/app/update','/applications',   // 批4 b4c1：练习会话六路由（登记非放宽）
   '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf',
   '/job-panel.js','/job/brief','/job/changes','/job/create','/job/feedback-del','/job/generate','/job/gen-cancel','/job/gen-retry','/job/gen-start','/job/new','/layout-info','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',
   '/materials','/new','/onboarding','/onboarding/guided','/onboarding/star-suggest','/onboarding/step','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings','/eval/create','/eval/promote','/evals',
