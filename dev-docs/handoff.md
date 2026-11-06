@@ -1323,3 +1323,60 @@ Flash 23 条要点见各提交信息与 `b47-report` 工作流报告；收口时
 - **回显邮箱电话原文的口径**（b2c1 note #10）：本批判定文案会把联系方式原文回显在页面上（如「电话「138」」）。当前实现如此，未擅改；是否改为掩码/脱敏**待用户拍板**（属隐私呈现口径，非规则面）。
 - **`/export` 在 live 7766 上未直接点验**：因其为 write-on-GET（自动重渲会写 `pdfs/` 与 `docs-meta.json`），本轮改在只读复制的隔离实例点验。若后续要求「live 导出页逐项点验」，需先定「允许重渲写 PDF」的口径再执行。
 - **ECC 钩子桩值误报**：批 5 根治前，本批零旁路（未用 `ECC_SKIP_PRECOMMIT=1`）。
+
+## 批 3 轮（2026-11-06～11-07）：网申包 + 跟进助手（起点 `main@a204e3d`，收口 `main@0c5a5d1`）
+
+> 总纲：`dev-docs/2026-11-05-roadmap-batch-plan.md` §4（S8 网申包 + 跟进助手：`/apply-profile` 新页 + topnav 第七项、字段三态与漂移、AI 文案字段走 genTasks、跟进助手草稿不发送、分享副本文本层无残留；硬约束「不代填/不自动发送」）+ §7（每卡先红后绿、断言同提交、批门四套件 + 7766 重启点验）。本批 5 笔提交（`b82ddea` → `0c5a5d1`），DESIGN.md §10.10–§10.14 随卡登记。
+
+### 1. 逐卡结果（5 笔提交，逐卡哈希）
+
+| 卡 | 提交 | 内容 | 先红→后绿证据 |
+|---|---|---|---|
+| b3c1 | `b82ddea` | 网申包数据层：`apply-profiles.json` 通用表+公司包同表、`tx.mjs` 通用账本事务 `updateJsonLedger`（含 mutator 非对象抛错护栏）、字段三态与漂移、隐藏章节不派生 | **先红**（收口独立复现，批前树 `a204e3d` + HEAD 夹具）：`Cannot find module '/private/tmp/b3-pre/apply-profile.mjs'` EXIT=1（红在本卡引入的数据层模块缺失）。**后绿**：HEAD 四套件合跑夹具行 ✅（`/tmp/b3-test-all.log:542`）；卡片侧另做变异测试（tx 护栏 / 两层隐藏护栏）变红后还原（提交信息留痕） |
+| b3c2 | `b8087a3` | `/apply-profile` 页 + topnav 第七项「网申包」、三态字段 UI、单字段复制、整包导出（scope=common\|package、pkg 别名、未知 scope→400） | **先红**（同上复现）：`❌ /apply-profile 应 200，实际 404` EXIT=1。**后绿**：test:all 日志:543 ✅ |
+| b3c3 | `4625dc2` | AI 文案字段（打招呼语/自荐信/跟进语）走 genTasks 口径：生成→预览→确认才入库、运行中取消钮补建、usage=null 显式「服务商未返回」、空值可解锁、`isCopyKey` 唯一真源 | **先红**（同上复现）：`❌ /apply-profile 应 200，实际 404` EXIT=1（AI 字段行承载于该页）。**后绿**：test:all 日志:544 ✅ |
+| b3c4 | `7d5e8aa` | 跟进助手：投递卡满 N 天无回应→生成跟进语草稿（不发送）、阈值 /settings 可配（写侧类型收严）、冻结件三件 sha1 钉定 | **先红**（同上复现）：`❌ 满 8 天无回应（状态=已投递）的投递卡应出现「生成跟进语」入口` EXIT=1。**后绿**：test:all 日志:545 ✅ |
+| b3c5 | `0c5a5d1` | 分享副本：勾选隐藏字段→独立预览/PDF、文本层零残留才发布（残留 409 零产物）、导出记录实时查投递引用 | **先红**（同上复现）：`❌ 分享副本导出应 200，实际 404 not found` EXIT=1。**后绿**：test:all 日志:546 ✅ |
+
+先红复现方法（批 2 收口同款）：`git archive a204e3d` 解包 `/tmp/b3-pre`，拷入 HEAD 五份夹具；archive 不含 node_modules，首轮四个浏览器夹具红在 `ERR_MODULE_NOT_FOUND: playwright-core` 属**环境红**，按 ESM 解析路径补 `node_modules → 真实仓库 node_modules` 符号链接后复跑，五夹具批前树 **EXIT=1 全红且红在目标断言/目标模块**，HEAD 全绿——夹具与本批实现强耦合（非空转绿）。各卡自述的逐条变异测试（先红细节）见各提交信息，收口未逐条重放。
+
+### 2. 批门轮次
+
+- `RESUME_TEST_STRICT=1 npm run test:all` → **EXIT=0**（收口会话独立跑一次，707 个 ✅）。本批五卡夹具行在日志 542–546 行（网申包数据层 / 网申包页面 / AI 文案字段 / 跟进助手 / 分享副本各一行 ✅）；唯一 ❌ 仍是段 X Chromium 探测契约的既有预期输出（无缓存→应失败并给修复动作，批 1/批 2 收口登记同一基线），非本批引入。
+- 红线复核：冻结件 `template.html` / `render.mjs` / `themes/` 零改动（工作区零 diff + b3c4/b3c5 夹具内三件 sha1 钉定在合跑中绿）；`package.json` / `package-lock.json` 零 diff（零新增 npm 依赖）；真实数据目录（`docs/ snapshots/ pdfs/ backups/ photos/` 与根下 `*.json`，共 148 文件）mtime+size 前后逐项比对**全等**；唯一变化 = `logs/resume-server.log`（7766 重启时刻服务自身日志增长，运维写入非数据写入）。点验全程未创建 `apply-profiles.json` / `.apply-profiles.lock`（读路径纯读：`apply-profile.mjs:186` 缺文件→空结构、`migrateProfiles` 纯函数不落盘）。
+- ECC pre-commit：本批旁路 2 次（b3c3/b3c4 新夹具桩 `apiKey: 'stub-key-not-real'` 与仓库既有桩逐字同款被通用凭证正则误报，按既定处置 `ECC_SKIP_PRECOMMIT=1` 并在提交信息留痕；`bash privacy-check.sh` 在两卡提交后均 exit 0）；b3c1/b3c2/b3c5 零旁路。
+- **收口后复跑**（本轮 §1–§5 章节落档之后、本笔 docs 提交之前，提交员补跑）：`RESUME_TEST_STRICT=1 bash test-structure.sh` → **EXIT=0**（254 个 ✅；本批五卡夹具行在第 42–46 行全 ✅；唯一 ❌ 仍为段 X Chromium 探测契约既有口径，不影响退出码）；`bash privacy-check.sh` → **EXIT=0**。收口章节的引用与哈希另经提交员逐项核验：六哈希 `git rev-parse` 全解析、`git rev-list --count a204e3d..HEAD` = 5、7766 现进程 PID 94874（03:31:36 启）与 §3 一致、`RESTORE_MANAGED_FILES`（server.mjs:213）确不含 apply-profiles.json、`apExportJson` 在 server.mjs:2589、`.gitignore:7/21/22` 与 `privacy-check.sh:6/12` 探针在位、`ROUTES_FROZEN` 逐条清点 = 94。收口章节为纯文档（handoff.md），不触代码与断言。
+
+### 3. 7766 重启与只读点验结论
+
+- **重启**：`kill $(lsof -nP -tiTCP:7766 -sTCP:LISTEN)` → 旧 PID `71405`（03:20:36 启）→ **新 PID `94874`（03:31:36 启，晚于收口提交 `0c5a5d1` 的 03:20:08）**，launchd KeepAlive 自动拉起，服务确为最新提交。
+- **HTTP 状态**：`/` 200（42,011B）、`/stats` 200（27,699B）、`/materials` 200（33,665B）、`/settings` 200（40,462B）、`/evals` 200（30,334B）、`/applications` 200（41,115B）、`/onboarding/guided` 200（32,600B）、**`/apply-profile` 200（本批新页，49,316B）**——八条路由全 200。首页承接本批改动：`nav.topnav` 共 7 锚点（brand + 6 项），第七项「网申包」→ `/apply-profile`。
+- **GET 守卫矩阵（live，全部只读）**：`/apply/export` 200（缺省→通用表）、`?scope=bogus` → 400（不静默回落）、`?scope=package&pkg=nope` → 404（不导空包）、`?format=json` → 200 + `Content-Disposition: attachment` + 14 字段；`/apply/copy/state` 缺 key → 400、非 AI 字段 → 400、正常传参 → 200（task=null draft=null）；`/app/followup/state?id=abc` → 400；`/share/pdf?id=nope` → 404。
+- **headless Chromium 只读点验**（playwright-core + `chromium.mjs` resolveChromium；探针 `/tmp/probe-b3-batch3.mjs`，全程只发 GET，页级拦截非 GET 请求）：**88 项检查全通过，0 失败**——① live 7766 35 项（八路由 200 / topnav 第七项 / `/apply-profile` 页题「网申包」+ 导航高亮 + 14 字段行 + 空账本徽章形态（8「跟随来源」+ 3「独立维护」+ 3「待生成」）+ 绑定母版控件 + 分享副本卡 8 勾选 + 记录列表空态行动位 + 导出链接 + 隐私说明「导出的内容需自己粘贴到网申系统；本工具不代填、不发送」+ 全页零「发送」按钮 + `.ap-*` 零 box-shadow + `/settings`「跟进语提醒」卡 `#fuDays` min=1 max=90 + 守卫矩阵）；② 隔离实例 50 项（真实 docs 只读复制 + 合成 `apply-profiles.json`/`applications.json`、不放 config.json → 无模型降级面：徽章六态实测「手动覆写/独立维护/已锁定/待生成/AI 文案/来源已变」、包卡 14 行、分享记录行只记事实（隐藏清单/字符量 4321/投递引用实时派生「示例公司·后端工程师」）、JSON 导出与页面徽章同源（drift/locked/14 字段/generatedAt）、纯文本导出空字段不进、未知包 404、`/app/followup/state` 草稿在场、`/share/pdf` 记录在产物缺→404 形状错→400、`/applications` 只给到期卡渲染 `.fu-box`（「无回应 10 天」+「重新生成」+ 草稿框只读 + 诚实句「草稿不会自动发送，复制后自己发」+ 零发送钮零外链零表单；当天投递无块）、无模型 → 6/6 生成按钮禁用且状态行写明原因、`.fu-line` badge 右距 0px、字号 12/13px 既有档、`.ap-*`/`.fu-*` 零 box-shadow）；③ 只读纪律总检 3 项（非 GET 请求 0 条 / 页面 JS 异常 0 条 / console error 0 条）。
+- **探针修正登记（探针自身断言错位，非产品缺陷）**：首轮 1 项红（`I-ex-locked`）——把「greeting.locked=true」断言打在**字段包导出**上，而合成的锁定字段在**通用表**；核对 `server.mjs` 的 `apExportJson`（server.mjs:2589）后把断言放回正确作用域并补「包导出无记录→locked=false」对照项，复跑 88/88 绿。产品侧无一处改动。另实测：未生成的 AI 字段 JSON 导出为 `mode=ai / state=ai_empty`（与页面「待生成」徽章同源——导出走 `resolveProfiles` 同一视图，无双口径）。
+- **未覆盖项（如实登记）**：① live 7766 真实投递无「满 N 天无回应」卡（`.fu-box`=0；真实数据不作断言面），跟进块行为由隔离实例实测 + `test-followup-assistant.mjs` 覆盖（合跑绿）；② POST 写路径（生成/确认/建包/换源/分享导出）在点验中一律不发（只读纪律），由各卡夹具的浏览器段真点覆盖（合跑绿）；③ `/share/pdf` 产物伺服成功路径需先 POST 产生产物，同由 `test-share-copy.mjs` 覆盖。
+
+### 4. DESIGN.md 登记核对（收口轮）
+
+计划 §4 各项（新页+导航 / 字段三态 / AI 文案字段 / 单字段复制+整包导出 / 跟进助手 / 分享副本）逐项核对，**§10.10–§10.14 五节已随五卡落地**，收口逐项实测（关键口径 vs 实测）：
+
+| 登记项 | 实测核对 |
+|---|---|
+| §10.10 账本 / tx / 损坏停写 / 三态 / 派生 | ✅ 隔离实例徽章矩阵；`RESTORE_MANAGED_FILES`（server.mjs:213）未纳管该账本（「属后续卡」口径属实）；`.gitignore:7/21/22` 与 `privacy-check.sh:6/12` 探针齐（含 b3c1 note #9 补的 `.apply-profiles.json.*.tmp`） |
+| §10.11 页面 / topnav 第七项 / 导出 scope 口径 | ✅ live 实测 14 行 + 7 锚点 + 未知 scope 400 / 未知包 404 / `pkg` 别名认 + 隐私说明恰 2 处（两个导出行，不挂页题） |
+| §10.12 AI 字段 / 降级 / 导出 | ✅ 空账本 3 行「待生成」；无模型 6/6 禁用 + 行内原因（不做「点了才知道」）；导出 `mode=ai/state=ai_empty/locked` 与页面同源 |
+| §10.13 阈值卡 / 判定 / 诚实边界 | ✅ `#fuDays` min=1 max=90 缺省 7（无 config.json 回落实测）；「无回应 10 天」徽章；草稿框只读；零发送钮 / 零外链 / 零表单 |
+| §10.14 分享副本卡 / 记录行 | ✅ 8 勾选；记录行只记事实（隐藏清单 / 字符量）；投递引用实时派生（合成 `app.shareId` → 「示例公司·后端工程师」）；产物缺 → 404 如实回报 |
+| 路由登记 | ✅ 每卡增量精确：b3c1 +0、b3c2 +6、b3c3 +5、b3c4 +4、b3c5 +2（逐提交实测数组 77→83→88→92→94）；HEAD 实测 **94 条**与 `server.mjs` 的 `url.pathname` 字面量集合相等（test-structure.sh 集合比对在合跑中绿）。登记注释链上 65/71/76 为陈旧累计数（批 2 收口实际已是 77），已被「总数以本行数组实测为准——以逐条清点为准」（test-structure.sh 登记行 + §10.13/§10.14）覆盖，**无需改档** |
+
+**结论：无缺登，本节未补任何 DESIGN.md 条目。**
+
+### 5. 剩余事项 / 建议后续卡
+
+- **计划 §4 内、批 3 五卡未覆盖的条目**：「投递记录关联所用字段包」——§10.11/§10.12/§10.13/§10.14 四节一致登记「不在本卡（批 3 后续卡）」；现状只有分享副本的 `app.shareId` 关联（b3c5），投递记录关联所用**字段包**未落。建议后续卡承接。
+- **备份/恢复纳管 `apply-profiles.json`**：§10.10/§10.11 两处登记的后续卡（当前恢复/备份不带走网申包账本）。
+- **b3c1 note #6（待口径拍板）**：通用表逐字段来源写路径照设、读路径不认（§10.10 已登记 + 两条定口径选项：限定 `setFieldSource` 在 package 范围 / 让读路径尊重 `entry.source`）。
+- **复核员标注的观感/健壮性遗留（未擅改，留后续卡）**：b3c2 note #4 跟随/覆写两枚徽章渲染同款；b3c2 note #7 `POST /apply/package` 非原子（9 次独立事务，中断可产部分包）；b3c4 note #8 跟进接口层无到期闸门（阈值只影响要不要提示）；b3c4 note #11 `data-fu-draft` 属性未读、空 `.fu-msg` 多一个 gap、清空阈值无反馈；b3c5 note #9 `addShareRecord` 失败时孤儿 PDF（当前 500 + 如实回报，无自动清理）。
+- **ECC 钩子桩值误报**：批 5 白名单根治前，本批旁路 2 次（b3c3/b3c4，均已留痕）；b3c1/b3c2/b3c5 零旁路。
+
+（本节为收口会话产物；点验探针 `/tmp/probe-b3-batch3.mjs`、四套件日志 `/tmp/b3-test-all.log`、先红复现树 `/tmp/b3-pre` 均在 /tmp 不入仓。本节未提交，交提交员按 docs 动机分笔入库。）
