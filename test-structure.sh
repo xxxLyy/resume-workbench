@@ -108,6 +108,16 @@ node ./test-fixtures/reliability/test-apply-copy-fields.mjs
 #         计划 dev-docs/2026-11-05-roadmap-batch-plan.md §4 批 3，DESIGN.md §10.13）=====
 node ./test-fixtures/reliability/test-followup-assistant.mjs
 
+# ===== 批3 分享副本（卡片 b3c5）：勾选隐藏字段 → 独立预览/PDF（不动原简历）
+#       + 隐藏 = 物理删除（h1 / 联系方式块内摘除 / 整章节移除），副本文件里不存在隐藏载荷
+#       + 导出前文本层校验（批 2 能力复用：pdftotext + 去空白比对）：残留 → 409 零记录零产物（fail-honest）
+#       + 原简历零改动（docs/docs-meta 逐字节不变、pdfs/<id>.pdf 不出现、不经 renderCurrent）
+#       + 导出记录（apply-profiles.json shares 段，迁移不丢既有数据）实时可查被哪些投递引用（app.shareId 派生）
+#       + 形状守卫（hidden/docId/appId/GET /share/pdf）+ absent 如实回报 + 浏览器段真点导出
+#       （隔离根 + 随机端口 + 合成文档与投递；Chromium 缺失 exit 2；
+#         计划 dev-docs/2026-11-05-roadmap-batch-plan.md §4 批 3，DESIGN.md §10.14）=====
+node ./test-fixtures/reliability/test-share-copy.mjs
+
 # ===== VQA 视觉验收截图（零断言、退出 0）：8 个关键页 1280x900 全页图落 /tmp/shots-after，
 #       视觉判定走 DESIGN.md 对照（人工/视觉流程），本夹具只产出真实隔离实例渲染截图；Chromium 缺失 exit 2 =====
 node ./test-fixtures/reliability/test-visual-screens.mjs
@@ -2167,7 +2177,7 @@ const COLD = /#F4F5F8|#202737|#697186|#DCE0E8|#5B5DE8|#EEEFFE|#409eff|#2563eb|#d
 fs.readFileSync(F, 'utf8').split('\n').forEach((ln, i) => {
   if (COLD.test(ln)) fail(`${F}:${i + 1} 冷色/靛蓝残留: ${ln.trim().slice(0, 90)}`);
 });
-// 路由集合不变（任何新增 pathname 字面量都会红）。初值 = S2 开工前实测冻结的 54 个字面量；S4a-T10 登记 /export/layout-apply、S4a-T11 登记 /favicon.ico（56），批次2-T2 登记 /eval/create、/eval/promote（58，登记非放宽），2026-11-01 登记 /evals（评估历史独立页，59，登记非放宽），S5 登记 /onboarding、/onboarding/guided、/onboarding/step（引导向导页壳+步进 API，62，登记非放宽），S5F 登记 /onboarding/star-suggest（STAR AI 建议卡，63，登记非放宽；设计 dev-docs/2026-11-02-s5-design.md），S4b-A P3 登记 /job/gen-retry（批次重试端点，64，登记非放宽），批 1 拆页卡登记 /job/new（为岗位定制简历独立页，65，登记非放宽），批 3 网申包页面卡登记 /apply-profile（页面）+ /apply/field、/apply/bind、/apply/package、/apply/source（三态字段写入口）+ /apply/export（整包导出）（71，登记非放宽；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §4 批 3，DESIGN.md §10.11），批 3 AI 文案字段卡登记 /apply/copy/start、/apply/copy/state、/apply/copy/cancel、/apply/copy/confirm、/apply/copy/discard（生成→预览→确认五端点，76，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.12），批 3 跟进助手卡登记 /app/followup/start、/app/followup/state、/app/followup/cancel、/app/followup/discard（生成跟进语草稿四端点，92，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.13。总数以本行数组实测为准——早前登记行写的 76/80 是逐卡递增计数，与实测条数有漂移，2026-11-07 以逐条清点 92 为准）
+// 路由集合不变（任何新增 pathname 字面量都会红）。初值 = S2 开工前实测冻结的 54 个字面量；S4a-T10 登记 /export/layout-apply、S4a-T11 登记 /favicon.ico（56），批次2-T2 登记 /eval/create、/eval/promote（58，登记非放宽），2026-11-01 登记 /evals（评估历史独立页，59，登记非放宽），S5 登记 /onboarding、/onboarding/guided、/onboarding/step（引导向导页壳+步进 API，62，登记非放宽），S5F 登记 /onboarding/star-suggest（STAR AI 建议卡，63，登记非放宽；设计 dev-docs/2026-11-02-s5-design.md），S4b-A P3 登记 /job/gen-retry（批次重试端点，64，登记非放宽），批 1 拆页卡登记 /job/new（为岗位定制简历独立页，65，登记非放宽），批 3 网申包页面卡登记 /apply-profile（页面）+ /apply/field、/apply/bind、/apply/package、/apply/source（三态字段写入口）+ /apply/export（整包导出）（71，登记非放宽；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §4 批 3，DESIGN.md §10.11），批 3 AI 文案字段卡登记 /apply/copy/start、/apply/copy/state、/apply/copy/cancel、/apply/copy/confirm、/apply/copy/discard（生成→预览→确认五端点，76，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.12），批 3 跟进助手卡登记 /app/followup/start、/app/followup/state、/app/followup/cancel、/app/followup/discard（生成跟进语草稿四端点，92，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.13），批 3 分享副本卡登记 /share/copy（勾选隐藏字段→独立导出）+ /share/pdf（独立产物伺服）（94，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.14。总数以本行数组实测为准——早前登记行写的 76/80 是逐卡递增计数，与实测条数有漂移，2026-11-07 以逐条清点为准）
 const sm = fs.readFileSync(F, 'utf8');
 const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','/ai/prep','/ai/review','/ai/rewrite','/ai/test',
   '/ai/zone-analyze','/ai/zone-rewrite',
@@ -2176,6 +2186,7 @@ const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','
   '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf',
   '/job-panel.js','/job/brief','/job/changes','/job/create','/job/feedback-del','/job/generate','/job/gen-cancel','/job/gen-retry','/job/gen-start','/job/new','/layout-info','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',
   '/materials','/new','/onboarding','/onboarding/guided','/onboarding/star-suggest','/onboarding/step','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings','/eval/create','/eval/promote','/evals',
+  '/share/copy','/share/pdf',
   '/snapshot/baseline','/snapshot/note','/snapshot/pdf','/snapshot/view','/snapshots','/stats','/tag',
   '/theme-preview','/theme/apply',
   '/zones','/zones/init','/zone-panel.js','/upload'].sort();   // 2026-10-28 AUD-12：接回首页一直在调用却缺失的 PDF 上传入口（登记非放宽）；S6-A2：模板预览（只读）与主题选择两路由（登记非放宽）

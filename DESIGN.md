@@ -444,3 +444,22 @@ FIELDS（editor-shell.js） → typoCss(v) → #typo-custom（落盘进 <head>�
 - **断言同提交**：新增 `test-fixtures/reliability/test-followup-assistant.mjs`（判定矩阵：满 8 天/满 7 天有入口、才 2 天/面试中/有面试记录/已录用无入口 / 与「临近截止」并存且首页「近期日程」不受影响 / 阈值默认 7 + /settings 可配 + 非法值 400 且被拒不改写已存值（含 true / [3] 这类「Number() 会静默转换」的形状错，纯数字串可认）/ 生成走 genTasks 口径：真实用量 total=333、**无百分比**、取材是这条投递的简历且带公司名 / 草稿落投递记录且**不出现在其它任何文件** / **重新生成换新稿：投递记录只留新稿一份** / 模型只被调用一次 + 块内**无「发送」按钮**/无外发链接/无表单 / 无模型 409 + 页面入口禁用并写明原因 / 取消后迟到结果零落账 + 重复取消 409 / 丢弃清稿 / **浏览器段真点「生成跟进语」→ 出草稿 → 复制（桩剪贴板：复制源 = 草稿正文）** / `.fu-*` 红线扫描 / **冻结件逐字节钉定：resume-classic.css + template.html + render.mjs 三件固定 sha1**），`test-structure.sh` 登记执行。
   - **同提交改动的既有断言（登记非放宽）**：`test-structure.sh` 的 `/settings 保存` 字面量断言重锚为 `JSON.stringify({ active: profiles.length ? body.active : 0, profiles, followUpDays: fuDays })`——**profiles 仍整体原样 stringify、不走白名单**的意图不变，只是写入对象多了一个键。
   - **路由登记**：新增四端点 `/app/followup/start`、`/app/followup/state`、`/app/followup/cancel`、`/app/followup/discard` → `test-structure.sh` 的 `ROUTES_FROZEN` 登记（登记非放宽；数组实测 92 条，本节与登记行此前写的 76/80 是逐卡递增计数、与实测条数有漂移，2026-11-07 以逐条清点为准）。
+
+
+### 10.14 分享副本（2026-11-07 批 3 登记 · 卡片 b3c5）
+
+> 计划 §4 批 3「分享副本」条目：勾选隐藏字段 → 独立预览/PDF（不动原简历），导出前文本层校验无残留（复用批 2 文本层能力）；导出记录可查被哪些投递引用。上位数据层/页面层口径见 §10.10/§10.11。本节是**分享副本**口径：**投递记录关联所用字段包不在本卡**（批 3 后续卡）。
+
+- **账本**：`apply-profiles.json` 新增顶层 `shares` 段（与 common/packages/copyTasks/copyDrafts 同表、同一 tx 纪律；读时迁移逐条补齐形状，旧账本无该键不算损坏、既有数据零丢失）。记录形状 `{ id, docId, hidden[], createdAt, file, chars }`——**只记事实**（隐藏了哪些字段/来源文档/文本层字符量/产物路径），**不记任何字段值**（个人数据不进第二份文件）；产物 = `pdfs/shares/<shareId>.pdf`（与 pdfs/history、pdfs/archive 同属派生产物子目录惯例），PDF 与 `.env.json` 旁车成对落盘。导出记录不设清理配额（与 pdfs/history 同口径），登记备查。
+- **隐藏 = 物理删除（不是 display:none）**：姓名 = 删除 `<h1>`；电话/邮箱 = 只在**联系方式块内**摘除匹配串（`share-copy.mjs` 的 hideFieldsInHtml，摘除与残留预期用同一组正则——「删了什么」与「查什么」不两套口径）；章节类（自评/技能/工作/项目/教育）= 整个 `<section>` 移除（标题一并），章节匹配复用 §10.10 派生口径的 `SECTION_TITLES`（唯一出处，防两处规格漂移），且**不分编辑器隐藏态**（编辑器隐藏的章节仍会渲染进 PDF，分享副本按内容实况处理）。副本文件里不存在隐藏载荷。
+- **原简历零改动（铁律）**：渲染走独立 `renderDoc`（不经 `renderCurrent`）——**不写 docs/docs-meta、不触碰 pdfs/<id>.pdf、不做任何渲染记账**；夹具逐字节断言 docs/*.html 与 docs-meta.json 不变、pdfs/<id>.pdf 不出现。
+- **导出前文本层校验（批 2 能力复用，fail-honest）**：先渲染到临时名 → 服务端 `pdftotext` 全文提取 → `findResidues`（与导出页 layerCheck 同款「去空白子串比对」口径）→ **零残留才转正发布**，有残留整体拒绝（409，写明哪个字段还有几处残留），不落记录、不落产物。残留预期从**全文**挖掘（不只联系方式块）：正文书了同一个电话/邮箱/姓名照样算残留。工具**不代改简历正文**（正文出现同样内容时由用户自己在原简历处理——工具替用户删正文等于篡改内容）。文本层未取到 = 409 拒导出（不产出无法核验的副本），绝不报通过。
+- **absent 如实回报**：勾选了原简历里没有的字段（派生值为空，判据 = `deriveResumeFields` 同一份派生口径）→ 仍可导出其余字段，但响应带 `absent` 清单并在页面提示「原简历没有这些字段（未隐藏任何内容）」，不假装隐藏了。
+- **导出记录可查被哪些投递引用（实时派生，绝不存储）**：与 usedByExport 同款口径——`app.shareId === 记录 id` 即引用（权威来源 = applications.json，读取时派生）。关联动作 = 创建分享副本时带 `appId`（写 `app.shareId`；先验后做：appId 不存在 → 404 且**零部分产物零记录**）。页面记录行显示「投递引用：公司·岗位」或如实显示「投递引用：无」。
+- **路由**：`POST /share/copy`（docId + hidden[] + appId? → 导出并落记录）与 `GET /share/pdf?id=`（独立产物伺服，inline，纯读；shareId 形状校验挡路径穿越；记录在而产物缺 → 404 如实说明）。
+- **形状守卫（形状错即拒）**：hidden 非数组/为空 → 400；hidden 含未知键或非派生字段（AI 文案/独立字段不在简历里，无从隐藏）→ 400；docId 非法形状 → 400、不存在 → 404；appId 非法形状 → 400、不存在 → 404；GET /share/pdf 形状错 → 400、未知 → 404。
+- **页面**：/apply-profile 页新增「分享副本」卡（8 个派生字段勾选 + 来源简历下拉 + 关联投递下拉 + 导出按钮 + 记录列表，全部 server 渲染；无文档时如实提示「还没有可导出的简历」）。空态提示只在列表空时出现（行动位，不挂页题）。
+- **样式口径**：新增 `.ap-sh*` 规则的间距一律 `--space-*` token（§5.1），圆角走既有 `--radius`（§5.2），**零 `box-shadow`**（§3.1），字号只取既有档（§4.1：12px 元数据 / 13px 勾选行），不新增档位。
+- **诚实边界**：副本与「导出记录」都是本机产物，**没有任何发送/上传/外发能力**（「分享」指人肉把这份 PDF 发出去；工具不代发——批 3 硬约束同 §10.13）。无分数无结论词（批 2 §10.9 同口径）：记录行只写事实（隐藏了什么/字符量/被哪些投递引用）。
+- **断言同提交**：新增 `test-fixtures/reliability/test-share-copy.mjs`（勾选隐藏联系方式 → 独立 PDF 文本层无残留 + 未勾选内容保留 + 原简历逐字节不变 + docs-meta 不变 + pdfs/<id>.pdf 不出现 / 正文残留 → 409 且零记录零产物 + 同文档只勾不冲突字段可正常导出 / 章节隐藏 + 记录行写明隐藏清单 + 投递引用实时派生（关联写 app.shareId、未关联显示无）/ absent 如实回报 / 形状守卫矩阵（含 appId 404 零部分产物、GET /share/pdf 404/400）/ 页面 UI 结构（8 勾选 + 下拉 + 记录列表）/ **浏览器段真点「导出分享副本」→ 新记录 + 产物可打开且文本层干净** / `.ap-sh*` 红线扫描 / **冻结件逐字节钉定：resume-classic.css + template.html + render.mjs 三件固定 sha1**），`test-structure.sh` 登记执行。
+  - **路由登记**：新增两端点 `/share/copy`、`/share/pdf` → `test-structure.sh` 的 `ROUTES_FROZEN` 登记（登记非放宽；数组实测 94 条）。

@@ -35,9 +35,10 @@ const JD_MAX_CHARS = 64 * 1024;
 import { applyOps, reviewConsistency, refFresh, buildEvidencePrompt, parseEvidence, buildInterviewPrompt, parseInterview, guardOps, exportChecks, layoutDiagnose, resolveInterviewSources, interviewSourceView, evidenceSourceView } from './evidence.mjs';
 import { completeGenResult } from './gen-result.mjs';   // 任务完成判定纯函数（设计 §4）：显式成功/拒绝 + 独立工作副本
 import { assembleTemplate, listThemes, themeCss, themeRegistration } from './template.mjs';
-import { loadApplyProfilesView, loadApplyProfiles, setField, setFieldSource, bindCommonMaster, ensurePackage, updateApplyProfiles, copyTaskKey, copySource, FIELD_CATALOG, MODE_FOLLOW, MODE_OVERRIDE, MODE_MANUAL, MODE_AI, SOURCE_RESUME, SOURCE_COMMON } from './apply-profile.mjs';   // 网申包数据层（批 3 卡片 b3c1）：账本/三态/派生/漂移
+import { loadApplyProfilesView, loadApplyProfiles, setField, setFieldSource, bindCommonMaster, ensurePackage, updateApplyProfiles, copyTaskKey, copySource, FIELD_CATALOG, DERIVED_KEYS, MODE_FOLLOW, MODE_OVERRIDE, MODE_MANUAL, MODE_AI, SOURCE_RESUME, SOURCE_COMMON } from './apply-profile.mjs';   // 网申包数据层（批 3 卡片 b3c1）：账本/三态/派生/漂移
 import { startCopyTask, runCopyTask, copyTaskState, cancelCopyTask, confirmCopyDraft, discardCopyDraft, finishCopyTask, isCopyKey, stageLabel, NO_MODEL_HINT, COPY_TTL_MS } from './apply-gen.mjs';   // AI 文案字段生成任务层（批 3 卡片 b3c3）：genTasks 口径（进度/取消/真实用量）
 import { followUpState, followUpDays, normalizeFollowUpDays, followUpTask, followUpDraft, startFollowUpTask, followUpStateOf, cancelFollowUpTask, discardFollowUpDraft, runFollowUpTask, failFollowUpTask, followUpSource, FOLLOW_UP_TTL_MS, FOLLOW_UP_NO_MODEL_HINT } from './followup.mjs';   // 跟进助手（批 3 卡片 b3c4）：无回应满 N 天 → 跟进语草稿（只生成不发送）
+import { hideFieldsInHtml, shareExpectations, findResidues, absentKeys, addShareRecord, sharePdfPath, SHARE_ID_RE } from './share-copy.mjs';   // 分享副本（批 3 卡片 b3c5）：勾选隐藏字段 → 独立预览/PDF + 文本层无残留校验
 import { ICONS } from './vendors/icons.mjs';  // Lucide 图标数据（纯数据文件，零 npm 依赖）
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -1150,6 +1151,9 @@ const exportsOf = (m) => (Array.isArray(m && m.exports) ? m.exports : []);
 // （2026-10-22 审查 [低] 实测：1200 条投递时首页 182ms → 37ms）
 const deliveredRefs = (docId, apps) => (apps || loadApps()).filter((a) => a && a.docId === docId);
 const usedByExport = (exportId) => loadApps().filter((a) => a && a.exportId && a.exportId === exportId); // 使用某导出的投递
+// 引用某分享副本的投递（批 3 卡片 b3c5）：实时派生自 applications.json（权威来源，绝不存储）——
+// 与 usedByExport 同款口径：app.shareId === 分享副本记录 id；可传已取好的 apps 复用（页面每渲染一次只读一遍账本）。
+const usedByShare = (shareId, apps) => (apps || loadApps()).filter((a) => a && a.shareId && a.shareId === shareId);
 const pendingConflictsOf = (m) => {
   const j = m && m.job;
   return (j && Array.isArray(j.changes)) ? j.changes.filter((c) => c && c.level === 'conflict' && ['pending', 'skipped'].includes(c.status)) : [];   // S4a-T9 后补齐：skipped 的 conflict 仍算未解决（可投递与导出页同口径）
@@ -1712,6 +1716,13 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .fu-draft[hidden]{display:none}
 .fu-text{width:100%;font-family:var(--font);font-size:13px}
 .fu-acts{display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap}
+/* 分享副本（2026-11-07 批 3 §4 卡片 b3c5）：勾选隐藏字段 → 独立预览/PDF + 文本层无残留校验。
+   间距一律 --space-* token（§5.1）；圆角走既有 --radius（§5.2）；零 box-shadow（§3.1 静态层级零投影）；
+   字号只取既有档（§4.1：12px 元数据、13px 面板正文与勾选行），不新增档位。 */
+.ap-sh-keys{display:flex;gap:var(--space-3);flex-wrap:wrap;align-items:center}
+.ap-sh-key{display:flex;align-items:center;gap:var(--space-2);font-size:13px}
+.ap-sh-list{margin-top:var(--space-3)}
+.ap-sh-row{display:flex;justify-content:space-between;align-items:center;gap:var(--space-2);flex-wrap:wrap;border-top:1px dashed var(--line);margin-top:var(--space-2);padding-top:var(--space-2)}
 .cta{display:inline-block;background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--radius);padding:9px 16px;font-weight:700;font-size:14px;cursor:pointer}
 .cta:hover{transform:translateY(-1px)}
 .cta-alt{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:var(--radius);padding:9px 14px;font-weight:600;font-size:13px;cursor:pointer}
@@ -2698,6 +2709,34 @@ function applyProfilePage() {
     </section>`;
   }).join('');
 
+  // ===== 分享副本（批 3 卡片 b3c5）：勾选隐藏字段 → 独立预览/PDF；记录可查被哪些投递引用 =====
+  // 可隐藏字段 = 8 个从简历派生的字段（AI 文案/独立字段不在简历里，无从隐藏）；引用实时派生自投递记录。
+  const apps4share = loadApps();
+  const shareRows = Object.values(raw.shares || {})
+    .sort((a, b) => String(b.id || '').localeCompare(String(a.id || '')))
+    .map((s) => {
+      const used = usedByShare(s.id, apps4share);
+      const hiddenLabels = (Array.isArray(s.hidden) ? s.hidden : [])
+        .map((k) => { const it = FIELD_CATALOG.find((f) => f.key === k); return it ? it.label : String(k); });
+      const when = s.createdAt ? new Date(s.createdAt).toLocaleString('zh-CN') : String(s.id || '');
+      return `<div class="ap-sh-row" data-share-id="${escAttr(s.id)}">
+        <span class="ap-note">${escHtml(when)} · 文档 ${escHtml(docLabel(s.docId))} · 隐藏：${hiddenLabels.length ? escHtml(hiddenLabels.join('、')) : '（无）'} · 文本层 ${Number(s.chars) || 0} 字符 · 投递引用：${used.length ? escHtml(used.map((a) => String(a.company || '') + '·' + String(a.role || '')).join('、')) : '无'}</span>
+        <a class="cta-alt" href="/share/pdf?id=${encodeURIComponent(String(s.id || ''))}">打开 PDF</a>
+      </div>`;
+    }).join('');
+  const shareKeys = FIELD_CATALOG.filter((f) => f.derived)
+    .map((f) => `<label class="ap-sh-key"><input type="checkbox" name="apShareHide" value="${escAttr(f.key)}">${escHtml(f.label)}</label>`).join('');
+  const shareDocOptions = infos.map((d) => `<option value="${escAttr(d.id)}"${d.id === raw.common.sourceDocId ? ' selected' : ''}>${d.title}（${escAttr(d.id)}）</option>`).join('');
+  const shareAppOptions = apps4share.map((a) => `<option value="${escAttr(a.id)}">${escHtml(String(a.company || '') + '·' + String(a.role || ''))}（${escAttr(a.id)}）</option>`).join('');
+  const shareForm = infos.length
+    ? `<form id="apShareForm" class="ap-bar">
+        <label class="ap-src">来源简历<select id="apShareDoc">${shareDocOptions}</select></label>
+        <label class="ap-src">关联投递<select id="apShareApp"><option value="">不关联</option>${shareAppOptions}</select></label>
+        <div class="ap-sh-keys">${shareKeys}</div>
+        <button type="submit">导出分享副本</button>
+      </form>`
+    : `<div class="ap-bar"><span class="ap-note">还没有可导出的简历</span></div>`;
+
   return page('网申包', `
     <div class="page-head"><h1>网申包</h1><span id="apMsg" role="status" class="ap-note"></span></div>
     ${led.corrupt ? `<div class="card" style="border-color:var(--err-soft);background:var(--err-soft);color:var(--err)"><b>${icon('circle-alert', 13)}数据文件损坏，已停止写入：</b>apply-profiles.json —— 请先人工修复或从备份恢复。</div>` : ''}
@@ -2725,6 +2764,13 @@ function applyProfilePage() {
       </div>
     </section>
     ${pkgSections}
+    <section class="ap-sec" id="apShare">
+      <div class="card">
+        <b class="card-title">分享副本</b>
+        ${shareForm}
+        <div class="ap-sh-list" id="apShareList">${shareRows || '<div class="ap-note" style="margin-top:var(--space-3)">还没有分享副本（勾选要隐藏的字段并导出后，这里会列出每一份独立 PDF）</div>'}</div>
+      </div>
+    </section>
     <script>
     (function () {
       var msg = document.getElementById('apMsg');
@@ -2941,6 +2987,21 @@ function applyProfilePage() {
         if (!company) { if (msg) msg.textContent = '公司必填'; return; }
         __wv('/apply/package', { company: company, role: document.getElementById('apPkgRole').value.trim(), note: document.getElementById('apPkgNote').value.trim() }, msg)
           .then(function () { location.reload(); }).catch(function () {});
+      });
+      // 分享副本导出（b3c5）：勾选隐藏字段 → POST /share/copy；有如实提醒（absent/关联失败）时先展示再刷新。
+      var shareFormEl = document.getElementById('apShareForm');
+      if (shareFormEl) shareFormEl.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var keys = Array.prototype.map.call(shareFormEl.querySelectorAll('input[name="apShareHide"]:checked'), function (i) { return i.value; });
+        var appId = document.getElementById('apShareApp').value;
+        __wv('/share/copy', { docId: document.getElementById('apShareDoc').value, hidden: keys, appId: appId || undefined }, msg)
+          .then(function (d) {
+            var extra = (d && d.absent && d.absent.length) ? '原简历没有这些字段：' + d.absent.join('、') + '（未隐藏任何内容）' : '';
+            if (d && d.warning) extra = extra ? extra + '；' + d.warning : d.warning;
+            if (extra) { if (window.__status) { try { __status(msg, 'err', '已导出；' + extra); } catch (e2) {} } else if (msg) { msg.textContent = '已导出；' + extra; } }
+            setTimeout(function () { location.reload(); }, extra ? 2600 : 0);
+          })
+          .catch(function () {});
       });
     })();
     </script>`, 'apply');
@@ -4557,6 +4618,102 @@ async function handler(req, res) {
       try { discardCopyDraft(root, scope.scope, key); }
       catch (e) { return sendJson((e && e.httpCode) || 400, { ok: false, error: String((e && e.message) || e), code: (e && e.code) || '' }); }
       return sendJson(200, { ok: true });
+    }
+    // ===== 分享副本（批 3 卡片 b3c5）：勾选隐藏字段 → 独立预览/PDF（不动原简历）=====
+    // 隐藏 = 物理删除（share-copy.mjs hideFieldsInHtml：姓名删 <h1>、联系方式块内摘除电话/邮箱、章节整段移除），
+    // 副本文件里不存在隐藏载荷。渲染走独立 renderDoc（不经 renderCurrent）：**不写 docs/docs-meta、
+    // 不触碰 pdfs/<id>.pdf**——原简历与它的渲染记账零改动。
+    // 导出前文本层校验（批 2 文本层能力复用：pdftotext + 去空白比对，share-copy.mjs findResidues）：
+    // 被隐藏字段原文在副本文本层仍有残留（哪怕在正文别处）→ 整体拒绝（409），不落记录不落产物。
+    if (req.method === 'POST' && url.pathname === '/share/copy') {
+      const body = await readBodyAuto(req);
+      const docId = String(body.docId || '');
+      if (!VALID_ID.test(docId)) return sendJson(400, { ok: false, error: 'invalid docId' });
+      if (!fs.existsSync(docPath(docId))) return sendJson(404, { ok: false, error: 'doc not found' });
+      const hidden = Array.isArray(body.hidden) ? [...new Set(body.hidden.filter((k) => typeof k === 'string'))] : null;
+      if (!hidden || !hidden.length) return sendJson(400, { ok: false, error: '未勾选任何要隐藏的字段' });
+      const badKey = hidden.find((k) => !DERIVED_KEYS.includes(k));
+      if (badKey) return sendJson(400, { ok: false, error: '不是简历里可隐藏的字段：' + badKey + '（只有从简历派生的字段能隐藏）' });
+      const appId = body.appId === undefined || body.appId === null || body.appId === '' ? '' : String(body.appId);
+      if (appId) {
+        if (!/^[0-9-]+$/.test(appId)) return sendJson(400, { ok: false, error: 'invalid appId' });
+        // 先验后做：关联投递的校验放在任何产物/记录产生之前（不存在 → 404 零部分产物）
+        if (!loadApps().some((a) => a && a.id === appId)) return sendJson(404, { ok: false, error: '投递记录不存在（appId=' + appId.slice(0, 40) + '）' });
+      }
+      const led0 = loadApplyProfiles(root);
+      if (led0.corrupt) return sendJson(500, { ok: false, error: '数据文件损坏，已停止写入：apply-profiles.json。请先人工修复或从备份恢复。' });
+      const meta = loadMeta()[docId] || {};
+      const docHtml = applyDocTheme(fs.readFileSync(docPath(docId), 'utf8'), meta);   // 与当前文档渲染同源的主题装配
+      const frozen = freezeHtml(hideFieldsInHtml(docHtml, hidden), meta);
+      if (!frozen.reproducible) {
+        return sendJson(409, { ok: false, error: '文档包含不可复现资源（远程 URL 或缺失文件），请先本地化后再导出分享副本', remote: frozen.remote, missing: frozen.missing });
+      }
+      const absent = absentKeys(docHtml, hidden);
+      const shareId = 'sh-' + timestamp() + '-' + randomBytes(3).toString('hex');
+      const shareDirPath = path.join(root, 'pdfs', 'shares');
+      fs.mkdirSync(shareDirPath, { recursive: true });
+      const stamp = process.pid + '-' + Date.now() + '-' + randomBytes(4).toString('hex');
+      const tmpOut = path.join(shareDirPath, `.tmp-${stamp}.pdf`);
+      const tmpSrc = path.join(os.tmpdir(), `resume-share-src-${stamp}.html`);
+      atomicWrite(tmpSrc, frozen.html);
+      let rr = null;
+      try {
+        rr = await renderDoc({
+          src: tmpSrc, out: tmpOut,
+          env: { RESUME_RENDER_INPUT_ID: frozen.renderInputId, RESUME_RENDER_REPRODUCIBLE: frozen.reproducible ? '1' : '0' },
+          lease: leaseOf(req)
+        });
+      } finally { try { fs.unlinkSync(tmpSrc); } catch {} }
+      const failShare = (code, error, extra) => {
+        try { fs.rmSync(tmpOut, { force: true }); } catch {}
+        try { fs.rmSync(tmpOut + '.env.json', { force: true }); } catch {}
+        return sendJson(code, { ok: false, error, ...(extra || {}) });
+      };
+      if (!rr || !rr.ok || !fs.existsSync(tmpOut)) {
+        return failShare(500, (rr && rr.sizeError) || '渲染失败，分享副本未导出（详见服务日志）');
+      }
+      // 文本层校验（批 2 能力复用）：先渲染到临时名，校验零残留才转正——绝不发布带残留的副本
+      let layerText = '';
+      try { layerText = execFileSync('pdftotext', [tmpOut, '-'], { timeout: 30000 }).toString('utf8'); } catch { layerText = ''; }
+      if (!layerText) {
+        return failShare(409, 'PDF 文本层未取到，无法校验隐藏字段是否残留——分享副本未导出（不产出无法核验的副本）');
+      }
+      const residues = findResidues(layerText, shareExpectations(docHtml, hidden));
+      if (residues.length) {
+        const detail = residues.map((x) => `${x.label} 仍有 ${x.count} 处残留`).join('；');
+        return failShare(409, '文本层校验未通过：' + detail + '。工具只在联系方式块内摘除联系方式；正文其他位置出现同样内容时，请先在原简历中处理（工具不代改简历正文）。', { residues });
+      }
+      fs.renameSync(tmpOut, sharePdfPath(root, shareId));
+      if (fs.existsSync(tmpOut + '.env.json')) fs.renameSync(tmpOut + '.env.json', sharePdfPath(root, shareId) + '.env.json');
+      try {
+        addShareRecord(root, { id: shareId, docId, hidden, createdAt: new Date().toISOString(), file: 'pdfs/shares/' + shareId + '.pdf', chars: layerText.length });
+      } catch (e) {
+        return sendJson((e && e.httpCode) || 500, { ok: false, error: '分享副本 PDF 已生成，但导出记录写入失败：' + String((e && e.message) || e) });
+      }
+      let warning = null;
+      if (absent.length) warning = '原简历没有这些字段：' + absent.map((k) => (FIELD_CATALOG.find((f) => f.key === k) || { label: k }).label).join('、') + '（未隐藏任何内容）';
+      if (appId) {
+        try {
+          const apps = loadApps();
+          const app = apps.find((a) => a && a.id === appId);
+          if (app) { app.shareId = shareId; app.updatedAt = timestamp(); saveApps(apps); }
+          else warning = (warning ? warning + '；' : '') + '关联投递失败：记录已不存在';
+        } catch (e) { warning = (warning ? warning + '；' : '') + '关联投递失败：' + String((e && e.message) || e); }
+      }
+      return sendJson(200, { ok: true, shareId, url: '/share/pdf?id=' + encodeURIComponent(shareId), absent, warning });
+    }
+    // 分享副本产物伺服（独立预览/PDF）：纯读。shareId 形状校验挡路径穿越；记录在账本、产物在
+    // pdfs/shares/，两者缺一都如实 404（记录与产物成对落盘，缺失说明产物被外部删除）。
+    if (req.method === 'GET' && url.pathname === '/share/pdf') {
+      const sid = String(url.searchParams.get('id') || '');
+      if (!SHARE_ID_RE.test(sid) || sid.length > 80) return send(400, 'invalid share id', 'text/plain');
+      const ledS = loadApplyProfiles(root);
+      const rec = ledS.corrupt ? null : ((ledS.data.shares || {})[sid] || null);
+      if (!rec) return send(404, '分享副本不存在（shareId=' + sid.slice(0, 64) + '）', 'text/plain');
+      const f = sharePdfPath(root, sid);
+      if (!fs.existsSync(f)) return send(404, '分享副本记录存在但产物缺失：' + rec.file + '（产物被外部删除时，这份记录无法再打开）', 'text/plain');
+      res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; ${dispositionFileName('share-' + sid + '.pdf')}` });
+      return fs.createReadStream(f).on('error', () => res.destroy()).pipe(res);
     }
     // 绑定母版（通用表跟随来源的出处）：换母版 = 重新确认全部跟随字段的快照（清漂移）；手填与独立字段不动。
     if (req.method === 'POST' && url.pathname === '/apply/bind') {

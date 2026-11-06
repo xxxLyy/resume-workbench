@@ -7,7 +7,10 @@
 //     common:   { sourceDocId, fields: { <key>: <字段条目> } },
 //     packages: { <pkgId>: { company, role, note, sourceDocId, fields: { <key>: <字段条目> } } },
 //     copyTasks:  { <taskKey>: <任务记录> },   // b3c3：AI 文案生成任务（genTasks 口径）
-//     copyDrafts: { <taskKey>: <待确认稿> } }   // b3c3：生成结果只落这里，确认后才进字段
+//     copyDrafts: { <taskKey>: <待确认稿> },   // b3c3：生成结果只落这里，确认后才进字段
+//     shares:     { <shareId>: <分享副本导出记录> } }  // b3c5：勾选隐藏字段 → 独立 PDF 的导出记录
+//       记录形状 { id, docId, hidden[], createdAt, file, chars } —— 只记事实（隐藏了哪些字段/字符量），
+//       **不记任何字段值**（个人数据不进第二份文件）；被哪些投递引用实时派生自 applications.json（app.shareId）。
 //
 // 字段条目（每个字段一条，三态）：
 //   follow   跟随来源：值 = 来源派生纯文本（母版简历 / 通用表）；来源变更 → 标漂移（drift）
@@ -86,7 +89,7 @@ const err = (code, msg) => Object.assign(new Error(msg), { code });
 
 // ===== 账本形状 =====
 export function emptyProfiles() {
-  return { version: PROFILES_VERSION, updatedAt: '', common: { sourceDocId: '', fields: {} }, packages: {}, copyTasks: {}, copyDrafts: {} };
+  return { version: PROFILES_VERSION, updatedAt: '', common: { sourceDocId: '', fields: {} }, packages: {}, copyTasks: {}, copyDrafts: {}, shares: {} };
 }
 
 export function applyProfilesPath(root) {
@@ -112,6 +115,8 @@ export function validateProfiles(d) {
   // AI 文案任务/待确认稿（b3c3）：有则须为对象
   if (d.copyTasks !== undefined && !plainObj(d.copyTasks)) return false;
   if (d.copyDrafts !== undefined && !plainObj(d.copyDrafts)) return false;
+  // 分享副本导出记录（b3c5）：有则须为对象
+  if (d.shares !== undefined && !plainObj(d.shares)) return false;
   return true;
 }
 
@@ -146,6 +151,24 @@ export function migrateProfiles(d) {
     // AI 文案生成任务与待确认稿（b3c3）：任务/稿与字段同表 → 确认入库可同事务完成
     copyTasks: (src.copyTasks && typeof src.copyTasks === 'object' && !Array.isArray(src.copyTasks)) ? { ...src.copyTasks } : {},
     copyDrafts: (src.copyDrafts && typeof src.copyDrafts === 'object' && !Array.isArray(src.copyDrafts)) ? { ...src.copyDrafts } : {},
+    // 分享副本导出记录（b3c5）：逐条补齐形状；记录只存事实（id/docId/hidden 清单/时间/文件/字符量），不存字段值
+    shares: (() => {
+      const raw = (src.shares && typeof src.shares === 'object' && !Array.isArray(src.shares)) ? src.shares : {};
+      const shares = {};
+      for (const [sid, s] of Object.entries(raw)) {
+        if (!s || typeof s !== 'object' || Array.isArray(s)) { shares[sid] = { id: sid, docId: '', hidden: [], createdAt: '', file: '', chars: 0 }; continue; }
+        shares[sid] = {
+          ...s,
+          id: String(s.id || sid),
+          docId: String(s.docId || ''),
+          hidden: Array.isArray(s.hidden) ? s.hidden.map(String) : [],
+          createdAt: String(s.createdAt || ''),
+          file: String(s.file || ''),
+          chars: Number.isFinite(s.chars) ? s.chars : 0,
+        };
+      }
+      return shares;
+    })(),
   };
 }
 
@@ -199,11 +222,23 @@ export function updateApplyProfiles(root, mutator) {
 // ===== 母版派生纯文本（跟随来源的取值口径）=====
 // 纯函数、零落盘：从简历正文派生各字段的纯文本（隐藏章节不参与）。
 const SECTION_TITLE_RE = /<div[^>]*class="[^"]*\bsection-title\b[^"]*"[^>]*>[\s\S]*?<\/div>/i;
-function sectionPlain(sec) {
-  const inner = String((sec && sec.html) || '').replace(SECTION_TITLE_RE, '');
-  return docToText(inner);
+// 章节标题映射（派生口径唯一出处；分享副本 b3c5 按同一映射定位要整段移除的章节，防两处规格漂移）
+export const SECTION_TITLES = {
+  selfIntro: ['个人总结', '自我评价', '自评'],
+  skills: ['专业技能', '技能', '专业能力'],
+  work: ['工作经历', '工作经验', '工作履历'],
+  projects: ['项目经历', '项目经验'],
+  education: ['教育经历', '教育背景'],
+};
+// 章节正文纯文本（剥掉章节标题行；不给 sec 对象也能用 → 分享副本 b3c5 复用同一口径）
+export function sectionBodyText(secHtml) {
+  return docToText(String(secHtml == null ? '' : secHtml).replace(SECTION_TITLE_RE, ''));
 }
-function pickSection(sections, titles) {
+function sectionPlain(sec) {
+  return sectionBodyText((sec && sec.html) || '');
+}
+function pickSection(sections, key) {
+  const titles = SECTION_TITLES[key] || [];
   for (const t of titles) {
     const hit = sections.find((s) => String(s.title || '').trim() === t);
     if (hit) return sectionPlain(hit);
@@ -222,11 +257,11 @@ export function deriveResumeFields(html) {
   const ph = /(?:1[3-9]\d[-\s]?\d{4}[-\s]?\d{4}|0\d{2,3}[-\s]?\d{3,4}[-\s]?\d{3,4})/.exec(contact);
   out.phone = ph ? ph[0] : '';
   const sections = sectionsOf(src).filter((s) => !s.hidden);
-  out.selfIntro = pickSection(sections, ['个人总结', '自我评价', '自评']);
-  out.skills = pickSection(sections, ['专业技能', '技能', '专业能力']);
-  out.work = pickSection(sections, ['工作经历', '工作经验', '工作履历']);
-  out.projects = pickSection(sections, ['项目经历', '项目经验']);
-  out.education = pickSection(sections, ['教育经历', '教育背景']);
+  out.selfIntro = pickSection(sections, 'selfIntro');
+  out.skills = pickSection(sections, 'skills');
+  out.work = pickSection(sections, 'work');
+  out.projects = pickSection(sections, 'projects');
+  out.education = pickSection(sections, 'education');
   return out;
 }
 
