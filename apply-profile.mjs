@@ -408,6 +408,15 @@ export function copySource(root, scope) {
   return { docId, fields: d || {} };
 }
 
+// 某份文档的派生要点（纯函数、只读、零落盘）：供跟进助手按投递记录取材。
+// docId 闸门与拼路径都留在模块内（投递记录里的 docId 是外部可编辑内容，越界由模块挡）。
+export function deriveDocFields(root, docId) {
+  const id = String(docId || '');
+  if (!VALID_ID.test(id)) return null;   // 闸门：外部可编辑内容不能拼路径
+  const ctx = makeCtx(root);
+  return ctx.derived(id);
+}
+
 // 作用范围的抬头信息（公司/岗位）：AI 文案 prompt 用；通用表没有公司/岗位 → 空串。
 export function scopeMeta(root, scope) {
   const l = loadApplyProfiles(root);

@@ -100,6 +100,14 @@ node ./test-fixtures/reliability/test-apply-profile-page.mjs
 #         计划 dev-docs/2026-11-05-roadmap-batch-plan.md §4 批 3，DESIGN.md §10.12）=====
 node ./test-fixtures/reliability/test-apply-copy-fields.mjs
 
+# ===== 批3 跟进助手（卡片 b3c4）：投递卡「无回应超 N 天（默认 7，/settings 可配）」→「生成跟进语」入口
+#       + 走既有 genTasks 口径（真实阶段/真实用量/无百分比/可取消/取消后迟到零落账）
+#       + 草稿不发送（只落本机投递记录；页面只有复制/丢弃，无发送/代填/外发入口）
+#       + 与既有逾期/临近截止提醒并存不冲突（同一张卡可同时有「临近截止」与「生成跟进语」）
+#       （隔离根 + 随机端口 + 合成文档与投递 + 本机假 LLM；Chromium 缺失 exit 2；
+#         计划 dev-docs/2026-11-05-roadmap-batch-plan.md §4 批 3，DESIGN.md §10.13）=====
+node ./test-fixtures/reliability/test-followup-assistant.mjs
+
 # ===== VQA 视觉验收截图（零断言、退出 0）：8 个关键页 1280x900 全页图落 /tmp/shots-after，
 #       视觉判定走 DESIGN.md 对照（人工/视觉流程），本夹具只产出真实隔离实例渲染截图；Chromium 缺失 exit 2 =====
 node ./test-fixtures/reliability/test-visual-screens.mjs
@@ -2159,12 +2167,12 @@ const COLD = /#F4F5F8|#202737|#697186|#DCE0E8|#5B5DE8|#EEEFFE|#409eff|#2563eb|#d
 fs.readFileSync(F, 'utf8').split('\n').forEach((ln, i) => {
   if (COLD.test(ln)) fail(`${F}:${i + 1} 冷色/靛蓝残留: ${ln.trim().slice(0, 90)}`);
 });
-// 路由集合不变（任何新增 pathname 字面量都会红）。初值 = S2 开工前实测冻结的 54 个字面量；S4a-T10 登记 /export/layout-apply、S4a-T11 登记 /favicon.ico（56），批次2-T2 登记 /eval/create、/eval/promote（58，登记非放宽），2026-11-01 登记 /evals（评估历史独立页，59，登记非放宽），S5 登记 /onboarding、/onboarding/guided、/onboarding/step（引导向导页壳+步进 API，62，登记非放宽），S5F 登记 /onboarding/star-suggest（STAR AI 建议卡，63，登记非放宽；设计 dev-docs/2026-11-02-s5-design.md），S4b-A P3 登记 /job/gen-retry（批次重试端点，64，登记非放宽），批 1 拆页卡登记 /job/new（为岗位定制简历独立页，65，登记非放宽），批 3 网申包页面卡登记 /apply-profile（页面）+ /apply/field、/apply/bind、/apply/package、/apply/source（三态字段写入口）+ /apply/export（整包导出）（71，登记非放宽；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §4 批 3，DESIGN.md §10.11），批 3 AI 文案字段卡登记 /apply/copy/start、/apply/copy/state、/apply/copy/cancel、/apply/copy/confirm、/apply/copy/discard（生成→预览→确认五端点，76，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.12）
+// 路由集合不变（任何新增 pathname 字面量都会红）。初值 = S2 开工前实测冻结的 54 个字面量；S4a-T10 登记 /export/layout-apply、S4a-T11 登记 /favicon.ico（56），批次2-T2 登记 /eval/create、/eval/promote（58，登记非放宽），2026-11-01 登记 /evals（评估历史独立页，59，登记非放宽），S5 登记 /onboarding、/onboarding/guided、/onboarding/step（引导向导页壳+步进 API，62，登记非放宽），S5F 登记 /onboarding/star-suggest（STAR AI 建议卡，63，登记非放宽；设计 dev-docs/2026-11-02-s5-design.md），S4b-A P3 登记 /job/gen-retry（批次重试端点，64，登记非放宽），批 1 拆页卡登记 /job/new（为岗位定制简历独立页，65，登记非放宽），批 3 网申包页面卡登记 /apply-profile（页面）+ /apply/field、/apply/bind、/apply/package、/apply/source（三态字段写入口）+ /apply/export（整包导出）（71，登记非放宽；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §4 批 3，DESIGN.md §10.11），批 3 AI 文案字段卡登记 /apply/copy/start、/apply/copy/state、/apply/copy/cancel、/apply/copy/confirm、/apply/copy/discard（生成→预览→确认五端点，76，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.12），批 3 跟进助手卡登记 /app/followup/start、/app/followup/state、/app/followup/cancel、/app/followup/discard（生成跟进语草稿四端点，92，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.13。总数以本行数组实测为准——早前登记行写的 76/80 是逐卡递增计数，与实测条数有漂移，2026-11-07 以逐条清点 92 为准）
 const sm = fs.readFileSync(F, 'utf8');
 const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','/ai/prep','/ai/review','/ai/rewrite','/ai/test',
   '/ai/zone-analyze','/ai/zone-rewrite',
   '/apply-profile','/apply/bind','/apply/copy/cancel','/apply/copy/confirm','/apply/copy/discard','/apply/copy/start','/apply/copy/state','/apply/export','/apply/field','/apply/package','/apply/source',
-  '/api/extract','/app','/app/add','/app/archive-regenerate','/app/del','/app/ics','/app/update','/applications',
+  '/api/extract','/app','/app/add','/app/archive-regenerate','/app/del','/app/followup/cancel','/app/followup/discard','/app/followup/start','/app/followup/state','/app/ics','/app/update','/applications',
   '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf',
   '/job-panel.js','/job/brief','/job/changes','/job/create','/job/feedback-del','/job/generate','/job/gen-cancel','/job/gen-retry','/job/gen-start','/job/new','/layout-info','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',
   '/materials','/new','/onboarding','/onboarding/guided','/onboarding/star-suggest','/onboarding/step','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings','/eval/create','/eval/promote','/evals',
@@ -3556,7 +3564,9 @@ assert(!/^\s*\+?\s*'[^']*list="models-/.test(srv), '模型不得再用 datalist'
 assert(!/^\s*\+?\s*'[^']*<datalist/.test(srv), '设置页不得再有 datalist（只看代码行，注释里提到不算）');
 assert(/modelButtonsHtml\(p, i\)/.test(srv), '按钮组重建必须传对 profile 下标（漏传会让 data-pi=undefined → 第二次切换报错）');
 // ④ /settings 保存不丢字段：整数组原样 stringify，没有白名单，新增字段自动持久化
-assert(/JSON\.stringify\(\{ active: profiles\.length \? body\.active : 0, profiles \}\)/.test(srv), '/settings 仍应原样保存 profiles（保证新字段不被丢）');
+//    （2026-11-06 批 3 卡片 b3c4 登记：写入对象多了 followUpDays —— 阈值随同一次保存落盘；
+//     profiles 仍整体原样 stringify，不走白名单，本条断言的意图不变，只是把字面量重锚到新形状。）
+assert(/JSON\.stringify\(\{ active: profiles\.length \? body\.active : 0, profiles, followUpDays: fuDays \}\)/.test(srv), '/settings 仍应原样保存 profiles 并带上跟进语阈值（保证新字段不被丢）');
 console.log('✅ S4B-14 reasoning_effort 固定思考程度（profile 级可选）');
 EOF
 

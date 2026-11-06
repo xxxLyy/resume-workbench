@@ -37,6 +37,7 @@ import { completeGenResult } from './gen-result.mjs';   // 任务完成判定纯
 import { assembleTemplate, listThemes, themeCss, themeRegistration } from './template.mjs';
 import { loadApplyProfilesView, loadApplyProfiles, setField, setFieldSource, bindCommonMaster, ensurePackage, updateApplyProfiles, copyTaskKey, copySource, FIELD_CATALOG, MODE_FOLLOW, MODE_OVERRIDE, MODE_MANUAL, MODE_AI, SOURCE_RESUME, SOURCE_COMMON } from './apply-profile.mjs';   // 网申包数据层（批 3 卡片 b3c1）：账本/三态/派生/漂移
 import { startCopyTask, runCopyTask, copyTaskState, cancelCopyTask, confirmCopyDraft, discardCopyDraft, finishCopyTask, isCopyKey, stageLabel, NO_MODEL_HINT, COPY_TTL_MS } from './apply-gen.mjs';   // AI 文案字段生成任务层（批 3 卡片 b3c3）：genTasks 口径（进度/取消/真实用量）
+import { followUpState, followUpDays, normalizeFollowUpDays, followUpTask, followUpDraft, startFollowUpTask, followUpStateOf, cancelFollowUpTask, discardFollowUpDraft, runFollowUpTask, failFollowUpTask, followUpSource, FOLLOW_UP_TTL_MS, FOLLOW_UP_NO_MODEL_HINT } from './followup.mjs';   // 跟进助手（批 3 卡片 b3c4）：无回应满 N 天 → 跟进语草稿（只生成不发送）
 import { ICONS } from './vendors/icons.mjs';  // Lucide 图标数据（纯数据文件，零 npm 依赖）
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -1700,6 +1701,17 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .ap-gen-draft{display:flex;flex-direction:column;gap:var(--space-2)}
 .ap-gen-draft[hidden]{display:none}
 .ap-gen-text{width:100%;font-family:var(--font);font-size:13px}
+/* 跟进助手（2026-11-06 批 3 §4 卡片 b3c4）：投递卡「无回应满 N 天」→ 生成跟进语草稿（只生成，不发送）。
+   间距一律 --space-* token（§5.1）；圆角 --radius（§5.2）；零 box-shadow（§3.1）；
+   字号只取既有档（§4.1：12px 元数据、13px 面板正文与输入），不新增档位。 */
+.fu-box{display:flex;flex-direction:column;gap:var(--space-2);margin-top:var(--space-2)}
+.fu-line{display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap}
+.fu-line .badge{margin-right:0}
+.fu-status,.fu-msg,.fu-note{font-size:12px;color:var(--mut)}
+.fu-draft{display:flex;flex-direction:column;gap:var(--space-2)}
+.fu-draft[hidden]{display:none}
+.fu-text{width:100%;font-family:var(--font);font-size:13px}
+.fu-acts{display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap}
 .cta{display:inline-block;background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--radius);padding:9px 16px;font-weight:700;font-size:14px;cursor:pointer}
 .cta:hover{transform:translateY(-1px)}
 .cta-alt{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:var(--radius);padding:9px 14px;font-weight:600;font-size:13px;cursor:pointer}
@@ -5365,6 +5377,87 @@ async function handler(req, res) {
       saveApps(apps);
       return sendJson(ok ? 200 : 500, { ok, error: ok ? null : '渲染失败' });
     }
+    // ===== 跟进助手（批 3 卡片 b3c4）：投递卡「无回应满 N 天」→ 生成跟进语草稿（只生成，不发送）=====
+    // 账本适配器：applications.json 的唯一写者仍是 server.mjs —— 写时重新读表、**只回写本卡的 followUp 字段**，
+    // 不拿旧副本覆盖别人刚改的备注/状态/面试记录。
+    const followUpLedger = {
+      read(id) {
+        const a = loadApps().find((x) => x.id === id);
+        return a ? { app: a } : null;
+      },
+      write(next) {
+        const apps = loadApps();
+        const i = apps.findIndex((x) => x.id === next.id);
+        if (i < 0) return false;
+        apps[i] = { ...apps[i], followUp: next.followUp };
+        saveApps(apps);
+        return true;
+      },
+    };
+    // 生成：原子登记任务（并发闸：同一条投递同时只允许 1 个）→ fire-and-forget 跑模型；
+    // 结果只经完成判定（gen-result.mjs 的纯函数）落「草稿」，**不发送、不入库任何字段包**。
+    if (req.method === 'POST' && url.pathname === '/app/followup/start') {
+      const body = await readBodyAuto(req);
+      const id = String(body.id || '');
+      if (!/^[0-9-]+$/.test(id)) return sendJson(400, { ok: false, error: 'invalid id' });
+      const rec = followUpLedger.read(id);
+      if (!rec) return sendJson(404, { ok: false, error: 'app not found' });
+      // 无模型 → 明确降级（不做「点了才知道」的死路；措辞与页面同源）
+      if (!hasLLM(root)) return sendJson(409, { ok: false, error: FOLLOW_UP_NO_MODEL_HINT });
+      // 无取材简历 → 明确拒绝（不留注定失败的 running 任务）
+      if (!followUpSource(root, rec.app)) return sendJson(409, { ok: false, error: '还没有可依据的简历：这条投递关联的简历不在本机（请先在投递详情里确认简历）' });
+      // 资源准入（与 /apply/copy/start 同口径）：先借 AI 槽，拿不到立刻拒 → 不留 running 假任务
+      let lease;
+      try { lease = aiPool.borrow(); }
+      catch (e) { return sendJson((e && e.httpCode) || 429, { ok: false, error: (e && e.message) || 'AI 排队已满，请稍候' }); }
+      const model = (() => { try { const c = loadProfiles(root); return (c && c.profiles && c.profiles[c.active]) ? c.profiles[c.active].model : null; } catch { return null; } })();
+      let taskId = null, reject = null;
+      try {
+        const st = startFollowUpTask(followUpLedger, id, { model });
+        taskId = st.taskId; reject = st.reject;
+      } catch (e) {
+        try { lease.release(); } catch {}
+        return sendJson((e && e.httpCode) || 400, { ok: false, error: String((e && e.message) || e), code: (e && e.code) || '' });
+      }
+      if (reject) { try { lease.release(); } catch {} return sendJson(reject.status, { ok: false, error: reject.error }); }
+      runFollowUpTask(root, followUpLedger, id, taskId, { lease })
+        .catch((e) => {
+          // 任何异常都要收敛任务态：否则账本里会留下永远 running 的假任务
+          try { failFollowUpTask(followUpLedger, id, taskId, '任务失败：' + ((e && e.message) || e)); } catch {}
+        })
+        .finally(() => { try { lease.release(); } catch {} });
+      return sendJson(200, { ok: true, taskId, status: 'running' });
+    }
+    // 任务状态（轮询用）：只给真实阶段与真实用量，**无百分比**。
+    if (req.method === 'GET' && url.pathname === '/app/followup/state') {
+      const id = String(url.searchParams.get('id') || '');
+      if (!/^[0-9-]+$/.test(id)) return sendJson(400, { ok: false, error: 'invalid id' });
+      const st = followUpStateOf(followUpLedger, id);
+      if (!st) return sendJson(404, { ok: false, error: 'app not found' });
+      const draft = st.draft ? { id: st.draft.id, text: st.draft.text, createdAt: st.draft.createdAt } : null;
+      return sendJson(200, { ok: true, task: st.task || null, draft, ttlMs: FOLLOW_UP_TTL_MS });
+    }
+    // 取消：taskId 匹配当前 running 才置 cancelled；在途结果被完成判定丢弃（零落账）。
+    if (req.method === 'POST' && url.pathname === '/app/followup/cancel') {
+      const body = await readBodyAuto(req);
+      const id = String(body.id || '');
+      const taskId = String(body.taskId || '');
+      if (!/^[0-9-]+$/.test(id) || !taskId) return sendJson(400, { ok: false, error: 'id 与 taskId 必填' });
+      let cancelled = false;
+      try { cancelled = cancelFollowUpTask(followUpLedger, id, taskId); }
+      catch (e) { return sendJson((e && e.httpCode) || 400, { ok: false, error: String((e && e.message) || e), code: (e && e.code) || '' }); }
+      if (!cancelled) return sendJson(409, { ok: false, error: '任务已结束或已被新任务取代（taskId 不匹配当前 running）' });
+      return sendJson(200, { ok: true });
+    }
+    // 丢弃草稿：草稿只是本机的待用文本，丢弃即清稿。
+    if (req.method === 'POST' && url.pathname === '/app/followup/discard') {
+      const body = await readBodyAuto(req);
+      const id = String(body.id || '');
+      if (!/^[0-9-]+$/.test(id)) return sendJson(400, { ok: false, error: 'invalid id' });
+      try { discardFollowUpDraft(followUpLedger, id); }
+      catch (e) { return sendJson((e && e.httpCode) || 400, { ok: false, error: String((e && e.message) || e), code: (e && e.code) || '' }); }
+      return sendJson(200, { ok: true });
+    }
     // ===== 素材库（确认状态）=====
     if (req.method === 'GET' && url.pathname === '/materials') {
       const mats = loadMats();
@@ -5775,6 +5868,47 @@ async function handler(req, res) {
         document.getElementById('appSearch').oninput = filterRows;
       </script>`, 'apps'));
       }
+      // 跟进助手（批 3 b3c4）：投递卡「无回应满 N 天（默认 7，/settings 可配）」→ 给「生成跟进语」入口。
+      // 草稿不发送：生成结果只落本机投递记录，页面只有「复制 / 丢弃」，没有任何发送/代填入口。
+      const fuDays = followUpDays(root);      // 阈值（缺省 7）；llmReady=false → 入口禁用并写明原因
+      const llmReady = hasLLM(root);
+      const fuBlock = (a) => {
+        const st = followUpState(a, { nowMs, thresholdDays: fuDays });
+        if (!st.due) return '';                // 不在等回应 / 没到阈值 → 不给入口
+        const task = followUpTask(a);
+        const draft = followUpDraft(a);
+        const noDoc = !followUpSource(root, a);   // 取材简历不在本机 → 明确说清，不给注定失败的入口
+        const disabled = !llmReady || noDoc;
+        let statusText = '';
+        if (!llmReady) statusText = '未配置大模型：先到设置页配置';
+        else if (noDoc) statusText = '这条投递关联的简历不在本机，先在投递详情里确认简历';
+        else if (task && task.status === 'running') statusText = '生成中 · ' + stageLabel(task.stage);
+        else if (task && task.status === 'error') statusText = String(task.error || '生成失败');
+        else if (task && task.status === 'cancelled') statusText = '已取消';
+        else if (task && task.status === 'done') {
+          statusText = '已生成草稿' + (task.usage && typeof task.usage.total === 'number' ? ' · 用量 ' + task.usage.total + ' tokens' : ' · 用量：服务商未返回');
+        }
+        const cancelBtn = (task && task.status === 'running')
+          ? `<button type="button" class="secondary" data-fu="cancel" data-app="${escAttr(a.id)}" data-task="${escAttr(String(task.taskId || ''))}">取消</button>` : '';
+        const draftHtml = draft ? `<div class="fu-draft" data-fu-draft="${escAttr(a.id)}">
+            <textarea class="fu-text" rows="4" readonly aria-label="跟进语草稿">${escHtml(String(draft.text == null ? '' : draft.text))}</textarea>
+            <div class="fu-acts">
+              <button type="button" class="secondary" data-fu="copy" data-app="${escAttr(a.id)}">复制</button>
+              <button type="button" class="secondary" data-fu="discard" data-app="${escAttr(a.id)}">丢弃</button>
+            </div>
+            <div class="fu-note">草稿不会自动发送，复制后自己发</div>
+          </div>` : '';
+        return `<div class="fu-box" data-fu-app="${escAttr(a.id)}">
+            <div class="fu-line">
+              <span class="badge">无回应 ${st.days} 天</span>
+              <button type="button" class="secondary" data-fu="gen" data-app="${escAttr(a.id)}"${disabled ? ' disabled' : ''}>${draft ? '重新生成' : '生成跟进语'}</button>
+              ${cancelBtn}
+              <span class="fu-msg"></span>
+            </div>
+            <div class="fu-status" role="status">${escHtml(statusText)}</div>
+            ${draftHtml}
+          </div>`;
+      };
       const appCard = (a) => {
         const idx = APP_STATUSES.indexOf(a.status);
         const due = a.dueDate && (new Date(a.dueDate).getTime() - nowMs) < 48 * 3600 * 1000 && new Date(a.dueDate).getTime() >= nowMs - 24 * 3600 * 1000 ? '<span class="badge warn" role="img" aria-label="临近截止" title="临近截止">' + icon('circle-alert', 11) + '</span>' : '';
@@ -5785,6 +5919,7 @@ async function handler(req, res) {
           <div style="font-size:12px;color:var(--mut);margin:2px 0"><a href="/edit?id=${escAttr(a.docId)}">${escHtml(a.docId)}</a> ${badge(a.jd ? 'ok' : 'warn', 'JD')}${arch}${a.channel ? `<span class="badge">${escHtml(a.channel)}</span>` : ''}</div>
           ${a.nextStep || a.dueDate ? `<div style="font-size:12px;color:var(--mut)">${a.nextStep ? '下一步：' + escHtml(a.nextStep) : ''}${a.dueDate ? ' 截止：' + escHtml(fmtWhen(a.dueDate)) : ''}</div>` : ''}
           ${a.note ? `<div style="font-size:12px;color:var(--mut)">${escHtml(a.note)}</div>` : ''}
+          ${fuBlock(a)}
           <div style="margin-top:4px;font-size:12px">
             ${idx > 0 ? `<button class="secondary" style="padding:2px 8px" onclick="appPatch(${jsStr(a.id)},{status:APP_STATUSES[${idx - 1}]})">◀</button>` : ''}
             ${idx < APP_STATUSES.length - 1 && !APP_TERMINAL.includes(a.status) ? `<button class="secondary" style="padding:2px 8px" onclick="appPatch(${jsStr(a.id)},{status:APP_STATUSES[${idx + 1}]})">▶</button>` : ''}
@@ -5858,6 +5993,127 @@ async function handler(req, res) {
         if (!confirm('删除这条投递？')) return;
         __wv('/app/del', { id: id }).then(function () { location.reload(); }).catch(function () {});
       }
+      // ===== 跟进助手（批 3 b3c4）：生成 → 草稿（只生成不发送）=====
+      // 进度只报真实阶段（排队/调用模型/解析），**不给百分比**（诚实最小进度，与既有 genTasks 同口径）。
+      var FU_STAGE = { queued: '排队等待槽位', calling: '调用模型中', parsing: '解析校验中' };
+      var fuMsg = function (box, text) { var el = box && box.querySelector('.fu-msg'); if (el) el.textContent = text; };
+      var fuStatus = function (box, text) { var el = box && box.querySelector('.fu-status'); if (el) el.textContent = text; };
+      var fuUsage = function (u) { return (u && typeof u.total === 'number') ? ('用量 ' + u.total + ' tokens') : '用量：服务商未返回'; };
+      var fuGenBtn = function (box) { return box && box.querySelector('button[data-fu="gen"]'); };
+      // 运行中「取消」：服务端只在页面加载那一刻已有 running 任务时渲染它；点「生成」后是客户端
+      // 轮询才发现 running —— 这里补建（带 taskId），否则运行中就没有取消入口，只能刷新页面。
+      var fuShowCancel = function (box, taskId) {
+        if (!box) return;
+        var btn = box.querySelector('button[data-fu="cancel"]');
+        if (!btn) {
+          btn = document.createElement('button');
+          btn.type = 'button'; btn.className = 'secondary';
+          btn.setAttribute('data-fu', 'cancel');
+          btn.setAttribute('data-app', box.getAttribute('data-fu-app') || '');
+          var line = box.querySelector('.fu-line');
+          if (line) line.appendChild(btn);
+        }
+        btn.setAttribute('data-task', String(taskId || ''));
+      };
+      var fuHideCancel = function (box) {
+        var btn = box && box.querySelector('button[data-fu="cancel"]');
+        if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
+      };
+      var fuShowDraft = function (box, draft) {
+        if (!box) return;
+        var d = box.querySelector('.fu-draft');
+        if (!draft) { if (d) d.setAttribute('hidden', ''); return; }
+        if (!d) {
+          d = document.createElement('div');
+          d.className = 'fu-draft';
+          d.innerHTML = '<textarea class="fu-text" rows="4" readonly aria-label="跟进语草稿"></textarea>'
+            + '<div class="fu-acts"><button type="button" class="secondary" data-fu="copy">复制</button>'
+            + '<button type="button" class="secondary" data-fu="discard">丢弃</button></div>'
+            + '<div class="fu-note">草稿不会自动发送，复制后自己发</div>';
+          box.appendChild(d);
+        }
+        d.removeAttribute('hidden');
+        var ta = d.querySelector('textarea');
+        if (ta) ta.value = draft.text || '';
+        var gen = fuGenBtn(box);
+        if (gen) gen.textContent = '重新生成';
+      };
+      var fuPoll = function (box) {
+        var id = box.getAttribute('data-fu-app');
+        var tick = function () {
+          fetch('/app/followup/state?id=' + encodeURIComponent(id))
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+              if (!d || !d.ok) { fuStatus(box, '状态读取失败'); return; }
+              var t = d.task || {};
+              if (t.status === 'running') {
+                fuShowCancel(box, t.taskId);
+                fuStatus(box, '生成中 · ' + (FU_STAGE[t.stage] || '处理中'));
+                setTimeout(tick, 700);
+                return;
+              }
+              fuHideCancel(box);
+              if (t.status === 'error') fuStatus(box, t.error || '生成失败');
+              else if (t.status === 'cancelled') fuStatus(box, '已取消');
+              else if (t.status === 'done') fuStatus(box, '已生成草稿 · ' + fuUsage(t.usage));
+              fuShowDraft(box, d.draft);
+            })
+            .catch(function () { fuStatus(box, '状态读取失败：网络异常'); });
+        };
+        tick();
+      };
+      document.addEventListener('click', function (e) {
+        var b = e.target && e.target.closest ? e.target.closest('button[data-fu]') : null;
+        if (!b) return;
+        var act = b.getAttribute('data-fu');
+        var box = b.closest('.fu-box');
+        var id = b.getAttribute('data-app') || (box ? box.getAttribute('data-fu-app') : '');
+        if (act === 'gen') {
+          fuMsg(box, '生成中…');
+          fetch('/app/followup/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) })
+            .then(function (r) {
+              return r.text().then(function (t) {
+                var d = null; try { d = JSON.parse(t); } catch (err) {}
+                if (!r.ok || (d && d.ok === false)) { var e2 = new Error((d && d.error) || ('HTTP ' + r.status)); throw e2; }
+                return d || {};
+              });
+            })
+            .then(function () { fuMsg(box, ''); fuPoll(box); })
+            .catch(function (err) { fuMsg(box, ''); fuStatus(box, '生成失败：' + (err.message || err)); });
+          return;
+        }
+        if (act === 'cancel') {
+          fetch('/app/followup/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id, taskId: b.getAttribute('data-task') || '' }) })
+            .then(function (r) { return r.json(); })
+            .then(function (d) { if (d && d.ok === false) fuStatus(box, d.error || '取消失败'); else fuStatus(box, '已取消'); })
+            .catch(function () { fuStatus(box, '取消失败：网络异常'); });
+          return;
+        }
+        if (act === 'copy') {
+          var ta = box && box.querySelector('.fu-text');
+          var text = ta ? ta.value : '';
+          if (!text) { fuMsg(box, '没有可复制的草稿'); return; }
+          // 剪贴板不可用（非安全上下文/浏览器没给权限）→ 如实说失败，不假装成功
+          if (!navigator.clipboard || !navigator.clipboard.writeText) { fuMsg(box, '复制失败：浏览器未授权剪贴板，请手动选中草稿复制'); return; }
+          navigator.clipboard.writeText(text)
+            .then(function () { fuMsg(box, '已复制'); })
+            .catch(function () { fuMsg(box, '复制失败：浏览器未授权剪贴板，请手动选中草稿复制'); });
+          return;
+        }
+        if (act === 'discard') {
+          fetch('/app/followup/discard', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+              if (d && d.ok === false) { fuStatus(box, d.error || '丢弃失败'); return; }
+              var dd = box && box.querySelector('.fu-draft');
+              if (dd) dd.setAttribute('hidden', '');
+              var gen = fuGenBtn(box);
+              if (gen) gen.textContent = '生成跟进语';
+              fuStatus(box, '草稿已丢弃');
+            })
+            .catch(function () { fuStatus(box, '丢弃失败：网络异常'); });
+        }
+      });
       document.getElementById('appForm').addEventListener('submit', async function (e) {
         e.preventDefault();
         try {
@@ -6039,6 +6295,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     // ===== 设置页 + 备份恢复 =====
     if (req.method === 'GET' && url.pathname === '/settings') {
       const { active, profiles } = loadProfiles(root);
+      const fuDays = followUpDays(root);   // 跟进语提醒阈值（缺省 7；可改 → 随「保存」落 config.json）
       // R3③：页名与 topnav 一致叫「设置」；无任何配置时给一张说明卡（首次使用知道每个字段是什么、怎么测）。
       const settingsGuide = `<div class="card" id="settingsGuide" style="margin-top:var(--space-3)">
       <b class="card-title">${icon('compass', 13)} 还没有模型配置——从这张卡开始</b>
@@ -6057,6 +6314,12 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     ${corruptBanner()}
     ${profiles.length ? '' : settingsGuide}
     <div id="cards"></div>
+    <div class="card" style="margin-top:var(--space-3)">
+      <b class="card-title">${icon('clock', 13)} 跟进语提醒</b>
+      <label style="display:block;font-size:12px;color:var(--mut)">投递后多少天没回应，就在投递卡上提示生成跟进语
+        <input id="fuDays" type="number" min="1" max="90" step="1" value="${escAttr(String(fuDays))}" style="width:100%;margin-top:var(--space-1)">
+      </label>
+    </div>
     <p><button type="button" id="addBtn">${icon('plus', 13)} 添加配置</button> <button type="button" id="saveBtn">保存</button> <a href="/">返回首页</a> <span id="msg"></span></p>
     <div class="card" style="margin-top:var(--space-3)">
       <b class="card-title">${icon('save', 13)} 备份与恢复</b>
@@ -6070,9 +6333,12 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       <p style="font-size:12px;color:var(--mut)">每次恢复前自动生成回退点（backups/），失败可一键回退</p>
       <div id="undoBox"></div>
     </div>
-    <script>var DATA = ${JSON.stringify({ active, profiles }).replace(/</g, '\\u003c')}</script>
+    <script>var DATA = ${JSON.stringify({ active, profiles, followUpDays: fuDays }).replace(/</g, '\\u003c')}</script>
     <script>
       var state = DATA;
+      // 跟进语提醒阈值：改动只改内存态，点「保存」才落盘（与模型配置同一条保存路径）
+      var fuDaysEl = document.getElementById('fuDays');
+      if (fuDaysEl) fuDaysEl.oninput = function () { state.followUpDays = this.value; };
       function escAttr(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
       function inp(i, f, label, val, extra) {
         // R3④：label 包裹 input（可访问名）；value/oninput 语义不变
@@ -6124,6 +6390,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         if (await save()) return;
         state = JSON.parse(prev);
         render();
+        if (fuDaysEl) fuDaysEl.value = String(state.followUpDays == null ? 7 : state.followUpDays);
         if (radio) { var el = document.querySelector('input[name="act"][value="' + state.active + '"]'); if (el) el.checked = true; }
       }
       // 删除即落盘：原先只改内存 state，刷新后从 config.json 读回又出现（2026-10-18 修复）
@@ -6272,10 +6539,17 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       }
       if (profiles.length && (typeof body.active !== 'number' || !Number.isInteger(body.active) || body.active < 0 || body.active >= profiles.length))
         return send(400, 'active 需为 0-' + (profiles.length - 1) + ' 的整数', 'text/plain');
+      // 跟进语提醒阈值（/settings 可配，缺省 7）：形状错即拒（不静默回落成默认——用户以为改了却没生效）
+      let fuDays = followUpDays(root);
+      if (body.followUpDays !== undefined && body.followUpDays !== null && body.followUpDays !== '') {
+        const n = normalizeFollowUpDays(body.followUpDays);
+        if (!n.ok) return send(400, n.error, 'text/plain');
+        fuDays = n.days;
+      }
       const cfgTmp = path.join(root, 'config.json.tmp');
       // mode 0o600：config.json 含明文 API Key，默认 0644 让同机其他用户可读（实测 -rw-r--r--）。
       // 先 chmod 再 rename，避免 tmp 创建瞬间的默认权限窗口
-      fs.writeFileSync(cfgTmp, JSON.stringify({ active: profiles.length ? body.active : 0, profiles }), { mode: 0o600 });
+      fs.writeFileSync(cfgTmp, JSON.stringify({ active: profiles.length ? body.active : 0, profiles, followUpDays: fuDays }), { mode: 0o600 });
       try { fs.chmodSync(cfgTmp, 0o600); } catch {}
       fs.renameSync(cfgTmp, path.join(root, 'config.json'));
       return sendJson(200, { ok: true });
