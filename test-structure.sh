@@ -128,6 +128,16 @@ node ./test-fixtures/reliability/test-share-copy.mjs
 #         计划 dev-docs/2026-11-05-roadmap-batch-plan.md §5 批 4，DESIGN.md §10.15）=====
 node ./test-fixtures/reliability/test-practice-session.mjs
 
+# ===== 批4 练习 UI（卡片 b4c2）：投递详情「面试练习」区（可练性与 start 409 共用 gate 单一通道，
+#       不能练不给入口+降级原因照实渲染）+ 逐题作答→反馈流（就地保存/轮询真实阶段/四字段就地渲染、
+#       零整页 reload、零 JS 异常、模型产物不进 innerHTML）+ 缺的素材一键转「待补充素材」
+#       （/app/practice/missing/material：服务端按落账文本建条目、形状与 /mat/add 一致零新字段、
+#       会话侧 missingMats 轻量关联、幂等、守卫矩阵）+ 复盘页入口（最近练习摘要直达 /app#pr-<pid>）
+#       + 空态与降级（无模型出题/作答照常、反馈禁用+文案；无作答点反馈行动位如实报 409）
+#       （隔离根 + 随机端口 + 合成岗位草稿/投递/素材 + 本机假 LLM；浏览器段 Chromium 缺失 exit 2；
+#         计划 dev-docs/2026-11-05-roadmap-batch-plan.md §5 批 4，DESIGN.md §10.16）=====
+node ./test-fixtures/reliability/test-practice-ui.mjs
+
 # ===== VQA 视觉验收截图（零断言、退出 0）：8 个关键页 1280x900 全页图落 /tmp/shots-after，
 #       视觉判定走 DESIGN.md 对照（人工/视觉流程），本夹具只产出真实隔离实例渲染截图；Chromium 缺失 exit 2 =====
 node ./test-fixtures/reliability/test-visual-screens.mjs
@@ -2187,13 +2197,13 @@ const COLD = /#F4F5F8|#202737|#697186|#DCE0E8|#5B5DE8|#EEEFFE|#409eff|#2563eb|#d
 fs.readFileSync(F, 'utf8').split('\n').forEach((ln, i) => {
   if (COLD.test(ln)) fail(`${F}:${i + 1} 冷色/靛蓝残留: ${ln.trim().slice(0, 90)}`);
 });
-// 路由集合不变（任何新增 pathname 字面量都会红）。初值 = S2 开工前实测冻结的 54 个字面量；S4a-T10 登记 /export/layout-apply、S4a-T11 登记 /favicon.ico（56），批次2-T2 登记 /eval/create、/eval/promote（58，登记非放宽），2026-11-01 登记 /evals（评估历史独立页，59，登记非放宽），S5 登记 /onboarding、/onboarding/guided、/onboarding/step（引导向导页壳+步进 API，62，登记非放宽），S5F 登记 /onboarding/star-suggest（STAR AI 建议卡，63，登记非放宽；设计 dev-docs/2026-11-02-s5-design.md），S4b-A P3 登记 /job/gen-retry（批次重试端点，64，登记非放宽），批 1 拆页卡登记 /job/new（为岗位定制简历独立页，65，登记非放宽），批 3 网申包页面卡登记 /apply-profile（页面）+ /apply/field、/apply/bind、/apply/package、/apply/source（三态字段写入口）+ /apply/export（整包导出）（71，登记非放宽；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §4 批 3，DESIGN.md §10.11），批 3 AI 文案字段卡登记 /apply/copy/start、/apply/copy/state、/apply/copy/cancel、/apply/copy/confirm、/apply/copy/discard（生成→预览→确认五端点，76，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.12），批 3 跟进助手卡登记 /app/followup/start、/app/followup/state、/app/followup/cancel、/app/followup/discard（生成跟进语草稿四端点，92，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.13），批 3 分享副本卡登记 /share/copy（勾选隐藏字段→独立导出）+ /share/pdf（独立产物伺服）（94，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.14。总数以本行数组实测为准——早前登记行写的 76/80 是逐卡递增计数，与实测条数有漂移，2026-11-07 以逐条清点为准）
+// 路由集合不变（任何新增 pathname 字面量都会红）。初值 = S2 开工前实测冻结的 54 个字面量；S4a-T10 登记 /export/layout-apply、S4a-T11 登记 /favicon.ico（56），批次2-T2 登记 /eval/create、/eval/promote（58，登记非放宽），2026-11-01 登记 /evals（评估历史独立页，59，登记非放宽），S5 登记 /onboarding、/onboarding/guided、/onboarding/step（引导向导页壳+步进 API，62，登记非放宽），S5F 登记 /onboarding/star-suggest（STAR AI 建议卡，63，登记非放宽；设计 dev-docs/2026-11-02-s5-design.md），S4b-A P3 登记 /job/gen-retry（批次重试端点，64，登记非放宽），批 1 拆页卡登记 /job/new（为岗位定制简历独立页，65，登记非放宽），批 3 网申包页面卡登记 /apply-profile（页面）+ /apply/field、/apply/bind、/apply/package、/apply/source（三态字段写入口）+ /apply/export（整包导出）（71，登记非放宽；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §4 批 3，DESIGN.md §10.11），批 3 AI 文案字段卡登记 /apply/copy/start、/apply/copy/state、/apply/copy/cancel、/apply/copy/confirm、/apply/copy/discard（生成→预览→确认五端点，76，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.12），批 3 跟进助手卡登记 /app/followup/start、/app/followup/state、/app/followup/cancel、/app/followup/discard（生成跟进语草稿四端点，92，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.13），批 3 分享副本卡登记 /share/copy（勾选隐藏字段→独立导出）+ /share/pdf（独立产物伺服）（94，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.14），批 4 练习 UI 卡登记 /app/practice/missing/material（反馈缺项一键转「待补充素材」，登记非放宽；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §5 批 4，DESIGN.md §10.16。总数以本行数组实测为准——早前登记行写的 76/80 是逐卡递增计数，与实测条数有漂移，2026-11-07 以逐条清点为准）
 const sm = fs.readFileSync(F, 'utf8');
 const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','/ai/prep','/ai/review','/ai/rewrite','/ai/test',
   '/ai/zone-analyze','/ai/zone-rewrite',
   '/apply-profile','/apply/bind','/apply/copy/cancel','/apply/copy/confirm','/apply/copy/discard','/apply/copy/start','/apply/copy/state','/apply/export','/apply/field','/apply/package','/apply/source',
   '/api/extract','/app','/app/add','/app/archive-regenerate','/app/del','/app/followup/cancel','/app/followup/discard','/app/followup/start','/app/followup/state','/app/ics',
-  '/app/practice/answer','/app/practice/feedback/cancel','/app/practice/feedback/start','/app/practice/history','/app/practice/start','/app/practice/state',
+  '/app/practice/answer','/app/practice/feedback/cancel','/app/practice/feedback/start','/app/practice/history','/app/practice/missing/material','/app/practice/start','/app/practice/state',
   '/app/update','/applications',   // 批4 b4c1：练习会话六路由（登记非放宽）
   '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf',
   '/job-panel.js','/job/brief','/job/changes','/job/create','/job/feedback-del','/job/generate','/job/gen-cancel','/job/gen-retry','/job/gen-start','/job/new','/layout-info','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',

@@ -39,7 +39,7 @@ import { loadApplyProfilesView, loadApplyProfiles, setField, setFieldSource, bin
 import { startCopyTask, runCopyTask, copyTaskState, cancelCopyTask, confirmCopyDraft, discardCopyDraft, finishCopyTask, isCopyKey, stageLabel, NO_MODEL_HINT, COPY_TTL_MS } from './apply-gen.mjs';   // AI 文案字段生成任务层（批 3 卡片 b3c3）：genTasks 口径（进度/取消/真实用量）
 import { followUpState, followUpDays, normalizeFollowUpDays, followUpTask, followUpDraft, startFollowUpTask, followUpStateOf, cancelFollowUpTask, discardFollowUpDraft, runFollowUpTask, failFollowUpTask, followUpSource, FOLLOW_UP_TTL_MS, FOLLOW_UP_NO_MODEL_HINT } from './followup.mjs';   // 跟进助手（批 3 卡片 b3c4）：无回应满 N 天 → 跟进语草稿（只生成不发送）
 import { hideFieldsInHtml, shareExpectations, findResidues, absentKeys, addShareRecord, sharePdfPath, SHARE_ID_RE } from './share-copy.mjs';   // 分享副本（批 3 卡片 b3c5）：勾选隐藏字段 → 独立预览/PDF + 文本层无残留校验
-import { PRACTICE_CAP, PRACTICE_NO_MODEL_HINT, buildPracticeSession, appendPracticeSession, savePracticeAnswer, normalizeAnswerText, startPracticeFeedbackTask, cancelPracticeFeedbackTask, runPracticeFeedbackTask, failPracticeFeedbackTask, findSession, practiceSessions, practiceSessionView, sessionSummary } from './practice.mjs';   // 练习会话 API（批 4 卡片 b4c1）：出题复用 kind=interview 产物 + 逐题作答 + AI 对照证据表反馈（无百分位无排名）+ 历史随投递截 20
+import { PRACTICE_CAP, PRACTICE_TTL_MS, PRACTICE_NO_MODEL_HINT, buildPracticeSession, appendPracticeSession, savePracticeAnswer, normalizeAnswerText, startPracticeFeedbackTask, cancelPracticeFeedbackTask, runPracticeFeedbackTask, failPracticeFeedbackTask, findSession, findQuestion, practiceSessions, practiceSessionView, sessionSummary, feedbackResultOf, missingMatLinkOf, linkMissingMaterial, POINT_STATE_LABEL } from './practice.mjs';   // 练习会话 API（批 4 卡片 b4c1）+ 练习 UI/缺项转待补充（批 4 卡片 b4c2）：出题复用 kind=interview 产物 + 逐题作答 + AI 对照证据表反馈（无百分位无排名）+ 历史随投递截 20
 import { ICONS } from './vendors/icons.mjs';  // Lucide 图标数据（纯数据文件，零 npm 依赖）
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -1724,6 +1724,24 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .ap-sh-key{display:flex;align-items:center;gap:var(--space-2);font-size:13px}
 .ap-sh-list{margin-top:var(--space-3)}
 .ap-sh-row{display:flex;justify-content:space-between;align-items:center;gap:var(--space-2);flex-wrap:wrap;border-top:1px dashed var(--line);margin-top:var(--space-2);padding-top:var(--space-2)}
+/* 面试练习（2026-11-07 批 4 §5 卡片 b4c2）：投递详情「面试练习」区——逐题作答 → 反馈流 + 缺的素材一键转待补充。
+   间距一律 --space-* token（§5.1）；圆角走既有 --radius（§5.2）；零 box-shadow（§3.1 静态层级零投影）；
+   字号只取既有档（§4.1：12px 元数据、13px 面板正文与输入），不新增档位。 */
+.pr-session{margin-top:var(--space-2);border-top:1px solid var(--line);padding-top:var(--space-2)}
+.pr-session>summary{cursor:pointer;font-size:13px}
+.pr-q{margin-top:var(--space-3);border-top:1px dashed var(--line);padding-top:var(--space-3)}
+.pr-qtext{font-size:13px;font-weight:700}
+.pr-meta{font-size:12px;color:var(--mut);margin-top:var(--space-1)}
+.pr-points{margin:var(--space-1) 0 0;padding-left:var(--space-4);font-size:13px}
+.pr-answer{width:100%;font-family:var(--font);font-size:13px;margin-top:var(--space-2)}
+.pr-acts{display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap;margin-top:var(--space-2)}
+.pr-status,.pr-msg,.pr-note{font-size:12px;color:var(--mut)}
+.pr-msg:empty,.pr-status:empty{display:none}
+.pr-fb{margin-top:var(--space-2);border-top:1px solid var(--line);padding-top:var(--space-2)}
+.pr-fb-label{font-size:12px;font-weight:700;margin-top:var(--space-2)}
+.pr-list{margin:var(--space-1) 0 0;padding-left:var(--space-4);font-size:13px}
+.pr-mat-line{display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap;margin-top:var(--space-1);font-size:13px}
+.pr-empty{font-size:13px;color:var(--mut)}
 .cta{display:inline-block;background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--radius);padding:9px 16px;font-weight:700;font-size:14px;cursor:pointer}
 .cta:hover{transform:translateY(-1px)}
 .cta-alt{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:var(--radius);padding:9px 14px;font-weight:600;font-size:13px;cursor:pointer}
@@ -5617,6 +5635,36 @@ async function handler(req, res) {
       return sendJson(200, { ok: true });
     }
     // ===== 练习会话（批 4 卡片 b4c1）：出题复用 kind=interview 产物 + 逐题作答 + AI 对照证据表反馈 =====
+    // 可练性判定（批 4 卡片 b4c2 抽成单一通道）：/app/practice/start 的 409 拒绝与投递详情「面试练习」区的
+    // 空态/降级文案共用同一份判定与同一份文案（UI 不另抄一份会漂移的复制品）；只读零写盘。
+    // ok 时带出 buildPracticeSession 的成品快照（start 直接落账它；页面只用 ok/reason，不落任何东西）。
+    const practiceGate = (app) => {
+      const docId = String(app.docId || '');
+      if (!docId) return { ok: false, reason: '这条投递还没有关联简历，练习出题无从取材' };
+      const meta = loadMeta()[docId];
+      const j = (meta && meta.job) ? meta.job : null;
+      if (!j) return { ok: false, reason: '还没有可练习的面试追问：这条投递关联的简历不是岗位草稿（练习出题复用岗位草稿的「面试追问」产物）' };
+      const iv = (j.interview && typeof j.interview === 'object') ? j.interview : null;
+      if (!iv) return { ok: false, reason: '还没有可练习的面试追问：这份岗位草稿还没生成「面试追问」，请先在编辑器里生成后再来练习' };
+      let html = null;
+      try { html = fs.readFileSync(docPath(docId), 'utf8'); } catch {}
+      if (html == null) return { ok: false, reason: '这条投递关联的简历不在本机，练习出题无从取材（请先在投递详情里确认简历）' };
+      const paras = parasOf(html);
+      const ivView = interviewSourceView(iv, { paras });
+      const evGenBound = (typeof j.interviewEvidenceGen === 'number' && j.interviewEvidenceGen !== Number(j.evidenceGen || 0));
+      const bindingFresh = !evGenBound;   // 与 S4B-3 stale 判定同口径：字段缺失视为仍绑定（宽容读），字段在且不同 → 已换批
+      const interviewStale = !!(j.interviewBaseHash && (
+        j.interviewBaseHash !== contentHash(html) || evGenBound));
+      const session = buildPracticeSession({
+        docId, company: String(app.company || ''), role: String(app.role || ''),
+        interviewView: ivView, evidence: Array.isArray(j.evidence) ? j.evidence : [],
+        bindingFresh, interviewStale,
+        interviewGen: Number.isInteger(j.interviewGen) ? j.interviewGen : null,
+        evidenceGen: Number.isInteger(j.evidenceGen) ? j.evidenceGen : null,
+      });
+      if (!session) return { ok: false, reason: '还没有可练习的面试追问：这份岗位草稿的「面试追问」没有任何可用要点，请先在编辑器里重新生成' };
+      return { ok: true, session };
+    };
     // 账本适配器（followUpLedger 同款）：applications.json 的唯一写者仍是 server.mjs —— 写时重新读表、
     // **只回写本卡的 practice 字段**，不拿旧副本覆盖别人刚改的备注/状态/面试记录/followUp。
     const practiceLedger = {
@@ -5633,43 +5681,20 @@ async function handler(req, res) {
         return true;
       },
     };
-    // 出题（零模型调用）：只读该投递关联岗位草稿的 meta.job.interview 既有产物（interviewSourceView
-    // 读视图）快照成练习会话；链题仅在追问仍绑定当前证据批次时快照对应要求行 req。
-    // 没有关联简历 / 不是岗位草稿 / 没有面试追问 / 没有可用要点 → 409 明确拒绝，不留空会话。
+    // 出题（零模型调用）：判定与文案走 practiceGate 单一通道（与详情页空态同源）；链题仅在追问仍绑定
+    // 当前证据批次时快照对应要求行 req。没有关联简历 / 不是岗位草稿 / 没有面试追问 / 没有可用要点 →
+    // 409 明确拒绝，不留空会话。
     if (req.method === 'POST' && url.pathname === '/app/practice/start') {
       const body = await readBodyAuto(req);
       const id = String(body.id || '');
       if (!/^[0-9-]+$/.test(id)) return sendJson(400, { ok: false, error: 'invalid id' });
       const rec = practiceLedger.read(id);
       if (!rec) return sendJson(404, { ok: false, error: '投递记录不存在' });
-      const app = rec.app;
-      const docId = String(app.docId || '');
-      if (!docId) return sendJson(409, { ok: false, error: '这条投递还没有关联简历，练习出题无从取材' });
-      const meta = loadMeta()[docId];
-      const j = (meta && meta.job) ? meta.job : null;
-      if (!j) return sendJson(409, { ok: false, error: '还没有可练习的面试追问：这条投递关联的简历不是岗位草稿（练习出题复用岗位草稿的「面试追问」产物）' });
-      const iv = (j.interview && typeof j.interview === 'object') ? j.interview : null;
-      if (!iv) return sendJson(409, { ok: false, error: '还没有可练习的面试追问：这份岗位草稿还没生成「面试追问」，请先在编辑器里生成后再来练习' });
-      let html = null;
-      try { html = fs.readFileSync(docPath(docId), 'utf8'); } catch {}
-      if (html == null) return sendJson(409, { ok: false, error: '这条投递关联的简历不在本机，练习出题无从取材（请先在投递详情里确认简历）' });
-      const paras = parasOf(html);
-      const ivView = interviewSourceView(iv, { paras });
-      const evGenBound = (typeof j.interviewEvidenceGen === 'number' && j.interviewEvidenceGen !== Number(j.evidenceGen || 0));
-      const bindingFresh = !evGenBound;   // 与 S4B-3 stale 判定同口径：字段缺失视为仍绑定（宽容读），字段在且不同 → 已换批
-      const interviewStale = !!(j.interviewBaseHash && (
-        j.interviewBaseHash !== contentHash(html) || evGenBound));
-      const session = buildPracticeSession({
-        docId, company: String(app.company || ''), role: String(app.role || ''),
-        interviewView: ivView, evidence: Array.isArray(j.evidence) ? j.evidence : [],
-        bindingFresh, interviewStale,
-        interviewGen: Number.isInteger(j.interviewGen) ? j.interviewGen : null,
-        evidenceGen: Number.isInteger(j.evidenceGen) ? j.evidenceGen : null,
-      });
-      if (!session) return sendJson(409, { ok: false, error: '还没有可练习的面试追问：这份岗位草稿的「面试追问」没有任何可用要点，请先在编辑器里重新生成' });
-      const appended = appendPracticeSession(practiceLedger, id, session);
+      const gate = practiceGate(rec.app);
+      if (!gate.ok) return sendJson(409, { ok: false, error: gate.reason });
+      const appended = appendPracticeSession(practiceLedger, id, gate.session);
       if (!appended.ok) return sendJson(appended.status || 404, { ok: false, error: appended.error });
-      return sendJson(200, { ok: true, pid: session.pid });
+      return sendJson(200, { ok: true, pid: gate.session.pid });
     }
     // 练习历史（摘要视图）：最新在前（appendPracticeSession 已保证），上限 PRACTICE_CAP=20（F3 同款）。
     if (req.method === 'GET' && url.pathname === '/app/practice/history') {
@@ -5750,6 +5775,46 @@ async function handler(req, res) {
       catch (e) { return sendJson((e && e.httpCode) || 400, { ok: false, error: String((e && e.message) || e), code: (e && e.code) || '' }); }
       if (!cancelled) return sendJson(409, { ok: false, error: '任务已结束或已被新任务取代（taskId 不匹配当前 running）' });
       return sendJson(200, { ok: true });
+    }
+    // 缺的素材一键转「待补充素材」（批 4 卡片 b4c2）：反馈里「缺的指标或事实」某一项 → 素材库占位条目。
+    // 条目形状与 /mat/add 完全一致（零新字段，备份/恢复/合并路径不受影响）；factStatus=pending +
+    // 「待补充」标签——它只是占位提醒，事实层待用户补齐后再确认。文本取落账的 result.missing[index]
+    //（服务端按账建条目，不信客户端传文）；会话侧 missingMats 记轻量关联（practice.mjs linkMissingMaterial）。
+    // 幂等：同一缺项已转过且素材还在 → 原样返回既有 matId；素材被用户删掉 → 重建并改链（素材库是事实源）。
+    if (req.method === 'POST' && url.pathname === '/app/practice/missing/material') {
+      const body = await readBodyAuto(req);
+      const id = String(body.id || '');
+      const pid = String(body.pid || '');
+      const qid = String(body.qid || '');
+      const index = body.index;
+      if (!/^[0-9-]+$/.test(id)) return sendJson(400, { ok: false, error: 'invalid id' });
+      if (!pid || !qid) return sendJson(400, { ok: false, error: 'pid 与 qid 必填' });
+      if (!Number.isInteger(index) || index < 0) return sendJson(400, { ok: false, error: 'index 必须是非负整数' });
+      const rec = practiceLedger.read(id);
+      if (!rec) return sendJson(404, { ok: false, error: '投递记录不存在' });
+      const session = findSession(rec.app, pid);
+      if (!session) return sendJson(404, { ok: false, error: '练习会话不存在或已被清理（历史保留最近 ' + PRACTICE_CAP + ' 次）' });
+      if (!findQuestion(session, qid)) return sendJson(404, { ok: false, error: '问题不存在（qid 不在这条练习里）' });
+      const result = feedbackResultOf(session, qid);
+      const missing = (result && Array.isArray(result.missing)) ? result.missing : null;
+      if (!missing || index >= missing.length || !String(missing[index] || '').trim()) {
+        return sendJson(400, { ok: false, error: '这一题没有对应的缺项记录（反馈可能已重新生成），请刷新后再试' });
+      }
+      const links = missingMatLinkOf(session, qid);
+      const prev = links[String(index)];
+      const mats = loadMats();
+      if (prev && prev.matId && mats.some((m) => m.id === prev.matId)) {
+        return sendJson(200, { ok: true, matId: prev.matId, existed: true });
+      }
+      const text = String(missing[index]).trim();
+      const now = timestamp();
+      mats.push({ id: now, title: ('待补充：' + text).slice(0, 60), brief: text,
+        technical: '', interview: '', attach: '', tags: ['待补充'], factStatus: 'pending',
+        createdAt: now, updatedAt: now });
+      saveMats(mats);
+      const linked = linkMissingMaterial(practiceLedger, id, pid, qid, index, now);
+      if (!linked.ok) return sendJson(linked.status || 404, { ok: false, error: linked.error });
+      return sendJson(200, { ok: true, matId: now });
     }
     // ===== 素材库（确认状态）=====
     if (req.method === 'GET' && url.pathname === '/materials') {
@@ -6439,6 +6504,248 @@ async function handler(req, res) {
       const archiveLine = archiveMissing
         ? `${badge('err', '存档 PDF 缺失')} <button class="secondary" style="padding:2px 8px;font-size:12px" onclick="regenArchive()">从快照重新生成</button><span id="regenMsg" style="font-size:12px"></span>`
         : `<a href="/archive-pdf?id=${escAttr(app.id)}" target="_blank">存档 PDF</a> ${badge('ok', '内容哈希 ' + escHtml((app.contentHash || '').slice(0, 8)))}`;
+      // ===== 面试练习区（批 4 卡片 b4c2）：逐题作答 → 反馈流 + 缺的素材一键转待补充 =====
+      // 可练性与 /app/practice/start 409 共用 practiceGate（单一通道）：不能练就不给「开始练习」入口
+      //（不给注定失败的按钮），降级原因照实渲染（§9.2-1）；练习历史照常可看（历史是已发生的事实）。
+      const prGate = practiceGate(app);
+      const prSessions = practiceSessions(app);
+      const prLlm = hasLLM(root);
+      const prNow = Date.now();
+      const prHasLinks = prSessions.some((s) => s && s.feedback && typeof s.feedback === 'object' && !Array.isArray(s.feedback)
+        && Object.values(s.feedback).some((b) => b && typeof b === 'object' && b.missingMats && Object.keys(b.missingMats).length));
+      const prMats = prHasLinks ? loadMats() : null;   // 仅在需要核对「已转素材还在不在」时才读素材库：被删 → 恢复按钮态（可重建）
+      const prMatExists = (matId) => !!prMats && prMats.some((m) => m.id === matId);
+      const prUsageText = (u) => (u && typeof u.total === 'number') ? ('用量 ' + u.total + ' tokens') : '用量：服务商未返回';
+      const prFbBox = (s, qid) => {
+        const fb = (s.feedback && typeof s.feedback === 'object' && !Array.isArray(s.feedback)) ? s.feedback : {};
+        return (fb[qid] && typeof fb[qid] === 'object' && !Array.isArray(fb[qid])) ? fb[qid] : {};
+      };
+      const prQuestionHtml = (s, q) => {
+        const box = prFbBox(s, q.qid);
+        const task = (box.task && typeof box.task === 'object') ? box.task : null;
+        const expired = !!(task && task.status === 'running' && typeof task.startedAt === 'number' && task.startedAt + PRACTICE_TTL_MS < prNow);
+        const running = !!(task && task.status === 'running' && !expired);
+        const result = (box.result && typeof box.result === 'object' && !Array.isArray(box.result)) ? box.result : null;
+        const links = (box.missingMats && typeof box.missingMats === 'object' && !Array.isArray(box.missingMats)) ? box.missingMats : {};
+        const ansRec = (s.answers && typeof s.answers === 'object' && s.answers[q.qid] && typeof s.answers[q.qid] === 'object') ? s.answers[q.qid] : null;
+        const saved = ansRec ? String(ansRec.text || '') : '';
+        const statusText = [
+          ansRec && ansRec.at ? '作答于 ' + escHtml(fmtWhen(ansRec.at)) : '',
+          running ? '反馈生成中 · ' + escHtml(stageLabel(task.stage)) : '',
+          expired ? '反馈超时：未生成结果，可重新生成' : '',
+          task && task.status === 'error' ? escHtml(String(task.error || '反馈生成失败')) : '',
+          task && task.status === 'cancelled' ? '已取消' : '',
+          task && task.status === 'done' ? '反馈已生成 · ' + prUsageText(task.usage) : '',
+        ].filter(Boolean).join(' · ');
+        const pointsHtml = (Array.isArray(q.points) && q.points.length) ? `<div class="pr-meta">证据要点</div>
+          <ul class="pr-points">${q.points.map((p) => `<li>${escHtml(p.text || '')}${p.quote ? `（引文：${escHtml(p.quote)}）` : ''} <span class="pr-meta">${escHtml(POINT_STATE_LABEL[p.sourceState] || '来源状态未知（仅作参考）')}</span></li>`).join('')}</ul>` : '';
+        const matLine = (t, i) => {
+          const link = links[String(i)];
+          return `<div class="pr-mat-line"><span>${escHtml(t)}</span>${(link && link.matId && prMatExists(link.matId))
+            ? `<a href="/materials">已转待补充素材</a>`
+            : `<button class="secondary" data-pr="mat" data-idx="${i}">转待补充素材</button>`}</div>`;
+        };
+        const fbHtml = result ? `<div class="pr-fb">
+          <div class="pr-fb-label">答到的事实</div>
+          ${(Array.isArray(result.hit) && result.hit.length) ? `<ul class="pr-list">${result.hit.map((t) => `<li>${escHtml(t)}</li>`).join('')}</ul>` : '<div class="pr-meta">（本次没有识别到答到的事实）</div>'}
+          <div class="pr-fb-label">缺的指标或事实</div>
+          ${(Array.isArray(result.missing) && result.missing.length) ? result.missing.map((t, i) => matLine(t, i)).join('') : '<div class="pr-meta">（无）</div>'}
+          <div class="pr-fb-label">夸大倾向</div>
+          ${(Array.isArray(result.exaggeration) && result.exaggeration.length) ? `<ul class="pr-list">${result.exaggeration.map((t) => `<li>${escHtml(t)}</li>`).join('')}</ul>` : '<div class="pr-meta">未发现夸大倾向</div>'}
+          <div class="pr-fb-label">改进建议</div>
+          <p style="margin:var(--space-1) 0 0;font-size:13px">${escHtml(String(result.advice || ''))}</p>
+        </div>` : '';
+        return `<div class="pr-q" data-pid="${escAttr(s.pid)}" data-qid="${escAttr(q.qid)}"${running ? ` data-pr-running="${escAttr(task.taskId || '')}"` : ''}>
+          <div class="pr-qtext">${escHtml(q.question || '')}</div>
+          ${q.followUp ? `<div class="pr-meta">追问：${escHtml(q.followUp)}</div>` : ''}
+          ${q.req ? `<div class="pr-meta">证据表要求：${escHtml(q.req)}</div>` : ''}
+          ${pointsHtml}
+          <textarea class="pr-answer" rows="5" aria-label="作答" placeholder="口头回答的要点转写" data-pr-saved="${escAttr(saved)}">${escHtml(saved)}</textarea>
+          <div class="pr-acts">
+            <button class="secondary" data-pr="save">保存作答</button>
+            <button class="secondary" data-pr="fb"${prLlm ? '' : ' disabled'}>生成反馈</button>
+            ${running ? `<button class="secondary" data-pr="cancel" data-task="${escAttr(task.taskId || '')}">取消</button>` : ''}
+            <span class="pr-status">${statusText}</span>
+            <span class="pr-msg"></span>
+          </div>
+          ${fbHtml}
+        </div>`;
+      };
+      const prSessionHtml = (s, i) => {
+        const sum = sessionSummary(s);
+        const qs = Array.isArray(s.questions) ? s.questions : [];
+        return `<details class="pr-session" id="pr-${escAttr(sum.pid)}"${i === 0 ? ' open' : ''}>
+          <summary>${escHtml(fmtWhen(s.createdAt))} · <span style="font-variant-numeric:tabular-nums">${sum.questionCount} 题 · 答 ${sum.answeredCount} · 反馈 ${sum.feedbackCount}</span>${s.interviewStale ? ' ' + badge('warn', '追问依据已变动') : ''}</summary>
+          <div class="pr-meta">依据简历 ${escHtml(sum.docId || '')}${s.interviewStale ? '（追问或证据批次已变动，对照仅作参考）' : ''}</div>
+          ${qs.map((q) => prQuestionHtml(s, q)).join('')}
+        </details>`;
+      };
+      const prCardHtml = `<div class="card" style="margin-top:var(--space-3)" id="practice" data-pr-llm="${prLlm ? '1' : ''}">
+      <b class="card-title">面试练习</b>
+      ${prLlm ? '' : `<div class="pr-note">${escHtml(PRACTICE_NO_MODEL_HINT)}</div>`}
+      ${prGate.ok
+        ? `<div class="pr-acts"><button data-pr="start">开始练习</button><span class="pr-msg" id="prMsg"></span></div>`
+        : `<div class="pr-empty">${escHtml(prGate.reason)}</div>`}
+      ${prSessions.map((s, i) => prSessionHtml(s, i)).join('')}
+    </div>`;
+      // 客户端段：作答保存/反馈轮询/缺项转待补充全部就地更新，不整页 reload（未保存的作答不丢）。
+      // 模型产物（反馈四字段）只经 textContent 进 DOM，不拼 innerHTML（模型输出不可信，F3 同口径）；
+      // 就绪后的呈现与服务端初载渲染同一份 /app/practice/state 数据，状态措辞保持一致。
+      const prScriptHtml = `<script>
+      var PR_STAGES = { queued: '排队等待槽位', calling: '调用模型中', parsing: '解析校验中' };
+      var PR_STAGE_FALLBACK = '处理中';
+      var prQEl = function (pid, qid) { return document.querySelector('.pr-q[data-pid="' + pid + '"][data-qid="' + qid + '"]'); };
+      var prStatus = function (q, text) { var el = q && q.querySelector('.pr-status'); if (el) el.textContent = text; };
+      var prMsg = function (q, text) { var el = q && q.querySelector('.pr-msg'); if (el) el.textContent = text; };
+      var prUsage = function (u) { return (u && typeof u.total === 'number') ? ('用量 ' + u.total + ' tokens') : '用量：服务商未返回'; };
+      var prUnsaved = function () {
+        return Array.prototype.some.call(document.querySelectorAll('.pr-answer'), function (ta) {
+          return ta.value !== (ta.getAttribute('data-pr-saved') || '');
+        });
+      };
+      var prHideCancel = function (q) { var b = q && q.querySelector('button[data-pr="cancel"]'); if (b && b.parentNode) b.parentNode.removeChild(b); };
+      var prShowCancel = function (q, taskId) {
+        if (!q) return;
+        var btn = q.querySelector('button[data-pr="cancel"]');
+        if (!btn) {
+          btn = document.createElement('button');
+          btn.type = 'button'; btn.className = 'secondary';
+          btn.setAttribute('data-pr', 'cancel');
+          var acts = q.querySelector('.pr-acts');
+          if (acts) acts.appendChild(btn);
+        }
+        btn.textContent = '取消';
+        btn.disabled = false;
+        btn.setAttribute('data-task', String(taskId || ''));
+      };
+      var prEnableFb = function (q) { var b = q && q.querySelector('button[data-pr="fb"]'); if (b) b.disabled = false; };
+      var prAddList = function (fb, label, items, emptyText) {
+        var h = document.createElement('div'); h.className = 'pr-fb-label'; h.textContent = label; fb.appendChild(h);
+        if (!items || !items.length) {
+          var e0 = document.createElement('div'); e0.className = 'pr-meta'; e0.textContent = emptyText; fb.appendChild(e0);
+          return;
+        }
+        var ul = document.createElement('ul'); ul.className = 'pr-list';
+        items.forEach(function (t) { var li = document.createElement('li'); li.textContent = t; ul.appendChild(li); });
+        fb.appendChild(ul);
+      };
+      var prFbRender = function (q, result, task) {
+        var fb = q.querySelector('.pr-fb');
+        if (!fb) { fb = document.createElement('div'); fb.className = 'pr-fb'; q.appendChild(fb); }
+        fb.textContent = '';
+        prAddList(fb, '答到的事实', result.hit, '（本次没有识别到答到的事实）');
+        var h2 = document.createElement('div'); h2.className = 'pr-fb-label'; h2.textContent = '缺的指标或事实'; fb.appendChild(h2);
+        var miss = result.missing || [];
+        if (!miss.length) { var e1 = document.createElement('div'); e1.className = 'pr-meta'; e1.textContent = '（无）'; fb.appendChild(e1); }
+        miss.forEach(function (t, i) {
+          var row = document.createElement('div'); row.className = 'pr-mat-line';
+          var sp = document.createElement('span'); sp.textContent = t; row.appendChild(sp);
+          var b = document.createElement('button'); b.type = 'button'; b.className = 'secondary';
+          b.setAttribute('data-pr', 'mat'); b.setAttribute('data-idx', String(i)); b.textContent = '转待补充素材';
+          row.appendChild(b); fb.appendChild(row);
+        });
+        prAddList(fb, '夸大倾向', result.exaggeration, '未发现夸大倾向');
+        var h3 = document.createElement('div'); h3.className = 'pr-fb-label'; h3.textContent = '改进建议'; fb.appendChild(h3);
+        var p = document.createElement('p'); p.style.margin = 'var(--space-1) 0 0'; p.textContent = result.advice || ''; fb.appendChild(p);
+        prHideCancel(q);
+        prStatus(q, '反馈已生成 · ' + prUsage(task && task.usage));
+      };
+      var prPoll = function (pid, qid, taskId) {
+        var tick = function () {
+          fetch('/app/practice/state?id=' + encodeURIComponent(APPID) + '&pid=' + encodeURIComponent(pid))
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+              var q = prQEl(pid, qid);
+              if (!q) return;
+              if (!d || !d.ok) { prMsg(q, '状态读取失败'); return; }
+              var box = (d.session && d.session.feedback && d.session.feedback[qid]) || {};
+              var t = box.task || {};
+              if (!taskId || t.taskId !== taskId) return;   // 已被新任务取代/会话已变：不覆盖页面状态
+              if (t.status === 'running') {
+                if (t.expired) { prHideCancel(q); prStatus(q, '反馈超时：未生成结果，可重新生成'); prEnableFb(q); return; }
+                prShowCancel(q, t.taskId);
+                prStatus(q, '反馈生成中 · ' + (PR_STAGES[t.stage] || PR_STAGE_FALLBACK));
+                setTimeout(tick, 900);
+                return;
+              }
+              prHideCancel(q); prEnableFb(q);
+              if (t.status === 'done') { prFbRender(q, box.result || {}, t); return; }
+              if (t.status === 'error') { prStatus(q, t.error || '反馈生成失败'); return; }
+              if (t.status === 'cancelled') { prStatus(q, '已取消'); return; }
+            })
+            .catch(function () {
+              var q = prQEl(pid, qid);
+              if (q) { prMsg(q, '状态读取失败：网络异常'); setTimeout(tick, 1800); }
+            });
+        };
+        tick();
+      };
+      document.addEventListener('click', function (e) {
+        var b = e.target && e.target.closest ? e.target.closest('button[data-pr]') : null;
+        if (!b) return;
+        var act = b.getAttribute('data-pr');
+        if (act === 'start') {
+          if (prUnsaved() && !confirm('有未保存的作答，开始新练习会丢失未保存内容。继续？')) return;
+          b.disabled = true;
+          __wv('/app/practice/start', { id: APPID }, document.getElementById('prMsg'))
+            .then(function () { location.reload(); })
+            .catch(function () { b.disabled = false; });
+          return;
+        }
+        var q = b.closest('.pr-q');
+        if (!q) return;
+        var pid = q.getAttribute('data-pid'), qid = q.getAttribute('data-qid');
+        if (act === 'save') {
+          var ta = q.querySelector('.pr-answer');
+          var text = ta ? ta.value : '';
+          if (!text.trim()) { prMsg(q, '作答不能为空'); return; }
+          b.disabled = true;
+          __wv('/app/practice/answer', { id: APPID, pid: pid, qid: qid, text: text }, q.querySelector('.pr-msg'))
+            .then(function () {
+              if (ta) ta.setAttribute('data-pr-saved', text);
+              prStatus(q, '作答已保存');
+              b.disabled = false;
+            })
+            .catch(function () { b.disabled = false; });
+          return;
+        }
+        if (act === 'fb') {
+          b.disabled = true;
+          prMsg(q, '');
+          __wv('/app/practice/feedback/start', { id: APPID, pid: pid, qid: qid }, q.querySelector('.pr-msg'))
+            .then(function (d) {
+              prStatus(q, '反馈生成中 · ' + (PR_STAGES.queued || PR_STAGE_FALLBACK));
+              prPoll(pid, qid, (d && d.taskId) || '');
+            })
+            .catch(function () { b.disabled = false; });
+          return;
+        }
+        if (act === 'cancel') {
+          b.disabled = true;
+          __wv('/app/practice/feedback/cancel', { id: APPID, pid: pid, qid: qid, taskId: b.getAttribute('data-task') || '' }, q.querySelector('.pr-msg'))
+            .then(function () { prStatus(q, '已取消'); })
+            .catch(function () { b.disabled = false; });
+          return;
+        }
+        if (act === 'mat') {
+          b.disabled = true;
+          var idx = parseInt(b.getAttribute('data-idx'), 10);
+          __wv('/app/practice/missing/material', { id: APPID, pid: pid, qid: qid, index: isNaN(idx) ? -1 : idx }, q.querySelector('.pr-msg'))
+            .then(function () {
+              var a = document.createElement('a');
+              a.href = '/materials';
+              a.textContent = '已转待补充素材';
+              b.replaceWith(a);
+            })
+            .catch(function () { b.disabled = false; });
+          return;
+        }
+      });
+      // 页面加载那一刻已有 running 任务 → 接着轮询（服务端渲染了 data-pr-running 与取消按钮）
+      document.querySelectorAll('.pr-q[data-pr-running]').forEach(function (q) {
+        prPoll(q.getAttribute('data-pid'), q.getAttribute('data-qid'), q.getAttribute('data-pr-running'));
+      });
+      </script>`;
       return send(200, page('投递详情', `<h1>投递详情</h1>
     <div class="card">
       <b style="font-size:16px">${escHtml(app.company)}</b> ${escHtml(app.role)} ${dueBadge}
@@ -6477,6 +6784,7 @@ async function handler(req, res) {
         </div>
       </details>
     </div>
+    ${prCardHtml}
     <div class="card" style="margin-top:12px">
       <b>AI 面试准备建议</b> <button id="prepBtn">生成</button><span id="prepMsg"></span>
       <div id="prepOut" style="margin-top:8px;font-size:13px;white-space:pre-wrap">${preps.length ? escHtml(preps[0].text) + (preps[0].at ? `<div style="font-size:12px;color:var(--mut);margin-top:4px">生成于 ${escHtml(preps[0].at)}</div>` : '') : ''}</div>
@@ -6513,7 +6821,8 @@ async function handler(req, res) {
           else { prepOutEl.textContent = ''; __status(prepMsgEl, 'err', data.error || '失败'); }
         } catch (e) { __status(document.getElementById('prepMsg'), 'err', e.message); }
       };
-    </script>`, 'apps'));
+    </script>
+    ${prScriptHtml}`, 'apps'));
     }
     // ICS 文本转义（2026-10-19 安全审查 🟡-2）：CRLF 必须转义，否则 SUMMARY 里的换行
 // 会注入出合法的 ICS 属性行（如 URL:https://evil/），日历客户端直接渲染成攻击者链接。
@@ -7122,9 +7431,19 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const loopCard = `<div class="card"><b class="card-title">评估 ↦ 投递</b>
       ${evalLoopRows || '<div style="color:var(--mut);font-size:13px;margin-top:var(--space-2)">还没有评估记录。到<a href="/job/new">「为岗位定制简历」</a>页点「先评估这个岗位」，评估结果会记在这里。</div>'}
       ${remindHtml}</div>`;
-      // 侧卡（1/3 列）：状态分布 + 面试参与合并为一张卡的两段（批 1 §0.2 复盘层级重排）
+      // 面试练习入口（批 4 卡片 b4c2）：只列最近 3 条跨投递练习摘要（按会话时间倒序，链接直达 /app#pr-<pid>），
+      // 练习明细都在投递详情页——这里不做第二份练习流（练习数据只落 app.practice，本页只读）。空态给去向指引（§9.2-4）。
+      const prRows = apps.flatMap((a) => practiceSessions(a).map((s) => ({ a, s })))
+        .sort((x, y) => String((y.s && y.s.createdAt) || '').localeCompare(String((x.s && x.s.createdAt) || '')))
+        .slice(0, 3);
+      const practiceSec = `<div class="stats-sec"><b class="card-title">面试练习</b>${prRows.length
+        ? prRows.map(({ a, s }) => { const sum = sessionSummary(s);
+            return `<div style="margin-top:var(--space-2)"><a href="/app?id=${escAttr(a.id)}#pr-${escAttr(sum.pid)}">${escHtml([a.company, a.role].filter(Boolean).join('·') || '未填公司岗位')}</a><div style="font-size:12px;color:var(--mut);font-variant-numeric:tabular-nums">${sum.questionCount} 题 · 答 ${sum.answeredCount} · 反馈 ${sum.feedbackCount} · ${escHtml(fmtWhen(s.createdAt))}</div></div>`;
+          }).join('')
+        : `<p style="font-size:13px;color:var(--mut);margin:var(--space-2) 0 0">还没有练习记录：入口在每条投递详情的「面试练习」区（<a href="/applications">投递看板</a>）</p>`}</div>`;
+      // 侧卡（1/3 列）：状态分布 + 面试参与合并为一张卡的两段（批 1 §0.2 复盘层级重排）；面试练习段为批 4 增段
       const sideCard = `<div class="card stats-side"><b class="card-title">状态分布</b>${funnelBar}
-      <div class="stats-sec"><b class="card-title">面试参与</b><p style="font-size:13px;margin:var(--space-2) 0 0">${interviewed}/${n} 有面试安排或已进入面试（${n ? Math.round(interviewed / n * 100) : 0}%）；预约不等于完成。</p></div></div>`;
+      <div class="stats-sec"><b class="card-title">面试参与</b><p style="font-size:13px;margin:var(--space-2) 0 0">${interviewed}/${n} 有面试安排或已进入面试（${n ? Math.round(interviewed / n * 100) : 0}%）；预约不等于完成。</p></div>${practiceSec}</div>`;
       // 三分布网格：收窄进主列（2/3）内，不再满宽铺开（批 1 §0.2）
       const distCards = `<div class="stats-dists">
       <div class="card"><b class="card-title">按渠道</b>${Object.entries(byCh).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:var(--space-2) 0"><span>${escHtml(k)}</span><span style="font-variant-numeric:tabular-nums">${v}</span></div>`).join('')}</div>

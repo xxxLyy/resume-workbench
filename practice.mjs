@@ -280,9 +280,44 @@ export function cancelPracticeFeedbackTask(ledger, id, pid, qid, taskId) {
   return ledger.write({ ...app, practice: nextSessions });
 }
 
+// ===== 缺的素材轻量关联（批 4 卡片 b4c2）：反馈缺项 → 素材库「待补充」条目的会话侧链接 =====
+// 链接只落本会话 feedback[qid].missingMats（applications.json 既有账本内）；materials.json 本体的增删改
+// 仍由 server.mjs 单写者的 /mat/* 既有入口接管，本模块不碰素材文件。重新生成反馈会换掉整份结果 →
+// startPracticeFeedbackTask 重写该盒（只带 task+result 两键）时旧 missingMats 一并失效：索引对应的
+// 文本已变，保留旧链接会张冠李戴（这是「重开反馈 = 缺项关联清零重记」的语义，不是丢数据）。
+export const feedbackResultOf = (session, qid) => {
+  const box = feedbackBoxOf(session, qid);
+  return (box.result && typeof box.result === 'object' && !Array.isArray(box.result)) ? box.result : null;
+};
+export const missingMatLinkOf = (session, qid) => {
+  const box = feedbackBoxOf(session, qid);
+  return (box.missingMats && typeof box.missingMats === 'object' && !Array.isArray(box.missingMats)) ? box.missingMats : {};
+};
+// 关联落账（幂等性由调用方保证：已链且素材还在 → 不再进这里）。写时重读、只回写 practice 字段（账本适配器同款）。
+export function linkMissingMaterial(ledger, id, pid, qid, index, matId) {
+  const rec = ledger.read(id);
+  if (!rec) return { ok: false, status: 404, error: '投递记录不存在' };
+  const app = rec.app;
+  const session = findSession(app, pid);
+  if (!session) return { ok: false, status: 404, error: '练习会话不存在或已被清理（历史保留最近 ' + PRACTICE_CAP + ' 次）' };
+  if (!findQuestion(session, qid)) return { ok: false, status: 404, error: '问题不存在（qid 不在这条练习里）' };
+  const sessions = practiceSessions(app);
+  const i = sessions.findIndex((s) => s.pid === pid);
+  if (i < 0) return { ok: false, status: 404, error: '练习会话不存在或已被清理（历史保留最近 ' + PRACTICE_CAP + ' 次）' };
+  const box = feedbackBoxOf(sessions[i], qid);
+  const links = (box.missingMats && typeof box.missingMats === 'object' && !Array.isArray(box.missingMats)) ? box.missingMats : {};
+  const nextSessions = sessions.slice();
+  nextSessions[i] = {
+    ...sessions[i],
+    feedback: { ...(sessions[i].feedback || {}), [qid]: { ...box, missingMats: { ...links, [String(index)]: { matId: String(matId), at: new Date().toISOString() } } } },
+  };
+  if (!ledger.write({ ...app, practice: nextSessions })) return { ok: false, status: 404, error: '投递记录已删除，未保存本次关联' };
+  return { ok: true };
+}
+
 // ===== 反馈 prompt（对照证据表；诚实红线钉在 sys 里）=====
 // 事实依据只有出题时快照的证据要点与引文：不虚构、不脑补；标注「来源已变动/仅作参考」的要点不当已核验事实。
-const POINT_STATE_LABEL = {
+export const POINT_STATE_LABEL = {   // 导出：练习 UI（b4c2）渲染要点来源状态与 prompt 同源同文案，防两处漂移
   fresh: '引文已核验',
   stale: '来源已变动（引文不再命中当前正文，仅作参考）',
   none: '作答思路（无引文锚点，未经核验）',
