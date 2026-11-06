@@ -345,3 +345,22 @@ FIELDS（editor-shell.js） → typoCss(v) → #typo-custom（落盘进 <head>�
 - **隐私边界**：原样展示意味着正文里的姓名/邮箱/电话会出现在文本层预览中——但同一页下方本就嵌着同一份 PDF 的预览（`/pdf` iframe），可见内容相同，**不新增暴露面**；预览只在本机渲染、不落盘、不外发（与既有导出页口径一致）。
 - 断言同提交：`test-fixtures/reliability/test-text-layer-preview.mjs`（折叠区在场 / 原样逐字相等 / 无分数无结论 / 字符量口径沿用 / 读不出与无 PDF 的诚实空态），`test-structure.sh` 登记执行。
 
+
+### 10.10 网申包数据层（2026-11-06 批 3 登记 · 卡片 b3c1）
+
+> 计划 §4 批 3「S8 网申包 + 跟进助手」；上位需求 `dev-docs/2026-09-23-roadmap-magazine-and-features.md` §S8。本节是**数据层**口径规范：页面、topnav、AI 文案字段、复制导出、跟进助手、分享副本**不在本卡**（留给批 3 后续卡）。
+
+- **账本**：`RESUME_ROOT/apply-profiles.json`（新增根级 JSON 账本，与 `applications.json`/`materials.json`/`evaluations.json`/`docs-meta.json` 同级、同纪律）。形状 = **通用信息表 + 按公司字段包同表**：`{ version, updatedAt, common: { sourceDocId, fields }, packages: { <pkgId>: { company, role, note, sourceDocId, fields } } }`。**个人数据**（姓名/电话/邮箱/经历文本）→ 已登记 `.gitignore` 与 `privacy-check.sh` 的忽略校验清单（不进仓库、不进备份）。
+- **读写纪律**：走 `tx.mjs` 新增的通用账本事务 `updateJsonLedger`（跨进程锁内读最新 → mutator → 唯一命名临时 + 原子 rename → 0600）。锁文件 `.apply-profiles.lock`（已登记忽略）。**结构迁移**（旧形状补齐）在同一锁内读时完成，不另开写路径。
+- **损坏停写口径**：解析失败或根值/内层形状不是对象 → 写侧抛 `CORRUPT`（`httpCode 500`，文案「数据文件损坏，已停止写入：apply-profiles.json。请先人工修复或从备份恢复。」），**停写不覆盖**（原文件保持原样）；读侧降级为空结构并带 `corrupt` 标记（与 `docs-meta`/`applications` 同口径：读容忍、写拒绝）。
+- **字段三态**（存储态 `mode` / 计算态 `state`）：
+  - **跟随来源 `follow`**：值 = **来源派生纯文本**（母版简历或通用表），**实时取当前来源**；来源自上次确认以来变了 → 标 **漂移 `drift`**（`state=drift`），界面据此提示。漂移基准 = 条目里的 `syncedText`/`syncedHash`（**上次确认过的来源快照**），未被确认前快照不被静默改写。
+  - **手动覆写 `override`**：值 = 手填文本，**锁死**，来源变更不影响它。
+  - **恢复跟随**：**动作**（不是第四态）——丢弃手填、回到 `follow`、重新取来源并确认快照（清漂移）。
+  - **独立维护 `manual`**：**仅独立字段**（期望薪资 / 到岗时间 / 工作年限），永不从简历派生；无来源 → 拒绝「恢复跟随」（`APPLY_FIELD_NOT_FOLLOWABLE`）；派生字段拒绝设为独立维护（`APPLY_FIELD_NOT_MANUAL`）。
+- **派生口径**：`deriveResumeFields()`（纯函数、零落盘）从简历正文派生纯文本 —— 姓名 ← `h1`；电话/邮箱 ← 联系方式块；自评/技能/工作经历/项目经历/教育经历 ← 对应章节（**隐藏章节不参与**，章节标题不进文本）。**独立字段不在派生结果里**。
+- **公司包来源**：包内字段可跟随**通用表**（默认）或**岗位简历**（`source.kind=resume` + `docId`）；来源切换后需一次「恢复跟随」确认快照。
+- **通用表逐字段来源的限制（登记备查，待后续页面卡定口径）**：通用表的字段一律跟随**通用表自己的** `sourceDocId`（读路径 `resolveProfiles` 对 common 段一律取通用表来源）；若对通用表字段调 `setFieldSource(..., {kind:'resume'})`，**写路径照设、读路径不认**（读仍取通用表来源）→「恢复跟随后仍标漂移」。逐字段换源是**包内字段**的契约（通用表 ↔ 岗位简历二选一），通用表侧未开放该入口，故本卡不改行为。后续页面卡若要开放通用表逐字段换源，须先定口径：把 `setFieldSource` 限定在 package 范围，或让读路径尊重 `entry.source`。
+- **诚实边界**：漂移只是提示——跟随字段的**值实时取当前来源**，但用户已确认的**快照**（`syncedText`/`syncedHash`）不被静默改写；手填覆写与独立字段**永不被自动改写**；派生文本来自简历原文，**不补造**任何简历里没有的信息。
+- **本卡不做**（留给批 3 后续卡）：`/apply-profile` 页面与 topnav 第七项、AI 文案字段（打招呼语/自荐信/跟进语）、单字段复制与整包导出、跟进助手、分享副本、投递记录关联字段包、备份/恢复纳管该账本（`RESTORE_MANAGED_FILES` 等在 `server.mjs`，属后续卡）。
+- **断言同提交**：`test-fixtures/reliability/test-apply-profiles.mjs`（通用表+公司包同表 / 三态切换 / 漂移标记 / 独立字段不被简历改动覆盖 / 损坏停写不覆盖原文件 / 落盘 0600 与无临时残留 / 服务启动不改写账本），`test-structure.sh` 登记执行。

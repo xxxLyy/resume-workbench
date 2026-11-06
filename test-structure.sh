@@ -74,6 +74,13 @@ node ./test-fixtures/reliability/test-content-check.mjs
 #       （隔离根 + 浏览器段；Chromium 缺失 exit 2；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §3 批 2）=====
 node ./test-fixtures/reliability/test-text-layer-preview.mjs
 
+# ===== 批3 网申包数据层（卡片 b3c1）：RESUME_ROOT/apply-profiles.json 通用表+按公司包同表
+#       + 字段三态（跟随来源=母版派生纯文本+来源变更标漂移 / 手动覆写 / 恢复跟随）
+#       + 期望薪资等独立字段不从简历派生 + 损坏停写口径对齐其它 JSON 账本
+#       + tx 纪律落盘（锁内 RMW / 原子写 / 0600 / 无临时残留）+ 服务启动不改写账本
+#       （隔离根 + 随机端口 + 合成文档，无浏览器依赖；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §4 批 3）=====
+node ./test-fixtures/reliability/test-apply-profiles.mjs
+
 # ===== VQA 视觉验收截图（零断言、退出 0）：8 个关键页 1280x900 全页图落 /tmp/shots-after，
 #       视觉判定走 DESIGN.md 对照（人工/视觉流程），本夹具只产出真实隔离实例渲染截图；Chromium 缺失 exit 2 =====
 node ./test-fixtures/reliability/test-visual-screens.mjs

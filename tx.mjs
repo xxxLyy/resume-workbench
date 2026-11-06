@@ -227,6 +227,44 @@ export function updateMetaAll(root, mutator) {
   } finally { releaseLockSync(lockPath); }
 }
 
+// ===== 通用 JSON 账本事务（批 3 网申包数据层 · 卡片 b3c1）=====
+// 纪律同 updateMeta：跨进程锁内读最新（损坏抛 CORRUPT，停写不覆盖）→ mutator → 唯一临时 + 原子 rename。
+// 与 docs-meta 的差别：账本是「整表 RMW」（mutator 收整表、返回整表），不是按文档 patch；
+// 供 apply-profiles.json 这类新账本复用既有锁与原子写纪律，不另造一套写路径。
+// validate：根值形状校验器（返回 false = 形状错 = 损坏，与其它账本 shapeOk 同口径停写）。
+// initial：文件缺失时交给 mutator 的种子（对象或函数）。
+// format：落盘文本（默认 2 空格缩进 + 尾换行，便于人工查看账本）。
+export function updateJsonLedger(root, fileName, mutator, { lockFile, validate = null, initial = null, format = null } = {}) {
+  const lockPath = path.join(root, lockFile || ('.' + fileName + '.lock'));
+  acquireLockSync(lockPath, { staleMs: 30000, timeoutMs: 8000, retryMs: 2 });
+  try {
+    const fp = path.join(root, fileName);
+    let cur = null;
+    if (fs.existsSync(fp)) {
+      let parsed = null;
+      try { parsed = JSON.parse(fs.readFileSync(fp, 'utf8')); }
+      catch (err) {
+        const e = new Error(`数据文件损坏，已停止写入：${fileName}。请先人工修复或从备份恢复。`);
+        e.httpCode = 500; e.code = 'CORRUPT'; e.cause = err; throw e;
+      }
+      if (validate && !validate(parsed)) {
+        const e = new Error(`数据文件损坏，已停止写入：${fileName}。请先人工修复或从备份恢复。`);
+        e.httpCode = 500; e.code = 'CORRUPT'; throw e;
+      }
+      cur = parsed;
+    }
+    const seed = cur === null ? (typeof initial === 'function' ? initial() : initial) : cur;
+    const next = mutator(seed);
+    if (next === null || next === undefined) return null;   // 放弃不写（与 updateMetaAll 同语义）
+    // mutator 返回非对象（数组/字符串等）→ 抛错不落盘（与 updateMetaAll 同款护栏）：
+    // 否则整表被写成非对象，下次读即判形状错 → 停写（账本自损坏）。
+    if (typeof next !== 'object' || Array.isArray(next)) throw new Error('updateJsonLedger mutator 必须返回对象新表或 null（放弃），得到：' + typeof next);
+    const text = format ? format(next) : JSON.stringify(next, null, 2) + '\n';
+    atomicWrite(fp, text);
+    return next;
+  } finally { releaseLockSync(lockPath); }
+}
+
 // ===== 保存事务记录（覆盖异常与进程中断）=====
 function newTxId() { return `${Date.now()}-${process.pid}-${Math.floor(Math.random() * 1e6).toString(36)}`; }
 

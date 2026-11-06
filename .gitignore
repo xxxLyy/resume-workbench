@@ -4,6 +4,7 @@ applications.json
 materials.json
 evaluations.json
 docs-meta.json
+apply-profiles.json
 docs/
 snapshots/
 pdfs/
@@ -17,6 +18,8 @@ audio/
 .tx/
 .migrate.lock
 .meta.lock
+.apply-profiles.lock
+.apply-profiles.json.*.tmp
 .docs-meta.json.*.tmp
 .gstack/
 *.log
