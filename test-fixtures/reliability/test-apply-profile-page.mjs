@@ -155,7 +155,9 @@ try {
     const html = (await get('/apply-profile')).text;
     commonHtml = section(html, 'apCommon');
     assert.ok(commonHtml, '/apply-profile 应渲染通用信息表区（id=apCommon）');
-    assert.equal(rowCount(commonHtml), 11, '通用表应有 11 个字段行（8 派生 + 3 独立），实际 ' + rowCount(commonHtml));
+    // 11 → 14（登记非放宽）：批 3 卡片 b3c3 按计划 §4 批 3「AI 文案字段（新增类型）：打招呼语/自荐信/跟进语」
+    // 在字段目录里新增 3 个字段类型（不是断言放宽：计数仍精确，AI 三行的行为断言见 test-apply-copy-fields.mjs）。
+    assert.equal(rowCount(commonHtml), 14, '通用表应有 14 个字段行（8 派生 + 3 独立 + 3 AI 文案），实际 ' + rowCount(commonHtml));
     // 每个字段行都有：标签 + 状态徽章 + 值 + 复制入口
     for (const [key, label] of [['name', '姓名'], ['phone', '电话'], ['email', '邮箱'], ['selfIntro', '自评'],
       ['skills', '专业技能'], ['work', '工作经历'], ['projects', '项目经历'], ['education', '教育经历'],
@@ -262,7 +264,7 @@ try {
     const pkgSec = section(html, 'apPkg-' + pkgId);
     assert.ok(pkgSec, '页面应渲染公司字段包区（id=apPkg-<id>）');
     assert.ok(pkgSec.includes('合成公司') && pkgSec.includes('后端工程师'), '字段包应显示公司与岗位');
-    assert.equal(rowCount(pkgSec), 11, '字段包应有 11 个字段行，实际 ' + rowCount(pkgSec));
+    assert.equal(rowCount(pkgSec), 14, '字段包应有 14 个字段行（11 + 3 AI 文案，b3c3 登记），实际 ' + rowCount(pkgSec));
     const nameRow = rowOf(pkgSec, pkgId, 'name');
     assert.equal(textareaValue(nameRow), '合成姓名', '包内字段默认跟随通用表当前值');
     assert.ok(nameRow.includes('通用'), '包内字段应标出来源（通用信息表），实际：' + nameRow.slice(0, 300));
@@ -310,7 +312,7 @@ try {
     assert.ok(/application\/json/.test(j.headers.get('content-type') || ''), 'JSON 导出 Content-Type 应为 application/json');
     const jd = JSON.parse(j.text);
     assert.equal(jd.scope, 'common', 'JSON 导出应标 scope=common');
-    assert.equal(Object.keys(jd.fields || {}).length, 11, 'JSON 导出应含全部 11 个字段，实际 ' + Object.keys(jd.fields || {}).length);
+    assert.equal(Object.keys(jd.fields || {}).length, 14, 'JSON 导出应含全部 14 个字段（11 + 3 AI 文案，b3c3 登记），实际 ' + Object.keys(jd.fields || {}).length);
     assert.equal(jd.fields.name.value, '合成姓名', 'JSON 导出应含字段当前值');
     assert.equal(jd.fields.name.state, 'follow', 'JSON 导出应含字段计算态');
     assert.equal(jd.fields.expectedSalary.state, 'manual', 'JSON 导出应含独立字段态');

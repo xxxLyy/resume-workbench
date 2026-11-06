@@ -35,7 +35,8 @@ const JD_MAX_CHARS = 64 * 1024;
 import { applyOps, reviewConsistency, refFresh, buildEvidencePrompt, parseEvidence, buildInterviewPrompt, parseInterview, guardOps, exportChecks, layoutDiagnose, resolveInterviewSources, interviewSourceView, evidenceSourceView } from './evidence.mjs';
 import { completeGenResult } from './gen-result.mjs';   // 任务完成判定纯函数（设计 §4）：显式成功/拒绝 + 独立工作副本
 import { assembleTemplate, listThemes, themeCss, themeRegistration } from './template.mjs';
-import { loadApplyProfilesView, loadApplyProfiles, setField, setFieldSource, bindCommonMaster, ensurePackage, updateApplyProfiles, FIELD_CATALOG, MODE_FOLLOW, MODE_OVERRIDE, MODE_MANUAL, SOURCE_RESUME, SOURCE_COMMON } from './apply-profile.mjs';   // 网申包数据层（批 3 卡片 b3c1）：账本/三态/派生/漂移
+import { loadApplyProfilesView, loadApplyProfiles, setField, setFieldSource, bindCommonMaster, ensurePackage, updateApplyProfiles, copyTaskKey, copySource, FIELD_CATALOG, MODE_FOLLOW, MODE_OVERRIDE, MODE_MANUAL, MODE_AI, SOURCE_RESUME, SOURCE_COMMON } from './apply-profile.mjs';   // 网申包数据层（批 3 卡片 b3c1）：账本/三态/派生/漂移
+import { startCopyTask, runCopyTask, copyTaskState, cancelCopyTask, confirmCopyDraft, discardCopyDraft, finishCopyTask, isCopyKey, stageLabel, NO_MODEL_HINT, COPY_TTL_MS } from './apply-gen.mjs';   // AI 文案字段生成任务层（批 3 卡片 b3c3）：genTasks 口径（进度/取消/真实用量）
 import { ICONS } from './vendors/icons.mjs';  // Lucide 图标数据（纯数据文件，零 npm 依赖）
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -1694,6 +1695,11 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .ap-acts{display:flex;gap:var(--space-2);flex-wrap:wrap;align-items:center}
 .ap-bar{display:flex;gap:var(--space-2);flex-wrap:wrap;align-items:center;margin-top:var(--space-3)}
 .ap-note{font-size:12px;color:var(--mut)}
+.ap-gen{display:flex;flex-direction:column;gap:var(--space-2)}
+.ap-gen-status{font-size:12px;color:var(--mut)}
+.ap-gen-draft{display:flex;flex-direction:column;gap:var(--space-2)}
+.ap-gen-draft[hidden]{display:none}
+.ap-gen-text{width:100%;font-family:var(--font);font-size:13px}
 .cta{display:inline-block;background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--radius);padding:9px 16px;font-weight:700;font-size:14px;cursor:pointer}
 .cta:hover{transform:translateY(-1px)}
 .cta-alt{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:var(--radius);padding:9px 14px;font-weight:600;font-size:13px;cursor:pointer}
@@ -2434,9 +2440,10 @@ function jobNewPage() {
 // 通用信息表 + 按公司字段包同页；字段三态（跟随来源 / 手动覆写 / 恢复跟随）+ 独立维护；
 // 单字段一键复制 + 整包导出（纯文本 / JSON）。
 // 数据层口径（账本形状/三态/漂移/派生）见 apply-profile.mjs 与 DESIGN.md §10.10；本页口径见 §10.11。
-// AI 文案字段、跟进助手、分享副本、投递记录关联字段包不在本卡（批 3 后续卡）。
-const AP_STATE_LABEL = { follow: '跟随来源', drift: '来源已变', override: '手动覆写', manual: '独立维护' };
-const AP_STATE_CLS = { follow: 'mute', drift: 'warn', override: '', manual: 'ai' };
+// AI 文案字段（打招呼语/自荐信/跟进语）是批 3 卡片 b3c3 的增量：新增字段类型 + 生成区（进度/预览/确认）。
+// 跟进助手、分享副本、投递记录关联字段包不在本卡（批 3 后续卡）。
+const AP_STATE_LABEL = { follow: '跟随来源', drift: '来源已变', override: '手动覆写', manual: '独立维护', ai: 'AI 文案', ai_locked: '已锁定', ai_empty: '待生成' };
+const AP_STATE_CLS = { follow: 'mute', drift: 'warn', override: '', manual: 'ai', ai: 'ai', ai_locked: 'warn', ai_empty: 'mute' };
 
 // 请求体的 scope 归一 → 数据层 scope 对象（形状错即拒，不猜）。
 // **两种形状都认**：字符串 'common'（旧调用方）与对象 {kind:'common'} / {kind:'package', id}（页面客户端发的形状）。
@@ -2457,7 +2464,9 @@ const apScopeOf = (s) => {
 
 // 字段行：标签 + 三态徽章 + 来源标注 + 值框 + 操作行（复制 / 手动改写|保存 / 恢复跟随）。
 // 值框即复制源：所见即所复制（复制动作只取该行值框内容，不另取来源）。
-function apFieldRow(scope, key, item, f, srcLabel) {
+// AI 文案字段（b3c3）走另一支：值框恒可编辑（手动改写 = 覆写并锁定），另加生成区。
+function apFieldRow(scope, key, item, f, srcLabel, gen) {
+  if (item.ai) return apAiFieldRow(scope, key, item, f, srcLabel, gen);
   const derived = !!item.derived;
   const state = derived ? String(f.state || 'follow') : 'manual';   // 独立字段永不派生 → 恒为独立维护
   const editable = state === 'override' || state === 'manual';
@@ -2475,6 +2484,59 @@ function apFieldRow(scope, key, item, f, srcLabel) {
       <div class="ap-head"><span class="ap-label">${escHtml(item.label)}</span>${badgeHtml}<span class="ap-src">来源：${escHtml(srcLabel)}</span></div>
       <textarea class="ap-val" data-scope="${scope.kind}"${pkgAttr} data-key="${escAttr(key)}" rows="3"${editable ? '' : ' readonly'}>${escHtml(String(f.value == null ? '' : f.value))}</textarea>
       <div class="ap-acts">${acts.join('')}</div>
+    </div>`;
+}
+
+// AI 文案字段行（b3c3）：标签 + 状态徽章 + 取材来源 + 值框（可编辑）+ 操作行（复制/保存/解锁/生成）
+// + 生成区（状态行：阶段/失败原因/真实用量；待确认预览稿 + 确认入库 / 丢弃）。
+// 生成区只报真实阶段（排队/调用模型/解析），**不给百分比**（诚实进度口径，与既有 genTasks 一致）。
+function apAiFieldRow(scope, key, item, f, srcLabel, gen) {
+  const g = gen || {};
+  const pkgAttr = scope.kind === 'package' ? ` data-pkg="${escAttr(scope.id)}"` : '';
+  const state = String(f.state || 'ai_empty');
+  const locked = state === 'ai_locked';
+  const cls = AP_STATE_CLS[state] || '';
+  const badgeHtml = `<span class="badge${cls ? ' ' + cls : ''}">${escHtml(AP_STATE_LABEL[state] || state)}</span>`;
+  const acts = [
+    `<button type="button" class="secondary" data-ap="copy" data-scope="${scope.kind}"${pkgAttr} data-key="${escAttr(key)}">复制</button>`,
+    `<button type="button" class="secondary" data-ap="save" data-mode="override" data-scope="${scope.kind}"${pkgAttr} data-key="${escAttr(key)}">保存</button>`,
+  ];
+  if (locked) acts.push(`<button type="button" class="secondary" data-ap="unlock" data-scope="${scope.kind}"${pkgAttr} data-key="${escAttr(key)}">解锁</button>`);
+  // 无模型 → 生成按钮禁用并写明原因（不做「点了才知道」的死路；降级口径见 apply-gen.mjs 的 NO_MODEL_HINT）
+  acts.push(`<button type="button" class="secondary" data-ap="gen" data-scope="${scope.kind}"${pkgAttr} data-key="${escAttr(key)}"${g.noModel ? ' disabled' : ''}>生成</button>`);
+  const task = g.task || null;
+  const draft = g.draft || null;
+  let statusText = '';
+  if (g.noModel) statusText = '未配置大模型，不能生成（可手动填写）';
+  else if (task && task.status === 'running') statusText = '生成中 · ' + stageLabel(task.stage);
+  else if (task && task.status === 'error') statusText = String(task.error || '生成失败');
+  else if (task && task.status === 'cancelled') statusText = '已取消';
+  else if (task && task.status === 'done') statusText = '已生成，待确认入库';
+  // 用量：取服务商真实返回；没返回（null）就显式说「服务商未返回」，不编 0（§10.12 诚实口径）。
+  if (task && task.status === 'done') {
+    statusText += ' · ' + (task.usage && typeof task.usage.total === 'number' ? '用量 ' + task.usage.total + ' tokens' : '用量：服务商未返回');
+  }
+  const cancelBtn = (task && task.status === 'running')
+    ? `<button type="button" class="secondary" data-ap="gen-cancel" data-scope="${scope.kind}"${pkgAttr} data-key="${escAttr(key)}" data-task="${escAttr(String(task.taskId || ''))}">取消</button>`
+    : '';
+  const draftHtml = draft
+    ? `<div class="ap-gen-draft" data-draft="${escAttr(String(draft.id || ''))}" data-draft-text="${escAttr(String(draft.text == null ? '' : draft.text))}">
+        <textarea class="ap-gen-text" rows="4">${escHtml(String(draft.text == null ? '' : draft.text))}</textarea>
+        <div class="ap-acts">
+          <button type="button" data-ap="gen-confirm" data-scope="${scope.kind}"${pkgAttr} data-key="${escAttr(key)}" data-draft="${escAttr(String(draft.id || ''))}">确认入库</button>
+          <button type="button" class="secondary" data-ap="gen-discard" data-scope="${scope.kind}"${pkgAttr} data-key="${escAttr(key)}">丢弃</button>
+        </div>
+      </div>`
+    : '';
+  return `<div class="ap-row" data-ai="1" data-scope="${scope.kind}"${pkgAttr} data-key="${escAttr(key)}">
+      <div class="ap-head"><span class="ap-label">${escHtml(item.label)}</span>${badgeHtml}<span class="ap-src">来源：${escHtml(srcLabel)}</span></div>
+      <textarea class="ap-val" data-scope="${scope.kind}"${pkgAttr} data-key="${escAttr(key)}" rows="3">${escHtml(String(f.value == null ? '' : f.value))}</textarea>
+      <div class="ap-acts">${acts.join('')}</div>
+      <div class="ap-gen">
+        <div class="ap-gen-status" role="status">${escHtml(statusText)}</div>
+        ${cancelBtn ? `<div class="ap-acts">${cancelBtn}</div>` : ''}
+        ${draftHtml}
+      </div>
     </div>`;
 }
 
@@ -2517,6 +2579,8 @@ function apExportJson(view, pkgId) {
       value: String(f.value == null ? '' : f.value), drift: !!f.drift,
       source: (f.source && typeof f.source === 'object') ? f.source : null,
     };
+    // AI 文案字段多一个锁定标记（手动改写后锁定 → 再生不覆盖）
+    if (item.ai) out.fields[item.key].locked = !!f.locked;
   }
   if (pkgId) {
     const p = view.packages[pkgId];
@@ -2565,8 +2629,34 @@ function applyProfilePage() {
     if (kind === 'resume') return `岗位简历 · ${docLabel(src.docId)}`;
     return '通用信息表';
   };
+  // AI 文案字段（b3c3）：取材来源 = 该作用范围当前跟随的简历（通用表取母版；公司包取包级来源，否则通用表母版）。
+  // 只标「取材于哪份简历」，不写模型名/规格等静态说明（§9.1-2/§9.1-3）。
+  const noModel = !hasLLM(root);
+  const srcDocCache = new Map();
+  const srcDocOf = (scope) => {
+    const ck = scope.kind === 'package' ? 'package:' + scope.id : 'common';
+    if (srcDocCache.has(ck)) return srcDocCache.get(ck);
+    let did = '';
+    try { const s = copySource(root, scope); did = s && s.docId ? s.docId : ''; } catch { did = ''; }
+    srcDocCache.set(ck, did);
+    return did;
+  };
+  const aiSrcLabel = (scope) => {
+    const did = srcDocOf(scope);
+    return did ? `AI 生成 · 取材 ${docLabel(did)}` : 'AI 生成（还没有可取材的简历）';
+  };
   const rowsOf = (scope, fields) => FIELD_CATALOG
-    .map((item) => apFieldRow(scope, item.key, item, fields[item.key] || {}, srcLabelOf(scope, item.key, item)))
+    .map((item) => {
+      const f = fields[item.key] || {};
+      if (!item.ai) return apFieldRow(scope, item.key, item, f, srcLabelOf(scope, item.key, item));
+      const tk = copyTaskKey(scope, item.key);
+      const gen = {
+        task: (view.tasks || {})[tk] || null,
+        draft: (view.drafts || {})[tk] || null,
+        noModel,
+      };
+      return apFieldRow(scope, item.key, item, f, aiSrcLabel(scope), gen);
+    })
     .join('');
 
   const commonScope = { kind: 'common', id: '' };
@@ -2637,6 +2727,119 @@ function applyProfilePage() {
         var pkg = host.getAttribute('data-pkg') || '';
         return pkg ? { kind: 'package', id: pkg } : { kind: 'common' };
       };
+      // ===== AI 文案字段（b3c3）：生成 → 预览 → 确认才入库 =====
+      // 状态行只报真实阶段（排队/调用模型/解析）与服务商真实用量，**不给百分比**（诚实进度口径）。
+      var GEN_STAGE = { queued: '排队等待槽位', calling: '调用模型中', parsing: '解析校验中' };
+      // api：写接口但**不 reload**（生成流程要在原地轮询到预览出现）。
+      var api = function (url, body) {
+        return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) })
+          .then(function (r) {
+            return r.text().then(function (t) {
+              var d = null; try { d = JSON.parse(t); } catch (e) {}
+              if (!r.ok || (d && d.ok === false)) {
+                var e = new Error((d && d.error) || ('HTTP ' + r.status)); e.__failed = true; throw e;
+              }
+              return d || {};
+            });
+          });
+      };
+      var genStatus = function (row, text) {
+        var el = row && row.querySelector('.ap-gen-status');
+        if (el) el.textContent = text;
+        if (msg) msg.textContent = text;
+      };
+      var usageText = function (u) {
+        if (u && typeof u.total === 'number') return '用量 ' + u.total + ' tokens';
+        return '用量：服务商未返回';
+      };
+      var scopeParam = function (scope, pkg) { return scope === 'package' ? ('package:' + pkg) : 'common'; };
+      // 运行中「取消」：服务端只在**页面加载那一刻**已有 running 任务时渲染它；点「生成」后是客户端
+      // 轮询才发现 running —— 这里补建（带 taskId），否则运行中就没有取消入口，只能刷新页面
+      // （2026-11-06 复核阻断项）。任务结束/失败/取消后撤掉它。
+      var showCancel = function (row, taskId) {
+        var box = row && row.querySelector('.ap-gen');
+        if (!box) return;
+        var btn = box.querySelector('button[data-ap="gen-cancel"]');
+        if (!btn) {
+          btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'secondary';
+          btn.setAttribute('data-ap', 'gen-cancel');
+          var wrap = document.createElement('div');
+          wrap.className = 'ap-acts';
+          wrap.appendChild(btn);
+          var st = box.querySelector('.ap-gen-status');
+          if (st && st.nextSibling) box.insertBefore(wrap, st.nextSibling);
+          else box.appendChild(wrap);
+        }
+        btn.textContent = '取消';
+        btn.setAttribute('data-scope', row.getAttribute('data-scope') || '');
+        var pkg2 = row.getAttribute('data-pkg');
+        if (pkg2) btn.setAttribute('data-pkg', pkg2); else btn.removeAttribute('data-pkg');
+        btn.setAttribute('data-key', row.getAttribute('data-key') || '');
+        btn.setAttribute('data-task', String(taskId || ''));
+      };
+      var hideCancel = function (row) {
+        var box = row && row.querySelector('.ap-gen');
+        var btn = box && box.querySelector('button[data-ap="gen-cancel"]');
+        if (!btn) return;
+        var w = btn.parentNode;
+        if (w && w !== box && w.children.length === 1 && w.parentNode) w.parentNode.removeChild(w);
+        else if (btn.parentNode) btn.parentNode.removeChild(btn);
+      };
+      // 预览稿：服务端渲染的那份已在 DOM 里（行内 .ap-gen-draft）；轮询到新稿时补建。
+      // 文案与 draftId 必须同源：用户没改过预览 → 两样一起换成当前那份稿；
+      // 用户改过预览 → 文案与 id 一起留在原那份（那份若已被新生成取代，确认会被服务端拒并提示重新确认，
+      // 不静默拿别人的稿入库，也不静默改掉用户正在写的字）。
+      var showDraft = function (row, draft) {
+        var box = row.querySelector('.ap-gen-draft');
+        if (!draft) {
+          if (box) { box.setAttribute('hidden', ''); box.removeAttribute('data-draft'); }
+          return;
+        }
+        if (!box) {
+          box = document.createElement('div');
+          box.className = 'ap-gen-draft';
+          box.innerHTML = '<textarea class="ap-gen-text" rows="4"></textarea>'
+            + '<div class="ap-acts"><button type="button" data-ap="gen-confirm">确认入库</button>'
+            + '<button type="button" class="secondary" data-ap="gen-discard">丢弃</button></div>';
+          row.appendChild(box);
+        }
+        box.removeAttribute('hidden');
+        var ta = box.querySelector('textarea');
+        var shown = box.getAttribute('data-draft-text') || '';
+        if (ta && ta.value === shown) {
+          ta.value = draft.text || '';
+          box.setAttribute('data-draft', draft.id || '');
+          box.setAttribute('data-draft-text', draft.text || '');
+        }
+      };
+      var pollGen = function (row) {
+        var scope = row.getAttribute('data-scope');
+        var pkg = row.getAttribute('data-pkg') || '';
+        var key = row.getAttribute('data-key');
+        var tick = function () {
+          fetch('/apply/copy/state?scope=' + encodeURIComponent(scopeParam(scope, pkg)) + '&key=' + encodeURIComponent(key))
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+              if (!d || !d.ok) { genStatus(row, '状态读取失败'); return; }
+              var t = d.task || {};
+              if (t.status === 'running') {
+                showCancel(row, t.taskId);
+                genStatus(row, '生成中 · ' + (GEN_STAGE[t.stage] || '处理中'));
+                setTimeout(tick, 700);
+                return;
+              }
+              hideCancel(row);
+              if (t.status === 'error') genStatus(row, t.error || '生成失败');
+              else if (t.status === 'cancelled') genStatus(row, '已取消');
+              else if (t.status === 'done') genStatus(row, '已生成，待确认入库 · ' + usageText(t.usage));
+              showDraft(row, d.draft);
+            })
+            .catch(function () { genStatus(row, '状态读取失败：网络异常'); });
+        };
+        tick();
+      };
       document.addEventListener('click', function (e) {
         var b = e.target.closest('button[data-ap]');
         if (!b) return;
@@ -2672,6 +2875,38 @@ function applyProfilePage() {
         }
         if (act === 'follow') {
           post('/apply/field', { scope: scope, key: key, mode: 'follow' });
+          return;
+        }
+        if (act === 'unlock') {
+          // 解锁：把被手动改写锁住的 AI 文案交回 AI 接管（文案内容不动）
+          post('/apply/field', { scope: scope, key: key, mode: 'ai' });
+          return;
+        }
+        if (act === 'gen') {
+          genStatus(row, '已发起生成…');
+          api('/apply/copy/start', { scope: scope, key: key }).then(function () {
+            pollGen(row);
+          }).catch(function (e) { genStatus(row, (e && e.message) || '生成失败'); });
+          return;
+        }
+        if (act === 'gen-cancel') {
+          api('/apply/copy/cancel', { scope: scope, key: key, taskId: b.getAttribute('data-task') || '' }).then(function () {
+            genStatus(row, '已取消');
+          }).catch(function (e) { genStatus(row, (e && e.message) || '取消失败'); });
+          return;
+        }
+        if (act === 'gen-confirm') {
+          var box2 = row.querySelector('.ap-gen-draft');
+          var ta2 = box2 ? box2.querySelector('textarea') : null;
+          post('/apply/copy/confirm', {
+            scope: scope, key: key,
+            draftId: box2 ? (box2.getAttribute('data-draft') || '') : '',
+            text: ta2 ? ta2.value : ''
+          });
+          return;
+        }
+        if (act === 'gen-discard') {
+          post('/apply/copy/discard', { scope: scope, key: key });
           return;
         }
         if (act === 'source') {
@@ -4202,18 +4437,113 @@ async function handler(req, res) {
       return send(200, body, type, { 'Content-Disposition': 'attachment; filename="' + name + '"' });
     }
     // 字段三态：follow（恢复跟随）/ override（手动覆写）/ manual（独立维护，仅独立字段）
+    // ai = AI 文案字段的「解锁」（文案内容不动，把被手动改写锁住的字段交回 AI 接管）。
     if (req.method === 'POST' && url.pathname === '/apply/field') {
       const body = await readBodyAuto(req);
       const scope = apScopeOf(body.scope);
       if (scope.err) return sendJson(400, { ok: false, error: scope.err });
       const key = String(body.key || '');
       const mode = String(body.mode || '');
-      if (![MODE_FOLLOW, MODE_OVERRIDE, MODE_MANUAL].includes(mode)) return sendJson(400, { ok: false, error: '未知字段模式：' + mode });
+      if (![MODE_FOLLOW, MODE_OVERRIDE, MODE_MANUAL, MODE_AI].includes(mode)) return sendJson(400, { ok: false, error: '未知字段模式：' + mode });
       try {
         setField(root, scope.scope, key, mode, { value: body.value == null ? '' : String(body.value) });
       } catch (e) {
         return sendJson(e && e.httpCode ? e.httpCode : 400, { ok: false, error: String((e && e.message) || e), code: (e && e.code) || '' });
       }
+      return sendJson(200, { ok: true });
+    }
+    // ===== AI 文案字段（批 3 卡片 b3c3）：生成 → 预览 → 确认才入库 =====
+    // 生成：原子登记任务（并发闸同款：同类 copy 全库同时只允许 1 个）→ fire-and-forget 跑模型；
+    // 结果只经完成判定（gen-result.mjs 的纯函数）落「待确认稿」，**不进字段**。
+    if (req.method === 'POST' && url.pathname === '/apply/copy/start') {
+      const body = await readBodyAuto(req);
+      const scope = apScopeOf(body.scope);
+      if (scope.err) return sendJson(400, { ok: false, error: scope.err });
+      const key = String(body.key || '');
+      if (!isCopyKey(key)) return sendJson(400, { ok: false, error: '不是 AI 文案字段：' + key });
+      if (scope.scope.kind === 'package' && !loadApplyProfiles(root).data.packages[scope.scope.id]) {
+        return sendJson(404, { ok: false, error: '字段包不存在' });
+      }
+      // 无模型 → 明确降级（不做「点了才知道」的死路；措辞与页面同源）
+      if (!hasLLM(root)) return sendJson(409, { ok: false, error: NO_MODEL_HINT });
+      // 无取材来源 → 明确拒绝（AI 文案只能取材于真简历；不留一个注定失败的 running 任务）
+      const src = copySource(root, scope.scope);
+      if (!src) return sendJson(500, { ok: false, error: '数据文件损坏，已停止写入：apply-profiles.json。请先人工修复或从备份恢复。' });
+      if (!src.docId) return sendJson(409, { ok: false, error: '还没有可依据的简历：请先绑定母版简历（或在字段包选择岗位简历）后再生成' });
+      // 资源准入（与 /job/gen-start 同口径）：先借 AI 槽，拿不到立刻拒 → 不留 running 假任务
+      let lease;
+      try { lease = aiPool.borrow(); }
+      catch (e) { return sendJson((e && e.httpCode) || 429, { ok: false, error: (e && e.message) || 'AI 排队已满，请稍候' }); }
+      const model = (() => { try { const c = loadProfiles(root); return (c && c.profiles && c.profiles[c.active]) ? c.profiles[c.active].model : null; } catch { return null; } })();
+      let taskId = null, reject = null;
+      try {
+        const st = startCopyTask(root, scope.scope, key, { model });
+        taskId = st.taskId; reject = st.reject;
+      } catch (e) {
+        try { lease.release(); } catch {}
+        return sendJson((e && e.httpCode) || 400, { ok: false, error: String((e && e.message) || e), code: (e && e.code) || '' });
+      }
+      if (reject) { try { lease.release(); } catch {} return sendJson(reject.status, { ok: false, error: reject.error }); }
+      runCopyTask(root, scope.scope, key, taskId, { lease })
+        .catch((e) => {
+          // 任何异常都要收敛任务态：否则账本里会留下永远 running 的假任务
+          try { finishCopyTask(root, copyTaskKey(scope.scope, key), taskId, { errMsg: '任务失败：' + ((e && e.message) || e) }); } catch {}
+        })
+        .finally(() => { try { lease.release(); } catch {} });
+      return sendJson(200, { ok: true, taskId, status: 'running' });
+    }
+    // 任务状态（轮询用）：只给真实阶段与真实用量，**无百分比**。
+    if (req.method === 'GET' && url.pathname === '/apply/copy/state') {
+      const scope = apScopeOf(String(url.searchParams.get('scope') || 'common').indexOf('package:') === 0
+        ? { kind: 'package', id: String(url.searchParams.get('scope')).slice(8) } : 'common');
+      if (scope.err) return sendJson(400, { ok: false, error: scope.err });
+      const key = String(url.searchParams.get('key') || '');
+      if (!isCopyKey(key)) return sendJson(400, { ok: false, error: '不是 AI 文案字段：' + key });
+      const st = copyTaskState(root, scope.scope, key);
+      if (st.corrupt) return sendJson(500, { ok: false, error: '数据文件损坏，已停止写入：apply-profiles.json。请先人工修复或从备份恢复。' });
+      const draft = st.draft ? { id: st.draft.id, text: st.draft.text, createdAt: st.draft.createdAt } : null;
+      return sendJson(200, { ok: true, task: st.task || null, draft, ttlMs: COPY_TTL_MS });
+    }
+    // 取消：taskId 匹配当前 running 才置 cancelled；在途结果被完成判定丢弃（零落账）。
+    if (req.method === 'POST' && url.pathname === '/apply/copy/cancel') {
+      const body = await readBodyAuto(req);
+      const scope = apScopeOf(body.scope);
+      if (scope.err) return sendJson(400, { ok: false, error: scope.err });
+      const key = String(body.key || '');
+      const taskId = String(body.taskId || '');
+      if (!isCopyKey(key) || !taskId) return sendJson(400, { ok: false, error: 'key（AI 文案字段）与 taskId 必填' });
+      let cancelled = false;
+      try { cancelled = cancelCopyTask(root, scope.scope, key, taskId); }
+      catch (e) { return sendJson((e && e.httpCode) || 400, { ok: false, error: String((e && e.message) || e), code: (e && e.code) || '' }); }
+      if (!cancelled) return sendJson(409, { ok: false, error: '任务已结束或已被新任务取代（taskId 不匹配当前 running）' });
+      return sendJson(200, { ok: true });
+    }
+    // 确认入库：待确认稿 → 字段（预览可改后再确认）；锁定期拒绝（覆写后锁定不被再生覆盖）。
+    if (req.method === 'POST' && url.pathname === '/apply/copy/confirm') {
+      const body = await readBodyAuto(req);
+      const scope = apScopeOf(body.scope);
+      if (scope.err) return sendJson(400, { ok: false, error: scope.err });
+      const key = String(body.key || '');
+      if (!isCopyKey(key)) return sendJson(400, { ok: false, error: '不是 AI 文案字段：' + key });
+      let r = null;
+      try {
+        r = confirmCopyDraft(root, scope.scope, key, body.draftId == null ? '' : String(body.draftId),
+          body.text == null ? undefined : String(body.text));
+      } catch (e) {
+        return sendJson((e && e.httpCode) || 400, { ok: false, error: String((e && e.message) || e), code: (e && e.code) || '' });
+      }
+      if (!r.ok) return sendJson(r.status || 400, { ok: false, error: r.error, code: r.code || '' });
+      return sendJson(200, { ok: true });
+    }
+    // 丢弃待确认稿：生成结果不进字段，丢弃即清稿。
+    if (req.method === 'POST' && url.pathname === '/apply/copy/discard') {
+      const body = await readBodyAuto(req);
+      const scope = apScopeOf(body.scope);
+      if (scope.err) return sendJson(400, { ok: false, error: scope.err });
+      const key = String(body.key || '');
+      if (!isCopyKey(key)) return sendJson(400, { ok: false, error: '不是 AI 文案字段：' + key });
+      try { discardCopyDraft(root, scope.scope, key); }
+      catch (e) { return sendJson((e && e.httpCode) || 400, { ok: false, error: String((e && e.message) || e), code: (e && e.code) || '' }); }
       return sendJson(200, { ok: true });
     }
     // 绑定母版（通用表跟随来源的出处）：换母版 = 重新确认全部跟随字段的快照（清漂移）；手填与独立字段不动。

@@ -5,7 +5,9 @@
 // 账本形状（通用信息表 + 按公司字段包，同一文件）：
 //   { version, updatedAt,
 //     common:   { sourceDocId, fields: { <key>: <字段条目> } },
-//     packages: { <pkgId>: { company, role, note, sourceDocId, fields: { <key>: <字段条目> } } } }
+//     packages: { <pkgId>: { company, role, note, sourceDocId, fields: { <key>: <字段条目> } } },
+//     copyTasks:  { <taskKey>: <任务记录> },   // b3c3：AI 文案生成任务（genTasks 口径）
+//     copyDrafts: { <taskKey>: <待确认稿> } }   // b3c3：生成结果只落这里，确认后才进字段
 //
 // 字段条目（每个字段一条，三态）：
 //   follow   跟随来源：值 = 来源派生纯文本（母版简历 / 通用表）；来源变更 → 标漂移（drift）
@@ -35,12 +37,16 @@ export const PROFILES_VERSION = 1;
 export const MODE_FOLLOW = 'follow';       // 跟随来源
 export const MODE_OVERRIDE = 'override';   // 手动覆写
 export const MODE_MANUAL = 'manual';       // 独立维护（不从简历派生）
+export const MODE_AI = 'ai';               // AI 文案字段（b3c3）：值来自「生成→预览→确认」，覆写后 locked
 
 // —— 字段三态（计算态，给界面用）——
 export const STATE_FOLLOW = 'follow';       // 跟随来源且来源未变
 export const STATE_DRIFT = 'drift';         // 跟随来源但来源已变（未确认）
 export const STATE_OVERRIDE = 'override';   // 手动覆写
 export const STATE_MANUAL = 'manual';       // 独立维护
+export const STATE_AI = 'ai';               // AI 文案（已确认入库）
+export const STATE_AI_LOCKED = 'ai_locked'; // AI 文案被手动改写 → 锁定（再生不覆盖）
+export const STATE_AI_EMPTY = 'ai_empty';   // AI 文案尚未生成
 
 // —— 来源类型 ——
 export const SOURCE_RESUME = 'resume';     // 母版/岗位简历（docs/<docId>.html 派生纯文本）
@@ -48,6 +54,8 @@ export const SOURCE_COMMON = 'common';     // 通用信息表同名字段
 export const SOURCE_NONE = 'none';         // 无来源（独立字段）
 
 // 字段目录：derived=true = 可从简历派生（跟随来源/手动覆写）；derived=false = 独立维护（不从简历派生）。
+// ai=true = AI 文案字段（批 3 卡片 b3c3 · 新增字段类型）：既不从简历派生、也不是独立手填 ——
+//   走「AI 生成 → 预览 → 确认才入库」，入库后手动改写即锁定（再生不得覆盖）。
 export const FIELD_CATALOG = [
   { key: 'name', label: '姓名', derived: true },
   { key: 'phone', label: '电话', derived: true },
@@ -60,10 +68,15 @@ export const FIELD_CATALOG = [
   { key: 'expectedSalary', label: '期望薪资', derived: false },
   { key: 'availability', label: '到岗时间', derived: false },
   { key: 'workYears', label: '工作年限', derived: false },
+  { key: 'greeting', label: '打招呼语', derived: false, ai: true },
+  { key: 'coverLetter', label: '自荐信', derived: false, ai: true },
+  { key: 'followUp', label: '跟进语', derived: false, ai: true },
 ];
 export const FIELD_KEYS = FIELD_CATALOG.map((f) => f.key);
 export const DERIVED_KEYS = FIELD_CATALOG.filter((f) => f.derived).map((f) => f.key);
-export const INDEPENDENT_KEYS = FIELD_CATALOG.filter((f) => !f.derived).map((f) => f.key);
+export const INDEPENDENT_KEYS = FIELD_CATALOG.filter((f) => !f.derived && !f.ai).map((f) => f.key);
+export const AI_COPY_FIELDS = FIELD_CATALOG.filter((f) => f.ai);
+export const AI_COPY_KEYS = AI_COPY_FIELDS.map((f) => f.key);
 
 // 文档 id 闸门（与 server.mjs 的 VALID_ID 同口径）：账本里的 docId 是外部可编辑内容，
 // 不校验就能拼出数据根之外的路径（../ 穿越）。
@@ -73,7 +86,7 @@ const err = (code, msg) => Object.assign(new Error(msg), { code });
 
 // ===== 账本形状 =====
 export function emptyProfiles() {
-  return { version: PROFILES_VERSION, updatedAt: '', common: { sourceDocId: '', fields: {} }, packages: {} };
+  return { version: PROFILES_VERSION, updatedAt: '', common: { sourceDocId: '', fields: {} }, packages: {}, copyTasks: {}, copyDrafts: {} };
 }
 
 export function applyProfilesPath(root) {
@@ -96,6 +109,9 @@ export function validateProfiles(d) {
       if (p.fields !== undefined && !plainObj(p.fields)) return false;
     }
   }
+  // AI 文案任务/待确认稿（b3c3）：有则须为对象
+  if (d.copyTasks !== undefined && !plainObj(d.copyTasks)) return false;
+  if (d.copyDrafts !== undefined && !plainObj(d.copyDrafts)) return false;
   return true;
 }
 
@@ -127,6 +143,9 @@ export function migrateProfiles(d) {
       fields: (rawCommon.fields && typeof rawCommon.fields === 'object' && !Array.isArray(rawCommon.fields)) ? { ...rawCommon.fields } : {},
     },
     packages,
+    // AI 文案生成任务与待确认稿（b3c3）：任务/稿与字段同表 → 确认入库可同事务完成
+    copyTasks: (src.copyTasks && typeof src.copyTasks === 'object' && !Array.isArray(src.copyTasks)) ? { ...src.copyTasks } : {},
+    copyDrafts: (src.copyDrafts && typeof src.copyDrafts === 'object' && !Array.isArray(src.copyDrafts)) ? { ...src.copyDrafts } : {},
   };
 }
 
@@ -239,7 +258,17 @@ export function catalogOf(key) {
 
 // 解析单个字段条目：mode 决定值来源；follow 时值 = 来源当前派生文本，drift = 来源已变但未确认。
 export function resolveField(entry, item, sourceText) {
-  const base = { key: item.key, label: item.label, derived: !!item.derived };
+  const base = { key: item.key, label: item.label, derived: !!item.derived, ai: !!item.ai };
+  // AI 文案字段（b3c3）：值只来自「生成→预览→确认」的入库动作或手动覆写；无来源可跟、无漂移。
+  if (item.ai) {
+    const v = entry && typeof entry === 'object' ? String(entry.value == null ? '' : entry.value) : '';
+    const locked = !!(entry && entry.locked === true);
+    return {
+      ...base, mode: MODE_AI,
+      state: locked ? STATE_AI_LOCKED : (v ? STATE_AI : STATE_AI_EMPTY),
+      value: v, locked, drift: false, synced: true, source: null, sourceText: '',
+    };
+  }
   if (!entry || typeof entry !== 'object') {
     // 独立字段（derived=false）从没被写过 → 恒为「独立维护」：它没有来源可跟，报 follow 是不实的
     // （页面徽章与 JSON 导出必须同口径：页面恒显「独立维护」，导出也报 manual）。
@@ -345,7 +374,65 @@ export function resolveProfiles(data, ctx = {}) {
     version: d.version, updatedAt: d.updatedAt,
     common: { sourceDocId: d.common.sourceDocId || '', fields: commonFields },
     packages,
+    // AI 文案生成任务与待确认稿（b3c3）：页面层据此渲染「生成中/待确认/上次用量」
+    tasks: d.copyTasks || {},
+    drafts: d.copyDrafts || {},
   };
+}
+
+// ===== AI 文案字段（b3c3）辅助 =====
+// 任务/稿的键：作用范围 + 字段 key（同一字段同一时刻只有一个任务）。
+export function copyTaskKey(scope, key) {
+  const s = scope || { kind: 'common' };
+  return (s.kind === 'package' ? 'package:' + String(s.id || '') : 'common') + ':' + String(key || '');
+}
+
+// AI 文案的取材来源：该作用范围当前跟随的来源简历 → 派生要点（纯函数、只读）。
+// 公司包：包的跟随来源是岗位简历时取该简历（包级 sourceDocId，/apply/source 写的就是它），
+//         否则取通用表母版；通用表：取自己的母版。
+// 路径拼接与 docId 闸门都留在模块内的取数上下文里（页面层不自己拼路径）。
+export function copySource(root, scope) {
+  const l = loadApplyProfiles(root);
+  if (l.corrupt) return null;
+  const data = l.data;
+  const ctx = makeCtx(root);
+  const { holder, kind } = scopeOf(data, scope);
+  let docId = '';
+  if (kind === 'package') {
+    docId = String(holder.sourceDocId || '') || String((data.common.sourceDocId) || '');
+  } else {
+    docId = String(holder.sourceDocId || '');
+  }
+  if (!docId) return { docId: '', fields: {} };
+  const d = ctx.derived(docId);
+  return { docId, fields: d || {} };
+}
+
+// 作用范围的抬头信息（公司/岗位）：AI 文案 prompt 用；通用表没有公司/岗位 → 空串。
+export function scopeMeta(root, scope) {
+  const l = loadApplyProfiles(root);
+  if (l.corrupt) return { company: '', role: '' };
+  const s = scope || { kind: 'common' };
+  if (s.kind === 'package') {
+    const p = (l.data.packages || {})[s.id];
+    return p ? { company: String(p.company || ''), role: String(p.role || '') } : { company: '', role: '' };
+  }
+  return { company: '', role: '' };
+}
+
+// AI 文案字段的入库写入口（b3c3）：待确认稿 → 字段值（mode=ai）。
+// 就地改传入的账本数据（调用方在账本事务内），返回 {ok:true} 或 {ok:false,code,error}。
+// 锁定期拒绝：字段被手动改写过（locked）→ 生成结果不得覆盖它。
+export function writeAiField(data, scope, key, value) {
+  const item = catalogOf(key);
+  if (!item.ai) throw err('APPLY_NOT_AI_FIELD', '不是 AI 文案字段：' + String(key));
+  const { fields } = scopeOf(data, scope);
+  const cur = (fields[key] && typeof fields[key] === 'object') ? fields[key] : null;
+  if (cur && cur.locked === true) {
+    return { ok: false, code: 'APPLY_AI_LOCKED', error: '该字段已手动改写并锁定，生成结果不会覆盖它（如需改用新文案，请先解锁）' };
+  }
+  fields[key] = { mode: MODE_AI, value: String(value == null ? '' : value), locked: false };
+  return { ok: true };
 }
 
 // ===== 页面层读视图（批 3 页面卡 b3c2）=====
@@ -362,6 +449,25 @@ export function setField(root, scope, key, mode, opts = {}) {
   const item = catalogOf(key);
   return updateApplyProfiles(root, (data) => {
     const { fields, holder } = scopeOf(data, scope);
+    // AI 文案字段（b3c3）：没有来源可跟、不独立手填 —— 只有两条路：
+    //   override = 手动改写并保存 → **锁定**（此后再生成/再确认都不得覆盖它）；
+    //   ai       = 解锁（交回 AI 接管），文案内容一字不动。
+    // 确认入库（生成稿 → 字段）不走这里：它在同一事务里还要清待确认稿，由 apply-gen.mjs 落账。
+    if (item.ai) {
+      if (mode === MODE_OVERRIDE) {
+        fields[key] = { mode: MODE_AI, value: String(opts.value == null ? '' : opts.value), locked: true };
+        return data;
+      }
+      if (mode === MODE_AI) {
+        // 解锁 = 把该字段交回 AI 接管（文案内容一字不动）。**空值也可解锁**：
+        // 「保存」空值会把字段锁上，若解锁再报「无可解锁」就成了死路（用户只能先填字再解锁）。
+        const curAi = (fields[key] && typeof fields[key] === 'object') ? fields[key] : null;
+        fields[key] = { ...(curAi || { value: '' }), mode: MODE_AI, locked: false };
+        return data;
+      }
+      if (mode === MODE_FOLLOW) throw err('APPLY_FIELD_NOT_FOLLOWABLE', 'AI 文案字段没有来源，不能恢复跟随：' + key);
+      throw err('APPLY_BAD_MODE', 'AI 文案字段的模式只能是 override（覆写并锁定）或 ai（解锁）：' + key);
+    }
     const cur = (fields[key] && typeof fields[key] === 'object') ? fields[key] : null;
     const src = (cur && cur.source && typeof cur.source === 'object') ? cur.source : defaultSourceFor(scope, holder);
     if (mode === MODE_MANUAL) {
