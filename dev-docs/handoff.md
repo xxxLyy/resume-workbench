@@ -1380,3 +1380,63 @@ Flash 23 条要点见各提交信息与 `b47-report` 工作流报告；收口时
 - **ECC 钩子桩值误报**：批 5 白名单根治前，本批旁路 2 次（b3c3/b3c4，均已留痕）；b3c1/b3c2/b3c5 零旁路。
 
 （本节为收口会话产物；点验探针 `/tmp/probe-b3-batch3.mjs`、四套件日志 `/tmp/b3-test-all.log`、先红复现树 `/tmp/b3-pre` 均在 /tmp 不入仓。本节未提交，交提交员按 docs 动机分笔入库。）
+
+## 批 4 轮（2026-11-07）：面试练习包（起点 `main@c4d6f86`，收口 `main@72a36d5`）
+
+> 总纲：`dev-docs/2026-11-05-roadmap-batch-plan.md` §5（出题复用 kind=interview 产物零模型调用、逐题文本作答 → AI 对照证据表四字段反馈、缺的素材一键转「待补充素材」、历史随投递截 20；诚实口径：无评分/无百分位/无「超过 X% 候选人」、反馈不直接改正文；入口 = 投递详情 + 复盘页；语音作答 S7a 未选不做）+ §7（每卡先红后绿、断言同提交、批门四套件 + 7766 重启点验）+ §7.1（与批 2 为唯一允许并行对，共用提交员 FIFO）。本批 2 笔提交（`df2bf96` → `72a36d5`），DESIGN.md §10.15–§10.16 随卡登记。
+
+### 1. 逐卡结果（2 笔提交，逐卡哈希）
+
+| 卡 | 提交 | 内容 | 先红→后绿证据 |
+|---|---|---|---|
+| b4c1 | `df2bf96`（04:47:46） | 练习会话 API：`practice.mjs`（新，零 UI 零 npm 依赖）+ 六端点 `/app/practice/{start,history,state,answer,feedback/start,feedback/cancel}`（出题只读快照岗位草稿追问产物、逐题作答重交为准、AI 反馈走 genTasks 同款任务链路 + 作答快照闭包防张冠李戴、历史截 20、四字段诚实反馈、不改正文铁律） | **先红**（收口独立复现，批前树 `c4d6f86` + HEAD 夹具 `test-practice-session.mjs`）：`AssertionError: 404 !== 200`（`test-practice-session.mjs:253`——批前树无练习路由，POST 404）**EXIT=1**（日志 `/tmp/b4-pre-red1.log`）。**后绿**：HEAD 四套件合跑夹具行 ✅（`/tmp/b4-test-all.log:547`）。卡片侧另做变异测试两条（拆 buildPracticeSession 要点过滤 →「可用要点」409 断言红；拆作答快照守卫 →「反馈应显式失败」断言红），提交信息留痕，收口未重放 |
+| b4c2 | `72a36d5`（05:41:03） | 练习 UI：`practiceGate` 单一通道（五类不可练文案与 409 逐字同源、不能练不给「开始练习」）、/app `id="practice"` 区（会话 details + 锚点 `pr-<pid>` + 题面/追问/要求行/要点状态标注/作答回填/行动位）、反馈流就地更新零整页 reload（模型产物只经 textContent）、缺的素材一键转「待补充素材」（形状与 /mat/add 一致零新字段、幂等、重新生成清缺项关联）、/stats 侧卡第三段（最近 3 条跨投递 + 空态去向指引）、无模型降级 | **先红**（同上复现）：`AssertionError: 应有「面试练习」区锚点（复盘页入口直达用）`（`test-practice-ui.mjs:213`——批前树 /app 无 `id="practice"`）**EXIT=1**（日志 `/tmp/b4-pre-red2.log`）。**后绿**：HEAD 四套件合跑夹具行 ✅（`/tmp/b4-test-all.log:548`）。复核员两处 §9.4 口径修正随卡落（空态句去句尾句号 / 练习计数补 tabular-nums，实测见 §3） |
+
+先红复现方法（批 3 收口同款）：`git archive c4d6f86` 解包 `/tmp/b4-pre`，拷入 HEAD 两份夹具 + `node_modules` 符号链接；两夹具批前树 **EXIT=1 全红且红在目标断言**（练习路由/练习区缺失），HEAD 全绿——夹具与本批实现强耦合（非空转绿）。各卡自述的逐条变异测试见各提交信息，收口未逐条重放。
+
+### 2. 批门轮次
+
+- `RESUME_TEST_STRICT=1 npm run test:all` → **EXIT=0**（收口会话独立跑一次，709 个 ✅）。本批两卡夹具行在日志 547–548 行（练习会话 API / 练习 UI 各一行 ✅）；唯一 ❌ 仍是段 X Chromium 探测契约的既有预期输出（无缓存→应失败并给修复动作，批 1/批 2/批 3 收口登记同一基线），非本批引入。
+- 红线复核：冻结件 `template.html` / `render.mjs` / `themes/resume-classic.css` 与 `package.json` / `package-lock.json` 零 diff（零新增 npm 依赖；冻结件 sha1 另由两卡夹具内钉定断言在合跑中绿）；工作区 `git status --short` 只剩 4 份固有未跟踪 dev-docs（`2026-10-28-*` 三份 + `2026-10-29-agent-handoff.md`）。
+- 路由清点：`ROUTES_FROZEN` 逐条清点 = **101**，与 `server.mjs` 的 `url.pathname` 字面量集合（101）**差集为空**（双向核对脚本实跑）；其中 `/app/practice/*` 7 条（b4c1 六端点 + b4c2 `/app/practice/missing/material`），登记注释链（test-structure.sh:2200）已含批 4 条目。
+- ECC pre-commit：本批旁路 1 次（b4c1 新夹具桩 `apiKey: 'stub-key-not-real'` 与仓库既有桩逐字同款被通用凭证正则误报，按既定处置 `ECC_SKIP_PRECOMMIT=1` 并在提交信息留痕，提交后 `bash privacy-check.sh` exit 0）；b4c2 零旁路（桩值 `stub` 低于正则 12 字符门槛，钩子正常放行）。白名单根治登记在批 5。
+- 两卡各自卡内批门：b4c1/b4c2 均自跑 `RESUME_TEST_STRICT=1 npm run test:all` exit 0（各自提交信息留痕）；批 2（并行对）的收口由其自身批次执行，本批未代跑。
+- **收口后复跑**（本轮 §1–§5 章节落档之后、本笔 docs 提交之前，提交员补跑）：`RESUME_TEST_STRICT=1 bash test-structure.sh` → **EXIT=0**（256 个 ✅；本批两卡夹具行在第 47–48 行全 ✅；唯一 ❌ 仍为段 X Chromium 探测契约既有口径，不影响退出码）；`bash privacy-check.sh` → **EXIT=0**。收口章节的引用与哈希另经提交员逐项核验：三哈希 `git rev-parse` 全解析、提交时刻（df2bf96 04:47:46 / 72a36d5 05:41:03）与 §1 表一致、`git rev-list --count c4d6f86..HEAD` = 2、7766 现进程 PID 2523（05:50:45 启）与 §3 一致、`ROUTES_FROZEN` 逐条清点 = 101 且 `/app/practice/*` 恰 7 条、与 `server.mjs` 字面量集合差集为空；§4 表的 practice.mjs/server.mjs 行引用逐条命中（buildPracticeSession:58 / PRACTICE_CAP:28 / practiceSessionView:122 / 任务链路:184-262 / parseFeedback:355 / POINT_STATE_LABEL:320 / PRACTICE_NO_MODEL_HINT:34 / practiceGate server.mjs:5641-5666 / missing/material server.mjs:5784 / `.pr-*` 段 1727 起），其中「practice.mjs:371 起」系 b4c2 插入 linkMissingMaterial 后的行漂移，提交员订正为「:384 声明、:410 比对」。收口章节为纯文档（handoff.md），不触代码与断言。
+
+### 3. 7766 重启与只读点验结论
+
+- **重启**：`kill $(lsof -nP -tiTCP:7766 -sTCP:LISTEN)` → 旧 PID `83072` → **新 PID `2523`（05:50:45 启，晚于收口提交 `72a36d5` 的 05:41:03）**，launchd KeepAlive 自动拉起（plist ProgramArguments 直跑 `/Users/xxxly/resume/server.mjs`，工作树即最新提交），服务确为最新代码。
+- **HTTP 状态（curl，8 条全 200）**：`/`、`/stats`、`/materials`、`/settings`、`/evals`、`/applications`、`/onboarding/guided`、`/app?id=2026-09-11-164709-312`（真实投递）。首页承接本批改动：内联样式含 b4c2 的「面试练习」CSS 段（`.pr-*` 选择器 31 次 + 段注释），即最新代码证据；本批无新页面（改动承载于 /app 与 /stats 两页 + 7 条 API 路由）。
+- **本批文案实测（curl）**：/stats 侧卡第三段「面试练习」+ 空态去向指引「还没有练习记录：入口在每条投递详情的『面试练习』区（投递看板）」——单句无句尾句号（§9.4，b4c2 修正项）实测在位；/app 真实投递 gate 降级空态照实渲染（「…不是岗位草稿…」）且**零「开始练习」按钮**（不给注定失败的入口）；两处练习计数带 `tabular-nums`（§9.4，b4c2 修正项）。
+- **GET 守卫矩阵（live，全部只读）**：`/app/practice/history?id=真实` → 200 `{ok,sessions:[],cap:20}`；`?id=x`（形状错）→ 400；`/app/practice/state` 缺 pid → 400、未知 pid → 404、形状合法的未知 id → 404「投递记录不存在」。POST 写端点（start/answer/feedback/missing/material）点验中一律不发（只读纪律），由夹具浏览器段真点覆盖。
+- **headless Chromium 只读点验**（playwright-core + `chromium.mjs` resolveChromium；探针 `/tmp/probe-b4-batch4.mjs`，全程只发 GET，页级拦截非 GET 请求）：**72 项检查全通过，0 失败**——① live 7766 26 项（八路由 200 / 首页批4 CSS 证据 / /stats 空态段 + 零阴影 / /app 练习卡 + gate 空态 + 无「开始练习」+ 练习卡内无「评分/百分位/排名」反断言 / GET 守卫矩阵）；② 隔离实例 43 项（临时 RESUME_ROOT + 随机端口 + 合成岗位草稿/投递/素材/练习账本：可练投递「开始练习」恰 1 + 两会话 details 最新展开 + 锚点 `pr-<pid>` + 摘要计数 tabular-nums + stale 徽章「追问依据已变动/对照仅作参考」+ 题面/追问/要求行/要点引文与来源状态「引文已核验」「作答思路（无引文锚点，未经核验）」+ 作答回填 data-pr-saved + 行动位「反馈已生成 · 用量 333 tokens」真实用量无百分比 + 四字段标签序 + 空夸大渲染「未发现夸大倾向」不硬凑 + 缺项[0]已转链接态/缺项[1]未转按钮态（不点击）+ 字号 12/13px + B/C 两类 gate 空态 + B 历史照常可看 + /stats 跨投递 3 条倒序直达锚点 + history/state GET 与账本一致 + 无模型根：反馈禁用 + PRACTICE_NO_MODEL_HINT 逐字 + 出题入口照常 + `.pr-*` 零 box-shadow）；③ 只读纪律总检 3 项（非 GET 请求 0 条 / 页面 JS 异常 0 条 / console error 0 条）。
+- **探针修正登记（探针自身数据/断言错位，非产品缺陷）**：首轮 3 红 1 崩——(a) 用量行红：探针合成的 task.usage 误用厂商字段名 `{prompt_tokens,total_tokens}`，而真实管线在 `llm.mjs:122-133` 归一为 `{prompt,completion,total}`（厂商 token 名不出 llm.mjs 边界），对照夹具 :266 断言「用量 333 tokens」与一次性复现实例后改合成形状；(b)(c) 缺项行两红：探针把整行 textContent（缺项原文+按钮/链接文本）与按钮文案单独比对，改查锚点/按钮自身 textContent；(d) /stats 行崩溃：evaluate 返回 DOM Element 不可序列化，改返回 href 字符串。复跑 **72/72 绿，产品侧零改动**。
+
+### 4. DESIGN.md 登记核对（收口轮）
+
+计划 §5 各项（出题复用 / 练习+反馈 / 反哺缺素材 / 记录截 20 / 入口两处）逐项核对，**§10.15–§10.16 两节已随两卡落地**，收口逐项实测（关键口径 vs 实测）：
+
+| 登记项 | 实测核对 |
+|---|---|
+| §10.15 出题只读复用零模型 + 四类 409 | ✅ `buildPracticeSession`（practice.mjs:58-102）零模型调用；`practiceGate`（server.mjs:5641-5666）五类拒绝文案（四类 409 + 简历不在本机）；无模型根出题入口照常（探针 I-N-startok）；「可用要点」409 直测场景由 b4c1 复核补齐（合跑绿） |
+| §10.15 历史截 20 + 读取零写盘 | ✅ `PRACTICE_CAP=20`（practice.mjs:28）；live history `cap:20`；`practiceSessionView`（practice.mjs:122-134）派生 expired 不落库 |
+| §10.15 反馈任务链路 + 作答快照 + 四字段诚实红线 | ✅ 任务契约 `{taskId,status,startedAt,stage,error,usage,model}`（practice.mjs:184-262）；快照闭包 `expectedAnswer` 比对（practice.mjs:384 声明、:410 比对）；解析只认 `{hit,missing,exaggeration,advice}`（practice.mjs:355 起）；探针反断言「评分/百分位/排名」零字样（live + 隔离双测） |
+| §10.15 AI 反馈不直接改正文 | ✅ practice.mjs 无写 docs/ 或 meta 正文维度代码路径（grep 核对）；夹具逐字节断言在合跑中绿 |
+| §10.16 gate 单一通道 + 不给注定失败的入口 | ✅ /app 与 `/app/practice/start` 共用 practiceGate；探针 B/C 两类空态 + 零「开始练习」反断言 |
+| §10.16 练习区呈现（锚点/摘要/徽章/要点/回填/行动位） | ✅ 探针 I-A-* 14 项逐条实测；`POINT_STATE_LABEL` 从 practice.mjs:320 导出复用（UI 与 prompt 同文案） |
+| §10.16 缺的素材一键转「待补充」+ 幂等 + 重新生成清关联 | ✅ `/app/practice/missing/material`（server.mjs:5784 起）；`startPracticeFeedbackTask` 盒重写 `{task, result}` 缺项关联清零（practice.mjs:203）；链接态/按钮态实测（写路径由夹具真点覆盖） |
+| §10.16 /stats 侧卡第三段 + 空态指引 | ✅ 探针 3 条跨投递倒序直达锚点 + 空态去向指引（live 空态 + 隔离有数据两态）；单句无句尾句号实测 |
+| §10.16 无模型降级 | ✅ `PRACTICE_NO_MODEL_HINT`（practice.mjs:34）逐字渲染 + 反馈按钮禁用 + 出题入口照常（探针 I-N-* 三项） |
+| §10.16 样式口径 | ✅ `.pr-*` 段（server.mjs:1727-1745）间距全 `--space-*`、字号 12/13px、零 box-shadow、圆角走 `--radius`；探针 computed 扫描 live+隔离 0 个非 none |
+| 路由登记 | ✅ 两卡增量精确：b4c1 +6（数组实测 100）、b4c2 +1（实测 101）；HEAD 实测 101 条与 server.mjs 字面量集合相等（差集空） |
+
+**结论：无缺登，本节未补任何 DESIGN.md 条目。**
+
+### 5. 剩余事项 / 建议后续卡
+
+- **语音作答**：计划 §5 明确 S7a 未选不做，本批未实现（如实登记，非遗漏）。
+- **ECC 钩子白名单根治**：批 5 三件之一（本批 b4c1 旁路 1 次已留痕；b4c2 零旁路）。
+- **练习数据的备份/恢复口径**：练习历史落 `applications.json` 既有账本（无新文件），备份/恢复路径天然覆盖，无需后续卡；若未来练习产物扩到独立文件再登记。
+- **复核员 note 留痕**：b4c1 note #7「过期 running 的派生 expired 标记不落库」与 §10.15 登记口径一致（账本备查）；b4c2 note #10「template.html mtime 触碰但内容零改动」以夹具 sha1 钉值兜底（git diff 零差异，合跑绿）；b4c2 note #11「PR_STAGES 三处人工同步属存量模式」登记备查未改。
+
+（本节为收口会话产物；点验探针 `/tmp/probe-b4-batch4.mjs`、四套件日志 `/tmp/b4-test-all.log`、先红复现树 `/tmp/b4-pre` 及两份红日志均在 /tmp 不入仓。本节未提交，交提交员按 docs 动机分笔入库。）
