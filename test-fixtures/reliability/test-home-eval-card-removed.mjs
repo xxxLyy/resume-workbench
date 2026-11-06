@@ -5,7 +5,8 @@
 //     评估行按钮（查看报告 / 转入适配）、评估记录内联载荷（EVAL_RECORDS）、公司·岗位回显、报告正文、
 //     指向 /evals 的入口（入口迁至 /job/new 页题右侧）。
 //   B /evals 页能力不变（正向）：全量列表 + 逐条「查看报告」/「转入适配」按钮 + 「来源缺失」与「已转适配」徽章
-//     （已转适配且目标文档在盘 → 仍链接 /edit）+ XSS 转义 + 内联载荷 + 导航零变化（topnav 6 链接 / 无 sidenav / 文档高亮）。
+//     （已转适配且目标文档在盘 → 仍链接 /edit）+ XSS 转义 + 内联载荷 + 导航（topnav 7 链接 / 无 sidenav / 文档高亮；
+//     链接数 6→7 是批 3「网申包」落地时的一次性同提交迁移，与 /evals 能力无关）。
 //   C /evals 入口可达：/job/new 页提供 href="/evals"，空库态与有母版态都在场（否则 /evals 成孤页）。
 //   D 阴性对照：撤除范围仅评估历史卡——首页任务卡 / 统计行 / 文档列表仍在，<script> 标签数不变。
 // 纪律：隔离 RESUME_ROOT（mkdtemp）+ 随机端口 + 合成数据；不读真实简历、不碰 7766、不调真实模型；仓库零写入。
@@ -139,9 +140,9 @@ try {
     assert.ok(html.includes('&lt;script&gt;'), '/evals 的评估载荷应渲染为实体');
     assert.ok(!html.includes('<script>alert(1)'), '/evals 不得含裸 <script>');
     assert.ok(!html.includes('<img src=x onerror'), '/evals 不得含裸 <img>');
-    // 导航零变化：topnav 仍 6 个 <a>（brand + 5 项）；导航唯一（无 sidenav）；「文档」高亮
+    // 导航：topnav 7 个 <a>（brand + 6 项，批 3「网申包」落地后由 6 增至 7）；导航唯一（无 sidenav）；「文档」高亮
     const nav = (html.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
-    assert.equal((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length, 6, '/evals 的 topnav 链接数应仍为 6（导航零变化）');
+    assert.equal((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length, 7, '/evals 的 topnav 链接数应为 7（brand + 6 项）');
     assert.ok(!html.includes('class="sidenav"'), '导航唯一：/evals 不应再有 .sidenav');
     assert.ok(/<a href="\/" class="on">/.test(nav), '/evals topnav「文档」应高亮（active=docs）');
   }

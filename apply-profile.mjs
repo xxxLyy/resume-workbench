@@ -241,6 +241,11 @@ export function catalogOf(key) {
 export function resolveField(entry, item, sourceText) {
   const base = { key: item.key, label: item.label, derived: !!item.derived };
   if (!entry || typeof entry !== 'object') {
+    // 独立字段（derived=false）从没被写过 → 恒为「独立维护」：它没有来源可跟，报 follow 是不实的
+    // （页面徽章与 JSON 导出必须同口径：页面恒显「独立维护」，导出也报 manual）。
+    if (!item.derived) {
+      return { ...base, mode: MODE_MANUAL, state: STATE_MANUAL, value: '', drift: false, synced: false, source: null, sourceText: '' };
+    }
     return { ...base, mode: MODE_FOLLOW, state: STATE_FOLLOW, value: '', drift: false, synced: false, source: null, sourceText: String(sourceText || '') };
   }
   const src = (entry.source && typeof entry.source === 'object') ? entry.source : null;
@@ -341,6 +346,14 @@ export function resolveProfiles(data, ctx = {}) {
     common: { sourceDocId: d.common.sourceDocId || '', fields: commonFields },
     packages,
   };
+}
+
+// ===== 页面层读视图（批 3 页面卡 b3c2）=====
+// 读账本 + 用模块内置取数上下文解析：取数上下文留在模块内（docId 闸门 VALID_ID 与拼路径都在这里），
+// 页面层不自己拼文档路径 —— 账本里的 docId 是外部可编辑内容，越界由模块挡。
+export function loadApplyProfilesView(root) {
+  const l = loadApplyProfiles(root);
+  return { corrupt: l.corrupt, error: l.error, data: l.data, view: resolveProfiles(l.data, makeCtx(root)) };
 }
 
 // ===== 写操作（三态切换）=====

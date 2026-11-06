@@ -90,7 +90,7 @@ try {
   const routes = [
     ['home', '/'], ['job-new', '/job/new'], ['onboarding', '/onboarding'], ['stats', '/stats'],
     ['materials', '/materials'], ['applications', '/applications'],
-    ['evals', '/evals'], ['settings', '/settings']
+    ['evals', '/evals'], ['settings', '/settings'], ['apply-profile', '/apply-profile']
   ];
   for (const [name, route] of routes) {
     await page.goto(base + route, { waitUntil: 'networkidle', timeout: 30000 });
@@ -98,7 +98,7 @@ try {
     await page.screenshot({ path: path.join(OUT_DIR, name + '.png'), fullPage: true });
     console.log('📸 ' + route + ' → ' + path.join(OUT_DIR, name + '.png'));
   }
-  console.log('✅ 8 张视觉验收截图完成（零断言，视觉判定走 DESIGN.md 对照）：' + OUT_DIR);
+  console.log('✅ 9 张视觉验收截图完成（零断言，视觉判定走 DESIGN.md 对照）：' + OUT_DIR);
 } finally {
   try { if (browser) await browser.close(); } catch {}
   cleanup();

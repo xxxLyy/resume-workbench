@@ -81,6 +81,15 @@ node ./test-fixtures/reliability/test-text-layer-preview.mjs
 #       （隔离根 + 随机端口 + 合成文档，无浏览器依赖；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §4 批 3）=====
 node ./test-fixtures/reliability/test-apply-profiles.mjs
 
+# ===== 批3 网申包页面（卡片 b3c2）：/apply-profile 页 + topnav 第七项「网申包」（链接数 6→7，UI-4 断言同提交）
+#       + 三态字段 UI（跟随来源/手动覆写/恢复跟随 + 独立维护，漂移有提示）
+#       + 单字段一键复制（复制源 = 该行值框，所见即所复制）
+#       + 整包导出（纯文本 = 复制用；JSON = 全字段 + 三态）
+#       + 写路径真点一遍（浏览器段：作用范围两种形状 + 手动改写→保存/恢复跟随/独立字段保存必须 200 且落盘；
+#         Chromium 缺失 exit 2，与本套件既有浏览器夹具同口径）
+#       （隔离根 + 随机端口 + 合成文档；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §4 批 3）=====
+node ./test-fixtures/reliability/test-apply-profile-page.mjs
+
 # ===== VQA 视觉验收截图（零断言、退出 0）：8 个关键页 1280x900 全页图落 /tmp/shots-after，
 #       视觉判定走 DESIGN.md 对照（人工/视觉流程），本夹具只产出真实隔离实例渲染截图；Chromium 缺失 exit 2 =====
 node ./test-fixtures/reliability/test-visual-screens.mjs
@@ -2140,10 +2149,11 @@ const COLD = /#F4F5F8|#202737|#697186|#DCE0E8|#5B5DE8|#EEEFFE|#409eff|#2563eb|#d
 fs.readFileSync(F, 'utf8').split('\n').forEach((ln, i) => {
   if (COLD.test(ln)) fail(`${F}:${i + 1} 冷色/靛蓝残留: ${ln.trim().slice(0, 90)}`);
 });
-// 路由集合不变（任何新增 pathname 字面量都会红）。初值 = S2 开工前实测冻结的 54 个字面量；S4a-T10 登记 /export/layout-apply、S4a-T11 登记 /favicon.ico（56），批次2-T2 登记 /eval/create、/eval/promote（58，登记非放宽），2026-11-01 登记 /evals（评估历史独立页，59，登记非放宽），S5 登记 /onboarding、/onboarding/guided、/onboarding/step（引导向导页壳+步进 API，62，登记非放宽），S5F 登记 /onboarding/star-suggest（STAR AI 建议卡，63，登记非放宽；设计 dev-docs/2026-11-02-s5-design.md），S4b-A P3 登记 /job/gen-retry（批次重试端点，64，登记非放宽），批 1 拆页卡登记 /job/new（为岗位定制简历独立页，65，登记非放宽）
+// 路由集合不变（任何新增 pathname 字面量都会红）。初值 = S2 开工前实测冻结的 54 个字面量；S4a-T10 登记 /export/layout-apply、S4a-T11 登记 /favicon.ico（56），批次2-T2 登记 /eval/create、/eval/promote（58，登记非放宽），2026-11-01 登记 /evals（评估历史独立页，59，登记非放宽），S5 登记 /onboarding、/onboarding/guided、/onboarding/step（引导向导页壳+步进 API，62，登记非放宽），S5F 登记 /onboarding/star-suggest（STAR AI 建议卡，63，登记非放宽；设计 dev-docs/2026-11-02-s5-design.md），S4b-A P3 登记 /job/gen-retry（批次重试端点，64，登记非放宽），批 1 拆页卡登记 /job/new（为岗位定制简历独立页，65，登记非放宽），批 3 网申包页面卡登记 /apply-profile（页面）+ /apply/field、/apply/bind、/apply/package、/apply/source（三态字段写入口）+ /apply/export（整包导出）（71，登记非放宽；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §4 批 3，DESIGN.md §10.11）
 const sm = fs.readFileSync(F, 'utf8');
 const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','/ai/prep','/ai/review','/ai/rewrite','/ai/test',
   '/ai/zone-analyze','/ai/zone-rewrite',
+  '/apply-profile','/apply/bind','/apply/export','/apply/field','/apply/package','/apply/source',
   '/api/extract','/app','/app/add','/app/archive-regenerate','/app/del','/app/ics','/app/update','/applications',
   '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf',
   '/job-panel.js','/job/brief','/job/changes','/job/create','/job/feedback-del','/job/generate','/job/gen-cancel','/job/gen-retry','/job/gen-start','/job/new','/layout-info','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',
@@ -4280,12 +4290,12 @@ try {
   assert(evh.includes('data-eval-hist="report"') && evh.includes('data-eval-hist="promote"'),
     '/evals 应保留「查看报告」/「转入适配」按钮');
   assert(evh.includes('EVAL_RECORDS'), '/evals 应保留评估记录内联载荷（客户端渲染报告）');
-  // 导航视觉零变化：topnav 仍 6 个链接；导航唯一（sidenav 已移除，不回归）
+  // 导航：topnav 7 个链接（批 3「网申包」落地后由 6 增至 7，一次性同提交迁移）；导航唯一（sidenav 已移除，不回归）
   const nav = (evh.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
-  assert((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length === 6, '/evals 的 topnav 链接数应仍为 6');
+  assert((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length === 7, '/evals 的 topnav 链接数应为 7（brand + 6 项）');
   assert(!evh.includes('class="sidenav"'), '导航唯一：/evals 不应再有 .sidenav（用户裁决 2026-11-03）');
   assert(/<a href="\/" class="on">/.test(nav), '/evals topnav「文档」应高亮（active=docs）');
-  // /evals 入口可达（首页卡撤除后）：入口在 /job/new 页题右侧（topnav 六链接口径不变）
+  // /evals 入口可达（首页卡撤除后）：入口在 /job/new 页题右侧（/evals 不占导航位）
   const jn = await (await fetch(`http://127.0.0.1:${port}/job/new`)).text();
   assert(jn.includes('href="/evals"'), '/job/new 应提供 /evals 入口（首页卡撤除后 /evals 不得成孤页）');
   console.log('✅ EV-8 ② 隔离实例：首页撤除评估卡（负向）+ /evals 能力不变（转义 / 按钮 / 导航零变化）+ /job/new 入口');
@@ -4522,11 +4532,11 @@ assert(hits.length === 0, '导航条仍含 emoji: ' + hits.join(' '));
 // 渲染结果必须含内联 SVG
 assert(/<svg/.test(navHtml), '导航应含内联 SVG');
 
-// brand + 5 个导航项：每项都必须「图标 + 文字」同现（WCAG nav-label-icon）
+// brand + 6 个导航项（批 3「网申包」落地后由 5 项增至 6 项）：每项都必须「图标 + 文字」同现（WCAG nav-label-icon）
 const links = (navHtml.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []);
-assert(links.length === 6, '导航应有 6 个链接（brand + 5 项），实际 ' + links.length);
+assert(links.length === 7, '导航应有 7 个链接（brand + 6 项），实际 ' + links.length);
 assert(links[0].includes(icon('file-text', 17)) && links[0].includes('简历工作台'), 'brand 应为图标 + 文字');
-const NAV = [['file-text','文档'],['box','素材库'],['columns-3','投递看板'],['chart-bar','复盘'],['settings','设置']];
+const NAV = [['file-text','文档'],['box','素材库'],['columns-3','投递看板'],['chart-bar','复盘'],['settings','设置'],['package','网申包']];
 NAV.forEach(([ic, label], idx) => {
   const a = links[idx + 1] || '';
   assert(a.includes('>' + label + '<'), '导航项应有文字: ' + label);
@@ -4546,9 +4556,9 @@ const srv = readFileSync('./server.mjs', 'utf8');
 assert(!/class="sidenav"/.test(srv), '导航唯一：不应再有 .sidenav（topnav 是唯一页头，用户裁决 2026-11-03）');
 assert(/<nav class="topnav">/.test(srv), '应有唯一页头 .topnav');
 assert(/class="mainarea"/.test(srv), '应有内容区 .mainarea');
-// topnav 含五个导航入口
+// topnav 含六个导航入口（批 3「网申包」落地后由五项增至六项）
 const navblk = (srv.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
-for (const t of ['文档', '素材库', '投递看板', '复盘', '设置']) {
+for (const t of ['文档', '素材库', '投递看板', '复盘', '设置', '网申包']) {
   assert(navblk.includes(t), 'topnav 应含入口: ' + t);
 }
 // topnav 必须由 page() 渲染（第三参数 active 即当前页 key），而不是 listPage()——

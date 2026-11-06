@@ -35,6 +35,7 @@ const JD_MAX_CHARS = 64 * 1024;
 import { applyOps, reviewConsistency, refFresh, buildEvidencePrompt, parseEvidence, buildInterviewPrompt, parseInterview, guardOps, exportChecks, layoutDiagnose, resolveInterviewSources, interviewSourceView, evidenceSourceView } from './evidence.mjs';
 import { completeGenResult } from './gen-result.mjs';   // 任务完成判定纯函数（设计 §4）：显式成功/拒绝 + 独立工作副本
 import { assembleTemplate, listThemes, themeCss, themeRegistration } from './template.mjs';
+import { loadApplyProfilesView, loadApplyProfiles, setField, setFieldSource, bindCommonMaster, ensurePackage, updateApplyProfiles, FIELD_CATALOG, MODE_FOLLOW, MODE_OVERRIDE, MODE_MANUAL, SOURCE_RESUME, SOURCE_COMMON } from './apply-profile.mjs';   // 网申包数据层（批 3 卡片 b3c1）：账本/三态/派生/漂移
 import { ICONS } from './vendors/icons.mjs';  // Lucide 图标数据（纯数据文件，零 npm 依赖）
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -1678,6 +1679,21 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
    只作用于本容器——行内容器里的徽章仍靠 6px 右距分隔（徽章后分隔的唯一机制，全站 43 处在用）。 */
 .taskcard .task-acts .badge{margin-right:0}
 .taskcard .task-side{margin-top:var(--space-2);display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap}
+/* 网申包页（2026-11-06 批 3 §4 卡片 b3c2）：字段行 + 三态徽章 + 操作行。
+   间距一律 --space-* token（§5.1）；圆角 --radius（§5.2）；零 box-shadow（§3.1 静态层级零投影，阴影例外仅 --shadow-up 限 .doc-card:hover）；
+   字号只取既有档（§4.1：12px 表单标签/元数据、13px 面板正文与输入），不新增档位。 */
+.ap-sec{margin:0 0 var(--space-4)}
+.ap-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:var(--space-3);margin-top:var(--space-3)}
+.ap-row{border:1px solid var(--line);border-radius:var(--radius);padding:var(--space-3);background:var(--panel);display:flex;flex-direction:column;gap:var(--space-2)}
+.ap-head{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
+.ap-head .badge{margin-right:0}
+.ap-label{font-size:12px;font-weight:700}
+.ap-src{font-size:12px;color:var(--mut)}
+.ap-val{width:100%;font-family:var(--font);font-size:13px}
+.ap-val[readonly]{background:var(--card-2);color:var(--mut)}
+.ap-acts{display:flex;gap:var(--space-2);flex-wrap:wrap;align-items:center}
+.ap-bar{display:flex;gap:var(--space-2);flex-wrap:wrap;align-items:center;margin-top:var(--space-3)}
+.ap-note{font-size:12px;color:var(--mut)}
 .cta{display:inline-block;background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--radius);padding:9px 16px;font-weight:700;font-size:14px;cursor:pointer}
 .cta:hover{transform:translateY(-1px)}
 .cta-alt{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:var(--radius);padding:9px 14px;font-weight:600;font-size:13px;cursor:pointer}
@@ -1702,7 +1718,7 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 @media(prefers-reduced-motion:reduce){.doc-card{transition:none!important}.doc-card:hover{transform:none!important}button{transition:none!important}button:hover,button:active{transform:none!important}}
 </style></head><body${wide ? ' class="wide"' : ''}>
 <script>${STATUS_SCRIPT}</script>
-<nav class="topnav"><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><span class="links">${nav('docs', '/', '文档', 'file-text')}${nav('materials', '/materials', '素材库', 'box')}${nav('apps', '/applications', '投递看板', 'columns-3')}${nav('stats', '/stats', '复盘', 'chart-bar')}${nav('settings', '/settings', '设置', 'settings')}</span></nav>
+<nav class="topnav"><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><span class="links">${nav('docs', '/', '文档', 'file-text')}${nav('materials', '/materials', '素材库', 'box')}${nav('apps', '/applications', '投递看板', 'columns-3')}${nav('stats', '/stats', '复盘', 'chart-bar')}${nav('settings', '/settings', '设置', 'settings')}${nav('apply', '/apply-profile', '网申包', 'package')}</span></nav>
 <div class="home"><div class="mainarea">${inner}</div></div>
 <footer>简历平台 · 本地优先 · 数据在 ${path.basename(root) === 'resume' ? '~/resume' : 'RESUME_ROOT'}</footer>
 ${WRITE_HELPER_JS}</body></html>`;
@@ -2233,9 +2249,9 @@ function listPage(showArchived = false) {
 // ===== /job/new「为岗位定制简历」（批 1 §0.3 拆页）=====
 // 首页岗位表单整体迁移到此：字段 id/label/默认值/客户端校验/提交与评估接线自 listPage 原样迁入，
 // POST /job/create 与 /eval/create 契约零变化（§0.3 裁决）。首页只留入口按钮（任务卡主行动 + 次级行按钮）。
-// 不进 topnav（导航六链接不变，UI-4）；active 传 'docs'（由首页进入，归属「文档」高亮）。
+// 不进 topnav（/evals 不占导航位；批 3 起导航为 7 项：文档/素材库/投递看板/复盘/设置/网申包）；active 传 'docs'（由首页进入，归属「文档」高亮）。
 // 页题右侧「评估历史 →」= /evals 入口（批 1 §0.3：首页评估历史卡撤除后，评估归 /evals；
-// 评估在本页发起（先评估这个岗位），故入口落本页题右侧；topnav 六链接口径不变，入口不进导航）。
+// 评估在本页发起（先评估这个岗位），故入口落本页题右侧；入口不进导航）。
 function jobNewPage() {
   const meta = loadMeta();
   // 母版下拉口径与拆出前 listPage infos 完全一致（在盘且未归档的全部文档，jobInfo 派生不筛选）。
@@ -2412,6 +2428,275 @@ function jobNewPage() {
         });
       })();
     </script>`, 'docs');
+}
+
+// ===== 网申包页 /apply-profile（批 3 卡片 b3c2 · 计划 §4 批 3「网申包 + 跟进助手」）=====
+// 通用信息表 + 按公司字段包同页；字段三态（跟随来源 / 手动覆写 / 恢复跟随）+ 独立维护；
+// 单字段一键复制 + 整包导出（纯文本 / JSON）。
+// 数据层口径（账本形状/三态/漂移/派生）见 apply-profile.mjs 与 DESIGN.md §10.10；本页口径见 §10.11。
+// AI 文案字段、跟进助手、分享副本、投递记录关联字段包不在本卡（批 3 后续卡）。
+const AP_STATE_LABEL = { follow: '跟随来源', drift: '来源已变', override: '手动覆写', manual: '独立维护' };
+const AP_STATE_CLS = { follow: 'mute', drift: 'warn', override: '', manual: 'ai' };
+
+// 请求体的 scope 归一 → 数据层 scope 对象（形状错即拒，不猜）。
+// **两种形状都认**：字符串 'common'（旧调用方）与对象 {kind:'common'} / {kind:'package', id}（页面客户端发的形状）。
+// 页面客户端发的是对象形态 —— 服务端只认字符串会让通用表整片写动作 400（2026-11-06 复核阻断项 ①）。
+const apScopeOf = (s) => {
+  if (s === 'common' || s === undefined || s === null || s === '') return { scope: { kind: 'common' }, err: '' };
+  if (typeof s === 'object' && !Array.isArray(s)) {
+    const kind = String(s.kind || '');
+    if (kind === 'common') return { scope: { kind: 'common' }, err: '' };
+    if (kind === 'package') {
+      const id = String(s.id || '');
+      if (!id) return { scope: null, err: '字段包 id 缺省' };
+      return { scope: { kind: 'package', id }, err: '' };
+    }
+  }
+  return { scope: null, err: '未知作用范围' };
+};
+
+// 字段行：标签 + 三态徽章 + 来源标注 + 值框 + 操作行（复制 / 手动改写|保存 / 恢复跟随）。
+// 值框即复制源：所见即所复制（复制动作只取该行值框内容，不另取来源）。
+function apFieldRow(scope, key, item, f, srcLabel) {
+  const derived = !!item.derived;
+  const state = derived ? String(f.state || 'follow') : 'manual';   // 独立字段永不派生 → 恒为独立维护
+  const editable = state === 'override' || state === 'manual';
+  const pkgAttr = scope.kind === 'package' ? ` data-pkg="${escAttr(scope.id)}"` : '';
+  const cls = AP_STATE_CLS[state] || '';
+  const badgeHtml = `<span class="badge${cls ? ' ' + cls : ''}">${escHtml(AP_STATE_LABEL[state] || state)}</span>`;
+  const acts = [`<button type="button" class="secondary" data-ap="copy" data-scope="${scope.kind}"${pkgAttr} data-key="${escAttr(key)}">复制</button>`];
+  if (editable) {
+    acts.push(`<button type="button" class="secondary" data-ap="save" data-mode="${state === 'manual' ? 'manual' : 'override'}" data-scope="${scope.kind}"${pkgAttr} data-key="${escAttr(key)}">保存</button>`);
+  } else {
+    acts.push(`<button type="button" class="secondary" data-ap="edit" data-scope="${scope.kind}"${pkgAttr} data-key="${escAttr(key)}">手动改写</button>`);
+  }
+  if (derived) acts.push(`<button type="button" class="secondary" data-ap="follow" data-scope="${scope.kind}"${pkgAttr} data-key="${escAttr(key)}">恢复跟随</button>`);
+  return `<div class="ap-row" data-scope="${scope.kind}"${pkgAttr} data-key="${escAttr(key)}">
+      <div class="ap-head"><span class="ap-label">${escHtml(item.label)}</span>${badgeHtml}<span class="ap-src">来源：${escHtml(srcLabel)}</span></div>
+      <textarea class="ap-val" data-scope="${scope.kind}"${pkgAttr} data-key="${escAttr(key)}" rows="3"${editable ? '' : ' readonly'}>${escHtml(String(f.value == null ? '' : f.value))}</textarea>
+      <div class="ap-acts">${acts.join('')}</div>
+    </div>`;
+}
+
+// 导出文案（纯文本 = 复制用的一行一字段；空字段不进纯文本，页面里仍可见其状态；JSON 含全部字段与三态）。
+function apExportText(view, pkgId) {
+  const lines = [];
+  let fields;
+  if (pkgId) {
+    const p = view.packages[pkgId];
+    fields = p.fields;
+    lines.push('公司：' + p.company);
+    lines.push('岗位：' + p.role);
+    if (p.note) lines.push('备注：' + p.note);
+  } else {
+    fields = view.common.fields;
+  }
+  for (const item of FIELD_CATALOG) {
+    const f = fields[item.key];
+    if (!f) continue;
+    const v = String(f.value == null ? '' : f.value);
+    if (!v.trim()) continue;
+    lines.push(item.label + '：' + v);
+  }
+  return lines.join('\n') + '\n';
+}
+
+function apExportJson(view, pkgId) {
+  const fields = pkgId ? view.packages[pkgId].fields : view.common.fields;
+  const out = {
+    version: 1,
+    scope: pkgId ? 'package' : 'common',
+    generatedAt: new Date().toISOString(),
+    fields: {},
+  };
+  for (const item of FIELD_CATALOG) {
+    const f = fields[item.key] || {};
+    out.fields[item.key] = {
+      label: item.label, derived: !!item.derived,
+      mode: String(f.mode || 'follow'), state: String(f.state || 'follow'),
+      value: String(f.value == null ? '' : f.value), drift: !!f.drift,
+      source: (f.source && typeof f.source === 'object') ? f.source : null,
+    };
+  }
+  if (pkgId) {
+    const p = view.packages[pkgId];
+    out.package = { id: pkgId, company: p.company, role: p.role, note: p.note };
+  } else {
+    out.common = { sourceDocId: view.common.sourceDocId };
+  }
+  return JSON.stringify(out, null, 2) + '\n';
+}
+
+function applyProfilePage() {
+  const led = loadApplyProfilesView(root);
+  const view = led.view;
+  const raw = led.data;
+  const meta = loadMeta();
+  const infos = docIdsOnDisk().map((did) => docInfo(did, meta[did])).filter(Boolean).filter((d) => !((meta[d.id] || {}).archivedAt));
+  // 文档标题取原文（docInfo.title 已转义，这里再转义会双重转义）→ 先建 id→原标题表。
+  // docLabel 返回**原文**，转义只在渲染处做一次（apFieldRow 的 escHtml）。
+  // 只对在盘文档建表（docIdsOnDisk 出来的文件名无路径分隔符），账本里的未知 docId 走纯 id 分支。
+  const rawTitles = new Map();
+  for (const d of infos) {
+    let raw = d.id;
+    try {
+      const html = fs.readFileSync(path.join(root, 'docs', d.id + '.html'), 'utf8');
+      raw = (html.match(/<h1[^>]*>([^<]+)<\/h1>/) || [])[1] || d.id;
+    } catch { /* 读不到就用 id */ }
+    rawTitles.set(d.id, raw);
+  }
+  const docLabel = (did) => {
+    const id = String(did || '');
+    if (!rawTitles.has(id)) return id;
+    return `${rawTitles.get(id)}（${id}）`;
+  };
+  // 来源标注：通用表 = 母版简历；公司包 = 通用信息表 或 岗位简历（逐字段记来源，见 apply-profile.mjs）。
+  const srcLabelOf = (scope, key, item) => {
+    if (!item.derived) return '不从简历派生';   // 独立字段无来源（徽章已说「独立维护」，此处只说来源为何空）
+    const holder = scope.kind === 'package' ? (raw.packages[scope.id] || { fields: {} }) : raw.common;
+    const entry = (holder.fields || {})[key] || null;
+    const src = entry && entry.source && typeof entry.source === 'object' ? entry.source : null;
+    if (scope.kind === 'common') {
+      // 通用表的逐字段来源不被读路径承认（DESIGN.md §10.10 已登记限制）→ 来源标注一律取通用表自己的母版。
+      const did = raw.common.sourceDocId;
+      return did ? `母版简历 · ${docLabel(did)}` : '未绑定母版';
+    }
+    const kind = src ? String(src.kind) : 'common';
+    if (kind === 'resume') return `岗位简历 · ${docLabel(src.docId)}`;
+    return '通用信息表';
+  };
+  const rowsOf = (scope, fields) => FIELD_CATALOG
+    .map((item) => apFieldRow(scope, item.key, item, fields[item.key] || {}, srcLabelOf(scope, item.key, item)))
+    .join('');
+
+  const commonScope = { kind: 'common', id: '' };
+  const commonGrid = rowsOf(commonScope, view.common.fields);
+
+  const masterOptions = infos.map((d) => `<option value="${escAttr(d.id)}"${d.id === raw.common.sourceDocId ? ' selected' : ''}>${d.title}（${escAttr(d.id)}）</option>`).join('');
+  const masterBar = infos.length
+    ? `<div class="ap-bar"><label class="ap-src">母版来源<select id="apMaster">${masterOptions}</select></label><button type="button" class="secondary" id="apBind">绑定母版</button></div>`
+    : `<div class="ap-bar"><span class="ap-note">还没有可绑定的母版简历</span></div>`;
+
+  const pkgSections = Object.values(view.packages).map((p) => {
+    const scope = { kind: 'package', id: p.id };
+    const srcOpts = [`<option value="common"${p.sourceDocId ? '' : ' selected'}>通用信息表</option>`]
+      .concat(infos.map((d) => `<option value="resume:${escAttr(d.id)}"${p.sourceDocId === d.id ? ' selected' : ''}>${d.title}（${escAttr(d.id)}）</option>`)).join('');
+    return `<section class="ap-sec" id="apPkg-${escAttr(p.id)}">
+      <div class="card">
+        <b class="card-title">${escHtml(p.company || '（未填公司）')} · ${escHtml(p.role || '（未填岗位）')}</b>
+        ${p.note ? `<div class="ap-bar"><span class="ap-note">网申地址备注：${escHtml(p.note)}</span></div>` : ''}
+        <div class="ap-bar"><label class="ap-src">跟随来源<select data-ap-src="${escAttr(p.id)}">${srcOpts}</select></label><button type="button" class="secondary" data-ap="source" data-pkg="${escAttr(p.id)}">切换来源</button></div>
+        <div class="ap-grid">${rowsOf(scope, p.fields)}</div>
+        <div class="ap-bar">
+          <a class="cta-alt" href="/apply/export?scope=package&amp;pkg=${encodeURIComponent(p.id)}&amp;format=text">导出纯文本</a>
+          <a class="cta-alt" href="/apply/export?scope=package&amp;pkg=${encodeURIComponent(p.id)}&amp;format=json">导出 JSON</a>
+          <span class="ap-note">导出的内容需自己粘贴到网申系统；本工具不代填、不发送</span>
+        </div>
+      </div>
+    </section>`;
+  }).join('');
+
+  return page('网申包', `
+    <div class="page-head"><h1>网申包</h1><span id="apMsg" role="status" class="ap-note"></span></div>
+    ${led.corrupt ? `<div class="card" style="border-color:var(--err-soft);background:var(--err-soft);color:var(--err)"><b>${icon('circle-alert', 13)}数据文件损坏，已停止写入：</b>apply-profiles.json —— 请先人工修复或从备份恢复。</div>` : ''}
+    <section class="ap-sec" id="apCommon">
+      <div class="card">
+        <b class="card-title">通用信息表</b>
+        ${masterBar}
+        <div class="ap-grid">${commonGrid}</div>
+        <div class="ap-bar">
+          <a class="cta-alt" href="/apply/export?scope=common&amp;format=text">导出纯文本</a>
+          <a class="cta-alt" href="/apply/export?scope=common&amp;format=json">导出 JSON</a>
+          <span class="ap-note">导出的内容需自己粘贴到网申系统；本工具不代填、不发送</span>
+        </div>
+      </div>
+    </section>
+    <section class="ap-sec" id="apPkgNew">
+      <div class="card">
+        <b class="card-title">新建字段包</b>
+        <form id="apPkgForm" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:var(--space-2);align-items:end;margin-top:var(--space-3)">
+          <label class="ap-src">公司<input id="apPkgCompany" required></label>
+          <label class="ap-src">岗位<input id="apPkgRole"></label>
+          <label class="ap-src">网申地址备注<input id="apPkgNote"></label>
+          <button type="submit">新建字段包</button>
+        </form>
+      </div>
+    </section>
+    ${pkgSections}
+    <script>
+    (function () {
+      var msg = document.getElementById('apMsg');
+      var post = function (url, body) {
+        // __wv 已把失败原因写进 msg 元素（不 reload、不清空输入）；这里只吞掉拒绝，避免未处理拒绝刷控制台。
+        return __wv(url, body, msg).then(function () { location.reload(); }).catch(function () {});
+      };
+      // 作用域与字段一律从**行容器**读（.ap-row 上带 data-scope / data-key / data-pkg）：
+      // 「手动改写」是运行时动态创建的保存按钮，天然不带这些属性 —— 从按钮读会拿到 null
+      // （2026-11-06 复核阻断项 ②）。行外按钮（如「切换来源」）不在 .ap-row 内，读自己。
+      var scopeOf = function (host) {
+        var pkg = host.getAttribute('data-pkg') || '';
+        return pkg ? { kind: 'package', id: pkg } : { kind: 'common' };
+      };
+      document.addEventListener('click', function (e) {
+        var b = e.target.closest('button[data-ap]');
+        if (!b) return;
+        var act = b.getAttribute('data-ap');
+        var row = b.closest('.ap-row');
+        var host = row || b;
+        var scope = scopeOf(host);
+        var key = (row || b).getAttribute('data-key') || '';
+        if (act === 'copy') {
+          var ta = row.querySelector('.ap-val');
+          var text = ta.value;
+          navigator.clipboard.writeText(text).then(function () {
+            b.textContent = '已复制';
+            setTimeout(function () { b.textContent = '复制'; }, 1200);
+          }).catch(function () { if (msg) msg.textContent = '复制失败：浏览器未授权剪贴板，请手动选中值框内容复制'; });
+          return;
+        }
+        if (act === 'edit') {
+          var box = row.querySelector('.ap-val');
+          box.removeAttribute('readonly');
+          var save = document.createElement('button');
+          save.type = 'button'; save.className = 'secondary';
+          save.setAttribute('data-ap', 'save'); save.setAttribute('data-mode', 'override');
+          save.textContent = '保存';
+          b.replaceWith(save);
+          box.focus();
+          return;
+        }
+        if (act === 'save') {
+          var val = row.querySelector('.ap-val').value;
+          post('/apply/field', { scope: scope, key: key, mode: b.getAttribute('data-mode') || 'override', value: val });
+          return;
+        }
+        if (act === 'follow') {
+          post('/apply/field', { scope: scope, key: key, mode: 'follow' });
+          return;
+        }
+        if (act === 'source') {
+          var sel = document.querySelector('select[data-ap-src="' + b.getAttribute('data-pkg') + '"]');
+          var v = sel ? sel.value : 'common';
+          post('/apply/source', { scope: scope, source: v.indexOf('resume:') === 0 ? { kind: 'resume', docId: v.slice(7) } : { kind: 'common' } });
+          return;
+        }
+      });
+      var bindBtn = document.getElementById('apBind');
+      if (bindBtn) bindBtn.addEventListener('click', function () {
+        var sel = document.getElementById('apMaster');
+        if (!sel || !sel.value) return;
+        post('/apply/bind', { docId: sel.value });
+      });
+      var form = document.getElementById('apPkgForm');
+      if (form) form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var company = document.getElementById('apPkgCompany').value.trim();
+        if (!company) { if (msg) msg.textContent = '公司必填'; return; }
+        __wv('/apply/package', { company: company, role: document.getElementById('apPkgRole').value.trim(), note: document.getElementById('apPkgNote').value.trim() }, msg)
+          .then(function () { location.reload(); }).catch(function () {});
+      });
+    })();
+    </script>`, 'apply');
 }
 
 // 备份恢复/回退：把 docs-meta.json 整体替换为 target（成对语义），但一律经 updateMeta 逐文档写（不裸 copyFileSync 覆盖共享文件）。
@@ -3874,8 +4159,8 @@ async function handler(req, res) {
     // ===== 评估历史（独立页）：全量列表 + 逐条展开报告 =====
     // 服务端渲染全量元数据（evalHistoryRows），报告正文经 jsonScript 内联，
     // 客户端由 evalCardHtml 渲染 —— 本页是评估历史的唯一落点（批 1 §0.3：首页评估历史卡已撤除）。
-    // 不进 topnav / 侧栏（导航视觉零变化）：入口是 /job/new 页题右侧的「评估历史 →」
-    // （评估在 /job/new 发起，入口落本页题右侧；topnav 六链接口径不变）。
+    // 不进 topnav / 侧栏：入口是 /job/new 页题右侧的「评估历史 →」
+    // （评估在 /job/new 发起，入口落本页题右侧；/evals 不占导航位）。
     // active 传 'docs'：本页由首页进入，归属「文档」，侧栏保持「文档」高亮。
     if (req.method === 'GET' && url.pathname === '/evals') {
       const records = loadEvals().map(evalRecordView);
@@ -3889,6 +4174,107 @@ async function handler(req, res) {
       ${EVAL_CARD_JS}
       ${EVAL_HISTORY_JS}
     </script>`, 'docs'));
+    }
+    // ===== 网申包（S8 · 批 3 页面卡 b3c2）：页面 + 三态字段 + 单字段复制 + 整包导出 =====
+    // 写入口一律走 apply-profile.mjs 数据层（tx 纪律 + 损坏停写），页面层不自己拼文档路径。
+    if (req.method === 'GET' && url.pathname === '/apply-profile') {
+      return send(200, applyProfilePage());
+    }
+    // 整包导出（纯文本 = 复制用；JSON = 全字段 + 三态）。只读导出，不写账本。
+    if (req.method === 'GET' && url.pathname === '/apply/export') {
+      // 导出范围：缺省 → 通用表；'package' 与其别名 'pkg' → 字段包；未知写法 → 400（形状错即拒，不猜——
+      // 否则拼错的 scope 会静默导出一份通用表糊弄用户）。
+      const scopeRaw = String(url.searchParams.get('scope') || '').trim();
+      let scope = 'common';
+      if (scopeRaw !== '') {
+        if (scopeRaw === 'common') scope = 'common';
+        else if (scopeRaw === 'package' || scopeRaw === 'pkg') scope = 'package';
+        else return send(400, '未知导出范围：' + scopeRaw + '（可用：common / package）', 'text/plain; charset=utf-8');
+      }
+      const format = url.searchParams.get('format') === 'json' ? 'json' : 'text';
+      const pkgId = scope === 'package' ? String(url.searchParams.get('pkg') || '') : '';
+      const led = loadApplyProfilesView(root);
+      if (led.corrupt) return send(500, '数据文件损坏，已停止写入：apply-profiles.json。请先人工修复或从备份恢复。', 'text/plain; charset=utf-8');
+      if (scope === 'package' && !led.view.packages[pkgId]) return send(404, '字段包不存在', 'text/plain; charset=utf-8');
+      const body = format === 'json' ? apExportJson(led.view, pkgId) : apExportText(led.view, pkgId);
+      const name = 'apply-' + (pkgId ? 'pkg-' + pkgId : 'common') + (format === 'json' ? '.json' : '.txt');
+      const type = format === 'json' ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8';
+      return send(200, body, type, { 'Content-Disposition': 'attachment; filename="' + name + '"' });
+    }
+    // 字段三态：follow（恢复跟随）/ override（手动覆写）/ manual（独立维护，仅独立字段）
+    if (req.method === 'POST' && url.pathname === '/apply/field') {
+      const body = await readBodyAuto(req);
+      const scope = apScopeOf(body.scope);
+      if (scope.err) return sendJson(400, { ok: false, error: scope.err });
+      const key = String(body.key || '');
+      const mode = String(body.mode || '');
+      if (![MODE_FOLLOW, MODE_OVERRIDE, MODE_MANUAL].includes(mode)) return sendJson(400, { ok: false, error: '未知字段模式：' + mode });
+      try {
+        setField(root, scope.scope, key, mode, { value: body.value == null ? '' : String(body.value) });
+      } catch (e) {
+        return sendJson(e && e.httpCode ? e.httpCode : 400, { ok: false, error: String((e && e.message) || e), code: (e && e.code) || '' });
+      }
+      return sendJson(200, { ok: true });
+    }
+    // 绑定母版（通用表跟随来源的出处）：换母版 = 重新确认全部跟随字段的快照（清漂移）；手填与独立字段不动。
+    if (req.method === 'POST' && url.pathname === '/apply/bind') {
+      const body = await readBodyAuto(req);
+      const docId = String(body.docId || '');
+      if (!fs.existsSync(docPath(docId))) return sendJson(404, { ok: false, error: '母版文档不存在' });
+      try {
+        bindCommonMaster(root, docId);
+      } catch (e) {
+        return sendJson(e && e.httpCode ? e.httpCode : 400, { ok: false, error: String((e && e.message) || e), code: (e && e.code) || '' });
+      }
+      return sendJson(200, { ok: true });
+    }
+    // 新建/补全公司字段包：建包即把派生字段同步到通用表当前值（跟随态 + 已确认快照）。
+    if (req.method === 'POST' && url.pathname === '/apply/package') {
+      const body = await readBodyAuto(req);
+      const company = String(body.company || '').trim();
+      const role = String(body.role || '').trim();
+      if (!company) return sendJson(400, { ok: false, error: '公司必填' });
+      try {
+        const pkg = ensurePackage(root, { company, role, note: String(body.note || '').trim() });
+        for (const item of FIELD_CATALOG) {
+          if (!item.derived) continue;
+          setField(root, { kind: 'package', id: pkg.id }, item.key, MODE_FOLLOW);
+        }
+        return sendJson(200, { ok: true, id: pkg.id });
+      } catch (e) {
+        return sendJson(e && e.httpCode ? e.httpCode : 400, { ok: false, error: String((e && e.message) || e), code: (e && e.code) || '' });
+      }
+    }
+    // 公司包换源（跟随通用信息表 ↔ 跟随岗位简历）：换源后跟随态字段重新确认快照；
+    // 手填覆写与独立字段的值不动（只更新它们记录的来源，供日后「恢复跟随」用）。
+    if (req.method === 'POST' && url.pathname === '/apply/source') {
+      const body = await readBodyAuto(req);
+      const scope = apScopeOf(body.scope);
+      if (scope.err) return sendJson(400, { ok: false, error: scope.err });
+      if (scope.scope.kind !== 'package') return sendJson(400, { ok: false, error: '只有公司字段包可以换源' });
+      const src = (body.source && typeof body.source === 'object') ? body.source : {};
+      const kind = String(src.kind || '');
+      if (![SOURCE_RESUME, SOURCE_COMMON].includes(kind)) return sendJson(400, { ok: false, error: '未知来源类型：' + kind });
+      const docId = String(src.docId || '');
+      if (kind === SOURCE_RESUME && !fs.existsSync(docPath(docId))) return sendJson(404, { ok: false, error: '岗位简历不存在' });
+      const before = loadApplyProfiles(root).data;
+      if (!before.packages[scope.scope.id]) return sendJson(404, { ok: false, error: '字段包不存在' });
+      try {
+        for (const item of FIELD_CATALOG) {
+          if (!item.derived) continue;
+          const cur = (before.packages[scope.scope.id].fields || {})[item.key] || null;
+          setFieldSource(root, scope.scope, item.key, { kind, docId });
+          if (!cur || cur.mode === MODE_FOLLOW) setField(root, scope.scope, item.key, MODE_FOLLOW);
+        }
+        updateApplyProfiles(root, (d) => {
+          const p = d.packages[scope.scope.id];
+          if (p) p.sourceDocId = kind === SOURCE_RESUME ? docId : '';
+          return d;
+        });
+      } catch (e) {
+        return sendJson(e && e.httpCode ? e.httpCode : 400, { ok: false, error: String((e && e.message) || e), code: (e && e.code) || '' });
+      }
+      return sendJson(200, { ok: true });
     }
     // 岗位修改清单读/写（状态持久化；应用动作由前端 DOM 执行后回写状态）
     if (req.method === 'GET' && url.pathname === '/job/changes') {
