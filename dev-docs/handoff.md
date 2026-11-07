@@ -1440,3 +1440,59 @@ Flash 23 条要点见各提交信息与 `b47-report` 工作流报告；收口时
 - **复核员 note 留痕**：b4c1 note #7「过期 running 的派生 expired 标记不落库」与 §10.15 登记口径一致（账本备查）；b4c2 note #10「template.html mtime 触碰但内容零改动」以夹具 sha1 钉值兜底（git diff 零差异，合跑绿）；b4c2 note #11「PR_STAGES 三处人工同步属存量模式」登记备查未改。
 
 （本节为收口会话产物；点验探针 `/tmp/probe-b4-batch4.mjs`、四套件日志 `/tmp/b4-test-all.log`、先红复现树 `/tmp/b4-pre` 及两份红日志均在 /tmp 不入仓。本节未提交，交提交员按 docs 动机分笔入库。）
+
+## 批 5 轮（2026-11-07）：技术遗留三件（起点 `main@8f2be35`，收口 `main@4b7c9be`）
+
+> 总纲：`dev-docs/2026-11-05-roadmap-batch-plan.md` §6（① CSP `unsafe-inline` 移除：51 处内联事件属性 → data-action 委托 + 28 个内联脚本块 nonce 化 + 收口 `script-src 'self'`；② resume-compact 第四主题（themes/ 加法边界，装配照 S6-A1 零新机制）；③ ECC 钩子白名单根治桩 apiKey 字面量误报、消灭 `ECC_SKIP_PRECOMMIT` 旁路）+ §7（每卡先红后绿、断言同提交、批门四套件 + 7766 重启点验）+ §7.1（批 5 与任何批❌，必须最后独占收尾——本批即压轴独占执行）。本批 5 笔提交（`ca7a6ea` → `4b7c9be`），DESIGN.md §10.17 随卡登记（b5c4），§10.18 收口补登（b5c1/b5c2/b5c3，见 §4）。
+
+### 1. 逐卡结果（5 笔提交，逐卡哈希）
+
+| 卡 | 提交 | 内容 | 先红→后绿证据 |
+|---|---|---|---|
+| b5c1 | `ca7a6ea`（08:01:22） | 内联 handler 委托化：应用页 51 处内联事件属性 → `data-action` + 一张委托注册表（`ACT_DISPATCH_JS` document 级五桶 click/change/input/submit/keydown-Enter，查不到同名注册静默=内联语义；排序表头 click+keydown 同名双桶；属性转义纪律平移 `escAttr`）；ivAdd 死按钮存量登记（只收敛绑定不补行为） | **先红**（收口独立复现，批前树 `8f2be35` + HEAD 夹具）：`❌ / 仍有 8 处内联事件属性（应已委托化为 data-action）` **EXIT=1**（日志 `/tmp/b5-pre-red-test-inline-delegation.log`）。**后绿**：合跑夹具行 ✅（`/tmp/b5-test-all.log:377`）。卡片侧 ECC 旁路 1 次（夹具桩 `apiKey: 'stub-key-not-real'` 命中通用凭证正则，note #5 预测命中、提交信息留痕，b5c5 根治前最后一例） |
+| b5c2 | `755b4a8`（08:51:35） | 内联脚本块 nonce 化：应用页 28 个内联 `<script>` 全部带一次性 nonce（`__CSP_NONCE__` 占位符 + `send()` 出口一次运行时替换 + CSP 头同 nonce；逐响应现发；占位符机制不碰 /edit 与渲染管线），script-src 收口 `'self'`（style-src `'unsafe-inline'` 既有口径裁决不动） | **先红**（同上复现）：`❌ / script-src 仍放行 'unsafe-inline'（b5c2 未收口）` **EXIT=1**（日志 `/tmp/b5-pre-red-test-app-pages-script-nonce.log`）。**后绿**：合跑夹具行 ✅（`/tmp/b5-test-all.log:506`）。零旁路（本卡夹具无 apiKey 桩，钩子正常放行） |
+| b5c3 | `689f53d`（09:47:33） | CSP 收口终检（b5c1/b5c2 的收口验收）：新夹具对 20 个 HTML 路由形态响应头实测——script-src 带 18 条全部 `'self'` 开头、无 `'unsafe-inline'`、不放外部主机；锁定预览 2 条 `default-src 'none'`；/edit nonce+hash 形态原样；顺带更新 `test-app-pages-csp.mjs` 头注释（b5c2 note #6 遗留项，零断言改动） | **先红**（同上复现）：`❌ / script-src 仍含 'unsafe-inline'（收口失败）` **EXIT=1**（日志 `/tmp/b5-pre-red-test-csp-script-src-closure.log`）。**后绿**：合跑夹具行 ✅（`/tmp/b5-test-all.log:507`）。零旁路（新夹具零凭证字面量，ECC 正则预检零命中） |
+| b5c4 | `8c2982c`（10:27:38） | 第四主题 resume-compact：`themes/resume-compact.css` 新增（紧凑单栏档：正文 12.2px/1.4、页边距 8mm 7.5mm、h1 21px、自带最小 print 隐藏规则）；装配照 S6-A1 零新机制（listThemes 文件名白名单 + 三路径 sha1）；向导 0.8 与编辑器模板页签各多一张卡；`editor-shell.js` THEME_META +1 | **先红**两条：① 卡内自做阴性对照（临时移走主题文件 → 红在 `listThemes 应恰含四主题…实际 ["classic","dual","magazine"]` → 还原 → 绿）；② 收口独立复现（HEAD 夹具对批前树）：同断言红在夹具 `:47` **EXIT=1**（日志 `/tmp/b5-pre-red-test-themes-compact.log`）。**后绿**：合跑夹具行 ✅（`:664`）+ 批 1 0.8 四卡行 ✅（`:549`）。零旁路 |
+| b5c5 | `4b7c9be`（11:07:00） | ECC 钩子白名单：根治夹具桩 apiKey 字面量误报（钩子本体在仓库外 `~/.codex/git-hooks/pre-commit:59-63`，计划明文设计，实施侧落白名单）；**本笔提交自身即根治验收**——暂存新增行含历史被拦字面量，`git commit` 不带任何旁路开关实跑用户级钩子、钩子放行；自本卡起 resume 仓库禁用旁路 | **先红复现未做**（如实登记）：钩子在仓库外且白名单已 live，红复现须临时改用户级钩子文件——超出收口范围。证据=卡片 7/7 探针（放行 ×3 含 P1 历史被拦字面量 / 拦截 ×4 负控，判定来自钩子本体、子进程显式删旁路开关）+ 上述零旁路实跑 + 合跑夹具行 ✅（`:517`） |
+
+先红复现方法（批 3/批 4 收口同款）：`git archive 8f2be35` 解包 `/tmp/b5-pre`，拷入 HEAD 四份夹具 + `node_modules` 符号链接；四夹具对批前树 **EXIT=1 全红且红在目标断言**（内联属性 8 处 / script-src 含 'unsafe-inline' ×2 / listThemes 三主题），HEAD 全绿——夹具与本批实现强耦合（非空转绿）。各卡自述的逐条变异测试与阴性对照见各提交信息，收口未逐条重放。
+
+### 2. 批门轮次
+
+- `RESUME_TEST_STRICT=1 npm run test:all` → **EXIT=0**（收口会话独立跑一次，731 个 ✅；批 4 收口 709 → 本批 +22）。本批五卡夹具行：`:377`（b5c1 委托化）/ `:506`（b5c2 nonce）/ `:507`（b5c3 终检）/ `:664`（b5c4 themes-compact）/ `:517`（b5c5 ECC 白名单）/ 另 `:549`（批 1 0.8 选模板 + 批 5 第四主题四卡行）。唯一 ❌ 仍是 :695 段 X Chromium 探测契约的既有预期输出（无缓存→应失败并给修复动作，批 1-4 收口登记同一基线），非本批引入。`bash privacy-check.sh` → **EXIT=0**。
+- 红线复核：冻结件 `template.html` / `render.mjs` / `themes/resume-classic.css` 与 `package.json` / `package-lock.json` 零 diff（`git diff --stat` 空输出）；工作区除本收口两份文档改动（DESIGN.md 补登 + 本节）外只剩 4 份固有未跟踪 dev-docs（`2026-10-28-*` 三份 + `2026-10-29-agent-handoff.md`）。
+- ECC pre-commit 全批汇总：**旁路 1 次**（b5c1，批 5 根治前最后一例，已留痕）；b5c2/b5c3/b5c4 零旁路；b5c5 零旁路且即根治（暂存含历史被拦字面量实跑钩子放行）。旁路机制自 `4b7c9be` 起在 resume 仓库禁用。
+- 各卡自跑批门：五卡提交信息各自留痕 `RESUME_TEST_STRICT=1 npm run test:all` exit 0；b5c4 另做阴性对照一条（移文件→红→还原→绿）。
+- 路由清点：**本批零新增路由**——`ROUTES_FROZEN` 数组 `8f2be35→HEAD` 零 diff（批 5 对 `test-structure.sh` 的改动全为三卡夹具登记行 + 委托化载荷 sink 重锚 + 第四主题注释），`server.mjs` 零 `url.pathname` 新增（diff 实测）。
+- **收口后复跑**（本轮 §4 补登 DESIGN.md §10.18 + §10.1 备查② 订正 + 本节落档之后、本笔 docs 提交之前，提交员补跑）：`RESUME_TEST_STRICT=1 bash test-structure.sh` → **EXIT=0**（276 个 ✅；本批五卡夹具行在 :4/:5/:15/:162/:517 全 ✅；唯一 ❌ 仍为 :193 段 X Chromium 探测契约既有口径，不影响退出码）；`bash privacy-check.sh` → **EXIT=0**。收口章节的引用与哈希另经提交员逐项核验：五哈希 `git rev-parse` 全解析、五笔提交时刻与 §1 表逐字一致（ca7a6ea 08:01:22 / 755b4a8 08:51:35 / 689f53d 09:47:33 / 8c2982c 10:27:38 / 4b7c9be 11:07:00）、`git rev-list --count 8f2be35..HEAD` = 5、7766 现进程 PID 1291（11:18:06 启）与 §3 一致、§10.18 行引用逐条命中现树（`ACT_DISPATCH_JS` :1579 / send 替换 :4010-4013 / 排序双桶 :6319-6320 / ivAdd 按钮 :6870 + 注册项 :6932）、`ROUTES_FROZEN` 数组批前批后均 101（零 diff）且 `server.mjs` 零新增 `url.pathname`。收口内容为纯文档（DESIGN.md / handoff.md），不触代码与断言。
+
+### 3. 7766 重启与只读点验结论
+
+- **重启**：`kill $(lsof -nP -tiTCP:7766 -sTCP:LISTEN)` → 旧 PID `79378` → **新 PID `1291`（11:18:06 启，晚于收口提交 `4b7c9be` 的 11:07:00）**，launchd KeepAlive 自动拉起（直跑 `/Users/xxxly/resume/server.mjs`，工作树即最新提交）。重启伴随 `logs/resume-server.log` 服务自体日志写入（存量行为，与批 1-4 收口重启同）。
+- **HTTP 状态（curl，7 条全 200）**：`/`、`/stats`、`/materials`、`/settings`、`/evals`、`/applications`、`/onboarding/guided`。**本批无新增页面**（零新增路由，见 §2 路由清点）——「新页点验」即核实此点；尾斜杠形态 `/stats/` 等 404 为既有精确匹配路由行为，非本批引入。
+- **首页承接本批改动证据（最新代码在跑）**：HTML 代码级 `onclick=` = 0；`data-action` 在场（confirmSubmit×3 / homeTag / homeDup / homeArchive…）；3 个内联 `<script>` 全部带 nonce；CSP 头 `script-src 'self' 'nonce-…'` 无 `'unsafe-inline'`（/settings 同口径实测）。
+- **headless Chromium 只读点验**（playwright-core + `chromium.mjs` resolveChromium；探针 `/tmp/probe-b5-batch5.mjs`，全程 GET，页级拦截非 GET 请求；唯一点击 = 投递表格排序表头——b5c1 委托注册的**纯客户端重排**，`server.mjs:6299-6307` 零网络请求）：**73 项检查全通过，0 失败**（日志 `/tmp/probe-b5-batch5.log`）——① live 7766 45 项：九路由 200（含 /job/new、/app 真实投递）；六页 CSP `script-src` 无 `'unsafe-inline'`；四页内联块 nonce 与响应头逐块一致（缺 0 错配 0）；nonce 逐响应现发（同页两次 GET 不同）；九页 DOM 零 `on*` 属性；`window.__acts` 五桶在场；排序真点（click→asc→desc，Enter→asc，双桶同名）；/theme-preview compact（锁定 CSP + 12.2px）与 classic（零回归）；`themes/resume-compact.css` 磁盘检查（12.2px + print 规则 + 零 box-shadow）；editor-shell THEME_META 钉值。② 隔离实例 25 项（临时 RESUME_ROOT + 随机端口 + 合成三投递乱序播种）：排序行序确定性翻转（乙甲丙→升序→降序，与 `localeCompare zh` 逐行核对）；向导 0.8 铺盘直达（meta.onboarding.next='0.8'，零 POST）恰四卡 classic,compact,dual,magazine + classic 默认选中 + compact 卡「紧凑单栏/单栏装更多」+ 四张 srcdoc 缩略图；/theme-preview 锁定 CSP + 12.2px；/edit 静态零 `on*` + **按 meta.theme=compact 装配实测**（响应体含 12.2px）；THEME_META 在场。③ 只读纪律总检 3 项（非 GET 请求 0 条 / 页面 JS 异常 0 条 / console error 0 条）。
+- **探针修正登记（探针口径错位，非产品缺陷）**：首轮 11 红——(a) 排序表头定位：/applications 首屏为看板视图，表格在 `/applications?view=table`（`server.mjs:6277`，GET 查询参数）；(b) 向导四卡：0.8 卡仅随 `meta.onboarding.next='0.8'` 渲染（`server.mjs:3895-3900`），真实根铺向导态属禁写 → live 侧降为信息项，四卡断言移隔离实例铺盘直达；(c) /theme-preview 首轮误用投递 id → 404（id 参数要文档 id），改真实文档 `linghaoxiang`（只读 ls docs/ 证实）；(d) `/themes/resume-compact.css` 非公开 HTTP 路由（主题经 themeCss 装配内联不单发，grep 零路由）→ 改磁盘检查 + 隔离 /edit 装配实测；(e) /edit 页自体加载即 POST `/zones/init`（页自行为）→ /edit 不进浏览器改静态扫描，保住「非 GET=0」纪律。复跑 **73/73 绿，产品侧零改动**。
+
+### 4. DESIGN.md 登记核对（收口轮）
+
+计划 §6 三项逐项核对：第 2 项（第四主题）**§10.17 已随 b5c4 落地**（档位/装配/0.8 卡/页签/断言清单逐项在位，§10.1 的「批 5 第四主题起四张」交叉引用同笔更新）；第 1 项（CSP 收口）与第 3 项（ECC 白名单）三卡（b5c1/b5c2/b5c3）当时未登 DESIGN.md——按计划 §7「每批收口：handoff.md 追加章节 + DESIGN.md 同步登记」**收口补登**（本节未提交，交提交员随本节同笔入库）：
+
+| 登记动作 | 内容 |
+|---|---|
+| **新增 §10.18**「内联面收口：事件委托 + 脚本 nonce + CSP 'unsafe-inline' 移除」 | b5c1/b5c2/b5c3 的机制口径与**规范性要求**（新增应用页交互一律走 data-action 委托、新增内联脚本一律带 nonce，不得回退）；委托五桶与静默语义、nonce 逐响应现发、style-src 既有口径不动、CSP 终检 20 形态、ivAdd 存量登记；断言锚点（四新夹具 + 既有 CSP 夹具 + test-page-writes 触发点换路径 + XSS sink 重锚） |
+| **§10.1 备查② 订正** | 原文「srcdoc 继承 /onboarding 页的 CSP（`script-src 'self' 'unsafe-inline'`）、残余面仅用户自己正文里的内联事件属性」已被 b5c1/b5c2 改陈旧——实测现树 /onboarding 为 `script-src 'self' 'nonce-…'`；内联事件属性无法携带 nonce、CSP 无 'unsafe-inline' → 残余面被 CSP 判死，可执行残余面为零（`stripInjections`/`themePreviewHtml` 不剥用户正文 on* 属性的事实不变，拦截面移到 CSP 层） |
+| b5c5 判定：无应登记项 | DESIGN.md 无 ECC/钩子章节（纯构建工具面），根治登记落 handoff（本节 §1/§2）与夹具头注释，不新开 §10 小节 |
+
+- 行号漂移登记：§10.18 引用**现树实测**行号（`ACT_DISPATCH_JS` :1579 / send 替换 :4010-4013 / 排序双桶 :6317-6320 / ivAdd 按钮 :6870 + 注册项 :6930-6932）；b5c1 卡自述 ivAdd「:6916-6918」系其后两卡（b5c4/b5c5）插行前的漂移值，已按现树订正。
+- b5c3 note #5 存量字面值（`.diff-line` border-radius:6px `server.mjs:1716`、.badge 字重 500 :1696 等）：实读核对在位，均为批 5 之前遗留、批 5 零新增，留后续视觉轮（不属本批应登记项）。
+
+### 5. 剩余事项 / 建议后续卡
+
+- **ivAdd 死按钮**：b5c1 只收敛绑定方式不补行为——`server.mjs:6870` 按钮 + `:6930-6932` 注册项指向未定义函数（点击静默，委托语义）。建议后续卡补实现或删按钮，二选一须用户拍板。
+- **b5c2 note #6**（test-app-pages-csp.mjs 头注释过时）：已由 b5c3 顺带更新（`689f53d` 含该文件 5 行头注释改动、零断言改动），无遗留。
+- **b5c5 note #8**（计划文档「累计 11 次」vs 登记册 14 次旁路计数漂移）：属计划文档登记漂移，以 handoff.md 登记册为准，未改计划文档；旁路机制已根治，该计数不再增长。
+- **用户正文内联事件属性**：应用页代码面已清零，用户正文（docs/*.html）不属应用页代码面——其可执行性已被 CSP 判死（§10.1 备查②订正后口径）；如需正文层 sanitizer 属安全面扩大，须用户单独授权，本批未动。
+- **755b4a8 尾注核验**：b5c2 提交信息自述「复核员 note #6 留待批收口 docs 轮」已闭环（见上）；「登记备查：计划 11 次 vs 登记册 14 次」已闭环（见上）。
+
+（本节为收口会话产物；点验探针 `/tmp/probe-b5-batch5.mjs` 及日志 `/tmp/probe-b5-batch5.log`、四套件日志 `/tmp/b5-test-all.log`、先红复现树 `/tmp/b5-pre` 及四份红日志均在 /tmp 不入仓。本节未提交，交提交员按 docs 动机分笔入库。）
