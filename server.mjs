@@ -3402,12 +3402,14 @@ const OB_PHOTO_MAX = 5 * 1024 * 1024;
 const OB_PHOTO_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
 const OB_PAGE_SVG = svgAsset('hero-page.svg');
 
-// ===== 0.8 选模板（批 1 §0.3：完成步「选一套模板」= 三张卡 = 主题名 + 场景短语 + 真渲染缩略图 + 选中态）=====
-// 场景短语是短标签（通用 / 经历多一页排满 / 展示向），非受众长句（DESIGN.md §9.1-3 边界内）。
+// ===== 0.8 选模板（批 1 §0.3：完成步「选一套模板」= 每主题一张卡 = 主题名 + 场景短语 + 真渲染缩略图 + 选中态；
+//       批 5 第 2 项起四主题）=====
+// 场景短语是短标签（通用 / 经历多一页排满 / 展示向 / 单栏装更多），非受众长句（DESIGN.md §9.1-3 边界内）。
 // 缩略图 = /theme-preview 同装配 srcdoc 内嵌（端点带 frame-ancestors 'none' 不可被嵌；与编辑器模板页签同思路），
 // 装配走单一实现 themePreviewHtml()（DESIGN.md §10.1）→ 卡内嵌内容与 GET /theme-preview 响应体逐字节相等。
 const OB_THEME_CARDS = [
   { theme: 'classic', name: '经典单栏', scene: '通用' },
+  { theme: 'compact', name: '紧凑单栏', scene: '单栏装更多' },
   { theme: 'dual', name: '双栏紧凑', scene: '经历多一页排满' },
   { theme: 'magazine', name: '杂志展示', scene: '展示向' }
 ];
@@ -3966,7 +3968,7 @@ function onboardingPage(state) {
 .ob-fallback summary{cursor:pointer;color:var(--muted);font-size:12px}
 .ob-resume .ob-resume-item{display:flex;justify-content:space-between;gap:var(--space-3);padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius);margin-bottom:var(--space-2);font-weight:400}
 .ob-resume .ob-resume-item span{color:var(--muted);font-size:13px;white-space:nowrap}
-/* 0.8 选模板：三张卡（主题名 + 场景短语 + 真渲染缩略图 + 选中态）。
+/* 0.8 选模板：每主题一张卡（批 5 第 2 项起四张：主题名 + 场景短语 + 真渲染缩略图 + 选中态）。
    缩略图 = A4 页面按比例缩放进固定框（尺寸字面值只落在本行的自定义属性上，规则里只引用变量）；
    缩放随框宽自适应（框宽/页宽，上限 --ob-thumb-scale）——卡宽随机型栅格随视口收窄，固定缩放会在
    ≤1250px 视口把页面右栏裁掉（缩略图是「双栏紧凑 vs 杂志展示」的唯一对比依据，2026-11-06 复核阻断项）；

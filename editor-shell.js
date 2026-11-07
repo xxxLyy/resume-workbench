@@ -2315,6 +2315,7 @@
   // （2026-11-04 文案减负：受众句/双栏安心注/页脚切换语义移除，DESIGN.md §9——切换语义只在确认框出现）
   var THEME_META = {
     classic: { label: '单栏' },
+    compact: { label: '单栏·紧凑' },
     dual: { label: '双栏' },
     magazine: { label: '单栏·展示' }
   };

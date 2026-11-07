@@ -45,7 +45,7 @@ node ./test-fixtures/reliability/test-onboarding-api.mjs
 # ===== R2 文案与按钮语义修复包：首页待办计数 / 409 死引用 / 向导横幅两态 / 导出页语义（隔离根 HTTP，无浏览器依赖）=====
 node ./test-fixtures/reliability/test-copy-semantic-fixes.mjs
 
-# ===== 批1 §0.3 从零建简历 0.8 步选模板：三张卡（主题名+场景短语+真渲染缩略图+选中态）
+# ===== 批1 §0.3 从零建简历 0.8 步选模板：每主题一张卡（批 5 第 2 项起四张：主题名+场景短语+真渲染缩略图+选中态）
 #       + 缩略图与 /theme-preview 同装配逐字节相等 + 确认完成随文档一步写 meta.theme（隔离根 + 浏览器段；Chromium 缺失 exit 2）
 #       计划 dev-docs/2026-11-05-roadmap-batch-plan.md §2，DESIGN.md §10.1 =====
 node ./test-fixtures/reliability/test-onboarding-theme-cards.mjs
@@ -200,6 +200,11 @@ node ./test-fixtures/reliability/test-themes-assemble.mjs
 
 # ===== S6-A2：模板库 UI（/theme-preview 只读+闸门+锁 CSP；/theme/apply 写 meta.theme 重装配；模板页签/主题卡/srcdoc iframe/切换语义）=====
 node ./test-fixtures/reliability/test-theme-picker-ui.mjs
+
+# ===== 批5 第2项：resume-compact 第四主题（themes/ 加法边界，DESIGN.md §7/§10.17；装配口径照 S6-A1：
+#       meta.theme=listThemes 白名单 + styleHash + 服务/渲染/冻结快照三路径；/theme/apply 与 /theme-preview；
+#       向导 0.8 与编辑器模板页签各多一张卡；classic 零回归；隔离根 + 随机端口 + 假渲染器，零浏览器）=====
+node ./test-fixtures/reliability/test-themes-compact.mjs
 
 # ===== A3：排版密度三档预设 + 页数感知收紧建议（只建议不删内容：正文零变化/仅 typo 块变化/尚未渲染不臆造）=====
 node ./test-fixtures/reliability/test-typo-presets.mjs

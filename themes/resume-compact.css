@@ -1,0 +1,68 @@
+/* resume-compact.css — 批 5 第 2 项：紧凑单栏第四主题（themes/ 加法边界，DESIGN.md §7；装配口径照 S6-A1）
+   边界（S2 交接清单）：只携带简历内容样式 + 自己的最小 print 隐藏规则，不为旧文档外壳样式（编辑器工具栏等）负责。
+   版式语言：机制同 classic 的单栏排，密度更高——正文 12.2px/1.4、页边距 8mm、小节标题收紧、
+   日期右齐等宽数字（§9.4 口径）；一页装更多但保持单栏阅读动线（向导场景短语「单栏装更多」）。 */
+@page { size: A4; margin: 0; }
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: #fff; color: #26231f; }
+body {
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", SimSun, Arial, sans-serif;
+  font-size: 12.2px;
+  line-height: 1.4;
+}
+.sheet {
+  position: relative;
+  width: 210mm;
+  min-height: 297mm;
+  padding: 8mm 7.5mm;
+  background: #fff;
+  page-break-after: always;
+}
+.sheet:last-child { page-break-after: auto; }
+.header { text-align: center; padding-top: 0.3mm; margin-bottom: 3.6mm; }
+h1 {
+  margin: 0 0 1.8mm;
+  font-size: 21px;
+  line-height: 1.1;
+  font-weight: 800;
+  color: #1c1917;
+  letter-spacing: 0.5px;
+}
+.contact { font-size: 11.4px; line-height: 1.45; color: #57534e; }
+.section { margin-top: 2.2mm; }
+.section-title {
+  font-size: 12.6px;
+  font-weight: 800;
+  color: #1c1917;
+  padding-bottom: 0.7mm;
+  border-bottom: 1px solid #d6d3d1;
+  margin-bottom: 1.1mm;
+  break-after: avoid;
+}
+.summary { margin: 0; color: #44403c; }
+.plain-lines p { margin: 0 0 0.4mm; }
+.entry-head {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: baseline;
+  column-gap: 3mm;
+  margin: 0 0 0.3mm;
+  break-after: avoid;
+  break-inside: avoid;
+}
+.entry-title { font-size: 12.6px; font-weight: 800; color: #1c1917; white-space: nowrap; }
+.entry-role { font-size: 11.4px; color: #57534e; white-space: nowrap; }
+.entry-date { font-size: 11.2px; color: #78716c; white-space: nowrap; justify-self: end; font-variant-numeric: tabular-nums; }
+ul { list-style: none; padding: 0; margin: 0; }
+li { position: relative; padding-left: 3mm; margin: 0.2mm 0; break-inside: avoid; }
+li::before {
+  content: "·";
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: #1c1917;
+  font-size: 12.2px;
+  font-weight: 800;
+  line-height: 1.4;
+}
+@media print { .edit-toolbar, .page-line, .toast, .recovery-bar { display: none !important; } }

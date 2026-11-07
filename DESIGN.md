@@ -237,7 +237,7 @@ FIELDS（editor-shell.js） → typoCss(v) → #typo-custom（落盘进 <head>�
 > 本节是**规范文本**，不受 §9 次级文案规则约束。
 
 - **装配单一实现**：`themePreviewHtml(源正文, 主题)` 是缩略图装配的唯一出处（`server.mjs`）。GET `/theme-preview?id=&theme=` 的响应体与卡片内嵌的 srcdoc **逐字节相等**——两处只调本函数，不各自拼装。
-- **0.8 选模板**（从零建简历的完成步，与编辑器「模板」页签**不是同一处 UI**：向导里选主题，向导完成后仍可进编辑器换主题）：三张卡 = 主题名 + 场景短语（通用 / 经历多一页排满 / 展示向）+ 真渲染缩略图 + 选中态；classic 默认可跳过。卡头单行不折行——卡内 radio 须中和 `.ob-form input{width:100%}`（表单框样式会把原生单选钮撑成整行宽，把主题名挤成折行，见 §8「先 grep 确认选择器真的命中」）。
+- **0.8 选模板**（从零建简历的完成步，与编辑器「模板」页签**不是同一处 UI**：向导里选主题，向导完成后仍可进编辑器换主题）：每主题一张卡（批 5 第四主题起四张，§10.17）= 主题名 + 场景短语（通用 / 单栏装更多 / 经历多一页排满 / 展示向）+ 真渲染缩略图 + 选中态；classic 默认可跳过。卡头单行不折行——卡内 radio 须中和 `.ob-form input{width:100%}`（表单框样式会把原生单选钮撑成整行宽，把主题名挤成折行，见 §8「先 grep 确认选择器真的命中」）。
 - **缩略图内嵌方式**：srcdoc 内嵌 `/theme-preview` 同装配（端点带 frame-ancestors 'none' 不可被嵌；与编辑器模板页签同思路）。
 - **缩略图缩放**：随框宽自适应（`scale = min(--ob-thumb-scale, (框宽-2px)/页宽)`，框为 `container-type:inline-size`）——卡宽随机型栅格 `auto-fit minmax(200px,1fr)` 随视口收窄，固定缩放会在 ≤1250px 视口把页面右栏裁掉，而版式对比正是缩略图的唯一目的；框高固定，可见页顶比例随之变大。缩放后宽 ≤ 框宽（逐视口量测钉在 `test-onboarding-theme-cards.mjs` ⑧段）。
 - **卡头字号/字重**：`.ob-tname` 13px/700、`.ob-scene` 12px/`--muted`——均为 §4.1 既有档（面板正文与输入 / 紧凑控件与元数据），**不新增字号档**；与编辑器同角色写法一致（`editor-shell.js` `.ed-jobtitle{font-size:13px;font-weight:700}`）；区块标题复用既有 `.ob-done-title`（16px/700，§4.2 二级标题档）。
@@ -491,3 +491,13 @@ FIELDS（editor-shell.js） → typoCss(v) → #typo-custom（落盘进 <head>�
 - **样式口径**：新增 `.pr-*` 规则间距一律 `--space-*` token（§5.1），圆角走既有 `--radius`（§5.2），**零 `box-shadow`**（§3.1），字号只取既有档（§4.1：12px 元数据 / 13px 正文与输入），不新增档位。
 - **断言同提交**：新增 `test-fixtures/reliability/test-practice-ui.mjs`（gate 空态降级三类直测 + 空态无入口反断言 / 复盘页空态指引与有数据摘要 / 会话锚点 + 题面/追问/要求行/要点状态标注/作答回填/摘要计数 / 反馈四字段服务端渲染 + 「未发现夸大倾向」不硬凑 + 真实用量 + **无评分/百分位/排名字样反断言** / 转待补充：素材 +1 形状钉值 + 会话侧关联 + 幂等同 matId + 两缺项各自成条 + 页面链接态/按钮态计数 + 守卫矩阵（负数/小数/越界/缺 index/未知 qid·pid·id/无反馈结果） / 无模型：反馈禁用 + 文案 + 出题入口照常 / **浏览器段：无作答点反馈行动位报因 → 作答保存就地反馈 → 反馈就地渲染 → 缺项一键转待补充（素材真实 +1）→ 全程零整页 reload（window 标记）+ 零 JS 异常** / `.pr-*` 红线扫描 / **冻结件三件固定 sha1**），`test-structure.sh` 登记执行。
   - **路由登记**：新增端点 `/app/practice/missing/material` → `test-structure.sh` 的 `ROUTES_FROZEN` 登记（登记非放宽；数组实测 101 条）。
+
+### 10.17 第四主题 resume-compact（2026-11-07 批 5 登记 · 卡片 b5c4）
+
+> 计划 §6 批 5 第 2 项「resume-compact 第四主题：themes/ 加法边界（§7），紧凑单栏档，走 A1 装配口径」。本节登记第四主题的档位与 UI 卡口径；装配机制沿用 S6-A1（§7 行：新增主题文件允许，`resume-classic.css` 内容为渲染契约不改动），未新增机制。
+
+- **主题档位**：`themes/resume-compact.css` —— 紧凑单栏档：机制同 classic 的单栏排（无栏式开关，双栏需求归 dual），密度更高（正文 12.2px/1.4、页边距 8mm 7.5mm、h1 21px、小节标题 12.6px 收紧、日期右齐等宽数字）。边界同 dual/magazine（S2 交接清单）：只携带简历内容样式 + 自己的最小 print 隐藏规则，不为旧文档外壳样式负责；文件自带 `@media print { .edit-toolbar, .page-line, .toast, .recovery-bar { display: none !important; } }`（`test-structure.sh` 对 `themes/resume-*.css` 的无条件检查）。主题文件是独立排印世界（不引应用页 A-VARS/`--ed-*`），字面值为主题自有档，不经 §3.1/§3.2 token 通道。
+- **装配口径（照 A1，零新机制）**：白名单 = `listThemes()` 读 `themes/resume-*.css` 文件名（`template.mjs`），三路径——/edit 服务（`applyDocTheme`）、渲染输入（`freezeHtml(applyDocTheme(…))`，render.mjs 冻结零改动）、冻结快照——全部按 `meta.theme` 装配，内联 CSS 与主题文件逐字节一致（styleHash = sha1(主题文件)，freeze 口径）；未知主题沿用 themeCss 抛错列可用主题。
+- **向导 0.8 卡**：`OB_THEME_CARDS` 增 `{ theme:'compact', name:'紧凑单栏', scene:'单栏装更多' }`（场景短语为短标签，§9.1-3 边界内；四张卡随 `auto-fit minmax(200px,1fr)` 栅格自适应）；classic 仍默认可跳过，选中随完成一步写 meta.theme（§10.1 口径不变）。
+- **编辑器模板页签**：自动多一张卡（页签遍历 `__THEME_INFO__.themes`=listThemes 下发）；`editor-shell.js` `THEME_META` 增 `compact: { label:'单栏·紧凑' }`（不落兜底「主题」标签）。
+- **断言同提交**：新增 `test-fixtures/reliability/test-themes-compact.mjs`（① listThemes 恰四主题 + 文件契约/print 规则/themeCss 逐字节 ② 装配三路径 sha1 钉值（服务/freeze styleHash/假渲染器捕获/冻结快照）③ /theme/apply 写 meta + /theme-preview 只读零写 ④ 向导恰四张卡 + compact 卡 srcdoc 与 /theme-preview 逐字节相等 ⑤ `__THEME_INFO__` 四主题下发 + THEME_META 源级钉值 ⑥ classic 零回归）；`test-onboarding-theme-cards.mjs` 卡数重锚 3→4 并入 compact 环（产品裁决重锚，非放宽）；`test-structure.sh` 登记执行。
