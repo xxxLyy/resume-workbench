@@ -2177,6 +2177,19 @@ else
   fi
 fi
 
+# ===== 16c-2. b5c1 内联 handler 委托化回归（八路由零 on* 属性 + data-action 五类事件委托行为抽检）=====
+if node test-fixtures/reliability/test-inline-delegation.mjs; then
+  echo '✅ 委托化回归（八路由零内联事件属性；首页表单/素材/投递卡片+表格排序/快照/设置/详情/导出行为抽检全过）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 委托化回归未执行：Chromium 不可用'
+  else
+    fail "委托化回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi
+
 # ===== 16d. 历史主脚本在严格 CSP 下的真实保存（DEL-01/02：脱敏夹具 + 未知脚本保持拒绝）=====
 if node test-fixtures/reliability/test-history-editor.mjs; then
   echo '✅ 历史主脚本回归（当前版/历史版 输入→保存→隔离盘→刷新 + 未知脚本被 CSP 拒绝）'

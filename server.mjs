@@ -130,7 +130,8 @@ const fmtWhen = (raw) => {
 const docPath = (id) => path.join(root, 'docs', id + '.html');
 // 磁盘上的文档 id 清单：只取通过 VALID_ID 的。
 // 文件名是外部输入（备份恢复 / 手工放置）→ 非法 id 绝不能进任何渲染点：
-// 首页、投递页、对比页都把 id 原样拼进 HTML 属性与内联 JS（value="${id}"、onclick="…('{id}')"），
+// 首页、投递页、对比页都把 id 原样拼进 HTML 属性与内联脚本（value="${id}"、data-id="${id}"、
+// action="?id=…"；b5c1 委托化前内联 onclick="…('{id}')" 也是注入点），
 // 带引号的 id 即存储型 XSS（2026-10-22 实测：点「删除」真的执行 alert(1)）。
 // 写入侧一律用 VALID_ID 闸门，读取侧同一把尺。
 const docIdsOnDisk = () => fs.readdirSync(path.join(root, 'docs'))
@@ -1566,6 +1567,45 @@ window.__wv = function (url, body, msgEl) {
     });
 };
 </script>`;
+
+// 内联 handler 委托化（2026-11-07 批 5 b5c1）：page() 统一注入（拼进 STATUS_SCRIPT 同一个
+// <script> 标签，不新增标签——首页 <script> 标签数有 test-home-eval-card-removed 钉值=3）。
+// 全站 51 处内联事件属性（onclick/onchange/oninput/onsubmit/onkeydown）改为 data-action="动作名"
+// + data-* 携带参数；各页脚本把实现注册进 window.__acts[事件类型][动作名]，本段在 document 级统一监听分发。
+// 按事件类型分桶：表单的 data-action 只注册在 submit 桶 —— 其内部按钮的 click 冒泡到表单元素时，
+// click 桶查不到同名注册 → 静默，与「内联 onclick 只绑在被点元素自身」的语义一致。
+// submit 处理器返回 false ⇔ 内联 onsubmit="return false"（取消提交）；处理器内自行 preventDefault 亦可。
+// keydown 只分发 Enter：内联 onkeydown 只钉过 Enter（投递表格排序表头）。
+const ACT_DISPATCH_JS = `
+window.__acts = { click: {}, change: {}, input: {}, submit: {}, keydown: {} };
+(function () {
+  var find = function (ev) {
+    var t = ev.target;
+    return (t && t.closest) ? t.closest('[data-action]') : null;
+  };
+  var run = function (type) {
+    return function (ev) {
+      var el = find(ev);
+      if (!el) return;
+      var fn = window.__acts[type][el.getAttribute('data-action')];
+      if (fn) fn(el, ev);
+    };
+  };
+  document.addEventListener('click', run('click'));
+  document.addEventListener('change', run('change'));
+  document.addEventListener('input', run('input'));
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Enter') return;
+    run('keydown')(ev);
+  });
+  document.addEventListener('submit', function (ev) {
+    var el = find(ev);
+    if (!el) return;
+    var fn = window.__acts.submit[el.getAttribute('data-action')];
+    if (fn && fn(el, ev) === false) ev.preventDefault();
+  });
+})();`;
+
 function page(title, inner, active = '', wide = false) {
   // 第 4 参 ic = Lucide 图标名（白名单外 icon() 返回空串 → 退化为纯文字，不炸）
   const nav = (key, href, label, ic) => `<a href="${href}"${active === key ? ' class="on"' : ''}>${ic ? icon(ic, 15) : ''}${label}</a>`;
@@ -1765,7 +1805,7 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .doc-card:focus-within{outline:2px solid var(--accent);outline-offset:2px}
 @media(prefers-reduced-motion:reduce){.doc-card{transition:none!important}.doc-card:hover{transform:none!important}button{transition:none!important}button:hover,button:active{transform:none!important}}
 </style></head><body${wide ? ' class="wide"' : ''}>
-<script>${STATUS_SCRIPT}</script>
+<script>${STATUS_SCRIPT}${ACT_DISPATCH_JS}</script>
 <nav class="topnav"><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><span class="links">${nav('docs', '/', '文档', 'file-text')}${nav('materials', '/materials', '素材库', 'box')}${nav('apps', '/applications', '投递看板', 'columns-3')}${nav('stats', '/stats', '复盘', 'chart-bar')}${nav('settings', '/settings', '设置', 'settings')}${nav('apply', '/apply-profile', '网申包', 'package')}</span></nav>
 <div class="home"><div class="mainarea">${inner}</div></div>
 <footer>简历平台 · 本地优先 · 数据在 ${path.basename(root) === 'resume' ? '~/resume' : 'RESUME_ROOT'}</footer>
@@ -2138,13 +2178,14 @@ function listPage(showArchived = false) {
       <a href="/snapshots?id=${id}">历史版本</a> ·
       <a href="/diff?base=${id}">对比</a> ·
       ${m.parent ? `<a href="/diff?base=${escAttr(m.parent)}&to=${id}">对比母版</a> · ` : ''}
-      ${info.degraded ? `<form method="post" action="/restructure?id=${id}" style="display:inline" onsubmit="return confirm('用 LLM 重新结构化这份文档？会先自动留快照')"><button class="secondary">${icon('refresh-cw', 13)} 结构化</button></form> · ` : ''}
-      <form method="post" action="/archive?id=${id}" style="display:inline" onsubmit="event.preventDefault();__wv('/archive', {id:${jsStr(id)}}).then(function(){location.reload();}).catch(function(){})"><button class="secondary">${m.archivedAt ? icon('archive', 13) + ' 取消归档' : icon('archive', 13) + ' 归档'}</button></form> ·
-      <!-- tag 是 JS 字符串上下文（onsubmit 里的 prompt 默认值）：escAttr 不够，单引号能闭合 JS 串 →
-           必须 JSON.stringify 成 JS 字面量后再按 HTML 属性转义。tag 本身由 company·role 派生，不经 /tag 的 '" 清洗。 -->
-      <form method="post" action="/tag" style="display:inline" onsubmit="event.preventDefault();const t=prompt('标签（≤20字，留空清除）',${jsStr(tag)});if(t!==null){__wv('/tag', {id:${jsStr(id)},tag:t}).then(function(){location.reload();}).catch(function(){})}"><button class="secondary" aria-label="标签" title="标签">${icon('tag', 13)}</button></form> ·
-      <form method="post" action="/duplicate?id=${id}" style="display:inline" onsubmit="event.preventDefault();const t=prompt('新文档 id（小写字母数字横线）');if(t){this.action='/duplicate?id=${id}&to='+t;this.submit()}"><button>复制</button></form> ·
-      <form method="post" action="/delete?id=${id}" style="display:inline;margin-left:12px;padding-left:12px;border-left:1px solid var(--line)" onsubmit="return confirm('确认删除 ${id}？快照会保留')"><button class="danger">删除</button></form>
+      ${info.degraded ? `<form method="post" action="/restructure?id=${id}" style="display:inline" data-action="confirmSubmit" data-msg="${escAttr('用 LLM 重新结构化这份文档？会先自动留快照')}"><button class="secondary">${icon('refresh-cw', 13)} 结构化</button></form> · ` : ''}
+      <form method="post" action="/archive?id=${id}" style="display:inline" data-action="homeArchive" data-id="${escAttr(id)}"><button class="secondary">${m.archivedAt ? icon('archive', 13) + ' 取消归档' : icon('archive', 13) + ' 归档'}</button></form> ·
+      <!-- tag 是任意文本（company·role 派生，不经 /tag 的 '" 清洗）：data-* 属性上下文 → escAttr；
+           提交处理在下方脚本按 data-tag 原样读回（getAttribute 返回实体解码后的原文）。b5c1 前 tag 落在
+           onsubmit 的 JS 单引号串里，须 JSON.stringify 后再转义——委托化后属性即原文，不再有 JS 串上下文。 -->
+      <form method="post" action="/tag" style="display:inline" data-action="homeTag" data-id="${escAttr(id)}" data-tag="${escAttr(tag)}"><button class="secondary" aria-label="标签" title="标签">${icon('tag', 13)}</button></form> ·
+      <form method="post" action="/duplicate?id=${id}" style="display:inline" data-action="homeDup" data-id="${escAttr(id)}"><button>复制</button></form> ·
+      <form method="post" action="/delete?id=${id}" style="display:inline;margin-left:12px;padding-left:12px;border-left:1px solid var(--line)" data-action="confirmSubmit" data-msg="${escAttr('确认删除 ' + id + '？快照会保留')}"><button class="danger">删除</button></form>
       </div></details>
     </li>`;
   };
@@ -2291,6 +2332,27 @@ function listPage(showArchived = false) {
         btn.href = '/edit?id=' + encodeURIComponent(pick);
         btn.textContent = (last ? '▶ 继续：' : '▶ 最近编辑：') + (titles[pick] || pick);
       })();
+      // ===== 内联 handler 委托化注册（b5c1）：data-action → 实现（与原内联 onsubmit 行为一致）=====
+      // 注册自足兜底：正常路径 head 分发段（page() 注入）先建 window.__acts 五桶，var 绑定的是同一对象；
+      // 本脚本被单独抽取执行时（静态桩夹具 new Function 沙箱里 window 只是普通对象参数，对它赋值
+      // 不产生全局绑定）或 b5c2 外置后顺序变化时，var + 兜底建桶保证注册可用，行为不分叉。
+      var __acts = window.__acts || (window.__acts = { click: {}, change: {}, input: {}, submit: {}, keydown: {} });
+      // confirmSubmit 复用于结构化/删除（本页）与快照回滚（/snapshots）：返回 false ⇔ 取消原生提交。
+      __acts.submit.confirmSubmit = function (el, ev) { return confirm(el.getAttribute('data-msg')); };
+      __acts.submit.homeArchive = function (el, ev) {
+        ev.preventDefault();
+        __wv('/archive', { id: el.getAttribute('data-id') }).then(function () { location.reload(); }).catch(function () {});
+      };
+      __acts.submit.homeTag = function (el, ev) {
+        ev.preventDefault();
+        var t = prompt('标签（≤20字，留空清除）', el.getAttribute('data-tag'));
+        if (t !== null) __wv('/tag', { id: el.getAttribute('data-id'), tag: t }).then(function () { location.reload(); }).catch(function () {});
+      };
+      __acts.submit.homeDup = function (el, ev) {
+        ev.preventDefault();
+        var t = prompt('新文档 id（小写字母数字横线）');
+        if (t) { el.action = '/duplicate?id=' + el.getAttribute('data-id') + '&to=' + t; el.submit(); }
+      };
     </script>`, 'docs');
 }
 
@@ -3941,8 +4003,8 @@ async function handler(req, res) {
     // 显式传了 Content-Security-Policy 的路由（/edit 的 nonce+hash 策略、/snapshot/view 的锁定策略）保持各自更严口径。
     // 口径：锁死除 script-src 外的全部通道——connect/form-action 限自源（外传关死）、img 不放 https:
     //（应用页零外链图，图片信标外传关死）、object 'none'、frame-ancestors 'none'（防嵌框）、base-uri 'none'、
-    // frame-src 'self'（/export 的 PDF 预览 iframe）。script-src 保留 'unsafe-inline'：应用页有 51 处内联事件属性
-    // + 28 个内联脚本块，nonce 挡不住内联事件属性，去 'unsafe-inline' 需重构全部 handler——登记为后续项。
+    // frame-src 'self'（/export 的 PDF 预览 iframe）。script-src 仍保留 'unsafe-inline'：51 处内联事件属性已全部
+    // 委托化为 data-action（2026-11-07 b5c1），但 28 个内联脚本块尚在（外置/nonce 化为后续项），暂不能收口 'self'。
     const hasCsp = extraHeaders && Object.keys(extraHeaders).some((k) => k.toLowerCase() === 'content-security-policy');
     if (isHtml && !hasCsp) {
       extra['Content-Security-Policy'] = [
@@ -5825,19 +5887,19 @@ async function handler(req, res) {
       const matCard = (m) => `<div class="card mat-card" data-mat="${escAttr(m.id)}" style="margin:10px 0">
         <b>${escHtml(m.title)}</b>${(m.tags || []).map((t) => `<span class="badge">${escHtml(t)}</span>`).join('')}${matBadge(m.factStatus)}
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin-top:8px;font-size:13px">
-          <div><b style="font-size:12px;color:var(--mut)">精简表达</b><div class="mat-brief">${escHtml(m.brief)}</div><button class="secondary" style="padding:2px 8px;font-size:12px" onclick="copyMat(this,'brief')">复制</button></div>
-          <div><b style="font-size:12px;color:var(--mut)">技术表达</b><div class="mat-tech">${escHtml(m.technical || '')}</div><button class="secondary" style="padding:2px 8px;font-size:12px" onclick="copyMat(this,'tech')">复制</button></div>
-          <div><b style="font-size:12px;color:var(--mut)">面试讲述</b><div class="mat-itv">${escHtml(m.interview || '')}</div><button class="secondary" style="padding:2px 8px;font-size:12px" onclick="copyMat(this,'itv')">复制</button></div>
+          <div><b style="font-size:12px;color:var(--mut)">精简表达</b><div class="mat-brief">${escHtml(m.brief)}</div><button class="secondary" style="padding:2px 8px;font-size:12px" data-action="copyMat" data-k="brief">复制</button></div>
+          <div><b style="font-size:12px;color:var(--mut)">技术表达</b><div class="mat-tech">${escHtml(m.technical || '')}</div><button class="secondary" style="padding:2px 8px;font-size:12px" data-action="copyMat" data-k="tech">复制</button></div>
+          <div><b style="font-size:12px;color:var(--mut)">面试讲述</b><div class="mat-itv">${escHtml(m.interview || '')}</div><button class="secondary" style="padding:2px 8px;font-size:12px" data-action="copyMat" data-k="itv">复制</button></div>
         </div>
         ${(m.facts && Object.entries(m.facts).filter(([k, v]) => v).map(([k, v]) => `<div style="font-size:12px;color:var(--mut);margin-top:4px"><b style="color:var(--fg)">${escHtml(FACT_LABELS[k] || k)}</b>：${escHtml(v)}</div>`).join('')) || ''}
         ${m.attach ? `<div style="font-size:12px;color:var(--mut);margin-top:4px">附件：${escHtml(m.attach)}</div>` : ''}
         <div style="margin-top:6px;font-size:12px">${m.factStatus === 'confirmed'
-          ? `<button class="secondary" onclick="matStatus(${jsStr(m.id)},'pending')">取消确认</button>`
-          : `<button onclick="matStatus(${jsStr(m.id)},'confirmed')">确认可用于生成</button>`}
-          ${m.factStatus !== 'outdated' ? `<button class="secondary" onclick="matStatus(${jsStr(m.id)},'outdated')">标记过时</button>` : `<button class="secondary" onclick="matStatus(${jsStr(m.id)},'pending')">恢复待确认</button>`}
-          <button class="secondary" onclick="matEdit(${jsStr(m.id)})">${icon('pencil', 13)} 编辑</button> <button class="danger" onclick="matDel(${jsStr(m.id)})">${icon('trash-2', 13)} 删除</button></div>
+          ? `<button class="secondary" data-action="matStatus" data-id="${escAttr(m.id)}" data-status="pending">取消确认</button>`
+          : `<button data-action="matStatus" data-id="${escAttr(m.id)}" data-status="confirmed">确认可用于生成</button>`}
+          ${m.factStatus !== 'outdated' ? `<button class="secondary" data-action="matStatus" data-id="${escAttr(m.id)}" data-status="outdated">标记过时</button>` : `<button class="secondary" data-action="matStatus" data-id="${escAttr(m.id)}" data-status="pending">恢复待确认</button>`}
+          <button class="secondary" data-action="matEdit" data-id="${escAttr(m.id)}">${icon('pencil', 13)} 编辑</button> <button class="danger" data-action="matDel" data-id="${escAttr(m.id)}">${icon('trash-2', 13)} 删除</button></div>
         <details open style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--mut)">事实层</summary>
-          <form class="mat-facts" style="margin-top:6px;font-size:13px" onsubmit="return matFacts(event,${jsStr(m.id)})">
+          <form class="mat-facts" style="margin-top:6px;font-size:13px" data-action="matFacts" data-id="${escAttr(m.id)}">
             ${FACT_KEYS.map((k) => `<p style="margin:2px 0">${FACT_LABELS[k]} <input name="f_${k}" value="${escAttr((m.facts || {})[k] || '')}" style="width:60%"></p>`).join('')}
             <p style="margin:2px 0">状态 <select name="f_factStatus">
               <option value="pending"${m.factStatus === 'pending' ? ' selected' : ''}>待确认</option>
@@ -5850,7 +5912,7 @@ async function handler(req, res) {
       </div>`;
       return send(200, page('素材库', `<h1>素材库</h1>
     ${corruptBanner()}
-    ${unconfirmed ? `<p style="margin:0 0 4px"><button class="secondary" onclick="matConfirmAll()">全部标记已确认（先预览再用）</button></p>` : ''}
+    ${unconfirmed ? `<p style="margin:0 0 4px"><button class="secondary" data-action="matConfirmAll">全部标记已确认（先预览再用）</button></p>` : ''}
     <input id="matSearch" placeholder="搜索素材（标题/标签/内容）" style="width:100%;margin-bottom:10px" aria-label="搜索素材">
     <details class="card"><summary style="cursor:pointer;font-weight:700">＋ 新增素材</summary>
       <form id="matForm" style="margin-top:10px">
@@ -5930,6 +5992,15 @@ async function handler(req, res) {
           c.style.display = !q || c.textContent.toLowerCase().includes(q) ? '' : 'none';
         });
       });
+      // ===== 内联 handler 委托化注册（b5c1）：data-action → 实现（与原内联 onclick/onsubmit 行为一致）=====
+      var __acts = window.__acts || (window.__acts = { click: {}, change: {}, input: {}, submit: {}, keydown: {} });
+      __acts.click.copyMat = function (el) { copyMat(el, el.getAttribute('data-k')); };
+      __acts.click.matStatus = function (el) { matStatus(el.getAttribute('data-id'), el.getAttribute('data-status')); };
+      __acts.click.matEdit = function (el) { matEdit(el.getAttribute('data-id')); };
+      __acts.click.matDel = function (el) { matDel(el.getAttribute('data-id')); };
+      __acts.click.matConfirmAll = function (el) { return matConfirmAll(); };
+      // 提交事件本就派发到表单自身（ev.target === form），matFacts 内部继续用 e.target 取 FormData
+      __acts.submit.matFacts = function (el, ev) { return matFacts(ev, el.getAttribute('data-id')); };
     </script>`, 'materials'));
     }
     if (req.method === 'POST' && url.pathname === '/mat/add') {
@@ -6098,9 +6169,9 @@ async function handler(req, res) {
               <a href="/snapshot/view?id=${escAttr(id)}&ts=${escAttr(ts)}">预览</a> ·
               <a href="/snapshot/pdf?id=${escAttr(id)}&ts=${escAttr(ts)}" target="_blank">下载该版本 PDF</a> ·
               <a href="/diff?base=${escAttr(id)}@${escAttr(ts)}&to=${escAttr(id)}">对比当前</a> ·
-              <button class="secondary" style="padding:2px 8px" onclick="snapNote(${jsStr(id)},${jsStr(ts)})">${icon('pencil', 13)}</button>
-              <button class="secondary" style="padding:2px 8px" onclick="snapBaseline(${jsStr(id)},${jsStr(ts)})" aria-label="设为基准" title="设为基准">${icon('pin', 13)}</button>
-              <form method="post" action="/rollback?id=${escAttr(id)}&ts=${escAttr(ts)}" style="display:inline" onsubmit="return confirm('回滚到 ' + ${jsStr(ts)} + '？当前版本会先自动留一份快照')"><button class="secondary" style="padding:2px 8px">回滚</button></form>
+              <button class="secondary" style="padding:2px 8px" data-action="snapNote" data-id="${escAttr(id)}" data-ts="${escAttr(ts)}">${icon('pencil', 13)}</button>
+              <button class="secondary" style="padding:2px 8px" data-action="snapBaseline" data-id="${escAttr(id)}" data-ts="${escAttr(ts)}" aria-label="设为基准" title="设为基准">${icon('pin', 13)}</button>
+              <form method="post" action="/rollback?id=${escAttr(id)}&ts=${escAttr(ts)}" style="display:inline" data-action="confirmSubmit" data-msg="${escAttr('回滚到 ' + ts + '？当前版本会先自动留一份快照')}"><button class="secondary" style="padding:2px 8px">回滚</button></form>
             </div>
           </div>
         </li>`;
@@ -6116,6 +6187,11 @@ async function handler(req, res) {
       function snapBaseline(id, ts) {
         __wv('/snapshot/baseline', { id: id, ts: ts }).then(function () { location.reload(); }).catch(function () {});
       }
+      // ===== 内联 handler 委托化注册（b5c1）：confirmSubmit 与首页同款（确认门 → 原生 POST /rollback）=====
+      var __acts = window.__acts || (window.__acts = { click: {}, change: {}, input: {}, submit: {}, keydown: {} });
+      __acts.click.snapNote = function (el) { snapNote(el.getAttribute('data-id'), el.getAttribute('data-ts')); };
+      __acts.click.snapBaseline = function (el) { snapBaseline(el.getAttribute('data-id'), el.getAttribute('data-ts')); };
+      __acts.submit.confirmSubmit = function (el, ev) { return confirm(el.getAttribute('data-msg')); };
     </script>`, 'docs'));
     }
     if (req.method === 'POST' && url.pathname === '/rollback') {
@@ -6200,7 +6276,7 @@ async function handler(req, res) {
         <input id="appSearch" placeholder="搜索（公司/岗位/渠道/下一步）" style="flex:1" aria-label="搜索投递">
       </div>
       <div class="tablewrap"><table id="appTable" style="width:100%;border-collapse:collapse;font-size:13px">
-        <thead><tr><th tabindex="0" onclick="sortCol(0)" onkeydown="if(event.key==='Enter')sortCol(0)">公司</th><th tabindex="0" onclick="sortCol(1)" onkeydown="if(event.key==='Enter')sortCol(1)">岗位</th><th tabindex="0" onclick="sortCol(2)" onkeydown="if(event.key==='Enter')sortCol(2)">渠道</th><th tabindex="0" onclick="sortCol(3)" onkeydown="if(event.key==='Enter')sortCol(3)">状态</th><th tabindex="0" onclick="sortCol(4)" onkeydown="if(event.key==='Enter')sortCol(4)">投递日期</th><th tabindex="0" onclick="sortCol(5)" onkeydown="if(event.key==='Enter')sortCol(5)">下一步</th><th tabindex="0" onclick="sortCol(6)" onkeydown="if(event.key==='Enter')sortCol(6)">截止时间</th><th>操作</th></tr></thead>
+        <thead><tr><th tabindex="0" data-action="sortCol" data-idx="0">公司</th><th tabindex="0" data-action="sortCol" data-idx="1">岗位</th><th tabindex="0" data-action="sortCol" data-idx="2">渠道</th><th tabindex="0" data-action="sortCol" data-idx="3">状态</th><th tabindex="0" data-action="sortCol" data-idx="4">投递日期</th><th tabindex="0" data-action="sortCol" data-idx="5">下一步</th><th tabindex="0" data-action="sortCol" data-idx="6">截止时间</th><th>操作</th></tr></thead>
         <tbody>${apps.map(row).join('') || '<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:20px">暂无投递</td></tr>'}</tbody>
       </table></div>
       <style>#appTable th{cursor:pointer;text-align:left;padding:8px;border-bottom:2px solid var(--line)}#appTable th:hover{background:var(--bg)}#appTable td{padding:8px;border-bottom:1px solid var(--line)}#appTable th.asc::after{content:' ↑'}#appTable th.desc::after{content:' ↓'}</style>
@@ -6224,6 +6300,10 @@ async function handler(req, res) {
         }
         document.getElementById('chFilter').onchange = filterRows;
         document.getElementById('appSearch').oninput = filterRows;
+        // ===== 内联 handler 委托化注册（b5c1）：表头排序 = click 与 keydown(Enter) 两个桶同名注册 =====
+      var __acts = window.__acts || (window.__acts = { click: {}, change: {}, input: {}, submit: {}, keydown: {} });
+        __acts.click.sortCol = function (el) { sortCol(Number(el.getAttribute('data-idx'))); };
+        __acts.keydown.sortCol = function (el) { sortCol(Number(el.getAttribute('data-idx'))); };
       </script>`, 'apps'));
       }
       // 跟进助手（批 3 b3c4）：投递卡「无回应满 N 天（默认 7，/settings 可配）」→ 给「生成跟进语」入口。
@@ -6279,12 +6359,12 @@ async function handler(req, res) {
           ${a.note ? `<div style="font-size:12px;color:var(--mut)">${escHtml(a.note)}</div>` : ''}
           ${fuBlock(a)}
           <div style="margin-top:4px;font-size:12px">
-            ${idx > 0 ? `<button class="secondary" style="padding:2px 8px" onclick="appPatch(${jsStr(a.id)},{status:APP_STATUSES[${idx - 1}]})">◀</button>` : ''}
-            ${idx < APP_STATUSES.length - 1 && !APP_TERMINAL.includes(a.status) ? `<button class="secondary" style="padding:2px 8px" onclick="appPatch(${jsStr(a.id)},{status:APP_STATUSES[${idx + 1}]})">▶</button>` : ''}
-            <select style="font-size:12px;padding:2px" aria-label="状态" onchange="if(this.value)appPatch(${jsStr(a.id)},{status:this.value})"><option value="">⇅</option>${APP_STATUSES.map((s) => `<option value="${s}"${s === a.status ? ' selected' : ''}>${escHtml(statusLabel(s))}</option>`).join('')}</select>
+            ${idx > 0 ? `<button class="secondary" style="padding:2px 8px" data-action="appPatch" data-app="${escAttr(a.id)}" data-status="${escAttr(APP_STATUSES[idx - 1])}">◀</button>` : ''}
+            ${idx < APP_STATUSES.length - 1 && !APP_TERMINAL.includes(a.status) ? `<button class="secondary" style="padding:2px 8px" data-action="appPatch" data-app="${escAttr(a.id)}" data-status="${escAttr(APP_STATUSES[idx + 1])}">▶</button>` : ''}
+            <select style="font-size:12px;padding:2px" aria-label="状态" data-action="appStatus" data-app="${escAttr(a.id)}"><option value="">⇅</option>${APP_STATUSES.map((s) => `<option value="${s}"${s === a.status ? ' selected' : ''}>${escHtml(statusLabel(s))}</option>`).join('')}</select>
             <a href="/app?id=${escAttr(a.id)}">详情</a>
-            <button class="secondary" style="padding:2px 8px" aria-label="快速编辑" onclick="appEdit(${jsStr(a.id)})">${icon('pencil', 13)}</button>
-            <button class="danger" style="padding:2px 8px;min-height:28px" aria-label="删除投递" onclick="appDel(${jsStr(a.id)})">${icon('trash-2', 13)}</button>
+            <button class="secondary" style="padding:2px 8px" aria-label="快速编辑" data-action="appEdit" data-app="${escAttr(a.id)}">${icon('pencil', 13)}</button>
+            <button class="danger" style="padding:2px 8px;min-height:28px" aria-label="删除投递" data-action="appDel" data-app="${escAttr(a.id)}">${icon('trash-2', 13)}</button>
           </div>
           <!--R3①：行内快速编辑（原为 4 连 prompt 链）——展开即改、取消即收；仍走 /app/update 的 {company,role,note,jd} 契约-->
           <div class="app-edit" id="editbox-${escAttr(a.id)}" hidden style="margin-top:8px;border-top:1px dashed var(--line);padding-top:8px">
@@ -6292,7 +6372,7 @@ async function handler(req, res) {
             <label style="display:block;font-size:12px;color:var(--mut);margin-top:6px"><span>岗位</span><input data-edit="role" style="width:100%;margin-top:3px" value="${escAttr(a.role)}"></label>
             <label style="display:block;font-size:12px;color:var(--mut);margin-top:6px"><span>备注（可空）</span><textarea data-edit="note" rows="2" style="width:100%;margin-top:3px">${escHtml(a.note || '')}</textarea></label>
             <label style="display:block;font-size:12px;color:var(--mut);margin-top:6px"><span>JD（可空）</span><textarea data-edit="jd" rows="3" style="width:100%;margin-top:3px">${escHtml(a.jd || '')}</textarea></label>
-            <div style="margin-top:6px"><button type="button" onclick="appEditSave(${jsStr(a.id)})">保存</button> <button type="button" class="secondary" onclick="appEditToggle(${jsStr(a.id)},false)">取消</button></div>
+            <div style="margin-top:6px"><button type="button" data-action="appEditSave" data-app="${escAttr(a.id)}">保存</button> <button type="button" class="secondary" data-action="appEditToggle" data-app="${escAttr(a.id)}" data-show="false">取消</button></div>
           </div>
         </div>`;
       };
@@ -6486,6 +6566,15 @@ async function handler(req, res) {
           __status(document.getElementById('appmsg'), 'err', '保存失败：' + (err.message || err) + '（输入已保留，可重试）');
         }
       });
+      // ===== 内联 handler 委托化注册（b5c1）：data-action → 实现（与原内联 onclick/onchange 行为一致）=====
+      var __acts = window.__acts || (window.__acts = { click: {}, change: {}, input: {}, submit: {}, keydown: {} });
+      // ◀/▶ 按钮与状态下拉同走 appPatch：◀▶ 的目标状态由服务端渲染进 data-status（原为 APP_STATUSES[idx±1] 内联求值）
+      __acts.click.appPatch = function (el) { appPatch(el.getAttribute('data-app'), { status: el.getAttribute('data-status') }); };
+      __acts.change.appStatus = function (el) { if (el.value) appPatch(el.getAttribute('data-app'), { status: el.value }); };
+      __acts.click.appEdit = function (el) { appEdit(el.getAttribute('data-app')); };
+      __acts.click.appDel = function (el) { appDel(el.getAttribute('data-app')); };
+      __acts.click.appEditSave = function (el) { appEditSave(el.getAttribute('data-app')); };
+      __acts.click.appEditToggle = function (el) { appEditToggle(el.getAttribute('data-app'), el.getAttribute('data-show') === 'true'); };
     </script>`, 'apps', true));
     }
     // ===== 投递详情 =====
@@ -6502,7 +6591,7 @@ async function handler(req, res) {
       const dueBadge = app.dueDate && (new Date(app.dueDate).getTime() - now) < 48 * 3600 * 1000 ? badge('warn', '到期') : '';
       const archiveMissing = !app.archive || app.archive.status !== 'ok';
       const archiveLine = archiveMissing
-        ? `${badge('err', '存档 PDF 缺失')} <button class="secondary" style="padding:2px 8px;font-size:12px" onclick="regenArchive()">从快照重新生成</button><span id="regenMsg" style="font-size:12px"></span>`
+        ? `${badge('err', '存档 PDF 缺失')} <button class="secondary" style="padding:2px 8px;font-size:12px" data-action="regenArchive">从快照重新生成</button><span id="regenMsg" style="font-size:12px"></span>`
         : `<a href="/archive-pdf?id=${escAttr(app.id)}" target="_blank">存档 PDF</a> ${badge('ok', '内容哈希 ' + escHtml((app.contentHash || '').slice(0, 8)))}`;
       // ===== 面试练习区（批 4 卡片 b4c2）：逐题作答 → 反馈流 + 缺的素材一键转待补充 =====
       // 可练性与 /app/practice/start 409 共用 practiceGate（单一通道）：不能练就不给「开始练习」入口
@@ -6764,7 +6853,7 @@ async function handler(req, res) {
       ${app.note ? `<div style="margin-top:6px;font-size:13px">${escHtml(app.note)}</div>` : ''}
     </div>
     <div class="card" style="margin-top:12px">
-      <b>面试记录</b> <button class="secondary" style="padding:2px 8px;font-size:12px" onclick="ivAdd()">＋</button>
+      <b>面试记录</b> <button class="secondary" style="padding:2px 8px;font-size:12px" data-action="ivAdd">＋</button>
       <div id="ivList">${interviews.map((iv, i) => `<div style="border-left:3px solid var(--accent);padding:8px;margin:8px 0;background:var(--bg)">
         <b>${escHtml(iv.round || '第' + (i + 1) + '轮')}</b> <span style="color:var(--mut);font-size:12px">${escHtml(fmtWhen(iv.time))}</span>
         <a href="/app/ics?id=${escAttr(app.id)}&i=${i}" target="_blank" style="font-size:12px;margin-left:8px">${icon('calendar', 13)} ICS</a>
@@ -6821,6 +6910,12 @@ async function handler(req, res) {
           else { prepOutEl.textContent = ''; __status(prepMsgEl, 'err', data.error || '失败'); }
         } catch (e) { __status(document.getElementById('prepMsg'), 'err', e.message); }
       };
+      // ===== 内联 handler 委托化注册（b5c1）=====
+      var __acts = window.__acts || (window.__acts = { click: {}, change: {}, input: {}, submit: {}, keydown: {} });
+      __acts.click.regenArchive = function (el) { return regenArchive(); };
+      // ivAdd 无定义（既有死按钮：点击 ReferenceError、界面无变化）——委托化保持原样，
+      // 只把调用点从内联属性搬进注册表；后续卡若补 ivAdd 实现，此处接线即刻生效。
+      __acts.click.ivAdd = function (el) { return ivAdd(); };
     </script>
     ${prScriptHtml}`, 'apps'));
     }
@@ -6943,8 +7038,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       if (fuDaysEl) fuDaysEl.oninput = function () { state.followUpDays = this.value; };
       function escAttr(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
       function inp(i, f, label, val, extra) {
-        // R3④：label 包裹 input（可访问名）；value/oninput 语义不变
-        return '<p><label style="display:block;font-size:12px;color:var(--mut)">' + label + '<input ' + ((extra || '') + ' style="width:100%;margin-top:3px"') + ' value="' + escAttr(val) + '" oninput="state.profiles[' + i + '].' + f + '=this.value"></label></p>';
+        // R3④：label 包裹 input（可访问名）；value 语义不变；oninput 已委托化（profInp 注册项，b5c1）
+        return '<p><label style="display:block;font-size:12px;color:var(--mut)">' + label + '<input ' + ((extra || '') + ' style="width:100%;margin-top:3px"') + ' value="' + escAttr(val) + '" data-action="profInp" data-pi="' + i + '" data-pf="' + f + '"></label></p>';
       }
       // 模型按钮组：pickModel 之后 render() 会重建卡片，按钮组必须跟着重建，
       // 否则切换一次模型后按钮就消失了，还得重新点「测试连接」（2026-10-19 实测）。
@@ -6966,20 +7061,20 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
           var card = document.createElement('div');
           card.className = 'card' + (i === state.active ? ' card-active' : '');   // A6：激活卡一眼可辨（决定所有 AI 请求打到哪个模型的状态）
           card.innerHTML =
-            '<p><label><input type="radio" name="act" value="' + i + '"' + (i === state.active ? ' checked' : '') + ' onchange="setActive(' + i + ', this)"> 启用</label> <b>配置 ' + (i + 1) + '</b>' + (i === state.active ? ' <span class="badge ok">使用中</span>' : '') + ' <button type="button" class="danger" onclick="delCard(' + i + ')">删除</button></p>'
+            '<p><label><input type="radio" name="act" value="' + i + '"' + (i === state.active ? ' checked' : '') + ' data-action="setActive" data-pi="' + i + '"> 启用</label> <b>配置 ' + (i + 1) + '</b>' + (i === state.active ? ' <span class="badge ok">使用中</span>' : '') + ' <button type="button" class="danger" data-action="delCard" data-pi="' + i + '">删除</button></p>'
             + inp(i, 'name', '名称', p.name, 'size="12"')
             + inp(i, 'baseURL', 'Base URL', p.baseURL)
             + inp(i, 'apiKey', 'API Key', p.apiKey, 'type="password"')
             + inp(i, 'model', '模型（可手填；点「测试连接」成功后下方出现可点的模型按钮）', p.model, '')
             + '<div id="models-' + i + '" style="margin:-6px 0 8px">' + modelButtonsHtml(p, i) + '</div>'
             + '<p><label style="display:block;font-size:12px;color:var(--mut)">思考程度 reasoning_effort（留空=不传该参数；部分厂商不认这个字段，硬传会 400）'
-            + '<select onchange="state.profiles[' + i + '].reasoningEffort=this.value">'
+            + '<select data-action="profEffort" data-pi="' + i + '">'
             + '<option value=""' + (!p.reasoningEffort ? ' selected' : '') + '>（不设置）</option>'
             + ['low', 'medium', 'high', 'xhigh', 'max'].map(function (x) {
                 return '<option value="' + x + '"' + (p.reasoningEffort === x ? ' selected' : '') + '>' + x + '</option>';
               }).join('')
             + '</select></label></p>'
-            + '<p><button type="button" onclick="testCard(' + i + ')">测试连接</button> <span id="msg-' + i + '"></span></p>';
+            + '<p><button type="button" data-action="testCard" data-pi="' + i + '">测试连接</button> <span id="msg-' + i + '"></span></p>';
           box.appendChild(card);
         });
       }
@@ -7104,7 +7199,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         var data = await r2.json();
         if (data.ok) __status(msg, 'ok', '已恢复'); else __status(msg, 'err', data.error || '失败');
         if (data.ok && data.safety) {
-          document.getElementById('undoBox').innerHTML = '<button class="secondary" onclick="undoRestore(\\'' + data.safety + '\\')">↩ 回退这次恢复</button> <span id="undoMsg" style="font-size:12px"></span>';
+          document.getElementById('undoBox').innerHTML = '<button class="secondary" data-action="undoRestore" data-ts="' + escAttr(data.safety) + '">↩ 回退这次恢复</button> <span id="undoMsg" style="font-size:12px"></span>';
         }
       });
       async function undoRestore(ts) {
@@ -7114,6 +7209,14 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         var undoEl = document.getElementById('undoMsg');
         if (d.ok) __status(undoEl, 'ok', '已回退'); else __status(undoEl, 'err', d.error || '失败');
       }
+      // ===== 内联 handler 委托化注册（b5c1）：render() 动态重建的卡片同样只需 data-action，无需重绑 =====
+      var __acts = window.__acts || (window.__acts = { click: {}, change: {}, input: {}, submit: {}, keydown: {} });
+      __acts.input.profInp = function (el) { state.profiles[Number(el.getAttribute('data-pi'))][el.getAttribute('data-pf')] = el.value; };
+      __acts.change.profEffort = function (el) { state.profiles[Number(el.getAttribute('data-pi'))].reasoningEffort = el.value; };
+      __acts.change.setActive = function (el) { return setActive(Number(el.getAttribute('data-pi')), el); };
+      __acts.click.delCard = function (el) { return delCard(Number(el.getAttribute('data-pi'))); };
+      __acts.click.testCard = function (el) { return testCard(Number(el.getAttribute('data-pi'))); };
+      __acts.click.undoRestore = function (el) { return undoRestore(el.getAttribute('data-ts')); };
     </script>`, 'settings'));
     }
     if (req.method === 'POST' && url.pathname === '/ai/test') {
@@ -7564,7 +7667,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         if (e.startsWith('/') || e.includes('..') || !ALLOWED.test(ep)) return fail('备份包含不允许的条目：' + e.slice(0, 80));
       }
       // 条目里的「标识」也必须合法（2026-10-22 安全审查 · 存储型 XSS）：
-      // 文档 id 会原样拼进首页的内联 JS（onclick="…('{id}')"），投递/素材记录的 id 同理。
+      // 文档 id 会原样拼进首页的 HTML 属性与内联脚本（b5c1 委托化前是 onclick="…('{id}')"），投递/素材记录的 id 同理。
       // 备份包是外部输入 → 恶意 id 即存储型 XSS
       // （实测：文档文件名 id="a'+alert(1)+'b" → 首页点「删除」真的弹出 alert(1)）。
       // 写入侧一律用 VALID_ID 闸门（/new、/save 的全局闸门），恢复侧必须同一把尺。
@@ -8051,7 +8154,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       ${layout.items.length ? `<ul style="font-size:13px">${layout.items.map((it) => `<li>${escHtml(it.text)}${it.zid ? `（<a href="/edit?id=${id}">定位 ${escHtml(it.zid)}</a>）` : it.page ? `（第 ${it.page} 页）` : ''}</li>`).join('')}</ul>` : '<p style="font-size:13px;color:var(--mut)">无跨页标题 / 末页偏少等结构性事项。</p>'}
       ${layout.over && layout.apply ? `<div style="font-size:13px">建议本轮参数：字号 ${typoVals.fontSize}px → <b>${layout.apply.fontSize}px</b> · 行高 ${typoVals.lineHeight} → <b>${layout.apply.lineHeight}</b> · 段距 ${typoVals.paraGap}mm → <b>${layout.apply.paraGap}mm</b>
         <form id="layApplyForm" style="display:inline;margin-left:8px"
-          onsubmit="event.preventDefault();var f=this,m=document.getElementById('layMsg');m.textContent=' 应用中…';__wv('/export/layout-apply?id=${id}',{fontSize:Number(f.fontSize.value),lineHeight:Number(f.lineHeight.value),paraGap:Number(f.paraGap.value)},m).then(function(d){m.textContent=' 已应用（第 '+d.rounds+' 轮，实际 '+d.pages+' 页）';setTimeout(function(){location.reload();},900);}).catch(function(e){m.textContent=' 应用失败：'+(e.message||e);});">
+          data-action="layApply" data-id="${escAttr(id)}">
           <input type="hidden" name="fontSize" value="${layout.apply.fontSize}">
           <input type="hidden" name="lineHeight" value="${layout.apply.lineHeight}">
           <input type="hidden" name="paraGap" value="${layout.apply.paraGap}">
@@ -8075,7 +8178,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       // S4a 上线后修复3：可投递改为显式确认——整体审阅完成 + 当前 PDF 才出按钮；确认后 S1 flow 契约不变
       const flowNow = flowOf(meta);
       const confirmDeliverable = meta.parent && pdfCurrent && expChecks.reviewComplete && flowNow !== 'reviewed'
-        ? `<form method="post" action="/job/changes?id=${id}" style="display:inline" onsubmit="event.preventDefault();__wv('/job/changes?id=${id}',{id:${jsStr(id)},status:'deliverable'}).then(function(){location.reload();}).catch(function(e){alert('确认失败：'+e.message)})"><button class="secondary" type="submit">确认可投递</button></form>`
+        ? `<form method="post" action="/job/changes?id=${id}" style="display:inline" data-action="jobDeliver" data-id="${escAttr(id)}"><button class="secondary" type="submit">确认可投递</button></form>`
         // R2⑥：button.ok 从无样式定义（一直误渲染成 accent 实底）→ 降 secondary；「（整体审阅已完成）」状态说明移出按钮文案——上下徽章/导出检查区已承载同一状态
         : flowNow === 'reviewed' ? badge('ok', '已确认可投递')
         : `<span class="badge mute" title="整体审阅完成 + 当前 PDF 后可确认">${icon('circle-help', 11)}未确认可投递</span>`;
@@ -8113,7 +8216,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       <p>
         ${pdfCurrent && !pendingConflicts.length ? `<button id="dlBtn">下载最新版 PDF</button>` : `<button disabled title="先解决上方问题">下载最新版 PDF</button>`}
         ${confirmDeliverable}
-        <button class="secondary" type="button" onclick="rerender()">重新生成</button>
+        <button class="secondary" type="button" data-action="rerender">重新生成</button>
         <a href="/snapshots?id=${id}" class="secondary" style="margin-left:8px">历史导出</a>
         <a href="/edit?id=${id}" class="secondary" style="margin-left:8px">返回编辑</a>
         <span id="rrMsg" style="font-size:12px"></span>
@@ -8203,6 +8306,25 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
           } else __status(msg, 'err', (d && d.error) || '失败');
         } catch (err) { __status(msg, 'err', err.message); }
       });
+      // ===== 内联 handler 委托化注册（b5c1）：data-action → 实现（与原内联 onsubmit/onclick 行为一致）=====
+      var __acts = window.__acts || (window.__acts = { click: {}, change: {}, input: {}, submit: {}, keydown: {} });
+      __acts.submit.layApply = function (el, ev) {
+        ev.preventDefault();
+        var f = el, m = document.getElementById('layMsg');
+        m.textContent = ' 应用中…';
+        __wv('/export/layout-apply?id=' + el.getAttribute('data-id'), { fontSize: Number(f.fontSize.value), lineHeight: Number(f.lineHeight.value), paraGap: Number(f.paraGap.value) }, m)
+          .then(function (d) { m.textContent = ' 已应用（第 ' + d.rounds + ' 轮，实际 ' + d.pages + ' 页）'; setTimeout(function () { location.reload(); }, 900); })
+          .catch(function (e) { m.textContent = ' 应用失败：' + (e.message || e); });
+      };
+      __acts.submit.jobDeliver = function (el, ev) {
+        ev.preventDefault();
+        // 载荷保持原内联的紧凑形态（status:'deliverable' 无空格）——test.sh「导出页不得自动标记」
+        // 的负向钉以带空格的旧自动标记字面为探针（test.sh:2113），此处不改探针、不碰其判定。
+        __wv('/job/changes?id=' + el.getAttribute('data-id'), {id: el.getAttribute('data-id'), status:'deliverable'})
+          .then(function () { location.reload(); })
+          .catch(function (e) { alert('确认失败：' + e.message); });
+      };
+      __acts.click.rerender = function (el) { return rerender(); };
     </script>`, 'docs'));
     }
     send(404, 'not found', 'text/plain');

@@ -3587,7 +3587,8 @@ assert(!/body:\s*JSON\.stringify\(\{\s*model:\s*c\.model,\s*messages\s*\}\)/.tes
 assert(/reasoningEffort/.test(srv), '设置页必须提供 reasoningEffort 控件');
 // 2026-10-19：从 <input list=datalist> 改成 <select>——datalist 在 input 已有值时
 // 下拉极难点开（实测：填了模型名后切换不了模型）。故此处断言 select 形态而非 inp()。
-assert(/<select onchange="state\.profiles\[' \+ i \+ '\]\.reasoningEffort=this\.value">/.test(srv), '思考程度必须是 <select>（datalist 在有值时不可用）');
+// 2026-11-07 b5c1：onchange 内联属性委托化为 data-action="profEffort"（行为同款：state.profiles[i].reasoningEffort=this.value）。
+assert(/<select data-action="profEffort" data-pi="' \+ i \+ '">/.test(srv), '思考程度必须是 <select>（datalist 在有值时不可用；b5c1 后经 data-action 委托）');
 assert(!/^\s*\+?\s*'[^']*list="effort-/.test(srv), '不得再用 datalist 承载思考程度');
 // 模型切换同理：改成可点按钮组 + data-* 事件委托，不用内联 onclick 拼字面量
 // （JSON.stringify 的双引号会截断 onclick 属性 → SyntaxError → 点击静默无效，实测栽过两次）。
@@ -4693,7 +4694,8 @@ EOF
 #   ① 载荷必须原样出现在**目标属性/JS 串**里（证明确实打到了 sink，测试不是空转）；
 #   ② 载荷绝不能变成可执行的事件处理器（按标签解析属性，不按裸子串匹配 ——
 #      文本节点里出现 `" onmouseover="x` 是无害的，裸子串匹配会误红）；
-#   ③ onsubmit 解码后，载荷只能待在字符串字面量内部（不能闭合 JS 串跑到代码区）。
+#   ③ 属性/JS 串解码后不得破坏边界（b5c1 后标签表单的 sink 是 data-tag 属性 →
+#      解码须与原载荷逐字一致；原 ③「onsubmit 载荷只能待在字符串字面量内」随委托化退役）。
 node --input-type=module << 'EOF'
 import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import http from 'node:http';
 import { spawn } from 'node:child_process';
@@ -4761,8 +4763,9 @@ try {
   if (!jr.json || !jr.json.ok) fail('/job/create 失败: ' + JSON.stringify(jr).slice(0, 200));
   const attrJobId = jr.json.id;
 
-  // —— 载荷 2：company 派生 tag（company·role 截断 20 字）→ 首页 onsubmit 的 JS 单引号串 ——
-  //     company 以 ' 开头 → 闭合 prompt 的 JS 串；tag 长度须 ≤ 20 字才能完整落进 tag
+  // —— 载荷 2：company 派生 tag（company·role 截断 20 字）→ 首页标签表单的 data-tag 属性 ——
+  //     （b5c1 前该 sink 是 onsubmit 里的 JS 单引号串，单引号载荷可闭合 JS 串——历史攻击面）
+  //     company 以 ' 开头仍是最刁钻的载荷形态；tag 长度须 ≤ 20 字才能完整落进 tag
   const jr2 = await post('/job/create', { from: 'x1', company: "x');window." + MARK + '//', role: 'r', jd: 'jd' });
   if (!jr2.json || !jr2.json.ok) fail('/job/create（tag 载荷）失败: ' + JSON.stringify(jr2).slice(0, 200));
   const tagJobId = jr2.json.id;
@@ -4789,25 +4792,18 @@ try {
   assertNoHandler(trTag, '/applications 的 data-ch');
   assertNoHandler(optTag, '/applications 的 <option value>');
 
-  // —— 断言 3：首页标签按钮的 onsubmit 解码后，载荷只能待在字符串字面量内部 ——
+  // —— 断言 3：首页标签表单的 data-tag 属性（2026-11-07 b5c1 委托化：tag 从 onsubmit 的 JS 串
+  //      改落 data-* 属性，提交逻辑进注册表）——属性上下文无代码可注入，等价安全性质 =
+  //      ① 载荷原样落在 data-tag 里；② 不成为任何可执行事件处理器；③ 解码后与原载荷逐字一致（不破属性边界、不串值）。
   const home = await (await fetch(B + '/')).text();
-  const onsubmitTag = tagsOf(home, 'action="/tag"').find((t) => t.includes(MARK)) || '';
-  if (!onsubmitTag) fail('首页标签按钮的 onsubmit 未回显载荷（sink 没打中，测试空转）');
-  const onsubmit = (onsubmitTag.match(/\sonsubmit="([^"]*)"/) || [])[1] || '';
-  if (!onsubmit) fail('首页标签按钮缺 onsubmit');
-  const dec = decodeEntities(onsubmit);
-  let jsOk = true; let jsErr = '';
-  try { new Function(dec); } catch (e) { jsOk = false; jsErr = String((e && e.message) || e); }
-  if (!jsOk) fail('首页 onsubmit 解码后不是合法 JS: ' + jsErr + ' | ' + dec.slice(0, 160));
-  // 把所有字符串字面量摘掉，载荷若还留在代码区 → 说明它闭合了 JS 串
-  const litRe = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g;
-  const parts = dec.split(litRe);
-  for (let i = 0; i < parts.length; i += 2) {
-    if (parts[i].includes(MARK)) fail('首页 onsubmit 的载荷落在 JS 串字面量之外（闭合了 JS 串）: ' + dec.slice(0, 160));
-  }
-  // 且 prompt 的默认值必须是字符串字面量（不是被闭合后的裸代码）
-  const pm = dec.match(/prompt\('[^']*',\s*("(?:[^"\\]|\\.)*")\)/);
-  if (!pm || !pm[1].includes(MARK)) fail('首页 onsubmit 的 prompt 默认值不是字符串字面量: ' + dec.slice(0, 160));
+  const tagFormTag = tagsOf(home, 'action="/tag"').find((t) => t.includes(MARK)) || '';
+  if (!tagFormTag) fail('首页标签表单的 data-tag 未回显载荷（sink 没打中，测试空转）');
+  assertNoHandler(tagFormTag, '首页标签表单');
+  const dm = tagFormTag.match(/data-tag="([^"]*)"/);
+  if (!dm) fail('首页标签表单缺 data-tag 属性');
+  const tagDec = decodeEntities(dm[1]);
+  if (tagDec !== "x');window." + MARK + '//·r')
+    fail('data-tag 解码后与载荷不一致（属性转义破坏了值或边界）: ' + JSON.stringify(tagDec));
 
   console.log('✅ XSS-1 属性/JS 上下文转义回归（属性闭合 + JS 串闭合，隔离实例真实请求）');
 } finally {
@@ -4978,7 +4974,7 @@ console.log('✅ EXTRACT-Q 标签闭合配对单遍扫描（等价旧实现 ' + 
 EOF
 
 # —— XSS-3：恢复备份不得植入恶意标识（存储型 XSS，2026-10-22）——
-# 文档 id 会原样拼进首页的内联 JS（onclick="…('{id}')"）与属性（value="{id}"），
+# 文档 id 会原样拼进首页的 HTML 属性与内联脚本（b5c1 委托化前是 onclick="…('{id}')"）与属性（value="{id}"），
 # 投递/素材记录的 id 同理。备份包是外部输入 → 恶意 id 即存储型 XSS
 # （实测：id="a'+alert(1)+'b" → 首页点「删除」真的执行 alert(1)）。
 # 写入侧一律 VALID_ID 闸门 → 恢复侧必须同一把尺；读取侧再兜一层。
@@ -5102,18 +5098,25 @@ try {
   const j7 = await restore(t7);
   if (j7.ok !== false) fail('含 pdfs 嵌套条目的备份包被接受了: ' + JSON.stringify(j7).slice(0, 160));
 
-  // —— 记录 id（applications/materials）恶意 → 渲染点必须转义，JS 串不得被闭合 ——
+  // —— 记录 id（applications/materials）恶意 → 渲染点必须转义，属性不得被闭合 ——
+  // （b5c1 委托化后 sink = data-action="appPatch" 的 data-app 属性；原 sink 是 onclick 里的 JS 串字面量）
   fs.writeFileSync(path.join(ROOT, 'applications.json'), JSON.stringify([
     { id: MARK, company: 'C', role: 'R', docId: 'good', status: '已投递' }
   ]));
   const appsHtml = await (await fetch(B + '/applications')).text();
-  const m2 = appsHtml.match(/onclick="appPatch\([^>]{0,120}/);
+  const m2 = appsHtml.match(/<button[^>]*data-action="appPatch"[^>]*>/);
   if (!m2) fail('/applications 未渲染 appPatch（sink 没打中，测试空转）');
   else {
     const raw = m2[0];
-    // id 必须以「双引号 JS 串字面量」出现（&quot; 包裹）→ 单引号载荷闭合不了它
-    if (!raw.includes('appPatch(&quot;')) fail('投递记录 id 未按 JS 串上下文转义: ' + raw.slice(0, 120));
-    if (raw.includes("appPatch('")) fail('投递记录 id 仍是裸单引号串（可被闭合）: ' + raw.slice(0, 120));
+    // 载荷不得出现在任何 on*= 事件属性里（属性级检查，防转义后的载荷变成可执行 handler）
+    for (const a of raw.matchAll(/\s(on[a-z]+)\s*=\s*"([^"]*)"/g)) {
+      if (a[2].includes(MARK)) fail('投递记录 id 进入了可执行事件属性: ' + a[0].slice(0, 160));
+    }
+    // id 经 escAttr 落进 data-app → 解码后必须与原载荷逐字一致（往返无损；单引号在双引号属性内本就无害）
+    const dv = (raw.match(/data-app="([^"]*)"/) || [])[1];
+    if (dv === undefined) fail('appPatch 按钮缺 data-app 属性');
+    else if (dv.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&') !== MARK)
+      fail('投递记录 id 经 data-app 属性转义后回读不一致: ' + JSON.stringify(dv));
   }
 
   // —— CSP：文档正文是外部输入（恢复的备份可带 <script>）→ 不得在应用同源执行 ——
@@ -5478,8 +5481,9 @@ for (const id of ['company', 'role', 'docId', 'channel', 'appliedAt', 'dueDate',
 assert(!srv.includes('大模型设置'), '设置页不得再叫「大模型设置」（topnav 已叫设置）');
 assert(srv.includes("<h1>设置</h1>"), '设置页 h1 应为「设置」');
 assert(srv.includes('id="settingsGuide"') && srv.includes("profiles.length ? '' : settingsGuide"), '无配置时应渲染说明卡（有配置不出现由浏览器夹具验证）');
-assert(/function inp\(i, f, label, val, extra\) \{[\s\S]*?<label[\s\S]*?<input [\s\S]*?oninput="state\.profiles\[' \+ i \+ '\]\.' \+ f \+ '=this\.value"><\/label>/.test(srv),
-  '设置页 inp() 应 label 包裹 input（可访问名）');
+// b5c1：oninput 内联属性 → data-action="profInp"（行为同款：state.profiles[i][f]=this.value，注册项见设置页脚本）
+assert(/function inp\(i, f, label, val, extra\) \{[\s\S]*?<label[\s\S]*?<input [\s\S]*?data-action="profInp" data-pi="' \+ i \+ '" data-pf="' \+ f \+ '"><\/label>/.test(srv),
+  '设置页 inp() 应 label 包裹 input（可访问名；b5c1 后经 data-action 委托）');
 assert(/<input type="file" id="restoreFile"[^>]*aria-label="/.test(srv), '备份文件选择应有可访问名（aria-label）');
 assert(srv.includes('guide.hidden = state.profiles.length > 0'), 'render() 应随配置状态显隐说明卡（删光配置后重新出现）');
 console.log('✅ R3 投递看板与设置页表单/可访问性源级钉值');

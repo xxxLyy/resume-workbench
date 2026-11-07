@@ -288,7 +288,8 @@ try {
           expect: (v) => !v },
         { name: '快照备注',
           run: (p) => p.evaluate(() => {
-            var b = Array.prototype.slice.call(document.querySelectorAll('button')).find(function (x) { return (x.getAttribute('aria-label') || '') === '' && !!(x.getAttribute('onclick') || '').indexOf('snapNote') >= 0; });
+            // b5c1 委托化后按钮不再带 onclick 属性 → 按 data-action 定位（原按 onclick 含 snapNote 定位）
+            var b = document.querySelector('button[data-action="snapNote"]');
             if (!b) return false; b.click(); return true;
           }),
           probe: async () => {
