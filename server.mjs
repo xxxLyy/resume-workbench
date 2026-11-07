@@ -1541,7 +1541,7 @@ function icon(name, size = 16, cls = '') {
 // 写请求统一失败语义（AUD-15）：HTTP 业务失败与网络异常都进失败分支；
 // 失败时保留输入与旧有效值，不 reload、不显示已生效。
 // 由 page() 统一注入到每个页面 —— 各写入口只调 __wv(url, body, msgEl)。
-const WRITE_HELPER_JS = `<script>
+const WRITE_HELPER_JS = `<script nonce="__CSP_NONCE__">
 window.__wv = function (url, body, msgEl) {
   var setMsg = function (m) {
     if (msgEl && window.__status) { try { window.__status(msgEl, 'err', m); return; } catch (e) {} }
@@ -1805,7 +1805,7 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .doc-card:focus-within{outline:2px solid var(--accent);outline-offset:2px}
 @media(prefers-reduced-motion:reduce){.doc-card{transition:none!important}.doc-card:hover{transform:none!important}button{transition:none!important}button:hover,button:active{transform:none!important}}
 </style></head><body${wide ? ' class="wide"' : ''}>
-<script>${STATUS_SCRIPT}${ACT_DISPATCH_JS}</script>
+<script nonce="__CSP_NONCE__">${STATUS_SCRIPT}${ACT_DISPATCH_JS}</script>
 <nav class="topnav"><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><span class="links">${nav('docs', '/', '文档', 'file-text')}${nav('materials', '/materials', '素材库', 'box')}${nav('apps', '/applications', '投递看板', 'columns-3')}${nav('stats', '/stats', '复盘', 'chart-bar')}${nav('settings', '/settings', '设置', 'settings')}${nav('apply', '/apply-profile', '网申包', 'package')}</span></nav>
 <div class="home"><div class="mainarea">${inner}</div></div>
 <footer>简历平台 · 本地优先 · 数据在 ${path.basename(root) === 'resume' ? '~/resume' : 'RESUME_ROOT'}</footer>
@@ -2274,7 +2274,7 @@ function listPage(showArchived = false) {
     </div>
     <div class="card statusline" role="status">${todoBits.join('<span class="sep">·</span>')}</div>
     ${agendaCard}
-    <script>
+    <script nonce="__CSP_NONCE__">
       document.getElementById('up').addEventListener('submit', async function (e) {
         e.preventDefault();
         var f = document.getElementById('upfile').files[0];
@@ -2404,7 +2404,7 @@ function jobNewPage() {
         <div style="grid-column:1/-1"><button type="submit">生成岗位草稿</button><button type="button" class="secondary" id="evalBtn">${icon('compass', 13)} 先评估这个岗位</button><span id="jobMsg" role="status" style="font-size:12px;color:var(--mut)"></span><span id="evalMsg" role="status" style="font-size:12px;color:var(--mut)"></span></div>
       </form>
       <div id="evalResult"></div>`}
-    <script>
+    <script nonce="__CSP_NONCE__">
       // 要求卡接线（自首页迁入，逻辑零变化）：chips 切换 / 幅度与页数段选 / 预设（localStorage，不进 meta）
       (function () {
         if (!document.getElementById('briefFocusChips')) return;   // 空态：无母版时不渲染岗位表单，预设逻辑一并跳过
@@ -2852,7 +2852,7 @@ function applyProfilePage() {
         <div class="ap-sh-list" id="apShareList">${shareRows || '<div class="ap-note" style="margin-top:var(--space-3)">还没有分享副本（勾选要隐藏的字段并导出后，这里会列出每一份独立 PDF）</div>'}</div>
       </div>
     </section>
-    <script>
+    <script nonce="__CSP_NONCE__">
     (function () {
       var msg = document.getElementById('apMsg');
       var post = function (url, body) {
@@ -3724,7 +3724,7 @@ const OB_STAR_KEYS_FILL_JS = `function OB_STAR_KEYS_FILL(card, star) {
   });
 }`;
 // 照片步（0.7）：选文件 → data URL → 随表单走既有 POST /onboarding/step（服务端存 photos/，0600）
-const OB_PHOTO_JS = `<script>
+const OB_PHOTO_JS = `<script nonce="__CSP_NONCE__">
 (function () {
   var file = document.querySelector('[data-ob-photo-file]');
   if (!file) return;
@@ -3752,7 +3752,7 @@ const OB_PHOTO_JS = `<script>
   });
 })();
 </script>`;
-const OB_CARDS_JS = `<script>${OB_STAR_KEYS_FILL_JS}
+const OB_CARDS_JS = `<script nonce="__CSP_NONCE__">${OB_STAR_KEYS_FILL_JS}
 (function () {
   var wrap = document.querySelector('[data-ob-entries]');
   if (!wrap) return;
@@ -3999,17 +3999,29 @@ async function handler(req, res) {
     // 只对 HTML 加；PDF / 附件 / 静态资源各自 res.writeHead，不经过这里，不受影响。
     const isHtml = /^text\/html/.test(type);
     const extra = isHtml ? { 'Cache-Control': 'no-store' } : {};
+    // 应用页内联脚本 nonce（批 5 b5c2）：page() 模板的每个内联 <script> 都写成
+    // nonce="__CSP_NONCE__"（占位符），响应时在这里现发一次性 nonce（randomBytes）替换占位符，
+    // 并把同一个 nonce 写进 CSP —— 与 /edit 注入块（iconBlock/shellBlock）的 nonce 同一口径。
+    // 占位符只出现在 page() 模板（含 WRITE_HELPER_JS/OB_*/prScriptHtml 常量）；文档正文与预览页
+    // 不经 page()，且 < > 引号在用户数据路径全部转义，不会命中该字节序列。
+    // HTML 是 no-store 的 → nonce 不可能被缓存复用；无占位符的响应（无内联脚本的页）不带 nonce。
+    let cspNonce = '';
+    if (isHtml && typeof body === 'string' && body.includes('<script nonce="__CSP_NONCE__">')) {
+      cspNonce = randomBytes(18).toString('base64');
+      body = body.split('<script nonce="__CSP_NONCE__">').join('<script nonce="' + cspNonce + '">');
+    }
     // 全站应用页默认 CSP（2026-11-02 B 线收口新发现：此前只有 /edit 与 /snapshot/view 有 CSP）。
     // 显式传了 Content-Security-Policy 的路由（/edit 的 nonce+hash 策略、/snapshot/view 的锁定策略）保持各自更严口径。
     // 口径：锁死除 script-src 外的全部通道——connect/form-action 限自源（外传关死）、img 不放 https:
     //（应用页零外链图，图片信标外传关死）、object 'none'、frame-ancestors 'none'（防嵌框）、base-uri 'none'、
-    // frame-src 'self'（/export 的 PDF 预览 iframe）。script-src 仍保留 'unsafe-inline'：51 处内联事件属性已全部
-    // 委托化为 data-action（2026-11-07 b5c1），但 28 个内联脚本块尚在（外置/nonce 化为后续项），暂不能收口 'self'。
+    // frame-src 'self'（/export 的 PDF 预览 iframe）。script-src 收口（2026-11-07 b5c2）：51 处内联事件属性已
+    // 全部委托化为 data-action（b5c1），全部内联脚本块已 nonce 化 → 'unsafe-inline' 移除，内联只放行
+    // 一次性 nonce。/edit 的 nonce+hash 策略不动。
     const hasCsp = extraHeaders && Object.keys(extraHeaders).some((k) => k.toLowerCase() === 'content-security-policy');
     if (isHtml && !hasCsp) {
       extra['Content-Security-Policy'] = [
         "default-src 'self'",
-        "script-src 'self' 'unsafe-inline'",
+        "script-src 'self'" + (cspNonce ? " 'nonce-" + cspNonce + "'" : ''),
         "style-src 'self' 'unsafe-inline'",
         "img-src 'self' data: blob:",
         "font-src 'self' data:",
@@ -4558,7 +4570,7 @@ async function handler(req, res) {
       <div id="evalHistory">${evalHistoryRows(records, (did) => fs.existsSync(docPath(did)))}</div>
       <span id="evalHistoryMsg" role="status" style="font-size:12px;color:var(--mut)"></span>
     </div>
-    <script>
+    <script nonce="__CSP_NONCE__">
       var EVAL_RECORDS = ${jsonScript(evalHistoryPayload(records))};
       ${EVAL_CARD_JS}
       ${EVAL_HISTORY_JS}
@@ -5926,8 +5938,8 @@ async function handler(req, res) {
       </form>
     </details>
     <div id="matList">${mats.map(matCard).join('') || '<div style="color:var(--mut);text-align:center;padding:20px">暂无素材</div>'}</div>
-    <script>var MATS = ${JSON.stringify(mats).replace(/</g, '\\u003c')};</script>
-    <script>
+    <script nonce="__CSP_NONCE__">var MATS = ${JSON.stringify(mats).replace(/</g, '\\u003c')};</script>
+    <script nonce="__CSP_NONCE__">
       function copyMat(btn, key) {
         var card = btn.closest('.mat-card');
         var sel = card.querySelector(key === 'brief' ? '.mat-brief' : key === 'tech' ? '.mat-tech' : '.mat-itv');
@@ -6178,7 +6190,7 @@ async function handler(req, res) {
       }).join('');
       return send(200, page('历史版本', `<h1>历史版本</h1>
     <ul class="doclist" style="grid-template-columns:1fr">${items || '<li>暂无快照</li>'}</ul>
-    <script>
+    <script nonce="__CSP_NONCE__">
       function snapNote(id, ts) {
         var name = prompt('快照名', ''); if (name === null) return;
         var note = prompt('备注', ''); if (note === null) return;
@@ -6280,7 +6292,7 @@ async function handler(req, res) {
         <tbody>${apps.map(row).join('') || '<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:20px">暂无投递</td></tr>'}</tbody>
       </table></div>
       <style>#appTable th{cursor:pointer;text-align:left;padding:8px;border-bottom:2px solid var(--line)}#appTable th:hover{background:var(--bg)}#appTable td{padding:8px;border-bottom:1px solid var(--line)}#appTable th.asc::after{content:' ↑'}#appTable th.desc::after{content:' ↓'}</style>
-      <script>
+      <script nonce="__CSP_NONCE__">
         var sortDir = 1, sortIdx = -1;
         function sortCol(i) {
           sortDir = sortIdx === i ? -sortDir : 1; sortIdx = i;
@@ -6405,8 +6417,8 @@ async function handler(req, res) {
       <div class="wide"><button>添加</button> <span id="appmsg"></span></div>
     </form></details>
     <div class="kb">${cols}</div>
-    <script>var APP_STATUSES = ${JSON.stringify(APP_STATUSES)}; var APPS = ${JSON.stringify(apps).replace(/</g, '\\u003c')};</script>
-    <script>
+    <script nonce="__CSP_NONCE__">var APP_STATUSES = ${JSON.stringify(APP_STATUSES)}; var APPS = ${JSON.stringify(apps).replace(/</g, '\\u003c')};</script>
+    <script nonce="__CSP_NONCE__">
       function appPatch(id, patch) {
         __wv('/app/update', Object.assign({ id: id }, patch)).then(function () { location.reload(); }).catch(function () {});
       }
@@ -6680,7 +6692,7 @@ async function handler(req, res) {
       // 客户端段：作答保存/反馈轮询/缺项转待补充全部就地更新，不整页 reload（未保存的作答不丢）。
       // 模型产物（反馈四字段）只经 textContent 进 DOM，不拼 innerHTML（模型输出不可信，F3 同口径）；
       // 就绪后的呈现与服务端初载渲染同一份 /app/practice/state 数据，状态措辞保持一致。
-      const prScriptHtml = `<script>
+      const prScriptHtml = `<script nonce="__CSP_NONCE__">
       var PR_STAGES = { queued: '排队等待槽位', calling: '调用模型中', parsing: '解析校验中' };
       var PR_STAGE_FALLBACK = '处理中';
       var prQEl = function (pid, qid) { return document.querySelector('.pr-q[data-pid="' + pid + '"][data-qid="' + qid + '"]'); };
@@ -6881,8 +6893,8 @@ async function handler(req, res) {
       <!-- F3：preps 只读服务端渲染（模型输出不可信，一律 escHtml）；生成成功的前端回调仍就地覆盖
            #prepOut（行为不变），刷新后由这里承接最近一次与更早版本收起的折叠区。 -->
     </div>
-    <script>var APPID = ${jsonScript(app.id)};</script>
-    <script>
+    <script nonce="__CSP_NONCE__">var APPID = ${jsonScript(app.id)};</script>
+    <script nonce="__CSP_NONCE__">
       function regenArchive() {
         document.getElementById('regenMsg').textContent = ' 生成中…';
         fetch('/app/archive-regenerate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: APPID }) })
@@ -7030,8 +7042,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       <p style="font-size:12px;color:var(--mut)">每次恢复前自动生成回退点（backups/），失败可一键回退</p>
       <div id="undoBox"></div>
     </div>
-    <script>var DATA = ${JSON.stringify({ active, profiles, followUpDays: fuDays }).replace(/</g, '\\u003c')}</script>
-    <script>
+    <script nonce="__CSP_NONCE__">var DATA = ${JSON.stringify({ active, profiles, followUpDays: fuDays }).replace(/</g, '\\u003c')}</script>
+    <script nonce="__CSP_NONCE__">
       var state = DATA;
       // 跟进语提醒阈值：改动只改内存态，点「保存」才落盘（与模型配置同一条保存路径）
       var fuDaysEl = document.getElementById('fuDays');
@@ -8262,7 +8274,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       </form>
     </div>
     ${pdfStat ? `<iframe src="/pdf?id=${id}" title="PDF 预览" style="width:100%;height:70vh;margin-top:12px;border:1px solid var(--line);border-radius:var(--radius-lg)"></iframe><p style="color:var(--mut);font-size:12px">预览为「最新版」便利文件；下载请用上方的导出记录（不可变产物）。</p>` : ''}
-    <script>
+    <script nonce="__CSP_NONCE__">
       // S4a 上线后修复3：移除「打开导出页即自动标记可投递」——改为契约判定（整体审阅完成 + 当前 PDF）下的显式用户确认。
       async function rerender() {
         var msg = document.getElementById('rrMsg');
