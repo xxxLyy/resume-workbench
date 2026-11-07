@@ -4,8 +4,9 @@
 //   default-src 'self'；connect/form-action 'self'（外传通道关死）；img-src 'self' data: blob:
 //  （应用页零外链图，图片信标外传关死）；object-src 'none'；frame-ancestors 'none'（防嵌框）；
 //   base-uri 'none'；frame-src 'self'（/export 的 PDF 预览 iframe 需要）。
-// script-src 保留 'self' 'unsafe-inline'：应用页有 51 处内联事件属性 + 28 个内联脚本块，nonce 挡不住
-// 内联事件属性（CSP 规范），去 'unsafe-inline' 需重构全部 handler——登记为后续项，不在本条。
+// script-src（2026-11-07 批 5 收口后口径）：51 处内联事件属性已全部委托化为 data-action（b5c1），
+// 28 个内联脚本块已全部 nonce 化（b5c2）→ 'unsafe-inline' 移除，script-src 收口 'self' 'nonce-…'
+// （终检由 test-csp-script-src-closure.mjs / test-app-pages-script-nonce.mjs 承载；本夹具继续核对外传/嵌框等通道）。
 // HTTP 类夹具：隔离根 + 合成文档。
 import fs from 'node:fs';
 import os from 'node:os';

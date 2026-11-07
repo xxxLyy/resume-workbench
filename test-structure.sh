@@ -10,6 +10,7 @@ node ./test-fixtures/reliability/test-snapview-csp.mjs
 node ./test-fixtures/reliability/test-edit-csp-frames.mjs
 node ./test-fixtures/reliability/test-app-pages-csp.mjs
 node ./test-fixtures/reliability/test-app-pages-script-nonce.mjs   # 批 5 b5c2：应用页内联脚本 nonce 化 + script-src 收口 'self'
+node ./test-fixtures/reliability/test-csp-script-src-closure.mjs   # 批 5 b5c3：CSP 收口终检——全部 HTML 路由响应头实测，script-src 无 'unsafe-inline'
 
 # ===== B 线批 2 · 数据完整性：zone 扫描/双 zid、tx 吞损坏、migrate 三件、备份恢复形状 =====
 node ./test-fixtures/reliability/test-zone-quote-scan.mjs
