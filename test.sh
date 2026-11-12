@@ -644,7 +644,7 @@ rm -f "$TEST_DIR/llm-slow"
 grep -q '任务超时' "$TEST_DIR/t5-gen409.json" || fail "S4a-T5 转交修 a：同步 409 应如实标任务超时: $(cat "$TEST_DIR/t5-gen409.json")"
 grep -q '已被取消或取代' "$TEST_DIR/t5-gen409.json" && fail 'S4a-T5 转交修 a：真超时不应再称已被取消或取代'
 # 要求卡 UI（服务端直渲染 + 预设键）：批 1 拆页后随表单在 /job/new，首页不再承载
-curl -sf "$B/job/new" | grep -q '本次定制要求' || fail '/job/new 缺要求卡折叠区'
+curl -sf "$B/job/new" | grep -q '补充要求' || fail '/job/new 缺要求卡折叠区'
 curl -sf "$B/job/new" | grep -q 'briefFocusChips' || fail '/job/new 缺重点 chips'
 curl -sf "$B/job/new" | grep -q 's4a-presets' || fail '/job/new 缺预设存储键'
 echo '✅ S4a-T5 要求卡（create/brief 端点 + 默认值 + 校验 + 旧草稿兼容 + 生成消费 + /job/new 表单 + 转交修 a）'
@@ -2545,9 +2545,10 @@ else
   fi
 fi
 
-# ===== 16u. 批1 /job/new「为岗位定制简历」拆页卡：表单整体迁移 + 空态/契约零变化/首页只留引导卡入口（T3 唯一）+ §9.1-2 空态不复述页题 + 入口间距 token（隔离 HTTP 夹具）=====
+# ===== 16u. 批1 /job/new「为岗位定制简历」拆页卡：表单整体迁移 + 空态/首页只留引导卡入口（T3 唯一）+ §9.1-2 空态不复述页题 + 入口间距 token；
+#      渐进呈现 T4 叠加：单动线三段 + 公司/岗位改可选（未命名占位 + JD 指纹去重）+ 评估降级文字链接（隔离 HTTP 夹具）=====
 if node test-fixtures/reliability/test-job-new-page.mjs; then
-  echo '✅ /job/new 拆页回归（空态不渲染表单/字段与提交契约零变化/首页引导卡入口唯一/空态不复述页题/卡内间距用 token）'
+  echo '✅ /job/new 拆页回归（空态不渲染表单/单动线三段+公司岗位可选+提交字段不变/首页引导卡入口唯一/空态不复述页题/卡内间距用 token）'
 else
   fail "「/job/new」拆页回归未通过 (exit $?)"
 fi

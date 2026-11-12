@@ -304,27 +304,45 @@ async function waitClaim(p, ms) {
 
 async function createJobDraft(root, o) {
   const from = String(o.from || '');
-  const company = String(o.company || '').trim();
-  const role = String(o.role || '').trim();
+  const companyRaw = String(o.company || '').trim();
+  const roleRaw = String(o.role || '').trim();
+  // 公司/岗位改可选（渐进呈现 spec §4）：全空 → 「未命名·定制」；缺一项 → 「未命名公司/岗位」。
+  // 去重身份不能再用 (母版,公司,岗位)——全缺省时不同 JD 会撞名；补 jd 指纹段。
+  const company = companyRaw || (roleRaw ? '未命名公司' : '未命名');
+  const role = roleRaw || (companyRaw ? '未命名岗位' : '定制');
+  const unnamed = !companyRaw && !roleRaw;
+  const jdId = createHash('sha1').update(String(o.jd || '').trim() || String(o.jdLink || '').trim()).digest('hex').slice(0, 10);
   if (!VALID_ID.test(from)) return { ok: false, status: 400, body: { ok: false, error: 'invalid from' } };
-  if (!company || !role) return { ok: false, status: 400, body: { ok: false, error: '公司、岗位必填' } };
   const nb = normBrief(o.brief);   // S4a-T5：brief 可选（缺省渐进默认），非法值 400
   if (nb.error) return { ok: false, status: 400, body: { ok: false, error: nb.error } };
   if (!fs.existsSync(docPath(from))) return { ok: false, status: 404, body: { ok: false, error: '母版文档不存在' } };
+
+  // JD 输入提前定型（jd = 截断后终值文本；jdLink = 链接终值）：去重谓词要用——链接抓取仍在拿到保留之后。
+  let jdRaw = typeof o.jd === 'string' ? o.jd.trim() : '';
+  let jdTruncated = jdRaw.length > JD_MAX_CHARS;
+  let jd = jdTruncated ? jdRaw.slice(0, JD_MAX_CHARS) : jdRaw;
+  let jdLink = typeof o.jdLink === 'string' ? o.jdLink.trim() : '';
+  // 全缺省时「同一岗位」= 同一 JD：文本对文本 / 链接对来源链接 / 双方都无 JD 三种同法。
+  // 空串互等不算同——不同链接抓取失败都落 m.jd=''，空等空会把不同岗位误判成同一草稿。
+  const sameJob = (m) => {
+    if (jd && String(m.jd || '') === jd) return true;                    // 同一份 JD 文本（含对链接抓取结果的回填）
+    if (jdLink && String(m.jdSource || '') === jdLink) return true;     // 同一个 JD 链接（抓取成败都记来源链接）
+    return !jd && !jdLink && !String(m.jd || '') && !String(m.jdSource || '');   // 双方都没有 JD：同一「无 JD」身份
+  };
 
   // 创建保留（AUD-14）：同一 (母版,公司,岗位) 的并发创建只能成功一个。
   // 原实现的去重检查发生在异步 JD 抓取【之前】→ 两个并发请求都读到同一份 meta、都没查到重复，
   // 各自建出 -v2 / -v3 两份草稿（实测两次都 200）。
   // 这里用「锁文件 + wx 原子创建」做小范围保留：只挡同一创建身份，
   // 不占共享根锁（那会把整个数据根的写操作都挡住，而网络等待可能十几秒），别的文档照常保存。
-  const claim = claimPath(root, from + '|' + company + '|' + role);
+  const claim = claimPath(root, from + '|' + company + '|' + role + (unnamed ? '|jd:' + jdId : ''));
   if (!acquireClaim(claim)) {
     // 别人正在创建同一身份：等它结束（最多 5s）再看结果
     await waitClaim(claim, 5000);
     const after = loadMeta();
     const dup2 = Object.keys(after).find((k) => {
       const m = after[k];
-      return m && m.parent === from && m.company === company && m.role === role && fs.existsSync(docPath(k));
+      return m && m.parent === from && m.company === company && m.role === role && (!unnamed || sameJob(m)) && fs.existsSync(docPath(k));
     });
     if (dup2) return { ok: false, status: 409, body: { ok: false, existing: dup2 } };
     return { ok: false, status: 409, body: { ok: false, error: '同一岗位正在创建中，请稍后重试' } };
@@ -335,7 +353,7 @@ async function createJobDraft(root, o) {
     const metaAll = loadMeta();
     const dup = Object.keys(metaAll).find((k) => {
       const m = metaAll[k];
-      return m && m.parent === from && m.company === company && m.role === role && fs.existsSync(docPath(k));
+      return m && m.parent === from && m.company === company && m.role === role && (!unnamed || sameJob(m)) && fs.existsSync(docPath(k));
     });
     if (dup) return { ok: false, status: 409, body: { ok: false, existing: dup } };
     // 冻结来源版本（快照 = freezeHtml + manifest），返回冻结 ts 供之后追溯
@@ -351,11 +369,7 @@ async function createJobDraft(root, o) {
     const srcMeta = metaAll[from] || {};
     const normJob = normalizeToCurrent(freezeHtml(srcHtml, srcMeta).html);
     atomicWrite(docPath(to), normJob.html);
-    // JD：优先文本；给了链接且无文本时尝试读取，失败则记录待补充
-    let jdRaw = typeof o.jd === 'string' ? o.jd.trim() : '';
-    let jdTruncated = jdRaw.length > JD_MAX_CHARS;
-    let jd = jdTruncated ? jdRaw.slice(0, JD_MAX_CHARS) : jdRaw;
-    let jdLink = typeof o.jdLink === 'string' ? o.jdLink.trim() : '';
+    // JD：优先文本；给了链接且无文本时尝试读取，失败则记录待补充（jdRaw/jd/jdLink 已在查重前定型）
     // 截断与「链接读取失败」是两回事，todo 文案必须分开：复用后者的模板会显示成
     // 「JD 链接读取失败（…），请粘贴 JD 文本」——用户明明已经粘贴了，让他再粘一次是荒谬的（2026-10-18 实测）。
     let jdError = '';
@@ -1680,6 +1694,8 @@ button:disabled{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none}
 input,textarea{border:1px solid var(--line);border-radius:var(--radius);padding:7px 10px;background:var(--panel);color:var(--ink);font-size:13px;max-width:100%}
 select{border:1px solid var(--line);border-radius:var(--radius);padding:7px 10px;background:var(--panel);color:var(--ink);font-size:13px}
 button:focus-visible,input:focus-visible,a:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+/* /job/new 单动线（渐进呈现 T4）：1-2-3 步骤块的纵向节奏；mock .step 20px → --space-4（16px，4px 差，§5.1 token 化） */
+.step{margin-bottom:var(--space-4)}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 16px}
 .card-active{border-color:var(--accent);background:var(--card-2)}
 /* 卡片标题唯一口径（全仓卡片标题只此一处，首页/导出/设置/复盘四页同款）：
@@ -2352,32 +2368,38 @@ function jobNewPage() {
     ${infos.length === 0 ? `<div class="card" style="border-style:dashed"><b>还没有母版简历</b>
         <p style="font-size:13px;color:var(--mut);margin:6px 0 10px">需要一份母版简历：先新建一份，或到<a href="/#up">首页上传 PDF 导入</a>，再回到这里为岗位定制可投递的两页版本。</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap"><form method="post" action="/new" style="display:inline"><button class="cta" type="submit">＋ 新建空白简历</button></form><a class="cta-alt" href="/#up">${icon('file-text', 13)} 上传 PDF 导入</a></div>
-      </div>` : `<form id="jobForm" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;align-items:end">
-        <label style="font-size:12px">公司<input id="jobCompany" required style="width:100%"></label>
-        <label style="font-size:12px">岗位<input id="jobRole" required style="width:100%"></label>
-        <label style="font-size:12px">母版简历<select id="jobFrom" style="width:100%">${infos.map((d) => `<option value="${escAttr(d.id)}">${d.title}（${d.id}）</option>`).join('')}</select></label>
-        <label style="font-size:12px">JD 链接（可留空）<input id="jobLink" placeholder="https://…读取失败可改贴文本" style="width:100%"></label>
-        <label style="font-size:12px;grid-column:1/-1">JD 文本（可留空，稍后补）<textarea id="jobJd" rows="3" style="width:100%"></textarea></label>
-        <details style="grid-column:1/-1;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel)">
-          <summary style="cursor:pointer;padding:8px 12px;font-size:13px;font-weight:600">本次定制要求（可选，默认已按经验填好）</summary>
-          <div style="padding:2px 12px 12px;display:grid;gap:6px">
-            <label style="font-size:12px">预设<span style="display:flex;gap:6px;margin-top:3px">
-              <select id="briefPresetSel" style="flex:1"><option value="">— 取回常用预设 —</option></select>
-              <button type="button" class="secondary" id="briefPresetSave">存为常用预设</button>
-              <button type="button" class="secondary" id="briefPresetDel">删除</button></span></label>
-            <label style="font-size:12px">本次重点（点击选中/取消；建议来自素材标签）<span id="briefFocusChips" class="chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:3px">${tagChips}</span></label>
-            <label style="font-size:12px">必须保留的项目（一行一个）<textarea id="briefKeep" rows="2" style="width:100%;margin-top:3px"></textarea></label>
-            <label style="font-size:12px">不希望强调（一行一个）<textarea id="briefDeem" rows="2" style="width:100%;margin-top:3px"></textarea></label>
-            <label style="font-size:12px">修改幅度<span id="briefDegree" style="display:flex;gap:6px;margin-top:3px">
-              <button type="button" class="secondary" data-deg="light">轻度精简</button>
-              <button type="button" class="secondary" data-deg="refocus" aria-pressed="true">重点调整</button>
-              <button type="button" class="secondary" data-deg="restructure">重新组织</button></span></label>
-            <label style="font-size:12px">页数目标<span id="briefPages" style="display:flex;gap:6px;margin-top:3px">
-              <button type="button" class="secondary" data-pages="1">1 页</button>
-              <button type="button" class="secondary" data-pages="2" aria-pressed="true">2 页（默认）</button></span></label>
-          </div>
-        </details>
-        <div style="grid-column:1/-1"><button type="submit">生成岗位草稿</button><button type="button" class="secondary" id="evalBtn">${icon('compass', 13)} 先评估这个岗位</button><span id="jobMsg" role="status" style="font-size:12px;color:var(--mut)"></span><span id="evalMsg" role="status" style="font-size:12px;color:var(--mut)"></span></div>
+      </div>` : `<form id="jobForm">
+        <div class="step"><div style="font-size:13px;font-weight:600;margin-bottom:6px"><span style="color:var(--mut)">1</span> 岗位描述 <span style="font-weight:400;font-size:12px;color:var(--mut)">粘贴招聘页全文即可</span></div>
+          <textarea id="jobJd" rows="6" style="width:100%" placeholder="把职位描述整段粘进来，公司、岗位会尽量自己识别"></textarea>
+          <div style="font-size:12px;color:var(--mut);margin-top:var(--space-1)">或 <a href="#" id="jdModeLink" style="color:inherit">粘贴招聘页链接</a>（读取失败可改回贴文本）</div>
+          <div id="jdLinkRow" style="display:none;margin-top:6px"><input id="jobLink" placeholder="https://…" style="width:100%"></div></div>
+        <div class="step"><div style="font-size:13px;font-weight:600;margin-bottom:6px"><span style="color:var(--mut)">2</span> 用哪份简历改</div>
+          <select id="jobFrom" style="width:100%">${infos.map((d) => `<option value="${escAttr(d.id)}">${d.title}（${d.id}）</option>`).join('')}</select></div>
+        <div class="step"><div style="font-size:13px;font-weight:600;margin-bottom:6px"><span style="color:var(--mut)">3</span> 生成</div>
+          <details style="border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);margin-bottom:var(--space-3)">
+            <summary style="cursor:pointer;padding:var(--space-2) var(--space-3);font-size:13px;font-weight:600">补充要求（可选，默认已按经验填好）</summary>
+            <div style="padding:var(--space-hair) var(--space-3) var(--space-3);display:grid;gap:6px">
+              <label style="font-size:12px">公司（可留空，自动识别）<input id="jobCompany" style="width:100%"></label>
+              <label style="font-size:12px">岗位（可留空，自动识别）<input id="jobRole" style="width:100%"></label>
+              <label style="font-size:12px">预设<span style="display:flex;gap:6px;margin-top:3px">
+                <select id="briefPresetSel" style="flex:1"><option value="">— 取回常用预设 —</option></select>
+                <button type="button" class="secondary" id="briefPresetSave">存为常用预设</button>
+                <button type="button" class="secondary" id="briefPresetDel">删除</button></span></label>
+              <label style="font-size:12px">本次重点（点击选中/取消；建议来自素材标签）<span id="briefFocusChips" class="chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:3px">${tagChips}</span></label>
+              <label style="font-size:12px">必须保留的项目（一行一个）<textarea id="briefKeep" rows="2" style="width:100%;margin-top:3px"></textarea></label>
+              <label style="font-size:12px">不希望强调（一行一个）<textarea id="briefDeem" rows="2" style="width:100%;margin-top:3px"></textarea></label>
+              <label style="font-size:12px">修改幅度<span id="briefDegree" style="display:flex;gap:6px;margin-top:3px">
+                <button type="button" class="secondary" data-deg="light">轻度精简</button>
+                <button type="button" class="secondary" data-deg="refocus" aria-pressed="true">重点调整</button>
+                <button type="button" class="secondary" data-deg="restructure">重新组织</button></span></label>
+              <label style="font-size:12px">页数目标<span id="briefPages" style="display:flex;gap:6px;margin-top:3px">
+                <button type="button" class="secondary" data-pages="1">1 页</button>
+                <button type="button" class="secondary" data-pages="2" aria-pressed="true">2 页（默认）</button></span></label>
+            </div></details>
+          <button type="submit">生成岗位草稿</button>
+          <a href="#" id="evalBtn" style="font-size:13px;color:var(--mut);margin-left:14px">先评估匹配度</a>
+          <span id="jobMsg" role="status" style="font-size:12px;color:var(--mut)"></span><span id="evalMsg" role="status" style="font-size:12px;color:var(--mut)"></span>
+          <div style="font-size:12px;color:var(--mut);margin-top:10px">生成约 2–3 分钟，分批改写并校验。产出一份新草稿，可再编辑。</div></div>
       </form>
       <div id="evalResult"></div>`}
     <script nonce="__CSP_NONCE__">
@@ -2468,6 +2490,13 @@ function jobNewPage() {
           if (jobErr.indexOf('未配置大模型') >= 0) msg.appendChild(Object.assign(document.createElement('a'), { href: '/settings', textContent: ' 去设置 →' }));   // A2：真实入口可点击
         } catch (err) { __status(msg, 'err', err.message); }
       });
+      // JD↔链接小字切换（渐进呈现 T4）：默认贴文本，链接行默认折叠；空态无此元素，守卫跳过
+      var jdModeLink = document.getElementById('jdModeLink');
+      if (jdModeLink) jdModeLink.addEventListener('click', function (e) {
+        e.preventDefault();
+        var row = document.getElementById('jdLinkRow');
+        row.style.display = row.style.display === 'none' ? '' : 'none';
+      });
       // ===== 岗位评估 UI（自首页迁入，逻辑零变化）：/eval/create → 报告卡片 → /eval/promote =====
       // 报告内容全部来自模型：渲染前逐字段转义（模型输出直接进 innerHTML = XSS）。
       ${EVAL_CARD_JS}
@@ -2477,11 +2506,14 @@ function jobNewPage() {
         var msg = document.getElementById('evalMsg');
         if (!btn || !box || !msg) return;
         var ctx = null;   // {id, from}：评估用哪个母版，转适配必须用同一个母版
+        var busy = false;   // evalBtn 已降级为 <a>（渐进呈现 T4）：disabled 对锚点无效，闭包锁挡评估中重复点击
         var run = async function () {
+          if (busy) return;
           var from = document.getElementById('jobFrom').value;
           var jd = document.getElementById('jobJd').value.trim();
-          if (!jd) { __status(msg, 'err', 'JD 必填：评估需要岗位描述文本'); return; }
-          btn.disabled = true;
+          var jdLink = document.getElementById('jobLink').value.trim();
+          if (!jd && !jdLink) { __status(msg, 'err', '评估需要岗位描述文本'); return; }
+          busy = true;
           btn.textContent = '评估中，通常需要 1–5 分钟…';
           msg.textContent = '';
           box.innerHTML = '';
@@ -2493,9 +2525,9 @@ function jobNewPage() {
             ctx = { id: d.eval.id, from: from };
             box.innerHTML = evalCardHtml(d.eval);
           } catch (err) { __status(msg, 'err', err.message); }
-          finally { btn.disabled = false; btn.innerHTML = EVAL_BTN_ICON + ' 先评估这个岗位'; }
+          finally { busy = false; btn.textContent = '先评估匹配度'; }
         };
-        btn.addEventListener('click', run);
+        btn.addEventListener('click', function (e) { e.preventDefault(); run(); });
         // 事件委托：卡片会被重新渲染，监听器不能绑在会被替换的节点上
         box.addEventListener('click', async function (e) {
           var t = e.target.closest('[data-eval-act]');

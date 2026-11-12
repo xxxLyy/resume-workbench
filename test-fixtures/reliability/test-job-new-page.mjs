@@ -2,11 +2,14 @@
 // 计划：dev-docs/2026-11-05-roadmap-batch-plan.md §2（表单整体迁移/首页只留入口/弹层标题/视觉截图夹具七路由含 /job/new）+ §0.3 裁决。
 // 覆盖（断言逐条独立）：
 //   A 空库：/job/new 200 + 页题/h1「为岗位定制简历」+ 无母版空态（既有 jobCard 空态口径迁入）+ 不渲染表单。
-//   B 有母版：表单字段/结构与首页拆出前零变化（id/label/默认值/按钮全保留）+ 提交与评估接线字符串在场。
+//   B 有母版：字段 id/默认值/接线全保留（提交体字段名零变化）；渐进呈现 T4 单动线结构在场——
+//     三段 step（JD→母版→生成）/ jdModeLink 切换 / 公司岗位改可选（折叠区内，零 required）/ 评估降级文字链接。
 //   C 首页拆出：首页无表单（#jobCard/#jobForm/brief*/evalBtn/evalResult 全不在场）；T3 起入口收敛为
 //     状态 1 的岗位定制引导卡（href="/job/new"，非表单，全页唯一）。
 //   D 契约零变化（行为面）：/job/new 页内联脚本按原字段构建的 payload POST /job/create → 200 {ok:true,id}、
 //     meta.parent 继承；/eval/create 未配置 LLM → 409 JSON 带 settingsPath='/settings'（R2② 契约原样）。
+//   D2 渐进呈现 T4（行为面）：公司/岗位全缺省 → meta 落「未命名·定制」占位；同 JD 复投 409 existing、
+//     异 JD 不撞名；部分缺省单侧占位；invalid from 400 与缺母版 404 既有错误路径不动。
 //   E 名称统一与截图路由：server.mjs/editor-shell.js 旧名「针对岗位生成」零残留；弹层标题改「为岗位定制简历」；
 //     视觉截图夹具 routes 含 ['job-new', '/job/new']。
 //   F DESIGN.md 红线自查（本卡新写代码）：首页引导卡内联样式与档内间距一律 --space-* token（§5.1），
@@ -117,14 +120,21 @@ try {
       'briefDegree', 'briefPages', 'jobMsg', 'evalMsg', 'evalResult']) {
       assert.ok(html.includes('id="' + id + '"'), `/job/new 表单应保留字段 #${id}（契约零变化）`);
     }
-    assert.ok(html.includes('required'), '公司/岗位 required 客户端校验应保留');
+    // 渐进呈现 T4：公司/岗位改可选——字段仍在（收入「补充要求」折叠区），required 客户端校验退役
+    assert.ok(!/id="jobCompany"[^>]*required/.test(html), '公司不再必填（渐进呈现 T4：可留空自动识别）');
+    assert.ok(!/id="jobRole"[^>]*required/.test(html), '岗位不再必填（渐进呈现 T4：可留空自动识别）');
+    // 单动线三段（1 岗位描述 → 2 用哪份简历改 → 3 生成）+ JD↔链接小字切换 + 诚实预期文案
+    assert.equal((html.match(/class="step"/g) || []).length, 3, '单动线应为三段 step（岗位描述→母版→生成）');
+    assert.ok(html.includes('id="jdModeLink"') && html.includes('id="jdLinkRow"'), '应有 JD↔链接小字切换（jdModeLink/jdLinkRow）');
+    assert.ok(html.includes('粘贴招聘页链接'), '应有「或粘贴招聘页链接」切换文案');
+    assert.ok(html.includes('产出一份新草稿'), '应有诚实预期文案「产出一份新草稿」');
     // 母版下拉：合成母版在场
     assert.ok(html.includes('value="jnmaster"'), '母版下拉应含合成母版 jnmaster');
-    // 按钮：生成岗位草稿（submit）+ 先评估这个岗位（evalBtn）
+    // 按钮：生成岗位草稿（submit）+ 先评估匹配度（evalBtn，T4 起降级为次级文字链接）
     assert.ok(html.includes('生成岗位草稿'), '应保留「生成岗位草稿」主按钮');
-    assert.ok(html.includes('id="evalBtn"') && html.includes('先评估这个岗位'), '应保留「先评估这个岗位」评估入口');
-    // 要求卡：预设/重点/保留/不强调/幅度/页数六要素 label 文案原样
-    for (const t of ['本次定制要求（可选，默认已按经验填好）', '取回常用预设', '存为常用预设',
+    assert.ok(html.includes('id="evalBtn"') && html.includes('先评估匹配度'), '应保留「先评估匹配度」评估入口');
+    // 要求卡：预设/重点/保留/不强调/幅度/页数六要素 label 文案原样（折叠区 T4 改名「补充要求」）
+    for (const t of ['补充要求（可选，默认已按经验填好）', '取回常用预设', '存为常用预设',
       '本次重点（点击选中/取消；建议来自素材标签）', '必须保留的项目（一行一个）', '不希望强调（一行一个）',
       '轻度精简', '重点调整', '重新组织', '2 页（默认）']) {
       assert.ok(html.includes(t), `/job/new 要求卡应保留文案「${t}」`);
@@ -143,7 +153,7 @@ try {
     for (const frag of ["fetch('/eval/create'", "fetch('/eval/promote'", 'evalCardHtml(', 'data-eval-act', 'EVAL_BTN_ICON']) {
       assert.ok(html.includes(frag), `/job/new 评估接线应保留片段：${frag}`);
     }
-    assert.ok(html.includes('JD 必填：评估需要岗位描述文本'), '评估 JD 必填客户端校验应保留');
+    assert.ok(html.includes('评估需要岗位描述文本'), '评估需要 JD 的客户端校验应保留（T4：JD 与链接均空时拦截）');
   }
 
   // ===== C. 首页拆出：无表单，只留入口按钮 =====
@@ -153,7 +163,7 @@ try {
     const html = home.text;
     // 表单与其专属 UI 整体迁出（含空态——空态已迁入 /job/new）
     for (const marker of ['id="jobCard"', 'id="jobForm"', 'id="briefFocusChips"', 'id="evalBtn"',
-      'id="evalResult"', 'id="taskJobCta"', '生成岗位草稿', '先评估这个岗位', '还没有母版简历']) {
+      'id="evalResult"', 'id="taskJobCta"', '生成岗位草稿', '先评估匹配度', '还没有母版简历']) {
       assert.ok(!html.includes(marker), `首页不得再含岗位表单标记「${marker}」（已迁 /job/new）`);
     }
     // T3 引导卡（有母版态）：「为岗位定制 →」直达新页，全页入口唯一
@@ -186,6 +196,36 @@ try {
     const ev = await postJson('/eval/create', { from: 'jnmaster', company: '合成公司', role: '前端', jd: '负责高并发服务' });
     assert.equal(ev.status, 409, '/eval/create 未配置 LLM 应 409');
     assert.ok(ev.json && ev.json.ok === false && ev.json.settingsPath === '/settings', '/eval/create 409 应带 settingsPath=/settings：' + ev.text.slice(0, 160));
+  }
+
+  // ===== D2. 渐进呈现 T4：公司/岗位改可选——缺省落「未命名·定制」占位，去重身份在全缺省时按 JD 指纹区分 =====
+  {
+    // 全缺省：company/role 不传 → meta 占位终值（「未命名·定制」）
+    const un1 = await postJson('/job/create', { from: 'jnmaster', jd: 'T4-JD-甲：增长方向' });
+    assert.equal(un1.status, 200, '全缺省公司/岗位应 200（占位兜底），实际 ' + un1.status + ' ' + un1.text.slice(0, 160));
+    const metaU = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    assert.equal((metaU[un1.json.id] || {}).company, '未命名', '全缺省 meta.company 应落「未命名」');
+    assert.equal((metaU[un1.json.id] || {}).role, '定制', '全缺省 meta.role 应落「定制」');
+    assert.equal((metaU[un1.json.id] || {}).tag, '未命名·定制', '占位草稿 tag 应为「未命名·定制」');
+    // 同一 JD 复投 → 撞既有草稿（409 existing），不得再建一份
+    const un2 = await postJson('/job/create', { from: 'jnmaster', jd: 'T4-JD-甲：增长方向' });
+    assert.equal(un2.status, 409, '同一 JD 的缺省草稿应查重 409，实际 ' + un2.status + ' ' + un2.text.slice(0, 160));
+    assert.equal((un2.json || {}).existing, un1.json.id, '409 应回指既存草稿 ' + un1.json.id);
+    // 不同 JD → 不撞名（JD 指纹段参与身份）→ 新草稿
+    const un3 = await postJson('/job/create', { from: 'jnmaster', jd: 'T4-JD-乙：另一岗位' });
+    assert.equal(un3.status, 200, '不同 JD 的缺省草稿不得撞名，实际 ' + un3.status + ' ' + un3.text.slice(0, 160));
+    assert.notEqual(un3.json.id, un1.json.id, '不同 JD 应产出新草稿');
+    // 部分缺省：只给岗位 → 公司落「未命名公司」；只给公司 → 岗位落「未命名岗位」
+    const un4 = await postJson('/job/create', { from: 'jnmaster', role: '增长工程师', jd: 'T4-JD-丙' });
+    assert.equal(un4.status, 200, '部分缺省应 200');
+    const metaU4 = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    assert.equal((metaU4[un4.json.id] || {}).company, '未命名公司', '只给岗位时公司应落「未命名公司」');
+    assert.equal((metaU4[un4.json.id] || {}).role, '增长工程师', '给定岗位原样保留');
+    // 既有 400/404 错误路径不动：非法母版 id → 400 invalid from；缺母版文档 → 404
+    const bad1 = await postJson('/job/create', { from: '!!!', jd: 'x' });
+    assert.equal(bad1.status, 400, '非法母版 id 仍应 400（invalid from），实际 ' + bad1.status);
+    const bad2 = await postJson('/job/create', { from: 'notexist', jd: 'x' });
+    assert.equal(bad2.status, 404, '缺母版文档仍应 404，实际 ' + bad2.status);
   }
 
   // ===== F. DESIGN.md 红线自查（本卡新写代码）：间距 token =====
