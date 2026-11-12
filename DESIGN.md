@@ -510,3 +510,15 @@ FIELDS（editor-shell.js） → typoCss(v) → #typo-custom（落盘进 <head>�
 - **脚本 nonce（b5c2）**：应用页 28 个内联 `<script>` 全部带一次性 nonce——模板写 `<script nonce="__CSP_NONCE__">`，`send()` 出口对响应体做一次运行时替换（`server.mjs:4010-4013`），CSP 头同步携带同一 nonce：`script-src 'self' 'nonce-…'`。**nonce 逐响应现发**（同页两次 GET nonce 不同）。占位符替换机制只作用于应用页装配路径，**不碰 /edit 与渲染管线**（template.html / render.mjs / 四个静态 JS 零占位符——grep 钉值断言）。`style-src 'unsafe-inline'` 是既有口径，b5c2 裁决**不动**（只收 script-src 段）。
 - **CSP 收口终检（b5c3）**：全部 GET HTML 路由（20 形态）响应头实测——带 `script-src` 的路由必须 `'self'` 开头 + 无 `'unsafe-inline'` + 不放外部主机；锁定预览（/snapshot/view、/theme-preview）`default-src 'none'` 在场（无 script-src 段，脚本一刀切关死）；/edit 显式策略 `'self' 'nonce-…' 'sha256-…'` 原样。`themes/resume-*.css` 非公开 HTTP 路由（主题经 `themeCss` 装配内联，不单发）。
 - **断言同提交**：`test-inline-delegation.mjs`（八路由属性级零 `on*` + 五类委托行为真点抽检 + ivAdd 存量登记）、`test-app-pages-script-nonce.mjs`（15 页面形态 nonce 同值 + 占位符零残留 + 逐响应现发 + /edit 与快照策略原样 + JSON 无 CSP）、`test-csp-script-src-closure.mjs`（20 路由形态响应头实测，b5c1/b5c2 的收口验收）、`test-app-pages-csp.mjs` / `test-edit-csp-frames.mjs` / `test-snapview-csp.mjs` 回归绿；`test-structure.sh` 登记执行；`test-page-writes.mjs` 写失败矩阵 15 触发点全部经新委托路径；XSS 相关载荷 sink 断言随委托化重锚（onsubmit JS 串 sink → data-tag 属性 sink）。
+
+### 10.19 渐进呈现：导航 3 项 + 首页三态 + /job/new 单动线（2026-11-12 登记 · spec `dev-docs/2026-11-12-progressive-disclosure-ux-design.md`）
+
+> 用户裁决：「第一次使用的人都知道应该怎么使用」；取舍档 = 藏不砍、不动数据模型。批准视觉稿 `dev-docs/2026-11-12-ux-progressive-disclosure-mock.html`（落地用 A-VARS token，不用稿内字面 hex）。
+
+- **导航唯一 topnav 收缩为 3 项**：简历 / 投递 / 设置（「文档→简历」「投递看板→投递」）。素材库→编辑器左栏（页面保留，active 归 docs）；网申包、复盘→投递页页签条（`.apptabs`：看板/网申包/复盘，三个既有页互链，零新路由；active 归 apps）。UI-5「sidenav 不得回归」不受影响。
+- **首页三态**（读既有 docs-meta/applications，零新字段）：无文档 → 两张起步卡（导入 PDF / 从零开始）；有简历无投递 → 继续卡（示意缩略图+状态点+继续编辑/导出 PDF）+「为岗位定制」引导卡 + 文档行；有投递 → 待办卡（人话句+行内动作：PDF 不是最新 / 满 N 天可跟进 / 待整理）+ 文档行。stat-grid、statusline 状态行、taskcard 退役；「为岗位定制」首页入口唯一。
+- **按钮语义**：实底近黑（--accent）= 主操作；橙（--warn 系 `.cta-exp`）= 只给「导出 PDF」。
+- **状态点**（signature）：7px 圆点+文字——灰（--mut）草稿 / 橙（--warn）需处理·可投递 / 绿（--ok）已投出。本轮落首页文档行与待办卡；其余页面 badge 迁移为后续项。
+- **/job/new 单动线**：1 岗位描述（链接为小字切换）→ 2 用哪份简历 → 3 生成；公司/岗位改可选（收入「补充要求」折叠区），服务端缺省落「未命名·定制」占位，去重身份在全缺省时补 JD 指纹段；「先评估匹配度」降为次级文字链接。
+- **文案**：品牌与页脚统一「简历工作台」；首页不出现「待结构化 / PDF 较旧 / AI：xx」状态行。
+- **本轮不做**：编辑器密度、网申包/复盘页内结构、真实渲染缩略图、状态点全站迁移。
