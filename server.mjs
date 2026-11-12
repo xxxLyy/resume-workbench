@@ -1641,11 +1641,12 @@ html{scroll-padding-top:64px}
 .topnav .links a.on{color:var(--accent);border-bottom-color:var(--accent)}
 .topnav .links a:hover{color:var(--ink)}
 /* 投递系页签条（渐进呈现 T2）：看板/网申包/复盘 三页共用，挂在页题下方。 */
-.apptabs{display:flex;gap:4px;margin:0 0 12px;border-bottom:1px solid var(--line)}
-.apptabs a{padding:6px 10px;font-size:13px;font-weight:600;color:var(--mut);border-bottom:2px solid transparent;margin-bottom:-1px}
+.apptabs{display:flex;gap:var(--space-1);margin:0 0 var(--space-3);border-bottom:1px solid var(--line)}
+/* margin-bottom:-1px 是边框补偿字面值（页签底边框与条底边框重合压线），非间距，不走 token。 */
+.apptabs a{padding:var(--space-2) var(--space-3);font-size:13px;font-weight:600;color:var(--mut);border-bottom:2px solid transparent;margin-bottom:-1px}
 .apptabs a.on{color:var(--ink);border-bottom-color:var(--ink)}
 .apptabs a:hover{color:var(--ink)}
-.cta-exp{display:inline-block;background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn);border-radius:var(--radius);padding:9px 16px;font-weight:700;font-size:14px}
+.cta-exp{display:inline-block;background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn);border-radius:var(--radius);padding:var(--space-2) var(--space-4);font-weight:700;font-size:14px}
 /* 批次B → 导航唯一后（2026-11-03）：.home 只剩内容区，单列流式定宽居中。
    旧 .sidenav 左栏规则已随 DOM 移除（topnav 是唯一页头，见 page() 注释）。 */
 .home{margin:0 auto 40px;max-width:1400px}
@@ -1821,10 +1822,10 @@ ${WRITE_HELPER_JS}</body></html>`;
 // 投递系页签（渐进呈现）：看板/网申包/复盘 三页共用一条页签条，active 传各自 key。
 // 只是三个已有页面的互链，不是新路由。
 // 模块级（与 page() 同级）：各路由把 inner 拼好才传进 page()，定义在 page() 体内够不到调用点。
-const appTabs = (on) => `<div class="apptabs">${
+const appTabs = (on) => `<nav class="apptabs" aria-label="投递">${
   [['apps', '/applications', '看板'], ['apply', '/apply-profile', '网申包'], ['stats', '/stats', '复盘']]
-    .map(([k, href, label]) => `<a href="${href}"${on === k ? ' class="on"' : ''}>${label}</a>`).join('')
-}</div>`;
+    .map(([k, href, label]) => `<a href="${href}"${on === k ? ' class="on" aria-current="page"' : ''}>${label}</a>`).join('')
+}</nav>`;
 
 // 徽章：底色 + 语义色 + 小图标 + 文字。类名沿用既有的 .badge ok/.warn/.err/.ai（既有 43 处在用），
 // 只新增 .mute —— 不另起 badge--ok 体系。ic 省略时按 cls 取默认图标；cls 为空（纯标签徽章）默认无图标。
@@ -2832,8 +2833,7 @@ function applyProfilePage() {
       </form>`
     : `<div class="ap-bar"><span class="ap-note">还没有可导出的简历</span></div>`;
 
-  return page('网申包', `${appTabs('apply')}
-    <div class="page-head"><h1>网申包</h1><span id="apMsg" role="status" class="ap-note"></span></div>
+  return page('网申包', `<div class="page-head"><h1>网申包</h1><span id="apMsg" role="status" class="ap-note"></span></div>${appTabs('apply')}
     ${led.corrupt ? `<div class="card" style="border-color:var(--err-soft);background:var(--err-soft);color:var(--err)"><b>${icon('circle-alert', 13)}数据文件损坏，已停止写入：</b>apply-profiles.json —— 请先人工修复或从备份恢复。</div>` : ''}
     <section class="ap-sec" id="apCommon">
       <div class="card">
@@ -7506,7 +7506,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const apps = loadApps();
       const evals = loadEvals().map(evalRecordView);
       // 早退口径（F1）：投递与评估**均为空**才早退——有评估无投递时闭环卡仍要渲染，不得被空投递吞掉。
-      if (!apps.length && !evals.length) return send(200, page('复盘', `${appTabs('stats')}<h1>复盘统计</h1><div class="card" style="text-align:center;padding:40px;color:var(--mut)">暂无投递记录<br><br><a href="/applications">先去投递看板添加记录</a></div>`, 'apps'));
+      if (!apps.length && !evals.length) return send(200, page('复盘', `<h1>复盘统计</h1>${appTabs('stats')}<div class="card" style="text-align:center;padding:40px;color:var(--mut)">暂无投递记录<br><br><a href="/applications">先去「投递」页添加记录</a></div>`, 'apps'));
       const funnel = APP_STATUSES.map((s) => [s, apps.filter((a) => a.status === s).length]);
       const byCh = {}; apps.forEach((a) => { byCh[a.channel || '未填'] = (byCh[a.channel || '未填'] || 0) + 1; });
       const byDoc = {}; apps.forEach((a) => { byDoc[a.docId] = (byDoc[a.docId] || 0) + 1; });
@@ -7571,7 +7571,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         ? prRows.map(({ a, s }) => { const sum = sessionSummary(s);
             return `<div style="margin-top:var(--space-2)"><a href="/app?id=${escAttr(a.id)}#pr-${escAttr(sum.pid)}">${escHtml([a.company, a.role].filter(Boolean).join('·') || '未填公司岗位')}</a><div style="font-size:12px;color:var(--mut);font-variant-numeric:tabular-nums">${sum.questionCount} 题 · 答 ${sum.answeredCount} · 反馈 ${sum.feedbackCount} · ${escHtml(fmtWhen(s.createdAt))}</div></div>`;
           }).join('')
-        : `<p style="font-size:13px;color:var(--mut);margin:var(--space-2) 0 0">还没有练习记录：入口在每条投递详情的「面试练习」区（<a href="/applications">投递看板</a>）</p>`}</div>`;
+        : `<p style="font-size:13px;color:var(--mut);margin:var(--space-2) 0 0">还没有练习记录：入口在每条投递详情的「面试练习」区（<a href="/applications">投递</a>）</p>`}</div>`;
       // 侧卡（1/3 列）：状态分布 + 面试参与合并为一张卡的两段（批 1 §0.2 复盘层级重排）；面试练习段为批 4 增段
       const sideCard = `<div class="card stats-side"><b class="card-title">状态分布</b>${funnelBar}
       <div class="stats-sec"><b class="card-title">面试参与</b><p style="font-size:13px;margin:var(--space-2) 0 0">${interviewed}/${n} 有面试安排或已进入面试（${n ? Math.round(interviewed / n * 100) : 0}%）；预约不等于完成。</p></div>${practiceSec}</div>`;
@@ -7581,7 +7581,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       <div class="card"><b class="card-title">按简历版本</b>${Object.entries(byDoc).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:var(--space-2) 0"><span>${byDocLabel(k)}</span><span style="font-variant-numeric:tabular-nums">${v}</span></div>`).join('')}</div>
       <div class="card"><b class="card-title">按岗位方向</b>${Object.entries(byTag).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:var(--space-2) 0"><span>${escHtml(k)}</span><span style="font-variant-numeric:tabular-nums">${v}</span></div>`).join('')}</div>
     </div>`;
-      return send(200, page('复盘', `${appTabs('stats')}<div class="page-head"><h1>复盘统计</h1><span class="page-meta">n=${n}</span></div>${warn}
+      return send(200, page('复盘', `<div class="page-head"><h1>复盘统计</h1><span class="page-meta">n=${n}</span></div>${appTabs('stats')}${warn}
     <div class="stats-grid">
       <div class="stats-main">${loopCard}${distCards}</div>
       ${sideCard}
@@ -8329,7 +8329,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
           var d = await r.json().catch(function () { return null; });
           if (d && d.ok) {
             __status(msg, 'ok', '已记录（未自动发送；存档绑定本次导出快照）');
-            msg.appendChild(Object.assign(document.createElement('a'), { href: '/applications', textContent: ' 去投递看板跟踪 →' }));   // A5：投递收尾不隐式
+            msg.appendChild(Object.assign(document.createElement('a'), { href: '/applications', textContent: ' 去「投递」页跟踪 →' }));   // A5：投递收尾不隐式
             if (d.warning) alert(d.warning);
           } else __status(msg, 'err', (d && d.error) || '失败');
         } catch (err) { __status(msg, 'err', err.message); }

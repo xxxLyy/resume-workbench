@@ -224,12 +224,12 @@ try {
   const st3 = await s3.get('/stats');
   assert.equal(st3.status, 200, '/stats（有评估无投递）应 200');
   assert.ok(st3.html.includes('评估 ↦ 投递'), '⑤ 有评估无投递时闭环卡仍渲染（不被空投递早退吞掉）');
-  assert.ok(!st3.html.includes('先去投递看板添加记录'), '⑤ 有评估无投递时不得走空投递早退页');
+  assert.ok(!st3.html.includes('先去「投递」页添加记录'), '⑤ 有评估无投递时不得走空投递早退页');
   assert.ok(st3.html.includes('暂无投递记录'), '⑤ 该评估行应呈现「暂无投递记录」事实');
   // 两表均空 → 早退页（apps 与 evals 均为空才早退的反向验证：运行中清空评估表）
   fs.writeFileSync(path.join(rootOnly, 'evaluations.json'), '[]');
   const st4 = await s3.get('/stats');
-  assert.ok(st4.html.includes('先去投递看板添加记录'), 'apps 与 evals 均空时才走早退页');
+  assert.ok(st4.html.includes('先去「投递」页添加记录'), 'apps 与 evals 均空时才走早退页');
 
   console.log('✅ F1 评估↦投递闭环视图：主 join 链接与投递事实（①）/ 已删降级（①）/ 同名兜底 / 提醒区（②）/ 空态指引（③）/ /evals 徽章链接化（④）/ 有评估无投递不早退（⑤）/ 复盘层级 2fr:1fr 主卡+合并侧卡+三分布收窄（⑥）/ 转义与零比率包装');
 } catch (e) {

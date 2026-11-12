@@ -4361,6 +4361,10 @@ try {
   const appHtml = await (await fetch(`http://127.0.0.1:${port}/applications`)).text();
   assert(appHtml.includes('class="apptabs"'), '投递页应有页签条');
   assert(appHtml.includes('网申包') && appHtml.includes('复盘'), '页签条应含网申包与复盘');
+  // 页签条同为 /stats 所挂（本夹具 evals 非空 → 走主态而非早退页）；当前项「复盘」应高亮
+  const statsHtml = await (await fetch(`http://127.0.0.1:${port}/stats`)).text();
+  assert(statsHtml.includes('class="apptabs"'), '复盘页应有页签条');
+  assert(/<a href="\/stats" class="on"/.test(statsHtml), '页签条「复盘」项应高亮（active=stats）');
   // /evals 入口可达（首页卡撤除后）：入口在 /job/new 页题右侧（/evals 不占导航位）
   const jn = await (await fetch(`http://127.0.0.1:${port}/job/new`)).text();
   assert(jn.includes('href="/evals"'), '/job/new 应提供 /evals 入口（首页卡撤除后 /evals 不得成孤页）');

@@ -142,10 +142,10 @@ try {
       'topnav 链接数应为 4（brand + 3 项，渐进呈现 T2 收敛）');
     assert.ok(!nav.includes('href="/apply-profile"'), 'topnav 不应再含「网申包」入口（已迁至投递系页签条）');
     assert.ok(/<a href="\/applications" class="on">/.test(nav), 'topnav「投递」项应高亮（active=apps，网申包归属投递系）');
-    const tabs = (html.match(/<div class="apptabs">[\s\S]*?<\/div>/) || [''])[0];
+    const tabs = (html.match(/<nav class="apptabs"[\s\S]*?<\/nav>/) || [''])[0];
     assert.ok(tabs, '网申包页应有投递系页签条 .apptabs');
     assert.ok(tabs.includes('href="/apply-profile"') && tabs.includes('网申包'), '页签条应含「网申包」入口');
-    assert.ok(/<a href="\/apply-profile" class="on">/.test(tabs), '页签条「网申包」项应高亮（active=apply）');
+    assert.ok(/<a href="\/apply-profile" class="on" aria-current="page">/.test(tabs), '页签条「网申包」项应高亮（active=apply，aria-current=page）');
     // 其它页面的导航同样 4 项（导航全站一致）
     const home = await get('/');
     const homeNav = (home.text.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
