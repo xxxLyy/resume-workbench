@@ -1548,3 +1548,50 @@ Flash 23 条要点见各提交信息与 `b47-report` 工作流报告；收口时
 - 编辑器密度档、网申包/复盘页内结构各自独立成卡，不阻塞本轮口径。
 
 （本节为收口会话产物；点验探针 `/tmp/t5-ux-check.mjs` 及日志 `/tmp/t5-ux-check.log`、四套件日志 `/tmp/t5-test-all.log`、截图 `/tmp/ux-check/`、调试隔离根 `/tmp/t5dbg*` 均在 /tmp 不入仓。）
+
+## JD 网址导入双轨轮（2026-11-12）：轨 A 书签递交 + 轨 B Boss 会话收口（起点 `main@d79c085`，收口 `main@29ea131` + 本节）
+
+> 总纲：`dev-docs/2026-11-12-jd-import-bookmarklet-design.md`（双轨 spec）+ `dev-docs/2026-11-12-jd-import-plan.md`（五任务）。DESIGN.md §10.20 随 T1 登记。用户裁决「双轨并行实测对比」：轨 A = 书签递交已渲染页面 HTML（绕登录墙/反爬/CSP），轨 B = 持久 profile 扫码登录后服务端带会话抓详情页。两轨共用 `extractJd` 三层级提取与「预览 → 带入 /job/new」出口。本轮 7 笔提交（`7805f5e` → `29ea131`）。
+
+### 1. 逐任务结果（5 任务 7 笔提交，逐笔哈希）
+
+| 任务 | 提交 | 内容 |
+|---|---|---|
+| T1 登记 | `7805f5e`（02:08:22） | DESIGN.md §10.20 登记双轨裁决与边界；`boss-session/` 入 gitignore（运行时数据） |
+| T2 提取+预览 | `3acac4e`（02:25:06）+ `b9a4f64`（02:38:09） | `extractJd` 三层级（站点表→JSON-LD→body 兜底）+ `POST /import/page` 零写盘预览 + OPTIONS PNA 预检。复核返工：预览响应去 ACAO（跨站 fetch 读不到母版清单）、host 精确匹配（误伤 notzhipin.com 类域）、via 枚举订正 |
+| T3 预填+书签 | `84ff0ba`（02:57:34）+ `af08a00`（03:07:38） | `POST /job/new` 预填（jd/company/role/jdLink/from，纯渲染零写盘）+ 可拖 `javascript:` 书签交付（action=实际端口）+ 抓取失败两级引导（复制全文/书签）。复核顺手项：书签 body 兜底 documentElement、提示行补拖拽说明、form-action 边界注释 |
+| T4 Boss 会话 | `a522e71`（03:26:46）+ `6772443`（03:46:26） | `boss-session/` 持久 profile + `/boss/session/{status,login,logout}` + headless-shell 带会话抓取（visibility 覆盖反爬、串行锁）+ zhipin 链接接入 + /job/new 会话卡（灰未登录/绿已登录/橙失效）。复核返工：waitForFunction 选项位、橙点失效态、dead 判据收紧、抓取锁行为断言 |
+| T5 验收收口 | `29ea131`（04:02:11）+ 本节 | 全量套件 + 7766 重启点验 + 端到端轨 A + 状态面/会话卡 + CSP/委托 + 窄屏。顺手修复一处真缺陷：预览页值列 `overflow-wrap:anywhere`（长 URL 无空格整串把表格顶出视口，实测 523px→375px） |
+
+### 2. 实测验证
+
+- **全量套件**：`RESUME_TEST_STRICT=1 npm run test:all` → **EXIT=0**（唯一 ❌ = Chromium 探测契约预期输出「无缓存→报修复动作」，批 1–批 5 以来同一基线）。
+- **7766 重启**：`kill` 旧进程 → launchd KeepAlive 拉起新码，`/` 实测 200。
+- **浏览器点验**（playwright-core + `chromium_headless_shell-1243`；探针 `/tmp/jd-check/probe.mjs`；截图 `/tmp/jd-check/*.png`；全程只读，POST 仅 /import/page·/job/new 纯渲染与 /boss/session/logout 无目录可删）：**38/38 通过，0 失败**——
+  - /job/new：书签 `<a href="javascript:…">` 在场（×2：常显提示行 + jdFailHint），href 含 `/import/page` + `localhost:7766`；提示行含「拖到书签栏」；会话卡在场，status 拉取后「未登录」+灰点（--mut rgb(115,115,115)）+仅「登录 Boss」可见；零 on* 属性；3 个 `<script>` 全带 nonce；响应头 CSP `script-src 'self' 'nonce-…'`；console 零 CSP 违规零错误。
+  - 端到端轨 A：页内模拟书签（隐藏表单 POST fixture outerHTML → target=_blank）→ 预览页公司=中软国际、岗位=数据标注项目管理 双休远程面试、via=site-selectors、JD 260 字符、隐藏字段四项齐、母版下拉 2 份 → 选 linghaoxiang 提交 → POST /job/new 预填：jd 进 textarea、company/role 进 value、jdLinkRow 展开、jdLink 进 value、母版 selected、会话卡在场。
+  - 轨 B 状态面：`GET /boss/session/status` → `{logged:false, dead:false, loggedAt/deadAt:null}`；`POST /boss/session/logout` → `{ok:true}`，`boss-session/` 目录不存在（无副作用）；**login 未点**（真窗口扫码属人工动作）。
+  - 窄屏 375px：/job/new 与预览页 `scrollWidth=375=clientWidth` 零横向溢出。
+
+### 3. 轨 A vs 轨 B 对比（贴 Boss/zhipin 链接口径）
+
+| 维度 | 轨 A 书签 | 轨 B Boss 会话 |
+|---|---|---|
+| 操作步数 | 3 步：点书签→预览页→带去定制（书签一次拖入书签栏后复用） | 0 步：贴链接服务端直抓（首次需扫码登录一次） |
+| 成功率 | 高——用户浏览器已渲染的 HTML 原样递交，登录墙/反爬/CSP 全绕开（POC 真站验证过） | **真扫码成功率待用户实测**——headless 带会话抓取路径已通、失效判据已钉，但扫码登录闭环未走真站 |
+| 覆盖站点 | 任意站（extractJd 三层级兜底：zhipin 站点表实测，其余站 JSON-LD/body 兜底） | 仅 zhipin.com（域收窄：302 落点非 zhipin 判会话死不收） |
+| 维护面 | 零维护——无会话无 profile，端口变了重拖书签即可 | 有维护面——会话会过期（橙点失效态+重登），cookie 判据/风控对抗需随站点演化跟进 |
+
+### 4. 未做清单
+
+- **liepin/lagou/51job/zhaopin 站点表选择器未实测**——公开结构初值，不命中自然落 JSON-LD/body 兜底（spec §2.3 明文）。
+- **cookie 判据待实测收窄**——现判据为 Boss 会话 cookie 出现（`__zp_stoken__` 类），真登录后按实测收紧到最小集合。
+- **headed 抓取兜底**——headless-shell 被风控识别时的备选（spec §5「后续可选」登记项）。
+- **CDP 连用户主 Chrome**——省一次扫码的代价是主浏览器常驻 debug 端口，本轮独立 profile 规避（spec §5 登记项）。
+
+### 5. 真人待办（须用户本机操作）
+
+- **扫码登录验证**：/job/new「Boss 会话」卡点「登录 Boss」→ 真窗口扫码 → 会话卡转绿点「已登录」→ 贴 zhipin 链接实测服务端抓取（验 cookie 判据与 `_jobInfo` 可读性）。
+- **书签实站复验**：把 /job/new 链接区书签拖入浏览器书签栏 → 在真实 Boss 职位页点 → 新标签出预览页 → 带去定制（验跨站表单递交与真实页面提取，POC 已验过但交付形态未复验）。
+
+（本节为收口会话产物；点验探针 `/tmp/jd-check/probe.mjs`、定位脚本 `/tmp/jd-check/diag.mjs`、截图 `/tmp/jd-check/*.png` 均在 /tmp 不入仓。）
