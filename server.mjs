@@ -1617,7 +1617,7 @@ function page(title, inner, active = '', wide = false) {
    主行动用近黑不用蓝；彩色只承载状态；零阴影靠 1px 边框 + 背景差表达层级。
    旧名（--bg/--panel/--ink/...）保留为别名，既有 CSS 几百处零改动即生效。 */
 /* B1 双区规则已定案（DESIGN.md §2，2026-11-02 用户拍板）：应用页主行动 --accent 为近黑；编辑器 --ed-accent 为暖橙（editor-shell.js），两区不互通；字面值已钉 test-structure.sh B1 断言。 */
-/*A-VARS*/:root{--background:#ffffff;--foreground:#0a0a0a;--muted:#737373;--card:#ffffff;--card-2:#fafafa;--border:#e5e5e5;--accent:#18181b;--accent-fg:#ffffff;--success:#15803D;--success-bg:#f0fdf4;--warning:#A25711;--warning-bg:#fffbeb;--danger:#B91C1C;--danger-bg:#fef2f2;--radius:4px;--radius-lg:6px;--shadow:none;--font:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;--font-mono:ui-monospace,Menlo,monospace;--bg:var(--background);--panel:var(--card);--ink:var(--foreground);--fg:var(--foreground);--mut:var(--muted);--line:var(--border);--accent-ink:var(--accent-fg);--accent-soft:var(--card-2);--ok:var(--success);--ok-soft:var(--success-bg);--warn:var(--warning);--warn-soft:var(--warning-bg);--err:var(--danger);--err-soft:var(--danger-bg);--ai:var(--foreground);--ai-soft:var(--card-2);--serif:var(--font);--sans:var(--font);--shadow-up:0 10px 24px rgba(0,0,0,.10);--space-hair:2px;--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-6:24px}
+/*A-VARS*/:root{--background:#ffffff;--foreground:#0a0a0a;--muted:#737373;--card:#ffffff;--card-2:#fafafa;--border:#e5e5e5;--accent:#18181b;--accent-fg:#ffffff;--success:#15803D;--success-bg:#f0fdf4;--warning:#A25711;--warning-bg:#fffbeb;--danger:#B91C1C;--danger-bg:#fef2f2;--radius:4px;--radius-lg:6px;--shadow:none;--font:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;--font-mono:ui-monospace,Menlo,monospace;--bg:var(--background);--panel:var(--card);--ink:var(--foreground);--fg:var(--foreground);--mut:var(--muted);--line:var(--border);--accent-ink:var(--accent-fg);--accent-soft:var(--card-2);--ok:var(--success);--ok-soft:var(--success-bg);--warn:var(--warning);--warn-soft:var(--warning-bg);--err:var(--danger);--err-soft:var(--danger-bg);--ai:var(--foreground);--ai-soft:var(--card-2);--serif:var(--font);--sans:var(--font);--space-hair:2px;--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-6:24px}
 *{box-sizing:border-box}
 /* 批次B：body 不再限宽（max-width:1100px 会把「侧栏+内容」压扁）——
    页面总宽改由 .home / .topnav 自身定宽居中（各 1400px），body 只留左右 20px 内边距。 */
@@ -1672,7 +1672,7 @@ button{cursor:pointer;background:var(--accent);color:var(--accent-ink);border:no
 button.secondary{background:var(--panel);color:var(--ink);border:1px solid var(--line)}
 button.danger{background:var(--panel);color:var(--err);border:1px solid var(--err-soft)}
 button.danger:hover{background:var(--err-soft)}
-/* R2⑩：hover 删影保留 translateY（零阴影定案见 DESIGN.md §3.1，阴影例外仅 --shadow-up 已登记；transition 同步清理 box-shadow） */
+/* R2⑩：hover 删影保留 translateY（零阴影定案见 DESIGN.md §3.1；transition 同步清理 box-shadow） */
 button:hover{transform:translateY(-1px)}
 button:active{transform:translateY(1px);box-shadow:none}
 button.secondary:hover{background:var(--bg)}
@@ -1685,12 +1685,10 @@ button:focus-visible,input:focus-visible,a:focus-visible,textarea:focus-visible,
 /* 卡片标题唯一口径（全仓卡片标题只此一处，首页/导出/设置/复盘四页同款）：
    14px/800。font-family 写 var(--font) 而非 var(--serif) —— 两者同族（--serif:var(--font)），零视觉差。 */
 .card-title{font-family:var(--font);font-size:14px;font-weight:800}
-/* doc-card 的 16px 是有意层级（文档标题比卡片标题大一号），单独登记，不是第四档。 */
-.doc-card .card-title{font-size:16px}
 /* 复盘层级（2026-11-05 批 1 §0.2）：主卡 2/3 + 侧卡 1/3。
    主列（.stats-main）承载主卡「评估 ↦ 投递」+ 三分布网格（收窄在 2/3 内，不再满宽铺开）；
    侧卡（.stats-side）合并「状态分布」与「面试参与」两段。
-   间距一律走 §5.1 token；静态层级零阴影（阴影例外仅 --shadow-up 限 .doc-card:hover，§3.1）。 */
+   间距一律走 §5.1 token；静态层级零阴影（§3.1）。 */
 .stats-grid{display:grid;grid-template-columns:2fr 1fr;gap:var(--space-3);align-items:start;margin-top:var(--space-3)}
 .stats-main{display:flex;flex-direction:column;gap:var(--space-3)}
 .stats-dists{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-3)}
@@ -1712,30 +1710,16 @@ button:focus-visible,input:focus-visible,a:focus-visible,textarea:focus-visible,
    —— 不另起 badge--ok 体系，避免两套命名并存。
    不用 white-space:nowrap：长文案徽章（导出页「旧版本 PDF」那条）要能换行，与改前一致。 */
 .badge.ok{background:var(--success-bg);color:var(--success)}.badge.warn{background:var(--warning-bg);color:var(--warning)}.badge.err{background:var(--danger-bg);color:var(--danger)}.badge.ai{background:var(--card-2);color:var(--foreground)}.badge.mute{background:var(--card-2);color:var(--muted)}
-.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:12px 0}
-.stat{border-radius:var(--radius);padding:12px 14px;box-shadow:var(--shadow);border:1px solid var(--line)}
-.stat b{font-size:22px;display:block;font-variant-numeric:tabular-nums}
-.stat span{font-size:12px;color:var(--mut)}
-.stat.s1{background:var(--ai-soft)}.stat.s2{background:var(--accent-soft)}.stat.s3{background:var(--ok-soft)}.stat.s4{background:var(--warn-soft)}
 ul.doclist{list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
-ul.doclist.list-view{grid-template-columns:1fr}
 .group-head{list-style:none;grid-column:1/-1;font-family:var(--serif);font-weight:800;font-size:15px;margin:10px 0 0;padding-bottom:4px;border-bottom:1px solid var(--line);color:var(--mut)}
 .diff-line{padding:3px 8px;border-radius:6px;margin:2px 0;font-size:13px}
 .diff-line.same{color:var(--mut)}
 .diff-line.del{background:var(--err-soft);text-decoration:line-through}
 .diff-line.ins{background:var(--ok-soft)}
 footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
-/* 任务卡（2026-11-05 批 1 §0.2：hero 退役后的首屏主行动，三态=草稿继续/从零建简历/为岗位定制简历）；
-   间距引用 §5.1 token，不新增间距档；主行动仍用 .cta 实底。 */
-.taskcard{margin:0 0 var(--space-3)}
-.taskcard .task-acts{display:flex;gap:var(--space-2);flex-wrap:wrap;align-items:center}
-/* 徽章在 gap 容器内必须归零自带右距（DESIGN.md §5.3：否则 gap+6px 双倍计距）；
-   只作用于本容器——行内容器里的徽章仍靠 6px 右距分隔（徽章后分隔的唯一机制，全站 43 处在用）。 */
-.taskcard .task-acts .badge{margin-right:0}
-.taskcard .task-side{margin-top:var(--space-2);display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap}
 /* 网申包页（2026-11-06 批 3 §4 卡片 b3c2）：字段行 + 三态徽章 + 操作行。
-   间距一律 --space-* token（§5.1）；圆角 --radius（§5.2）；零 box-shadow（§3.1 静态层级零投影，阴影例外仅 --shadow-up 限 .doc-card:hover）；
-   字号只取既有档（§4.1：12px 表单标签/元数据、13px 面板正文与输入），不新增档位。 */
+   间距一律 --space-* token（§5.1）；圆角 --radius（§5.2）；零 box-shadow（§3.1 静态层级零投影）；
+   字号只取既有档（§4.1：12px 表单标签与元数据、13px 面板正文与输入），不新增档位。 */
 .ap-sec{margin:0 0 var(--space-4)}
 .ap-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:var(--space-3);margin-top:var(--space-3)}
 .ap-row{border:1px solid var(--line);border-radius:var(--radius);padding:var(--space-3);background:var(--panel);display:flex;flex-direction:column;gap:var(--space-2)}
@@ -1792,8 +1776,6 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .cta{display:inline-block;background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--radius);padding:9px 16px;font-weight:700;font-size:14px;cursor:pointer}
 .cta:hover{transform:translateY(-1px)}
 .cta-alt{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:var(--radius);padding:9px 14px;font-weight:600;font-size:13px;cursor:pointer}
-.statusline{margin-top:12px;font-size:13px;line-height:1.7;color:var(--mut)}
-.statusline .sep{margin:0 8px;color:var(--line)}
 /* 搜索行（S2-T6 窄屏修复）：整行可换行 + 输入框可收缩到 0，按钮/链接标签一律 nowrap。
    390px 下「▤ 切换」曾被 flex 挤到 min-content 而竖排成 3 行；只加 nowrap 会把整行顶出横向溢出，
    故同时放开换行——窄屏自然折成两行（搜索+切换 / 归档），宽屏视觉与改前逐像素一致。 */
@@ -1806,11 +1788,7 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .kb-col .group-head{margin-top:0}
 .tablewrap{overflow-x:auto}
 @media (max-width:600px){.kb{flex-direction:column;overflow-x:visible}.kb>div{min-width:0!important;width:100%}}
-@media(hover:hover) and (pointer:fine){
-.doc-card{transition:transform .25s,box-shadow .25s}
-.doc-card:hover{transform:perspective(900px) rotateX(2deg) rotateY(-2px) translateY(-3px);box-shadow:var(--shadow-up)}}
-.doc-card:focus-within{outline:2px solid var(--accent);outline-offset:2px}
-@media(prefers-reduced-motion:reduce){.doc-card{transition:none!important}.doc-card:hover{transform:none!important}button{transition:none!important}button:hover,button:active{transform:none!important}}
+@media(prefers-reduced-motion:reduce){button{transition:none!important}button:hover,button:active{transform:none!important}}
 /* 渐进呈现 T3 首页三态（2026-11-12）：状态点 / 起步卡 / 继续卡 / 文档行 / 待办列表 / 底部入口行。
    间距一律 §5.1 token（与 --space-* 档重合的值写 var()；6px/10px/14px/18px/20px/34px/44px/48px 等
    不在档内的留字面值——档内替换按 T3 简报「凡等于 4/8/12/16/24 一律 token」执行）。 */
@@ -1830,7 +1808,7 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .docrow{display:flex;align-items:center;gap:14px;padding:10px var(--space-4);flex-wrap:wrap}
 .docrow+.docrow{border-top:1px solid var(--line)}
 .docrow .tx{flex:1;min-width:0}
-.docrow .nm{font-weight:600;font-size:13px}
+.docrow .nm{font-weight:600;font-size:13px;overflow-wrap:anywhere}
 .docrow .mt{font-size:12px;color:var(--mut);overflow-wrap:anywhere}
 .docrow .ops{margin-left:auto;display:flex;gap:14px}
 .docrow .ops a{font-size:12px;color:var(--mut)}
@@ -2137,21 +2115,15 @@ function listPage(showArchived = false) {
   // archived 独立标记（不混入 flow）：home 默认隐藏，?archived=1 切换显示（S1-T8）
   const isArchived = (did) => !!((meta[did] || {}).archivedAt);
   const infos = [...docInfoMap.values()].filter(Boolean).filter((d) => showArchived || !isArchived(d.id));
-  const activeApps = loadApps().filter((a) => !APP_TERMINAL.includes(a.status)).length;
-  const { active, profiles } = loadProfiles(root);
-  // 陈旧计数按 staleInfo（渲染标识），mtime 不参与；PDF 摘要单 chip 三态 = fresh/stale/none 计数
+  const allApps = loadApps();   // 投递表读一次：状态派生/待办/状态点/近期日程共用
+  // 陈旧判定按 staleInfo（渲染标识），mtime 不参与；siMap 每文档算一次，待办与文档行查表复用。
   const siState = (d) => staleInfo(meta[d.id] || {}, { renderInputId: d.renderInputId, pdfExists: fs.existsSync(pdfPath(d.id)) }).state;
-  const degradedCount = infos.filter((d) => d.degraded).length;
-  const pdfStates = infos.map(siState);
-  const pdfFresh = pdfStates.filter((s) => s === 'fresh').length;
-  const pdfStale = pdfStates.filter((s) => s === 'stale').length;
-  const pdfNone = pdfStates.length - pdfFresh - pdfStale;
-  const jobDocs = infos.filter((d) => meta[d.id] && (meta[d.id].parent || meta[d.id].job));
+  const siMap = new Map(infos.map((d) => [d.id, siState(d)]));
   // 母版 = 非岗位版文档（无 parent/job）。与 jobCard 空态（infos.length===0）刻意不同：
   // 只剩已投递岗位稿时「有母版」不成立——此时任务卡应指回「从零建简历」而非开一张选不到母版的定制表单。
   const hasMaster = infos.some((d) => { const m = meta[d.id] || {}; return !m.parent && !m.job; });
   const nowMs = Date.now();
-  const upcoming = loadApps().filter((a) => {
+  const upcoming = allApps.filter((a) => {
     if (APP_TERMINAL.includes(a.status)) return false;
     const due = a.dueDate ? new Date(a.dueDate).getTime() : null;
     if (due && due - nowMs < 48 * 3600 * 1000) return true;   // 已逾期或 48h 内到期（逾期不清零）
@@ -2181,31 +2153,11 @@ function listPage(showArchived = false) {
         <span class="badge">${escHtml(statusLabel(String(it.app.status || '')))}</span>
       </a>`).join('')}
     </div>` : '';
-  // 岗位状态徽章 = 全部派生（S1-T8）：已投递 ← applications.json（权威）；可投递 ← flow+冲突+stale 三条件；其余按 flow
-  const allApps = loadApps();   // 投递表读一次（首页每张卡都要用）
-  const jobStatusBadge = (id) => {
-    const m = meta[id] || {};
-    if (deliveredRefs(id, allApps).length) return badge('ai', '已记录投递', 'circle-check');
-    const f = flowOf(m);
-    if (f === 'reviewed') return deliverableNow(id, m, docInfoMap.get(id))
-      ? badge('ok', '可投递')
-      : badge('warn', '已审阅·PDF 未同步');
-    return f === 'reviewing' ? badge('warn', '审阅中') : badge('warn', '草稿');
-  };
-  const drafts = jobDocs
-    .filter((d) => !deliveredRefs(d.id, allApps).length)   // 已投递 = 派生自 applications.json（权威来源），不再读存储状态
-    .sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 4);
   // 「继续上次任务」回退链数据源：最近 mtime 排序（浏览器端再按 localStorage['resume-last-active-doc'] 优先）
   const byMtime = [...infos].sort((a, b) => b.mtimeMs - a.mtimeMs);
   const fallbackId = byMtime.length ? byMtime[0].id : '';
   const docIds = byMtime.map((d) => d.id);
   const docTitles = Object.fromEntries(byMtime.map((d) => [d.id, d.title]));
-  // S4a-T5：重点 chips 建议值 = 素材 tags 聚合（首版不做历史 brief 聚合）
-  const tagCount = new Map();
-  for (const mt of loadMats()) for (const t of (Array.isArray(mt.tags) ? mt.tags : [])) if (typeof t === 'string' && t.trim()) tagCount.set(t.trim(), (tagCount.get(t.trim()) || 0) + 1);
-  const tagChips = [...tagCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)
-    .map(([t]) => `<button type="button" class="chip" data-tag="${escAttr(t)}">${escHtml(t)}</button>`).join('');
-  const latestDraft = drafts[0] || null;
   // ===== 渐进呈现 T3（2026-11-12）：首页按数据状态渲染三态 ——
   //   0 起步态（磁盘无任何文档）：起步卡两张（导入现有 PDF / 从零开始分步向导），无列表无搜索；
   //   1 有文档无投递：「继续」hero（最近文档 + 回退链 continueBtn，契约同前）+ 岗位定制引导（有母版时）
@@ -2216,11 +2168,11 @@ function listPage(showArchived = false) {
   const homeState = infos.length === 0 ? 0 : (hasApps ? 2 : 1);
   const fuDays = followUpDays(root);
   const fuDueApps = hasLLM(root) ? allApps.filter((a) => !APP_TERMINAL.includes(a.status) && followUpState(a, { nowMs, thresholdDays: fuDays }).due) : [];
-  const staleDocs = infos.filter((d) => siState(d) === 'stale');
+  const staleDocs = infos.filter((d) => siMap.get(d.id) === 'stale');
   const todoItems = [
-    ...staleDocs.slice(0, 3).map((d) => ({ dot: 'ready', t: `「${d.title}」的 PDF 不是最新`, act: `/export?id=${d.id}`, actLabel: '重新导出' })),
+    ...staleDocs.slice(0, 3).map((d) => ({ dot: 'ready', t: `「${d.title}」的 PDF 不是最新`, act: `/export?id=${escAttr(d.id)}`, actLabel: '重新导出' })),
     ...fuDueApps.slice(0, 3).map((a) => ({ dot: 'sent', t: `${escHtml(a.company || '')} 已过 ${fuDays} 天无回应，可以写一句跟进`, act: `/app?id=${escAttr(a.id)}`, actLabel: '起草跟进语' })),
-    ...infos.filter((d) => d.degraded).slice(0, 2).map((d) => ({ dot: 'draft', t: `「${d.title}」还没整理成结构化简历`, act: `/edit?id=${d.id}`, actLabel: '去整理' })),
+    ...infos.filter((d) => d.degraded).slice(0, 2).map((d) => ({ dot: 'draft', t: `「${d.title}」还没整理成结构化简历`, act: `/edit?id=${escAttr(d.id)}`, actLabel: '去整理' })),
   ];
   // 状态点口径 = 原岗位徽章同源派生（S1-T8）：已投递 ← applications.json（权威）；可投递 ← flow+冲突+stale；其余草稿。
   const docStatus = (id) => {
@@ -2234,15 +2186,15 @@ function listPage(showArchived = false) {
     const m = meta[d.id] || {};
     const tag = m.tag || '';
     const [dc, sl] = docStatus(d.id);
-    const si = siState(d);
+    const si = siMap.get(d.id);
     // id 与标签进元信息行（原 doc-card 同款可见口径）：搜索契约「标题/id/标签」按行文本过滤；
     // tag 可见性也是 /tag 打标回显的既有契约（岗位草稿 tag=company·role 派生）。
     const sub = (m.parent ? '基于母版 · ' : '') + `${d.id} · 更新于 ${d.mtime}`;
     return `<div class="docrow"><span class="doc-thumb"><i></i><i></i><i></i><i></i><i></i></span>
     <div class="tx"><div class="nm">${d.title}</div><div class="mt">${escHtml(sub)}${si === 'stale' ? ' · PDF 不是最新' : ''}${d.degraded ? ' · 待整理' : ''}${m.archivedAt ? ' · 已归档' : ''}${tag ? ' · ' + escHtml(tag) : ''}</div></div>
     <span class="st"><i class="dot dot-${dc}"></i>${sl}</span>
-    <div class="ops"><a href="/edit?id=${encodeURIComponent(d.id)}">编辑</a><a href="/export?id=${escAttr(d.id)}">导出</a>
-    <details class="more" style="display:inline"><summary style="display:inline;cursor:pointer;color:var(--mut)">⋯</summary>
+    <div class="ops"><a href="/edit?id=${escAttr(d.id)}">编辑</a><a href="/export?id=${escAttr(d.id)}">导出</a>
+    <details class="more"><summary style="display:inline;cursor:pointer;color:var(--mut)" aria-label="更多操作">⋯</summary>
     <div style="margin-top:var(--space-1);font-size:13px;display:flex;gap:10px;flex-wrap:wrap">
     <a href="/pdf?id=${escAttr(d.id)}" target="_blank">最新PDF</a><a href="/snapshots?id=${escAttr(d.id)}">历史版本</a><a href="/diff?base=${escAttr(d.id)}">对比</a>
     ${m.parent ? `<a href="/diff?base=${escAttr(m.parent)}&to=${escAttr(d.id)}">对比母版</a>` : ''}
@@ -2255,8 +2207,9 @@ function listPage(showArchived = false) {
     <form method="post" action="/delete?id=${escAttr(d.id)}" style="display:inline" data-action="confirmSubmit" data-msg="${escAttr('确认删除 ' + d.id + '？快照会保留')}"><button class="danger">删除</button></form>
     </div></details></div></div>`;
   };
-  // 行序：母版在前、岗位版在后，同层按 mtime 倒序（最新优先）
-  const sortedRows = [...infos].sort((a, b) => ((meta[b.id] || {}).parent ? 0 : 1) - ((meta[a.id] || {}).parent ? 0 : 1) || b.mtimeMs - a.mtimeMs).map(docRow).join('');
+  // 行序：母版在前、岗位版（parent 或 job，与 hasMaster 口径一致）在后，同层按 mtime 倒序（最新优先）
+  const isJobDoc = (id) => { const m = meta[id] || {}; return !!(m.parent || m.job); };
+  const sortedRows = [...infos].sort((a, b) => (isJobDoc(a.id) ? 1 : 0) - (isJobDoc(b.id) ? 1 : 0) || b.mtimeMs - a.mtimeMs).map(docRow).join('');
   // ===== 三态公共件：上传区（#up 三态都在）、底部入口行、搜索行、文档行列表卡 =====
   const uploadBox = `<details class="import-box"><summary style="cursor:pointer">导入 PDF</summary>
     <form id="up" style="margin-top:var(--space-2)"><input type="file" id="upfile" accept="application/pdf" aria-label="选择 PDF 文件"><button>导入</button><span id="upmsg" role="status"></span></form></details>`;
@@ -2270,13 +2223,15 @@ function listPage(showArchived = false) {
     <a href="${showArchived ? '/' : '/?archived=1'}">${showArchived ? '隐藏已归档' : '显示已归档'}</a></div>`;
   const searchRow = `<div class="searchrow"><input id="searchBox" placeholder="搜索文档（标题/id/标签）" aria-label="搜索文档"></div>`;
   const docListCard = (rows) => `<div class="card" id="doclistCard">${rows}
-    <div class="docrow search-empty" style="display:none">没有匹配「<span class="q"></span>」的文档。<button type="button" class="secondary" id="clearSearch">清除搜索</button></div></div>`;
+    <div class="docrow search-empty" style="display:none"><span class="tx">没有匹配「<span class="q"></span>」的文档。</span><button type="button" class="secondary" id="clearSearch">清除搜索</button></div></div>`;
   const inner = homeState === 0
-    ? `<div class="home-start"><h1>建你的第一份简历</h1><p style="color:var(--mut);font-size:13px">一份母版，按岗位出不同版本。数据只存在这台机器上。</p></div>
+    ? `${corruptBanner()}
+    <div class="home-start"><h1>建你的第一份简历</h1><p style="color:var(--mut);font-size:13px">一份母版，按岗位出不同版本。数据只存在这台机器上。</p></div>
     <div class="start-cards">
       <div class="card start-card"><span class="doc-thumb" style="width:34px;height:34px;padding:var(--space-2)"><i></i><i></i><i></i></span><h3>导入现有简历</h3><p>拖入 PDF，自动整理成可编辑的简历</p>${uploadBox}</div>
       <a class="card start-card" href="/onboarding/guided"><span class="doc-thumb" style="width:34px;height:34px;padding:var(--space-2)"><i></i><i></i><i></i></span><h3>从零建简历</h3><p>从零开始分步填写，每步可跳过，写完就是完整简历</p></a>
-    </div>`
+    </div>
+    ${docs.length ? `<div class="foot-links" style="justify-content:center"><a href="${showArchived ? '/' : '/?archived=1'}">${showArchived ? '隐藏已归档' : '显示已归档'}</a></div>` : ''}`
     : homeState === 1
       ? `${corruptBanner()}
     <h1>继续</h1>
@@ -2287,16 +2242,17 @@ function listPage(showArchived = false) {
         <div style="display:flex;gap:var(--space-2);margin-top:14px"><a class="cta" id="continueBtn" href="/edit?id=${encodeURIComponent(fallbackId)}" data-fallback="${escAttr(fallbackId)}" data-doc-ids='${jsonAttr(docIds)}' data-doc-titles='${jsonAttr(docTitles)}'>继续编辑</a><a class="cta-exp" href="/export?id=${escAttr(fallbackId)}">导出 PDF</a></div></div></div>
     ${hasMaster ? `<div class="card" style="margin-top:var(--space-4);padding:14px var(--space-4);display:flex;align-items:center;gap:var(--space-3)"><div style="flex:1"><b style="font-size:13px">要投某个岗位？</b><div style="font-size:12px;color:var(--mut)">按 JD 生成一份定制副本，母版不动</div></div><a href="/job/new" style="font-size:13px">为岗位定制 →</a></div>` : ''}
     <h1 style="margin-top:var(--space-6)">全部简历</h1>
-    ${searchRow}${docListCard(sortedRows || `<div class="docrow" style="color:var(--mut)">没有可显示的文档——可能都已归档。<a href="/?archived=1">查看已归档</a></div>`)}
-    ${footLinks(false)}${agendaCard}`
+    ${searchRow}${docListCard(sortedRows)}
+    ${footLinks(false)}`
       : `${corruptBanner()}
     ${todoItems.length ? `<h1>待办</h1><div class="card"><ul class="todo-list">${todoItems.map((i) => `<li><i class="dot dot-${i.dot}"></i><span class="t">${i.t}</span><a class="act" href="${i.act}">${i.actLabel}</a></li>`).join('')}</ul></div>` : ''}
-    <h1 style="margin-top:var(--space-6)">简历</h1>
+    <h1${todoItems.length ? ' style="margin-top:var(--space-6)"' : ''}>简历</h1>
     ${searchRow}${docListCard(sortedRows)}
     ${footLinks(hasMaster)}${agendaCard}`;
   return page('简历工作台', `${inner}
     <script nonce="__CSP_NONCE__">
-      document.getElementById('up').addEventListener('submit', async function (e) {
+      var up = document.getElementById('up');
+      if (up) up.addEventListener('submit', async function (e) {
         e.preventDefault();
         var f = document.getElementById('upfile').files[0];
         if (!f) return;
@@ -3991,7 +3947,7 @@ function onboardingPage(state) {
    缩略图 = A4 页面按比例缩放进固定框（尺寸字面值只落在本行的自定义属性上，规则里只引用变量）；
    缩放随框宽自适应（框宽/页宽，上限 --ob-thumb-scale）——卡宽随机型栅格随视口收窄，固定缩放会在
    ≤1250px 视口把页面右栏裁掉（缩略图是「双栏紧凑 vs 杂志展示」的唯一对比依据，2026-11-06 复核阻断项）；
-   框高固定，可见页顶比例随之变大；零投影：选中态 = 边框色 + 底色差（DESIGN.md §3.1 阴影例外仅 --shadow-up）。 */
+   框高固定，可见页顶比例随之变大；零投影：选中态 = 边框色 + 底色差（DESIGN.md §3.1 静态层级零阴影）。 */
 .ob-tpick{--ob-page-w:794px;--ob-page-h:1123px;--ob-thumb-h:158px;--ob-thumb-scale:.35;margin:var(--space-4) 0}
 .ob-tcards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:var(--space-3)}
 .ob-tcard{display:flex;flex-direction:column;gap:var(--space-2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--space-3);background:var(--card);cursor:pointer}

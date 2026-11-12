@@ -5391,11 +5391,11 @@ assert(badge.includes('padding:3px 11px;font-size:12px'),
   '.badge 应与 .chip 同款 12px + 3px 11px（同档前提，高差才 ≤1px），实际: ' + badge);
 assert(!badge.includes('min-height'), '.badge 高度由盒模型决定（≈25.2px），不得挂 min-height');
 // gap 容器内的徽章必须归零自带右距（DESIGN.md §5.3：徽章自带 margin-right 是徽章后分隔的唯一机制，
-// 放进 gap 容器会变成 gap+6px 双倍计距）。首页任务卡操作行 .taskcard .task-acts 是批 1 新增的 gap 容器，
+// 放进 gap 容器会变成 gap+6px 双倍计距）。首页近期日程卡的行链接是 inline gap 容器（gap:var(--space-2)），
 // 故在此钉死归零规则；行内容器里的徽章仍保留 6px 右距（真渲染量测见 test-home-task-badge.mjs）。
-const taskBadge = rule('.taskcard .task-acts .badge');
-assert(taskBadge.includes('margin-right:0'),
-  '任务卡 gap 容器内徽章须 margin-right:0（§5.3 双倍计距禁令），实际: ' + taskBadge);
+const agendaBadge = rule('#upcomingAgenda .badge');
+assert(agendaBadge.includes('margin-right:0'),
+  '日程卡 gap 容器内徽章须 margin-right:0（§5.3 双倍计距禁令），实际: ' + agendaBadge);
 const btn = rule('button');
 assert(btn.includes('min-height:32px'), '全局 button{min-height:32px} 是 §5.3 chip 收口的对抗前提，不得静默改动');
 
@@ -5546,7 +5546,7 @@ assert(srv.includes('图文简历可忽略'), '字符量告警应带阈值与原
 assert(srv.includes('const byDocLabel = (k) => { const di = docInfo(k, meta[k]); return di ? `${di.title}（${escAttr(k)}）` : escHtml(k); };'),
   'byDoc 键应映射为「标题（id）」，已删文档回退裸 id');
 assert(srv.includes('${byDocLabel(k)}'), '「按简历版本」渲染应走 byDocLabel');
-// ⑩ button:hover 删影保留 translateY（零阴影定案，阴影例外仅 --shadow-up 已登记 DESIGN.md §3.1），transition 清理 box-shadow
+// ⑩ button:hover 删影保留 translateY（零阴影定案 DESIGN.md §3.1；--shadow-up 例外已随 doc-card 退役删除），transition 清理 box-shadow
 // （范围=卡片点名的 button 全局规则；.cta 等既有独立规则不在本卡范围，不顺手改）
 assert(srv.includes('button:hover{transform:translateY(-1px)}'), 'button:hover 应删影保留 translateY');
 assert(!/button:hover\{[^}]*box-shadow/.test(srv), 'button:hover 规则内不得再有 box-shadow');
@@ -5602,7 +5602,7 @@ assert(srv.includes('<div class="stats-main">') && srv.includes('<div class="sta
 assert(srv.includes('<div class="card stats-side">'), '侧卡应为 .stats-side（状态分布 + 面试参与合并）');
 // ③ 旧满宽分布网格退场
 assert(!srv.includes('minmax(220px,1fr)'), '旧满宽三分布网格（minmax(220px,1fr)）应退场');
-// ④ 纪律：新写规则的间距一律走 --space-* token（§5.1），静态层级零阴影（§3.1 阴影例外仅 --shadow-up 限 .doc-card:hover）
+// ④ 纪律：新写规则的间距一律走 --space-* token（§5.1），静态层级零阴影（§3.1）
 const rules = ['.stats-grid', '.stats-main', '.stats-dists', '.stats-sec']
   .map((s) => (srv.match(new RegExp(s.replace('.', '\\.') + '\\{[^}]*\\}')) || [''])[0]).join(' ');
 const spacingLit = (text) => (text.match(/\b(?:margin|padding|gap)(?:-[a-z]+)?\s*:\s*[^;}"]*\d+(?:\.\d+)?px/g) || []);

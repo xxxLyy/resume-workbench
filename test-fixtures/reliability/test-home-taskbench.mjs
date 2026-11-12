@@ -241,7 +241,7 @@ try {
     assert.ok(ctaHover.includes('translateY(-1px)'),
       '.cta:hover 应保留位移反馈（删影留位移），实际: ' + ctaHover);
     assert.ok(!ctaHover.includes('box-shadow'),
-      '.cta:hover 不得有 box-shadow（§3.1 阴影例外仅 --shadow-up），实际: ' + ctaHover);
+      '.cta:hover 不得有 box-shadow（§3.1 静态层级零阴影），实际: ' + ctaHover);
   }
 
   console.log('✅ 首页三态台面（退役标记清零 + 起步/继续/待办三态 + 行式列表 + 状态点 + 回退链契约 + ⋯ 全量操作 + T3 CSS 钉值）');

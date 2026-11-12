@@ -450,7 +450,7 @@ try {
     const apRules = srv.split('\n').filter((l) => { const t = l.trim(); return t.startsWith('.ap-') && t.includes('{'); });
     assert.ok(apRules.length > 0, '应有 .ap-* 样式规则（网申包页样式）');
     for (const line of apRules) {
-      assert.ok(!/box-shadow/.test(line), '应用页新写规则不得有 box-shadow（§3.1 阴影例外仅 --shadow-up 限 .doc-card:hover），实际：' + line.trim());
+      assert.ok(!/box-shadow/.test(line), '应用页新写规则不得有 box-shadow（§3.1 静态层级零阴影），实际：' + line.trim());
       assert.ok(!/border-radius:\s*\d/.test(line), '圆角必须走 --radius/--radius-lg token（§5.2），实际：' + line.trim());
       const badSpacing = line.match(/(?:padding|margin|gap)(?:-(?:top|right|bottom|left))?:\s*[^;{}]*\d+px/g) || [];
       assert.deepEqual(badSpacing, [], '新写规则的间距必须用 --space-* token（§5.1），实际：' + JSON.stringify(badSpacing) + ' @ ' + line.trim());

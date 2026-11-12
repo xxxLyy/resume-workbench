@@ -2880,6 +2880,27 @@ try {
   if (!vt) bad('首页缺 #searchBox（窄屏搜索行结构变了，需同步本断言）');
   else if (vt.right > vt.inner - 1 || vt.w < 120) bad(`窄屏搜索输入框越界或过窄（right=${vt.right} w=${vt.w} inner=${vt.inner}）`);
   else ok(`窄屏搜索输入框单行不越界（宽 ${vt.w}px）`);
+  // 14c 搜索过滤交互（T3 行式列表唯一过滤面）：无命中词 → 全行隐藏+空态行出 → #clearSearch 恢复
+  const srch = await narrow.evaluate(() => {
+    const box = document.getElementById('searchBox');
+    if (!box) return { missing: true };
+    const rows = () => [...document.querySelectorAll('#doclistCard .docrow:not(.search-empty)')];
+    const em = () => document.querySelector('#doclistCard .search-empty');
+    const total = rows().length;
+    box.value = 'zz-no-such-doc-zz'; box.dispatchEvent(new Event('input'));
+    const hidden = rows().filter((r) => r.style.display === 'none').length;
+    const e = em();
+    const emptyShown = !!(e && e.style.display !== 'none');
+    const qText = e && e.querySelector('.q') ? e.querySelector('.q').textContent : '';
+    const clr = document.getElementById('clearSearch'); if (clr) clr.click();
+    const restored = rows().filter((r) => r.style.display !== 'none').length;
+    const emptyHidden = !(em() && em().style.display !== 'none');
+    return { total, hidden, emptyShown, qText, restored, emptyHidden, cleared: box.value === '' };
+  });
+  if (srch.missing || srch.total < 1) bad('搜索过滤夹具前置失败：缺 #searchBox 或文档行', JSON.stringify(srch));
+  else if (srch.hidden !== srch.total || !srch.emptyShown || srch.qText !== 'zz-no-such-doc-zz') bad('无命中词应隐藏全部文档行并显示空态行（带回显词）', JSON.stringify(srch));
+  else if (!srch.cleared || srch.restored !== srch.total || !srch.emptyHidden) bad('clearSearch 应清空输入、恢复全部行并收起空态行', JSON.stringify(srch));
+  else ok(`搜索过滤交互（无命中 → ${srch.total} 行全隐藏+空态回显词 → clearSearch 清空恢复）`);
   await narrow.goto(`${base}/applications`, { waitUntil: 'networkidle' });
   const kb = await narrow.evaluate(() => ({ scrollW: document.documentElement.scrollWidth, inner: window.innerWidth }));
   if (kb.scrollW > kb.inner + 1) bad(`窄屏看板横向溢出 scrollW=${kb.scrollW}（应纵向堆叠）`); else ok('窄屏看板纵向堆叠不溢出');
