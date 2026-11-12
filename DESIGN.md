@@ -528,7 +528,7 @@ FIELDS（editor-shell.js） → typoCss(v) → #typo-custom（落盘进 <head>�
 
 > 用户裁决：双轨并行实测对比。轨 A 书签（POC 已验证：隐藏表单 POST 渲染好的页面 HTML 到本机，绕开目标站 CSP/反爬/登录墙）；轨 B Boss 会话（playwright 持久 profile 扫码登录 → 服务端带会话抓详情页）。两轨共用 `extractJd` 提取与「预览→带入 /job/new」出口。
 
-- **`/import/page`（POST）零写盘**：吃 urlencoded `html/url/title`（html ≤8MB），提取结果只进响应预览页；无文件无 meta 无副作用。CORS `Access-Control-Allow-Origin:*` + OPTIONS 预检回 `Access-Control-Allow-Private-Network:true`（https→localhost PNA）。
+- **`/import/page`（POST）零写盘**：吃 urlencoded `html/url/title`（html ≤8MB），提取结果只进响应预览页；无文件无 meta 无副作用。OPTIONS 预检放行（`Access-Control-Allow-Private-Network:true` 等，https→localhost PNA）；POST 响应**不带 ACAO**——表单导航无需 CORS，跨站 fetch 读不到预览（母版清单不跨站暴露）。
 - **`extractJd(html,url)` 三层级**：站点表（zhipin 优先 `_jobInfo` 内嵌对象+`.job-sec-text`/`.company-name`，liepin/lagou/51job/zhaopin 备选择器未实测）→ JSON-LD `JobPosting` → body 纯文本兜底（8000 字符，与远程抓取 4000 分口径）。
 - **`POST /job/new` 预填**：预览页表单携带 jd/company/role/jdLink/from → /job/new 渲染预填表单；GET 与提交管线零变化，jdSource=原链接复用查重指纹。
 - **书签交付**：/job/new 链接区渲染 `javascript:` 可拖书签（action=当次实际端口 /import/page；target=_blank 隐藏表单 POST——fetch 会被目标站 CSP connect-src 拦，表单导航不会）。

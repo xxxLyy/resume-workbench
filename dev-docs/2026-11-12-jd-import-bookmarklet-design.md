@@ -25,7 +25,7 @@
 ### 2.2 端点 `POST /import/page`
 
 - 收 urlencoded body：`html`（≤ 8MB 截断保护）、`url`、`title`。零写盘、零存储——提取结果只进响应页。
-- 响应头：`Access-Control-Allow-Origin: *`；`OPTIONS` 预检回 `Access-Control-Allow-Private-Network: true` + 常规 CORS 头（https→localhost 的 PNA 要求，表单导航虽不依赖但 fetch 类调用方可能走预检，统一放行）。
+- 响应头：POST 响应**不带** `Access-Control-Allow-Origin`——表单导航+`target=_blank` 不依赖 CORS，不带 ACAO 让跨站 fetch 读不到预览（预览含母版简历清单，跨站暴露即信息泄漏；T2 复核返工订正）；`OPTIONS` 预检回 `Access-Control-Allow-Private-Network: true` + 常规 CORS 头（https→localhost 的 PNA 要求，预检放行无害）。
 - 跑 `extractJd(html, url)` → 渲染「提取结果」页：来源/标题/公司/岗位/JD 长度/JD 全文预览（全部 escHtml）；页底一个表单：隐藏字段 `jd`/`company`/`role`/`jdLink`(=来源url) + 母版 select（在盘未归档文档，同 jobNewPage 口径；选中值以 `from` 字段随行）+ 提交按钮「带去定制」POST 到 `/job/new`。
 - 提取失败（JD < 50 字符）：预览页如实显示「没提到 JD」+ 两个备选动作（回 JD 页复制全文粘贴 / 确认用兜底文本）。
 
@@ -38,7 +38,7 @@
 2. **JSON-LD `JobPosting`**：扫 `application/ld+json`，取 `description`/`title`/`hiringOrganization.name`。
 3. **body 兜底**：剥 script/style/标签取纯文本，截 8000 字符（与 fetchPageText 4000 的既有口径区分——书签递交的是已验证人工可见页面，给更长额度）。
 
-返回 `{company, role, jd, via}`（via ∈ site-jsonld/site-selectors/jobposting/body-fallback），预览页显示 via 便于诊断。
+返回 `{company, role, jd, via}`（via ∈ site-selectors/json-ld/body——与实现一致；`site-jsonld` 永不可达故删），预览页显示 via 便于诊断。
 
 ### 2.4 轨 B：Boss 会话（zhipin 专属通道）
 

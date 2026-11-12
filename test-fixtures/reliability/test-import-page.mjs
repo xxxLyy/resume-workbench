@@ -5,7 +5,8 @@
 //   ② jsonld fixture → via=json-ld；
 //   ③ plain fixture → via=body + jd 非空；
 //   ④ OPTIONS /import/page → 204 + ACAO/Allow-Methods/Allow-Headers/Allow-Private-Network 四头；
-//   ⑤ POST 响应含 Access-Control-Allow-Origin；
+//   ⑤ POST 响应【不】含 Access-Control-Allow-Origin（保护钉：表单导航不依赖 CORS，
+//      带 ACAO 反而让跨站 fetch 读得到预览——母版简历标题清单不跨站暴露；T2 复核返工）；
 //   ⑥ 9MB html → 不炸、截断提取（200 + 截断提示）；
 //   ⑦ XSS：<img src=x onerror=alert(1)> 递交后预览页不出现 onerror 原文（剥离后文本，非回显原文）；
 //   ⑧ 表单含 name=jd/company/role/jdLink/from（带去定制的契约字段）。
@@ -102,8 +103,8 @@ try {
   if (h.get('access-control-allow-headers') !== 'Content-Type') fail('OPTIONS Allow-Headers 错：' + h.get('access-control-allow-headers'));
   if (h.get('access-control-allow-private-network') !== 'true') fail('OPTIONS Allow-Private-Network 错：' + h.get('access-control-allow-private-network'));
 
-  // ===== ⑤ POST 响应带 ACAO（fetch 类调用方需要；表单导航本身不需要）=====
-  if (r1.headers.get('access-control-allow-origin') !== '*') fail('POST 响应缺 ACAO:*');
+  // ===== ⑤ POST 响应不带 ACAO（保护钉）=====
+  if (r1.headers.get('access-control-allow-origin') !== null) fail('POST 响应不应带 ACAO（跨站 fetch 会读到母版清单）：' + r1.headers.get('access-control-allow-origin'));
 
   // ===== ⑥ 9MB html → 不炸、截断提取（urlencoded 主体 <10MB 共享上限 → 解析后 html 切 8MB）=====
   const big = '<html><body><p>' + 'a'.repeat(9 * 1024 * 1024) + '</p></body></html>';
@@ -125,7 +126,7 @@ try {
     if (!b1.includes(f)) fail('表单缺契约字段：' + f);
   }
 
-  console.log('✅ import-page：zhipin site-selectors(公司/岗位/JD 260+) / json-ld / body 三层级命中；OPTIONS 四头；ACAO；9MB 截断；XSS 剥离；表单五字段');
+  console.log('✅ import-page：zhipin site-selectors(公司/岗位/JD 260+) / json-ld / body 三层级命中；OPTIONS 四头；POST 无 ACAO；9MB 截断；XSS 剥离；表单五字段');
 } finally {
   cleanup();
 }

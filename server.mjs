@@ -256,12 +256,15 @@ function extractJd(html, url) {
   let company = '', role = '', jd = '', via = '';
   const pick = (re) => { const m = src.match(re); return m ? htmlToText(m[1]) : ''; };
 
-  // 层级 1：站点表。zhipin 先挖 `var _jobInfo = {…}` 内嵌对象（key:'val' 正则级取值，非 JSON）；
-  // 选择器：jd 候选取首个剥离后 ≥50 字符者，role/company 取首个命中。
-  const site = JD_SITE_RULES.find((s) => link.includes(s.host));
+  // 层级 1：站点表。host 精确匹配（new URL 解析）：host === rule.host 或其子域——
+  // includes 会误中 notzhipin.com 类域名；URL 解析失败按不含处理（空串/相对路径/垃圾输入 → 落下一层）。
+  let pageHost = '';
+  try { pageHost = new URL(link).hostname || ''; } catch {}
+  const site = JD_SITE_RULES.find((s) => pageHost === s.host || pageHost.endsWith('.' + s.host));
   if (site) {
     if (site.jobInfoVar) {
       const vi = src.indexOf(site.jobInfoVar);
+      // _jobInfo 实测为平铺键值对 → lazy 到首个 } 截块成立；若未来含嵌套对象会提前截断，届时再修。
       const block = vi >= 0 ? (src.slice(vi).match(/\{[\s\S]*?\}/) || [])[0] : '';
       if (block) {
         const field = (k) => { const m = block.match(new RegExp("(?:^|[,\\s{])" + k + "\\s*:\\s*(['\"])([\\s\\S]*?)\\1")); return m ? htmlToText(m[2]) : ''; };
@@ -4629,7 +4632,9 @@ async function handler(req, res) {
       return send(200, jobNewPage());
     }
     // ===== JD 书签导入预览（轨 A 共享轨，spec §10.20）：跨站表单递交 html/url/title → extractJd → 预览 =====
-    // 零写盘零副作用——这是跨源豁免的依据（mutating 定义处统一）；ACAO:* 供 fetch 类调用方（表单导航本身不需要）。
+    // 零写盘零副作用——这是跨源豁免的依据（mutating 定义处统一）。响应刻意不带 ACAO：
+    // 表单导航不依赖 CORS（target=_blank 在新标签渲染照常）；不带 ACAO 让跨站 fetch 读不到预览——
+    // 预览含母版简历标题清单，跨站暴露即信息泄漏（T2 复核返工）。
     if (req.method === 'POST' && url.pathname === '/import/page') {
       const text = await readBody(req);   // 共享 10MB body 上限（urlencoded 编码膨胀在外层兜底）；超限走统一 catch → 413
       const params = new URLSearchParams(text);
@@ -4637,8 +4642,7 @@ async function handler(req, res) {
       const htmlTruncated = htmlParam.length > IMPORT_HTML_MAX;
       const srcUrl = String(params.get('url') || '');
       const r = extractJd(htmlTruncated ? htmlParam.slice(0, IMPORT_HTML_MAX) : htmlParam, srcUrl);
-      return send(200, importPreviewPage({ srcUrl, title: String(params.get('title') || ''), ...r, htmlTruncated }),
-        'text/html; charset=utf-8', { 'Access-Control-Allow-Origin': '*' });
+      return send(200, importPreviewPage({ srcUrl, title: String(params.get('title') || ''), ...r, htmlTruncated }));
     }
     // ===== 岗位草稿（独立文档；不依赖模型；同岗位不重复建）=====
     if (req.method === 'POST' && url.pathname === '/job/create') {
