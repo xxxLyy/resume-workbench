@@ -1496,3 +1496,55 @@ Flash 23 条要点见各提交信息与 `b47-report` 工作流报告；收口时
 - **755b4a8 尾注核验**：b5c2 提交信息自述「复核员 note #6 留待批收口 docs 轮」已闭环（见上）；「登记备查：计划 11 次 vs 登记册 14 次」已闭环（见上）。
 
 （本节为收口会话产物；点验探针 `/tmp/probe-b5-batch5.mjs` 及日志 `/tmp/probe-b5-batch5.log`、四套件日志 `/tmp/b5-test-all.log`、先红复现树 `/tmp/b5-pre` 及四份红日志均在 /tmp 不入仓。本节未提交，交提交员按 docs 动机分笔入库。）
+
+## 渐进呈现轮（2026-11-12）：UX 重设计五任务收口——导航 3 项 / 首页三态 / /job/new 单动线（起点 `main@e9505c5`，收口 `main@bfb6a19` + 本节）
+
+> 总纲：`dev-docs/2026-11-12-progressive-disclosure-ux-design.md`（spec：导航 6→3、首页三态、/job/new 单动线；藏不砍、不动数据模型；用户裁决「第一次使用的人都知道应该怎么使用」）+ `dev-docs/2026-11-12-progressive-disclosure-ux-plan.md`（五任务：DESIGN 登记 / 导航 3 项+页签条 / 首页三态 / job-new 单动线 / 验收收口）。批准视觉稿 `dev-docs/2026-11-12-ux-progressive-disclosure-mock.html`（落地用 A-VARS token）。DESIGN.md §10.19 随 T1 登记，T4 补登「可见差异」段。范围 = 导航、首页三态、/job/new 三处页级改造；编辑器壳与数据模型零改动。本轮 7 笔提交（`71ec37c` → `bfb6a19`）。
+
+### 1. 逐任务结果（5 任务 7 笔提交，逐笔哈希）
+
+| 任务 | 提交 | 内容 |
+|---|---|---|
+| T1 DESIGN 登记 | `71ec37c`（16:35:34） | DESIGN.md §10.19 登记五项裁决：导航 3 项（简历/投递/设置）/ 首页三态 / 状态点 signature（灰草稿·橙可投递·绿已投出）/ 按钮语义（实底近黑=主操作、橙仅「导出 PDF」）/ job-new 单动线；附「本轮不做」清单 |
+| T2 导航 | `1109452`（16:45:19）+ `d38c839`（17:12:40） | topnav 6→3；素材库降编辑器左栏、网申包+复盘降投递系页签条 `.apptabs`（看板/网申包/复盘三既有页互链，零新路由，active 归 apps）；页脚统一「简历工作台」。复核返工：apptabs 间距 token 化（§5.1）、三页页签条位置统一页题下方、nav aria-current、投递看板残留文案清理（I1+M1-M4） |
+| T3 首页三态 | `20ab288`（18:05:14）+ `f105625`（18:37:58） | 状态 0 起步卡两张（导入 PDF/从零开始）/ 状态 1 「继续」hero+岗位定制引导卡+「全部简历」行式列表 / 状态 2 待办卡（PDF 不是最新/满 N 天可跟进/待整理）+「简历」行；状态点 dot-sent/dot-ready/dot-draft 落文档行与待办卡；stat-grid/statusline/taskcard/hero/viewToggle/list-view 退役；「为岗位定制」首页入口唯一。复核返工：退役计算与死 CSS 清零、状态 0 缺警与归档出口补齐、行卡 esc 与守卫统一（I1-I4+M 批） |
+| T4 /job/new | `65ac5cf`（18:58:30）+ `bfb6a19`（19:24:51） | 单动线三段 step（1 岗位描述→2 用哪份简历→3 生成）；公司/岗位改可选收入「补充要求」折叠区、服务端缺省落「未命名·定制」占位；去重身份在任一侧用占位值时补 JD 指纹段；「先评估匹配度」降为次级文字链接（`<a id="evalBtn">`）；「或粘贴招聘页链接」小字切换（jdModeLink/jdLinkRow）。复核返工：占位字段任一侧即启用 JD 指纹查重/eval 链接本地拦截（只贴链接不发请求）/抓取后重查防跨形态重复 |
+| T5 验收收口 | 本节 | 全量套件 + 7766 重启点验 + 三态隔离实例 + 窄屏 + CSP/委托复核 + 本登记（§2–§4） |
+
+### 2. 撞断言适配清单（断言与实现同提交先例口径）
+
+既有断言与新口径正面冲突者按批 1–批 5「断言同提交」先例就地适配，全部留痕在各任务提交 diff：
+
+- `test-home-taskbench.mjs`：整夹具重写——批 1「任务卡三态」断言面换成 T3「数据三态」断言面（旧 hero/taskcard/stat-grid/statusline/doclist/viewToggle 退役断言 → 起步卡/继续 hero/待办卡/状态点/死引用清零断言）；「继续编辑」回退链契约收窄为状态 1 限定。
+- `test-home-task-badge.mjs`：批 1 任务卡徽章 gap 量测对象退役 → 取样改近期日程卡 `#upcomingAgenda`（§5.3「gap 容器内 .badge margin-right 归零」规则在首页的唯一幸存样本，浏览器真渲染量测不变）。
+- `test-home-agenda.mjs` / `test-home-eval-card-removed.mjs`：首页卡序锚点与「评估卡不在场」断言改挂三态新结构（日程卡保留，锚点居文档列表后）。
+- `test-copy-semantic-fixes.mjs` / `test-followup-assistant.mjs`：首页去黑话后文案断言适配（旧「PDF 较旧/AI：xx/待结构化」口径 → 「PDF 不是最新」等人话句）。
+- `test-job-new-page.mjs`：T4 单动线断言——三段 `.step` 计数、jdModeLink/jdLinkRow 在场、`required` 退役（公司/岗位不再必填）、「未命名·定制」占位落 meta、同 JD 复投 409 existing、evalBtn 为 `<a>` 次级形态、提交契约零变化复测保留。
+- `test-apply-profile-page.mjs` / `test-stats-loop-view.mjs`：导航 4 链接口径 → topnav 3 项 + apptabs 页签条断言（on/aria-current）。
+- `test-editor.mjs` / `test.sh` / `test-structure.sh`：导航计数、UI-5「导航唯一」、CSS 钉值（apptabs token 化/dotrow/foot-links/doc-thumb 规则在场）随实现同提交更新；B1 双区、冻结件（template.html/render.mjs/resume-classic.css）与 package.json 断言零改动。
+
+### 3. 实测验证
+
+- **全量套件**：`RESUME_TEST_STRICT=1 npm run test:all` → **EXIT=0**（732 个 ✅；唯一 ❌ 为段 X Chromium 探测契约的既有预期输出——无缓存→应失败并给修复动作，批 1–批 5 收口登记同一基线；紧邻 doctor 重跑行 ✅ 解析到 `chromium_headless_shell-1243` 真二进制）。日志 `/tmp/t5-test-all.log`。
+- **7766 重启**：`kill` 旧 PID `1291`（11-07 批 5 收口所起、跑 T1–T4 前旧码）→ launchd KeepAlive 自动拉起 **新 PID `72790`**，工作树 HEAD 码在跑（首页响应实测含 docrow/dot-*/三项导航/零 on* 属性）。
+- **浏览器点验**（playwright-core 1.60 + `chromium_headless_shell-1243`；探针 `/tmp/t5-ux-check.mjs`；截图 `/tmp/ux-check/`；live 侧全程 GET 只读、页级拦截非 GET）：**44 项检查全通过，0 失败**（日志 `/tmp/t5-ux-check.log`）——
+  - live 7766（真实数据 = 状态 2）26 项：/ 导航恰三项（简历|投递|设置）+ 页脚「简历工作台」+ docrow + dot-* 状态点；/applications 页签 on=看板、/apply-profile on=网申包、/stats on=复盘；/settings 200+三项导航；/job/new 三段 step+岗位描述大 textarea+「或粘贴招聘页链接」+补充要求 details；/ /applications /settings /job/new 四页 CSP `script-src 'self' 'nonce-…'` 无 `'unsafe-inline'`；全部页内联 script 带 nonce、零 on* 事件属性。
+  - 隔离实例三态 13 项（合成根，照 test-home-agenda.mjs 夹具格式：docs/<id>.html + docs-meta.json + applications.json）：状态 0（空根）起步卡两张+「建你的第一份简历」+无列表/搜索/job-new 链接元素；状态 1（1 文档无 applications.json）「继续」hero+引导卡（`href="/job/new"` DOM 唯一）+「全部简历」+hero 状态点；状态 2（文档+非终态投递+stale PDF 触发待办）待办卡「PDF 不是最新/重新导出」+dot-sent+底部「为岗位定制」入口。
+  - 窄屏 375px 2 项：live / 与状态 0 / 均 `scrollWidth 375 = innerWidth`（零横向溢出，docrow flex-wrap 兜底生效）。
+  - 纪律 3 项：console CSP 违规 0 / console error+pageerror 0 / 非 GET 请求 0。
+- **探针修正登记（探针口径错位，非产品缺陷）**：首轮 3 红——`doclistCard`/`searchBox`/`/job/new` 字样出现在页内 script 源码与 CSS 注释中，`includes` 误报；改 DOM 级断言（locator 计数）后 44/44 绿，产品侧零改动。
+- **观感复核**（截图人工核对）：live 首页待办 3 条（2×PDF 不是最新+1×待整理）+两行 docrow（草稿灰点/已投递绿点）+底部入口行+近期日程卡；状态 0 居中标题+双大卡；状态 1 hero「最近编辑」黑 CTA+橙「导出 PDF」+引导条；/job/new 页题+「评估历史 →」+三段纵向单动线，观感与设计稿一致。
+
+### 4. 未做清单（spec 明文不做项 + 收口新发现）
+
+- spec 明文「本轮不做」四项：**编辑器密度**（编辑器壳内行距/字号档位未动）；**网申包/复盘页内结构**（/apply-profile 与 /stats 只接了 `.apptabs` 页签条，页内信息架构原样）；**真实渲染缩略图**（docrow 用 `.doc-thumb` CSS 占位条，非 PDF 真渲染，0.8 向导的 srcdoc 真渲染先例可借用）；**状态点全站迁移**（仅首页文档行与待办卡落点，/applications 看板、/stats、/edit 等仍是 badge 体系）。
+- 收口新发现两项：**/materials 仅编辑器内可达**（路由 `server.mjs:5915` 在，topnav 降 3 项后无全站入口——仅编辑器左栏与投递详情内链可达；若需全站可达须用户拍板入口位）；**EVAL_BTN_ICON 死常量**（`server.mjs:1996` EVAL_CARD_JS 块内声明但块内零引用——evalBtn 降级文字链接后图标无消费者；`test-job-new-page.mjs:154` 仍把它当评估接线锚点断言，删除须同提交适配夹具）。
+
+### 5. 下一步建议
+
+- 状态点全站迁移（看板卡/stats 行/编辑器页头）+真实渲染缩略图可合一张「signature 扩展」卡，沿用本轮 dot-* 口径与 0.8 srcdoc 装配先例。
+- EVAL_BTN_ICON 删除属零风险清理，但须同提交把 `test-job-new-page.mjs:154` 的锚点断言换掉（改锚 `fetch('/eval/create'` 等在场片段）。
+- /materials 全站入口取舍交用户裁决（topnav 第 4 项 vs 维持编辑器内可达）。
+- 编辑器密度档、网申包/复盘页内结构各自独立成卡，不阻塞本轮口径。
+
+（本节为收口会话产物；点验探针 `/tmp/t5-ux-check.mjs` 及日志 `/tmp/t5-ux-check.log`、四套件日志 `/tmp/t5-test-all.log`、截图 `/tmp/ux-check/`、调试隔离根 `/tmp/t5dbg*` 均在 /tmp 不入仓。）
