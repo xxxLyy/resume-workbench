@@ -12,6 +12,9 @@
 //     异 JD 不撞名；部分缺省单侧占位；invalid from 400 与缺母版 404 既有错误路径不动。
 //   E 名称统一与截图路由：server.mjs/editor-shell.js 旧名「针对岗位生成」零残留；弹层标题改「为岗位定制简历」；
 //     视觉截图夹具 routes 含 ['job-new', '/job/new']。
+//   G 轨 A 收口（spec §10.20）：GET 书签行（javascript: + 实际端口 /import/page）+ 隐藏 jdFailHint + submit
+//     jdError 失败回调接线；POST /job/new urlencoded {jd,company,role,jdLink,from} → 预填/展开/selected/XSS/
+//     非 http(s) 拒填/非法 from 不预选/空带入 = GET 渲染等价。
 //   F DESIGN.md 红线自查（本卡新写代码）：首页引导卡内联样式与档内间距一律 --space-* token（§5.1），
 //     不留与 4/8/12/16/24 档重合的字面 px（14px 不在档内，登记为字面层级）。
 //     （§9.1-2 空态不复述页题的钉在 A 段——空态只在空库渲染，须在播种母版前断言）
@@ -155,6 +158,21 @@ try {
       assert.ok(html.includes(frag), `/job/new 评估接线应保留片段：${frag}`);
     }
     assert.ok(html.includes('评估需要岗位描述文本'), '评估需要 JD 的客户端校验应保留（T4：JD 与链接均空时拦截）');
+    // ===== T3 轨 A 收口（spec §10.20 §2.1/§2.6）：书签交付 + 抓取失败引导锚点 =====
+    // 可拖书签：href=javascript: 前缀 + action=本机实际端口 /import/page（端口不写死——顺延情形书签仍指对）。
+    const bm = (html.match(/<a href="javascript:[^"]*">/) || [])[0] || '';
+    assert.ok(bm.startsWith('<a href="javascript:'), '链接区应渲染可拖 javascript: 书签');
+    assert.ok(bm.includes('/import/page'), '书签 action 应指向 /import/page');
+    assert.ok(bm.includes(`localhost:${port}`), `书签 action 应为本实例实际端口 localhost:${port}（不写死 7766）`);
+    assert.ok(html.includes('拖到书签栏') && html.includes('抓取此页 → 工作台'), '应有书签拖拽提示文案');
+    // 失败引导：隐藏 #jdFailHint（含同一书签链接）；submit 回调在 d.jdError（链接抓取失败）分支
+    // 留页显示它——草稿已建，给「复制全文粘贴 / 书签」两条退路（不静默跳走）。
+    assert.ok(/id="jdFailHint" style="display:none/.test(html), '应有默认隐藏的 #jdFailHint 失败引导块');
+    assert.ok(html.includes('这个站抓不到'), 'jdFailHint 应有「这个站抓不到（多半要登录）」文案');
+    const hintBlk = (html.match(/<div id="jdFailHint"[\s\S]*?<\/div>/) || [])[0] || '';
+    assert.ok(hintBlk.includes('href="javascript:') && hintBlk.includes('/import/page'), 'jdFailHint 应内联同一书签链接');
+    assert.ok(html.includes('d.jdError'), 'submit 回调应有 jdError 分支（链接抓取失败路径）');
+    assert.ok(html.includes("document.getElementById('jdFailHint')"), 'jdError 失败回调应显示 jdFailHint（零新事件类型）');
   }
 
   // ===== C. 首页拆出：无表单，只留入口按钮 =====
@@ -261,6 +279,43 @@ try {
     assert.equal(bad1.status, 400, '非法母版 id 仍应 400（invalid from），实际 ' + bad1.status);
     const bad2 = await postJson('/job/create', { from: 'notexist', jd: 'x' });
     assert.equal(bad2.status, 404, '缺母版文档仍应 404，实际 ' + bad2.status);
+  }
+
+  // ===== G. POST /job/new 预填（JD 导入轨 A 收口，spec §10.20 §2.5）：urlencoded 五字段 → 同表单回填 =====
+  {
+    const postForm = (fields) => fetch(base + '/job/new', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(fields).toString()
+    }).then(async (r) => ({ status: r.status, text: await r.text() }));
+    // 全字段带入：jd 进 textarea 体；company/role 进 value；jdLink 进 value 且行展开；from 预选母版。
+    const pre = await postForm({ jd: '合成 JD 全文：负责平台增长与稳定性建设', company: '合成公司A',
+      role: '增长工程师', jdLink: 'https://www.zhipin.com/job_detail/abc123.html', from: 'jnmaster' });
+    assert.equal(pre.status, 200, 'POST /job/new 应 200，实际 ' + pre.status + ' ' + pre.text.slice(0, 160));
+    const ph = pre.text;
+    assert.ok(/<textarea id="jobJd"[^>]*>合成 JD 全文：负责平台增长与稳定性建设<\/textarea>/.test(ph), 'jobJd 应预填 JD 文本进 textarea 体');
+    assert.ok(/id="jobCompany"[^>]*value="合成公司A"/.test(ph), 'jobCompany 应预填公司 value');
+    assert.ok(/id="jobRole"[^>]*value="增长工程师"/.test(ph), 'jobRole 应预填岗位 value');
+    const row = (ph.match(/<div id="jdLinkRow"[^>]*>/) || [])[0] || '';
+    assert.ok(row && !row.includes('display:none'), '预填 jdLink 时 jdLinkRow 应展开（无 display:none）：' + row);
+    assert.ok(/id="jobLink"[^>]*value="https:\/\/www\.zhipin\.com\/job_detail\/abc123\.html"/.test(ph), 'jobLink 应预填来源链接');
+    assert.ok(ph.includes('<option value="jnmaster" selected>'), 'jobFrom 应把 from 母版预选为 selected');
+    // XSS：jd 内的标签必须 escHtml 进 textarea 体，不得原样回显
+    const xs = await postForm({ jd: 'ok<img src=x onerror=alert(1)>', from: 'jnmaster' });
+    assert.ok(!xs.text.includes('<img src=x onerror=alert(1)>'), 'textarea 预填不得残留未转义标签');
+    assert.ok(xs.text.includes('&lt;img'), 'textarea 预填应转义为实体');
+    // 非 http(s) jdLink 不预填：行保持折叠、jobLink 无 value（safeUrl+^https?:// 双闸门）
+    const bad = await postForm({ jdLink: 'javascript:alert(1)', from: 'jnmaster' });
+    const badRow = (bad.text.match(/<div id="jdLinkRow"[^>]*>/) || [])[0] || '';
+    assert.ok(badRow.includes('display:none'), '非 http(s) jdLink 不预填、链接行应保持折叠');
+    assert.ok(!/id="jobLink"[^>]*value=/.test(bad.text), 'javascript: 不得进 jobLink value');
+    // 非法 from id（不过 VALID_ID）不预选：全页不得出现 selected 属性
+    const bf = await postForm({ from: 'bad id!', jd: 'x' });
+    assert.ok(!bf.text.includes(' selected'), '非法 from id 不得产生 selected');
+    // 空带入 → 与 GET 渲染等价（剥逐响应 nonce 后逐字一致：GET 路径零变化的行为钉）
+    const g = await get('/job/new');
+    const emp = await postForm({});
+    const strip = (s) => s.replace(/nonce="[^"]+"/g, 'nonce="N"');
+    assert.equal(strip(emp.text), strip(g.text), 'POST /job/new 空带入应与 GET 渲染逐字一致（GET 路径零变化）');
   }
 
   // ===== F. DESIGN.md 红线自查（本卡新写代码）：间距 token =====

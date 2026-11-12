@@ -126,7 +126,26 @@ try {
     if (!b1.includes(f)) fail('表单缺契约字段：' + f);
   }
 
-  console.log('✅ import-page：zhipin site-selectors(公司/岗位/JD 260+) / json-ld / body 三层级命中；OPTIONS 四头；POST 无 ACAO；9MB 截断；XSS 剥离；表单五字段');
+  // ===== ⑨ 端到端轨 A 收口：预览表单字段 → POST /job/new → 预填表单 =====
+  // 复刻浏览器「带去定制」提交：抽隐藏字段 value（escAttr 解码）+ from 下拉首项 → POST /job/new，
+  // 断言 /job/new 预填：JD 进 textarea 体、公司/岗位进 value、jdLinkRow 展开、母版 selected（spec §2.5）。
+  const dec = (s) => s == null ? '' : s.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  const field = (body, name) => { const m = body.match(new RegExp('name="' + name + '" value="([\\s\\S]*?)"')); return m ? dec(m[1]) : ''; };
+  const fromSel = (b1.match(/name="from"[\s\S]*?<option value="([^"]+)"/) || [])[1] || '';
+  const bring = await fetch(base + '/job/new', { method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ jd: field(b1, 'jd'), company: field(b1, 'company'), role: field(b1, 'role'),
+      jdLink: field(b1, 'jdLink'), from: fromSel }).toString() });
+  if (bring.status !== 200) fail('端到端 POST /job/new 非 200：' + bring.status);
+  const bp = await bring.text();
+  if (!/id="jobJd"[^>]*>[\s\S]*必须有带团队经验/.test(bp)) fail('端到端：jobJd 未预填提取出的 JD');
+  if (!/id="jobCompany"[^>]*value="[^"]*中软国际/.test(bp)) fail('端到端：jobCompany 未预填提取出的公司');
+  const e2eRow = (bp.match(/<div id="jdLinkRow"[^>]*>/) || [])[0] || '';
+  if (e2eRow.includes('display:none')) fail('端到端：jdLinkRow 应展开（预填了来源链接）');
+  if (!bp.includes('job_detail/7ad5d5939a74640b1XN63dy-E1RS.html')) fail('端到端：jobLink 未预填来源 URL');
+  if (!bp.includes(`<option value="${fromSel}" selected>`)) fail('端到端：jobFrom 未预选预览表单选中的母版');
+
+  console.log('✅ import-page：zhipin site-selectors(公司/岗位/JD 260+) / json-ld / body 三层级命中；OPTIONS 四头；POST 无 ACAO；9MB 截断；XSS 剥离；表单五字段；端到端带入 /job/new 预填');
 } finally {
   cleanup();
 }

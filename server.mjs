@@ -2443,6 +2443,14 @@ function listPage(showArchived = false) {
 // 不进 topnav（/evals 不占导航位；渐进呈现 T2 起导航收敛为 3 项：简历/投递/设置）；active 传 'docs'（由首页进入，归属「简历」高亮）。
 // 页题右侧「评估历史 →」= /evals 入口（批 1 §0.3：首页评估历史卡撤除后，评估归 /evals；
 // 评估在本页发起（先评估这个岗位），故入口落本页题右侧；入口不进导航）。
+// ===== JD 抓取书签（轨 A，spec §10.20 §2.1）：/job/new 渲染的可拖 <a href="javascript:…"> =====
+// 书签代码（一行 JS）：隐藏表单 POST 当前页 outerHTML+url+title 到 /import/page。
+// 用表单导航而非 fetch——目标站 CSP 的 connect-src 管不到表单提交；target=_blank 在新标签看结果。
+// action 端口 = 本机实际绑定端口（boundPort 在 listen 回调定型：7766 占用顺延 7767/7768、
+// PORT 环境指定都生效——spec「端口不写死」）；body 保持可读书写不 encodeURI，href 属性值整体 escAttr。
+const BOOKMARKLET_JS = "(()=>{var f=document.createElement('form');f.method='POST';f.action='http://localhost:__PORT__/import/page';f.target='_blank';f.style.display='none';var h=document.createElement('textarea');h.name='html';h.value=document.documentElement.outerHTML;f.appendChild(h);var u=document.createElement('input');u.name='url';u.value=location.href;f.appendChild(u);var t=document.createElement('input');t.name='title';t.value=document.title;f.appendChild(t);document.body.appendChild(f);f.submit();f.remove();})()";
+function bookmarkletHref() { return 'javascript:' + BOOKMARKLET_JS.replace('__PORT__', String(boundPort)); }
+
 // ===== JD 导入预览页（spec §10.20）：POST /import/page 的提取结果呈现 + 「带去定制」表单 =====
 // 纯表单零脚本需求（page() 外壳自带 nonce 脚本位，本页不新增脚本）。外部输入（url/title/提取文本）
 // 全走 escHtml/escAttr；来源链接过 safeUrl 协议白名单（html 是任意网页递交的，javascript: 不渲染成 href）。
@@ -2484,10 +2492,24 @@ function importPreviewPage({ srcUrl, title, company, role, jd, via, htmlTruncate
     <div class="card" style="margin-top:var(--space-3)"><b class="card-title">带入定制</b><div style="margin-top:var(--space-2)">${form}</div></div>`);
 }
 
-function jobNewPage() {
+function jobNewPage(prefill = null) {
   const meta = loadMeta();
   // 母版下拉口径与拆出前 listPage infos 完全一致（在盘且未归档的全部文档，jobInfo 派生不筛选）。
   const infos = docIdsOnDisk().map((did) => docInfo(did, meta[did])).filter(Boolean).filter((d) => !((meta[d.id] || {}).archivedAt));
+  // ===== JD 导入预填（轨 A 收口，spec §10.20 §2.5）：POST /job/new 的带入值 → 同一表单回填 =====
+  // GET 不带 prefill（null → 全空串），渲染与旧版一致——预填属性只在值非空时才出现。
+  const pf = prefill || {};
+  const pfJd = typeof pf.jd === 'string' ? pf.jd : '';
+  const pfCompany = typeof pf.company === 'string' ? pf.company : '';
+  const pfRole = typeof pf.role === 'string' ? pf.role : '';
+  // jdLink 语义 = 招聘页 URL：收窄到 http(s)（/job/create 的链接抓取同口径只认 ^https?://——
+  // safeUrl 还放 mailto/相对路径，那些预填了也必败；双判定防 javascript: 进 value 属性）。
+  const pfLinkRaw = typeof pf.jdLink === 'string' ? pf.jdLink.trim() : '';
+  const pfLink = /^https?:\/\//i.test(pfLinkRaw) && safeUrl(pfLinkRaw) ? pfLinkRaw : '';
+  // 母版预选：id 过 VALID_ID 再与下拉项逐一比对（下拉项 id 本身已过 VALID_ID——双端同尺，防注入式 id）。
+  const pfFrom = typeof pf.from === 'string' && VALID_ID.test(pf.from) ? pf.from : '';
+  // 抓取书签（spec §2.1）：拖到书签栏后在职位页点——表单 POST 页面 outerHTML 回本机 /import/page。
+  const BOOKMARKLET = bookmarkletHref();
   // S4a-T5：重点 chips 建议值 = 素材 tags 聚合（与拆出前同一推导，零口径漂移）
   const tagCount = new Map();
   for (const mt of loadMats()) for (const t of (Array.isArray(mt.tags) ? mt.tags : [])) if (typeof t === 'string' && t.trim()) tagCount.set(t.trim(), (tagCount.get(t.trim()) || 0) + 1);
@@ -2500,17 +2522,18 @@ function jobNewPage() {
         <div style="display:flex;gap:8px;flex-wrap:wrap"><form method="post" action="/new" style="display:inline"><button class="cta" type="submit">＋ 新建空白简历</button></form><a class="cta-alt" href="/#up">${icon('file-text', 13)} 上传 PDF 导入</a></div>
       </div>` : `<form id="jobForm">
         <div class="step"><div style="font-size:13px;font-weight:600;margin-bottom:6px"><span style="color:var(--mut)">1</span> 岗位描述 <span style="font-weight:400;font-size:12px;color:var(--mut)">粘贴招聘页全文即可</span></div>
-          <textarea id="jobJd" rows="6" style="width:100%" placeholder="把职位描述整段粘进来，公司、岗位会尽量自己识别"></textarea>
+          <textarea id="jobJd" rows="6" style="width:100%" placeholder="把职位描述整段粘进来，公司、岗位会尽量自己识别">${escHtml(pfJd)}</textarea>
           <div style="font-size:12px;color:var(--mut);margin-top:var(--space-1)">或 <a href="#" id="jdModeLink" style="color:inherit">粘贴招聘页链接</a>（读取失败可改回贴文本）</div>
-          <div id="jdLinkRow" style="display:none;margin-top:6px"><input id="jobLink" placeholder="https://…" style="width:100%"></div></div>
+          <div style="font-size:12px;color:var(--mut);margin-top:var(--space-2)">Boss/猎聘等要登录的站抓不到：把这个拖到书签栏 → <a href="${escAttr(BOOKMARKLET)}">抓取此页 → 工作台</a>，在职位页点它</div>
+          <div id="jdLinkRow" style="${pfLink ? '' : 'display:none;'}margin-top:6px"><input id="jobLink" placeholder="https://…" style="width:100%"${pfLink ? ` value="${escAttr(pfLink)}"` : ''}></div></div>
         <div class="step"><div style="font-size:13px;font-weight:600;margin-bottom:6px"><span style="color:var(--mut)">2</span> 用哪份简历改</div>
-          <select id="jobFrom" style="width:100%">${infos.map((d) => `<option value="${escAttr(d.id)}">${d.title}（${d.id}）</option>`).join('')}</select></div>
+          <select id="jobFrom" style="width:100%">${infos.map((d) => `<option value="${escAttr(d.id)}"${d.id === pfFrom ? ' selected' : ''}>${d.title}（${d.id}）</option>`).join('')}</select></div>
         <div class="step"><div style="font-size:13px;font-weight:600;margin-bottom:6px"><span style="color:var(--mut)">3</span> 生成</div>
           <details style="border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);margin-bottom:var(--space-3)">
             <summary style="cursor:pointer;padding:var(--space-2) var(--space-3);font-size:13px;font-weight:600">补充要求（可选，默认已按经验填好）</summary>
             <div style="padding:var(--space-hair) var(--space-3) var(--space-3);display:grid;gap:6px">
-              <label style="font-size:12px">公司（可留空，自动识别）<input id="jobCompany" style="width:100%"></label>
-              <label style="font-size:12px">岗位（可留空，自动识别）<input id="jobRole" style="width:100%"></label>
+              <label style="font-size:12px">公司（可留空，自动识别）<input id="jobCompany" style="width:100%"${pfCompany ? ` value="${escAttr(pfCompany)}"` : ''}></label>
+              <label style="font-size:12px">岗位（可留空，自动识别）<input id="jobRole" style="width:100%"${pfRole ? ` value="${escAttr(pfRole)}"` : ''}></label>
               <label style="font-size:12px">预设<span style="display:flex;gap:6px;margin-top:3px">
                 <select id="briefPresetSel" style="flex:1"><option value="">— 取回常用预设 —</option></select>
                 <button type="button" class="secondary" id="briefPresetSave">存为常用预设</button>
@@ -2529,6 +2552,7 @@ function jobNewPage() {
           <button type="submit">生成岗位草稿</button>
           <a href="#" id="evalBtn" style="font-size:13px;color:var(--mut);margin-left:14px">先评估匹配度</a>
           <span id="jobMsg" role="status" style="font-size:12px;color:var(--mut)"></span><span id="evalMsg" role="status" style="font-size:12px;color:var(--mut)"></span>
+          <div id="jdFailHint" style="display:none;font-size:12px;color:var(--mut);margin-top:var(--space-2)">这个站抓不到（多半要登录）。两个办法：① 回页面复制全文粘贴 ② 用上面的「抓取此页」书签：<a href="${escAttr(BOOKMARKLET)}">抓取此页 → 工作台</a>（拖到书签栏，在职位页点它）</div>
           <div style="font-size:12px;color:var(--mut);margin-top:10px">生成约 2–3 分钟，分批改写并校验。产出一份新草稿，可再编辑。</div></div>
       </form>
       <div id="evalResult"></div>`}
@@ -2613,7 +2637,18 @@ function jobNewPage() {
           var d = await r.json().catch(function () { return null; });
           if (r.redirected) { location.href = r.url; return; }
           if (d && d.existing) { var dupMsg = (document.getElementById('jobCompany').value.trim() && document.getElementById('jobRole').value.trim()) ? '已存在同一母版+岗位的草稿' : '已存在基于同一份 JD 的岗位草稿'; if (confirm(dupMsg + '（' + d.existing + '）。打开它？')) location.href = '/edit?id=' + d.existing; return; }
-          if (d && d.ok && d.id) { location.href = '/edit?id=' + d.id; return; }
+          if (d && d.ok && d.id) {
+            // JD 链接抓取失败（jdError）：草稿已建好但 JD 是空的——不静默跳走，留在本页给两条退路
+            //（轨 A 失败引导，spec §10.20 §2.6：① 回页面复制全文粘贴 ② 书签）；草稿经链接可去补 JD。
+            if (d.jdError) {
+              __status(msg, 'err', 'JD 链接读取失败（' + d.jdError + '），已建一份缺 JD 的草稿 ');
+              msg.appendChild(Object.assign(document.createElement('a'), { href: '/edit?id=' + encodeURIComponent(d.id), textContent: '打开草稿补 JD →' }));
+              var fh = document.getElementById('jdFailHint');
+              if (fh) fh.style.display = 'block';
+              return;
+            }
+            location.href = '/edit?id=' + d.id; return;
+          }
           var jobErr = (d && d.error) || (await r.text());
           if (jobErr.indexOf('invalid from') >= 0) jobErr = '请先选择母版简历';   // 兜底：服务端校验直出英文会让首用路径断链
           __status(msg, 'err', jobErr);
@@ -4630,6 +4665,15 @@ async function handler(req, res) {
     // ===== /job/new「为岗位定制简历」（批 1 §0.3 拆页）：表单页，提交契约零变化（仍 POST /job/create 与 /eval/create）=====
     if (req.method === 'GET' && url.pathname === '/job/new') {
       return send(200, jobNewPage());
+    }
+    // JD 导入带入（轨 A 收口，spec §10.20 §2.5）：预览页「带去定制」表单 POST 到本路由——
+    // urlencoded {jd,company,role,jdLink,from} → 同一表单预填渲染。纯渲染零写盘；
+    // 真正的建稿仍走 /job/create（管线零变化：jdSource=原链接、查重、jdFp 指纹守卫原样生效）。
+    // 10MB 共享 body 上限超限走统一 catch → 413。
+    if (req.method === 'POST' && url.pathname === '/job/new') {
+      const params = new URLSearchParams(await readBody(req));
+      return send(200, jobNewPage({ jd: params.get('jd') || '', company: params.get('company') || '',
+        role: params.get('role') || '', jdLink: params.get('jdLink') || '', from: params.get('from') || '' }));
     }
     // ===== JD 书签导入预览（轨 A 共享轨，spec §10.20）：跨站表单递交 html/url/title → extractJd → 预览 =====
     // 零写盘零副作用——这是跨源豁免的依据（mutating 定义处统一）。响应刻意不带 ACAO：
@@ -8551,6 +8595,9 @@ function decodeName(s) {
 }
 
 const PORTS = process.env.PORT && Number.isFinite(Number(process.env.PORT)) ? [Number(process.env.PORT)] : [7766, 7767, 7768];
+// 实际绑定端口：listen 回调里定型（EADDRINUSE 顺延 7767/7768、PORT 环境指定都落这个终值）——
+// JD 抓取书签的 action 用它渲染：书签里的 action 必须是本机实际端口（spec §10.20 §2.1「端口不写死」）。
+let boundPort = PORTS[0];
 function tryListen(i) {
   // 释放时机 = handler 的 Promise 真正结束（= 实际工作结束），不是 HTTP 响应结束。
   // 旧实现按 res 的 finish/close 释放：客户端一断连就腾槽，而模型请求/渲染子进程还在跑 →
@@ -8581,7 +8628,7 @@ function tryListen(i) {
     console.error('端口不可用:', e.message);
     process.exit(1);
   });
-  s.listen(PORTS[i], '127.0.0.1', () => console.log(`简历平台: http://localhost:${PORTS[i]}`));
+  s.listen(PORTS[i], '127.0.0.1', () => { boundPort = PORTS[i]; console.log(`简历平台: http://localhost:${PORTS[i]}`); });
 }
 // 启动恢复：扫描 .tx/ 未完成事务（进程被杀于两次 rename 之间等），只恢复目标文档的正文与 meta，不覆盖其他文档的并发更新。
 // 必须先于 listen（避免恢复完成前对外提供写服务）。陈旧 .migrate.lock（持有者已死）顺手清除，避免重启后写请求被误 503。
