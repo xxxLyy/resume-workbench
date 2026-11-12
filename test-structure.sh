@@ -84,7 +84,7 @@ node ./test-fixtures/reliability/test-text-layer-preview.mjs
 #       （隔离根 + 随机端口 + 合成文档，无浏览器依赖；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §4 批 3）=====
 node ./test-fixtures/reliability/test-apply-profiles.mjs
 
-# ===== 批3 网申包页面（卡片 b3c2）：/apply-profile 页 + topnav 第七项「网申包」（链接数 6→7，UI-4 断言同提交）
+# ===== 批3 网申包页面（卡片 b3c2）：/apply-profile 页 + 投递系页签条「网申包」项（渐进呈现 T2 后 topnav 收敛为 brand+3 项，链接数 7→4，UI-4 断言同提交）
 #       + 三态字段 UI（跟随来源/手动覆写/恢复跟随 + 独立维护，漂移有提示）
 #       + 单字段一键复制（复制源 = 该行值框，所见即所复制）
 #       + 整包导出（纯文本 = 复制用；JSON = 全字段 + 三态）
@@ -4352,11 +4352,15 @@ try {
   assert(evh.includes('data-eval-hist="report"') && evh.includes('data-eval-hist="promote"'),
     '/evals 应保留「查看报告」/「转入适配」按钮');
   assert(evh.includes('EVAL_RECORDS'), '/evals 应保留评估记录内联载荷（客户端渲染报告）');
-  // 导航：topnav 7 个链接（批 3「网申包」落地后由 6 增至 7，一次性同提交迁移）；导航唯一（sidenav 已移除，不回归）
+  // 导航：topnav 4 个链接（渐进呈现 T2 由 7 收敛为 brand + 3 项：简历/投递/设置，一次性同提交迁移）；导航唯一（sidenav 已移除，不回归）
   const nav = (evh.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
-  assert((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length === 7, '/evals 的 topnav 链接数应为 7（brand + 6 项）');
+  assert((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length === 4, '/evals 的 topnav 链接数应为 4（brand + 3 项）');
   assert(!evh.includes('class="sidenav"'), '导航唯一：/evals 不应再有 .sidenav（用户裁决 2026-11-03）');
-  assert(/<a href="\/" class="on">/.test(nav), '/evals topnav「文档」应高亮（active=docs）');
+  assert(/<a href="\/" class="on">/.test(nav), '/evals topnav「简历」应高亮（active=docs）');
+  // 渐进呈现 T2：投递系页签条——/applications 页应渲染 .apptabs，含「网申包」「复盘」互链（入口移位，非功能删除）
+  const appHtml = await (await fetch(`http://127.0.0.1:${port}/applications`)).text();
+  assert(appHtml.includes('class="apptabs"'), '投递页应有页签条');
+  assert(appHtml.includes('网申包') && appHtml.includes('复盘'), '页签条应含网申包与复盘');
   // /evals 入口可达（首页卡撤除后）：入口在 /job/new 页题右侧（/evals 不占导航位）
   const jn = await (await fetch(`http://127.0.0.1:${port}/job/new`)).text();
   assert(jn.includes('href="/evals"'), '/job/new 应提供 /evals 入口（首页卡撤除后 /evals 不得成孤页）');
@@ -4594,18 +4598,18 @@ assert(hits.length === 0, '导航条仍含 emoji: ' + hits.join(' '));
 // 渲染结果必须含内联 SVG
 assert(/<svg/.test(navHtml), '导航应含内联 SVG');
 
-// brand + 6 个导航项（批 3「网申包」落地后由 5 项增至 6 项）：每项都必须「图标 + 文字」同现（WCAG nav-label-icon）
+// brand + 3 个导航项（渐进呈现 T2 由 6 项收敛为 3 项：简历/投递/设置）：每项都必须「图标 + 文字」同现（WCAG nav-label-icon）
 const links = (navHtml.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []);
-assert(links.length === 7, '导航应有 7 个链接（brand + 6 项），实际 ' + links.length);
+assert(links.length === 4, '导航应有 4 个链接（brand + 3 项），实际 ' + links.length);
 assert(links[0].includes(icon('file-text', 17)) && links[0].includes('简历工作台'), 'brand 应为图标 + 文字');
-const NAV = [['file-text','文档'],['box','素材库'],['columns-3','投递看板'],['chart-bar','复盘'],['settings','设置'],['package','网申包']];
+const NAV = [['file-text','简历'],['columns-3','投递'],['settings','设置']];
 NAV.forEach(([ic, label], idx) => {
   const a = links[idx + 1] || '';
   assert(a.includes('>' + label + '<'), '导航项应有文字: ' + label);
   assert(a.includes(icon(ic, 15)), '导航项应使用图标 ' + ic + '（' + label + '）');
 });
 // 当前项高亮没被改坏
-assert(links[1].includes('class="on"'), '当前项（文档）应高亮 class="on"');
+assert(links[1].includes('class="on"'), '当前项（简历）应高亮 class="on"');
 console.log('✅ UI-4 导航图标化');
 EOF
 
@@ -4618,11 +4622,14 @@ const srv = readFileSync('./server.mjs', 'utf8');
 assert(!/class="sidenav"/.test(srv), '导航唯一：不应再有 .sidenav（topnav 是唯一页头，用户裁决 2026-11-03）');
 assert(/<nav class="topnav">/.test(srv), '应有唯一页头 .topnav');
 assert(/class="mainarea"/.test(srv), '应有内容区 .mainarea');
-// topnav 含六个导航入口（批 3「网申包」落地后由五项增至六项）
+// topnav 含三个导航入口（渐进呈现 T2 由六项收敛为三项：简历/投递/设置）
 const navblk = (srv.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
-for (const t of ['文档', '素材库', '投递看板', '复盘', '设置', '网申包']) {
+for (const t of ['简历', '投递', '设置']) {
   assert(navblk.includes(t), 'topnav 应含入口: ' + t);
 }
+// 渐进呈现 T2 负向断言（入口移位非功能删除）：素材库/复盘/网申包 不再占 topnav 位——
+// 素材库入口并入「简历」，复盘/网申包并入「投递」页签条 .apptabs。
+for (const t of ['网申包', '复盘', '素材库']) assert(!navblk.includes(t), 'topnav 不应再含入口: ' + t);
 // topnav 必须由 page() 渲染（第三参数 active 即当前页 key），而不是 listPage()——
 // listPage() 拿不到 active，无法做当前项高亮。断言 topnav 模板落在 page() 与 listPage() 之间。
 const pStart = srv.indexOf('function page(');

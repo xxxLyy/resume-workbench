@@ -1,9 +1,9 @@
 // test-apply-profile-page.mjs — 网申包页面（批 3 · 卡片 b3c2）
 // 计划：dev-docs/2026-11-05-roadmap-batch-plan.md §4 批 3「S8 网申包 + 跟进助手」；上位路线图 S8。
-// 合同（本卡只管页面层：页面 + topnav 第七项 + 三态字段 UI + 单字段复制 + 整包导出；
+// 合同（本卡只管页面层：页面 + 投递系页签条「网申包」项 + 三态字段 UI + 单字段复制 + 整包导出；
 //       AI 文案字段 / 跟进助手 / 分享副本 / 投递记录关联不在本卡）：
 //   ① 页面 /apply-profile：页题「网申包」、通用信息表 + 按公司字段包同页。
-//   ② topnav 第七项「网申包」（链接数 6 → 7，UI-4 断言同步）。
+//   ② 「网申包」入口：渐进呈现 T2 后由 topnav 迁入投递系页签条 .apptabs（topnav 链接数 7 → 4，UI-4 断言同步）。
 //   ③ 三态字段 UI：跟随来源 / 手动覆写 / 恢复跟随（动作）+ 独立维护（独立字段，不从简历派生）。
 //      漂移（来源变更）有提示；恢复跟随清漂移；独立字段无「恢复跟随」入口。
 //   ④ 单字段一键复制：每个字段一行有复制入口，复制的就是该行显示的值（所见即所复制）。
@@ -136,17 +136,20 @@ try {
     assert.ok(html.includes('<title>网申包</title>'), '页题应为「网申包」');
     assert.ok(html.includes('<h1>网申包</h1>'), '页面第一标题应为「网申包」');
     assert.equal((html.match(/<h1[\s>]/g) || []).length, 1, '/apply-profile 应只有一个 h1（页题档两档制）');
-    // topnav 第七项：链接数 6 → 7（brand + 6 项）
+    // 渐进呈现 T2：topnav 收敛为 brand + 3 项（7 → 4）；「网申包」入口迁入投递系页签条 .apptabs（入口移位，非功能删除）
     const nav = (html.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
-    assert.equal((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length, 7,
-      'topnav 链接数应为 7（brand + 6 项，批 3 网申包落地）');
-    assert.ok(nav.includes('href="/apply-profile"'), 'topnav 应含「网申包」入口');
-    assert.ok(nav.includes('网申包'), 'topnav 第七项文案应为「网申包」');
-    assert.ok(/<a href="\/apply-profile" class="on">/.test(nav), '网申包项应高亮（active=apply）');
-    // 其它页面的导航同样 7 项（导航全站一致）
+    assert.equal((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length, 4,
+      'topnav 链接数应为 4（brand + 3 项，渐进呈现 T2 收敛）');
+    assert.ok(!nav.includes('href="/apply-profile"'), 'topnav 不应再含「网申包」入口（已迁至投递系页签条）');
+    assert.ok(/<a href="\/applications" class="on">/.test(nav), 'topnav「投递」项应高亮（active=apps，网申包归属投递系）');
+    const tabs = (html.match(/<div class="apptabs">[\s\S]*?<\/div>/) || [''])[0];
+    assert.ok(tabs, '网申包页应有投递系页签条 .apptabs');
+    assert.ok(tabs.includes('href="/apply-profile"') && tabs.includes('网申包'), '页签条应含「网申包」入口');
+    assert.ok(/<a href="\/apply-profile" class="on">/.test(tabs), '页签条「网申包」项应高亮（active=apply）');
+    // 其它页面的导航同样 4 项（导航全站一致）
     const home = await get('/');
     const homeNav = (home.text.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
-    assert.equal((homeNav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length, 7, '首页 topnav 链接数应同为 7');
+    assert.equal((homeNav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length, 4, '首页 topnav 链接数应同为 4');
   }
 
   // ===== ② 通用信息表：字段目录齐全 + 三态 UI 骨架 =====
@@ -459,7 +462,7 @@ try {
     assert.deepEqual(echo, [], '页面说明不得复述页题/卡标题（§9.1-2），实际：' + echo.join(' || '));
   }
 
-  console.log('✅ 网申包页面：/apply-profile + topnav 第七项（7 链接）+ 三态字段 UI + 漂移提示 + 单字段复制 + 整包导出（纯文本/JSON）+ 写路径真点一遍（作用范围两种形状 + 手动改写→保存/恢复跟随/独立字段保存 200 且落盘）');
+  console.log('✅ 网申包页面：/apply-profile + 投递系页签条「网申包」项（topnav 4 链接）+ 三态字段 UI + 漂移提示 + 单字段复制 + 整包导出（纯文本/JSON）+ 写路径真点一遍（作用范围两种形状 + 手动改写→保存/恢复跟随/独立字段保存 200 且落盘）');
 } catch (e) {
   console.error('❌ ' + (e && e.stack || e));
   process.exitCode = 1;

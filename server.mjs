@@ -1640,6 +1640,12 @@ html{scroll-padding-top:64px}
 .topnav .links a svg{width:15px;height:15px;flex:none}
 .topnav .links a.on{color:var(--accent);border-bottom-color:var(--accent)}
 .topnav .links a:hover{color:var(--ink)}
+/* 投递系页签条（渐进呈现 T2）：看板/网申包/复盘 三页共用，挂在页题下方。 */
+.apptabs{display:flex;gap:4px;margin:0 0 12px;border-bottom:1px solid var(--line)}
+.apptabs a{padding:6px 10px;font-size:13px;font-weight:600;color:var(--mut);border-bottom:2px solid transparent;margin-bottom:-1px}
+.apptabs a.on{color:var(--ink);border-bottom-color:var(--ink)}
+.apptabs a:hover{color:var(--ink)}
+.cta-exp{display:inline-block;background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn);border-radius:var(--radius);padding:9px 16px;font-weight:700;font-size:14px}
 /* 批次B → 导航唯一后（2026-11-03）：.home 只剩内容区，单列流式定宽居中。
    旧 .sidenav 左栏规则已随 DOM 移除（topnav 是唯一页头，见 page() 注释）。 */
 .home{margin:0 auto 40px;max-width:1400px}
@@ -1806,11 +1812,19 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 @media(prefers-reduced-motion:reduce){.doc-card{transition:none!important}.doc-card:hover{transform:none!important}button{transition:none!important}button:hover,button:active{transform:none!important}}
 </style></head><body${wide ? ' class="wide"' : ''}>
 <script nonce="__CSP_NONCE__">${STATUS_SCRIPT}${ACT_DISPATCH_JS}</script>
-<nav class="topnav"><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><span class="links">${nav('docs', '/', '文档', 'file-text')}${nav('materials', '/materials', '素材库', 'box')}${nav('apps', '/applications', '投递看板', 'columns-3')}${nav('stats', '/stats', '复盘', 'chart-bar')}${nav('settings', '/settings', '设置', 'settings')}${nav('apply', '/apply-profile', '网申包', 'package')}</span></nav>
+<nav class="topnav"><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><span class="links">${nav('docs', '/', '简历', 'file-text')}${nav('apps', '/applications', '投递', 'columns-3')}${nav('settings', '/settings', '设置', 'settings')}</span></nav>
 <div class="home"><div class="mainarea">${inner}</div></div>
-<footer>简历平台 · 本地优先 · 数据在 ${path.basename(root) === 'resume' ? '~/resume' : 'RESUME_ROOT'}</footer>
+<footer>简历工作台 · 本地优先 · 数据在 ${path.basename(root) === 'resume' ? '~/resume' : 'RESUME_ROOT'}</footer>
 ${WRITE_HELPER_JS}</body></html>`;
 }
+
+// 投递系页签（渐进呈现）：看板/网申包/复盘 三页共用一条页签条，active 传各自 key。
+// 只是三个已有页面的互链，不是新路由。
+// 模块级（与 page() 同级）：各路由把 inner 拼好才传进 page()，定义在 page() 体内够不到调用点。
+const appTabs = (on) => `<div class="apptabs">${
+  [['apps', '/applications', '看板'], ['apply', '/apply-profile', '网申包'], ['stats', '/stats', '复盘']]
+    .map(([k, href, label]) => `<a href="${href}"${on === k ? ' class="on"' : ''}>${label}</a>`).join('')
+}</div>`;
 
 // 徽章：底色 + 语义色 + 小图标 + 文字。类名沿用既有的 .badge ok/.warn/.err/.ai（既有 43 处在用），
 // 只新增 .mute —— 不另起 badge--ok 体系。ic 省略时按 cls 取默认图标；cls 为空（纯标签徽章）默认无图标。
@@ -2359,7 +2373,7 @@ function listPage(showArchived = false) {
 // ===== /job/new「为岗位定制简历」（批 1 §0.3 拆页）=====
 // 首页岗位表单整体迁移到此：字段 id/label/默认值/客户端校验/提交与评估接线自 listPage 原样迁入，
 // POST /job/create 与 /eval/create 契约零变化（§0.3 裁决）。首页只留入口按钮（任务卡主行动 + 次级行按钮）。
-// 不进 topnav（/evals 不占导航位；批 3 起导航为 7 项：文档/素材库/投递看板/复盘/设置/网申包）；active 传 'docs'（由首页进入，归属「文档」高亮）。
+// 不进 topnav（/evals 不占导航位；渐进呈现 T2 起导航收敛为 3 项：简历/投递/设置）；active 传 'docs'（由首页进入，归属「简历」高亮）。
 // 页题右侧「评估历史 →」= /evals 入口（批 1 §0.3：首页评估历史卡撤除后，评估归 /evals；
 // 评估在本页发起（先评估这个岗位），故入口落本页题右侧；入口不进导航）。
 function jobNewPage() {
@@ -2818,7 +2832,7 @@ function applyProfilePage() {
       </form>`
     : `<div class="ap-bar"><span class="ap-note">还没有可导出的简历</span></div>`;
 
-  return page('网申包', `
+  return page('网申包', `${appTabs('apply')}
     <div class="page-head"><h1>网申包</h1><span id="apMsg" role="status" class="ap-note"></span></div>
     ${led.corrupt ? `<div class="card" style="border-color:var(--err-soft);background:var(--err-soft);color:var(--err)"><b>${icon('circle-alert', 13)}数据文件损坏，已停止写入：</b>apply-profiles.json —— 请先人工修复或从备份恢复。</div>` : ''}
     <section class="ap-sec" id="apCommon">
@@ -3085,7 +3099,7 @@ function applyProfilePage() {
           .catch(function () {});
       });
     })();
-    </script>`, 'apply');
+    </script>`, 'apps');
 }
 
 // 备份恢复/回退：把 docs-meta.json 整体替换为 target（成对语义），但一律经 updateMeta 逐文档写（不裸 copyFileSync 覆盖共享文件）。
@@ -6015,7 +6029,7 @@ async function handler(req, res) {
       __acts.click.matConfirmAll = function (el) { return matConfirmAll(); };
       // 提交事件本就派发到表单自身（ev.target === form），matFacts 内部继续用 e.target 取 FormData
       __acts.submit.matFacts = function (el, ev) { return matFacts(ev, el.getAttribute('data-id')); };
-    </script>`, 'materials'));
+    </script>`, 'docs'));
     }
     if (req.method === 'POST' && url.pathname === '/mat/add') {
       const body = JSON.parse(await readBody(req));
@@ -6282,7 +6296,7 @@ async function handler(req, res) {
           // data-ch 是属性上下文：channel 由 /app/add、/app/update 原样落库（用户可控）→ 必须 escAttr
           return `<tr data-ch="${escAttr(a.channel || '')}"><td><b>${escHtml(a.company)}</b></td><td>${escHtml(a.role)}</td><td>${escHtml(a.channel || '')}</td><td>${escHtml(statusLabel(a.status))}</td><td>${escHtml(fmtWhen(a.appliedAt))}</td><td>${escHtml(a.nextStep || '')}</td><td>${escHtml(fmtWhen(a.dueDate))}${due}</td><td>${archiveBadge}<a href="/app?id=${escAttr(a.id)}">详情</a></td></tr>`;
         };
-        return send(200, page('投递看板·表格', `<div class="page-head"><h1>投递看板</h1><a href="/applications" style="font-size:13px;font-weight:400">⇄ 看板视图</a></div>
+        return send(200, page('投递·表格', `<div class="page-head"><h1>投递</h1><a href="/applications" style="font-size:13px;font-weight:400">⇄ 看板视图</a></div>${appTabs('apps')}
       ${corruptBanner()}
       <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">
         <!-- option value 是属性上下文：渠道名用户可控 → escAttr；显示文本走 escHtml（文本节点） -->
@@ -6394,7 +6408,7 @@ async function handler(req, res) {
         const items = apps.filter((a) => a.status === st);
         return `<div class="kb-col${items.length ? '' : ' empty'}"><div class="group-head">${escHtml(statusLabel(st))} <span style="color:var(--mut);font-weight:600;font-variant-numeric:tabular-nums">${items.length}</span></div>${items.map(appCard).join('') || '<div style="color:var(--mut);font-size:12px;padding:4px 8px">（空）</div>'}</div>`;
       }).join('');
-      return send(200, page('投递看板', `<div class="page-head"><h1>投递看板</h1><a href="/applications?view=table" style="font-size:13px;font-weight:400">⇄ 表格视图</a></div>
+      return send(200, page('投递', `<div class="page-head"><h1>投递</h1><a href="/applications?view=table" style="font-size:13px;font-weight:400">⇄ 表格视图</a></div>${appTabs('apps')}
     ${corruptBanner()}
     <details class="card" id="appAddBox"><summary style="cursor:pointer;font-weight:700">＋ 新增投递（记录已发生的投递，不自动发送）</summary>
     <!--R3②：裸字段重排为向导 .ob-field 同款 label 包裹模式（每个控件有可访问名）；id 与提交载荷不变（/app/add 契约零变化）-->
@@ -7492,7 +7506,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const apps = loadApps();
       const evals = loadEvals().map(evalRecordView);
       // 早退口径（F1）：投递与评估**均为空**才早退——有评估无投递时闭环卡仍要渲染，不得被空投递吞掉。
-      if (!apps.length && !evals.length) return send(200, page('复盘', `<h1>复盘统计</h1><div class="card" style="text-align:center;padding:40px;color:var(--mut)">暂无投递记录<br><br><a href="/applications">先去投递看板添加记录</a></div>`, 'stats'));
+      if (!apps.length && !evals.length) return send(200, page('复盘', `${appTabs('stats')}<h1>复盘统计</h1><div class="card" style="text-align:center;padding:40px;color:var(--mut)">暂无投递记录<br><br><a href="/applications">先去投递看板添加记录</a></div>`, 'apps'));
       const funnel = APP_STATUSES.map((s) => [s, apps.filter((a) => a.status === s).length]);
       const byCh = {}; apps.forEach((a) => { byCh[a.channel || '未填'] = (byCh[a.channel || '未填'] || 0) + 1; });
       const byDoc = {}; apps.forEach((a) => { byDoc[a.docId] = (byDoc[a.docId] || 0) + 1; });
@@ -7567,11 +7581,11 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       <div class="card"><b class="card-title">按简历版本</b>${Object.entries(byDoc).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:var(--space-2) 0"><span>${byDocLabel(k)}</span><span style="font-variant-numeric:tabular-nums">${v}</span></div>`).join('')}</div>
       <div class="card"><b class="card-title">按岗位方向</b>${Object.entries(byTag).map(([k, v]) => `<div style="display:flex;justify-content:space-between;margin:var(--space-2) 0"><span>${escHtml(k)}</span><span style="font-variant-numeric:tabular-nums">${v}</span></div>`).join('')}</div>
     </div>`;
-      return send(200, page('复盘', `<div class="page-head"><h1>复盘统计</h1><span class="page-meta">n=${n}</span></div>${warn}
+      return send(200, page('复盘', `${appTabs('stats')}<div class="page-head"><h1>复盘统计</h1><span class="page-meta">n=${n}</span></div>${warn}
     <div class="stats-grid">
       <div class="stats-main">${loopCard}${distCards}</div>
       ${sideCard}
-    </div>`, 'stats'));
+    </div>`, 'apps'));
     }
     // ===== 备份 =====
     if (req.method === 'GET' && url.pathname === '/backup') {
