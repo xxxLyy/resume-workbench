@@ -24,6 +24,7 @@ import { sumExpandedBytes, MAX_EXPANDED_BYTES } from './restore-guard.mjs';   //
 import { aiPool, renderPool, ResourceBusy } from './resource-slots.mjs';
 import { trustedRenderHtml } from './render-safe.mjs';   // 受信渲染输入（AUD-05）：未知脚本/事件属性/外联载体不得进入渲染
 import { publishPair, makeIdentityValidator } from './render-publish.mjs';   // PDF+旁车成对发布（AUD-07）   // 共享容量池（RES-01/02/03）：AI 与渲染各 2 个并发
+import { resolveChromium, expectedRevision } from './chromium.mjs';   // 轨 B（Boss 会话）：headless 抓取复用 PDF 导出同一 chromium 定位链；expectedRevision 供完整版族同版本优先
 
 /**
  * JD 文本入库上限（S4B-12）。链接抓取路径 cap 在 4000 字，粘贴路径原本完全没 cap：
@@ -305,6 +306,186 @@ function extractJd(html, url) {
   return { company, role, jd, via };
 }
 
+// ===== Boss 会话（轨 B，spec dev-docs/2026-11-12-jd-import-bookmarklet-design.md §2.4，DESIGN.md §10.20）=====
+// 持久 profile 扫码登录一次 → 贴 zhipin 链接且有会话时，服务端带会话 headless 抓详情页。
+// 纪律：boss-session/ 已 gitignore（运行时数据，永不入仓）；cookie 不导出文件——登录态不离开
+// chromium profile 目录；state.json 只记 {loggedAt}；登录窗口只在用户主动 POST /boss/session/login 时起。
+const BOSS_SESSION_DIR = path.join(root, 'boss-session');
+const BOSS_SESSION_STATE = path.join(BOSS_SESSION_DIR, 'state.json');
+// userDataDir 用单独子目录（state.json 放根、profile 单独子目录，logout 整目录 rm 一次清干净）
+const BOSS_PROFILE_DIR = path.join(BOSS_SESSION_DIR, 'profile');
+const BOSS_LOGIN_URL = 'https://www.zhipin.com/web/user/';   // 登录页（扫码/验证码）
+// 轮询间隔 2s、上限 290s（spec 5min 口径留 10s 余量：server 默认 requestTimeout=300s，贴边会回不出响应）
+const BOSS_LOGIN_POLL_MS = 2000;
+const BOSS_LOGIN_DEADLINE_MS = 290000;
+// zhipin 登录标识 cookie（取「登录后必现」并集——T5 真人扫码实测后再收窄：
+// __zp_stoken__ 是反爬令牌、匿名访客也会有，不能单独作证）。登录判定同时认「URL 离开登录页」
+// （扫码成功后 zhipin 在域内跳走）——双判据防 cookie 名漂移。每轮把看到的 cookie 名打日志供 T5 校准。
+const BOSS_LOGIN_COOKIES = ['geek_zp_token', 'wt2', 'sid', 'uid', 'zp_at', 'boss_session'];
+
+function bossSessionStatus() {
+  try {
+    const st = JSON.parse(fs.readFileSync(BOSS_SESSION_STATE, 'utf8'));
+    if (st && st.loggedAt && !Number.isNaN(Date.parse(st.loggedAt))) return { logged: true, loggedAt: st.loggedAt };
+  } catch {}
+  return { logged: false };
+}
+function bossMarkLogged() {
+  fs.mkdirSync(BOSS_SESSION_DIR, { recursive: true });
+  atomicWrite(BOSS_SESSION_STATE, JSON.stringify({ loggedAt: new Date().toISOString() }));
+}
+
+// T2 host 口径的 zhipin 判定（extractJd 站点表同口径：精确命中或子域；URL 解析失败按否）
+const isZhipinUrl = (u) => {
+  try { const h = new URL(String(u)).hostname || ''; return h === 'zhipin.com' || h.endsWith('.zhipin.com'); }
+  catch { return false; }
+};
+
+// 浏览器拉起注入点（不真开浏览器的测试替身，spec §4「真登录走人工点验」）：
+// RESUME_TEST_NO_BROWSER=1 → 假上下文。假身每请求重读 RESUME_TEST_BOSS_STUB_FILE 指向的
+// JSON {finalUrl?, htmlFile?}——一个服务进程覆盖「抓取成功」与「SESSION_DEAD」两种形；
+// 登录假身永不给出登录信号，RESUME_TEST_LOGIN_MS（默认 800ms）后 pages() 返回空 = 模拟用户关窗。
+async function bossLaunchContext(userDataDir, opts) {
+  if (process.env.RESUME_TEST_NO_BROWSER === '1') return bossFakeContext();
+  const { chromium } = await import('playwright-core');   // 动态导入：不起浏览器的进程不背 playwright 载入成本
+  return chromium.launchPersistentContext(userDataDir, opts);
+}
+function bossFakeContext() {
+  const born = Date.now();
+  const aliveMs = Number(process.env.RESUME_TEST_LOGIN_MS || 800);
+  const stub = () => { try { return JSON.parse(fs.readFileSync(process.env.RESUME_TEST_BOSS_STUB_FILE, 'utf8')); } catch { return {}; } };
+  const mkPage = () => {
+    let u = 'about:blank';
+    return {
+      goto: async (v) => { u = String(stub().finalUrl || v); return null; },
+      url: () => u,
+      waitForFunction: async () => {},
+      content: async () => { const f = stub().htmlFile; try { return f ? fs.readFileSync(f, 'utf8') : '<html><body></body></html>'; } catch { return '<html><body></body></html>'; } },
+    };
+  };
+  const page = mkPage();
+  let closed = false;
+  return {
+    newPage: async () => mkPage(),
+    pages: () => (closed || Date.now() - born >= aliveMs ? [] : [page]),
+    cookies: async () => [],
+    addInitScript: async () => {},
+    close: async () => { closed = true; },
+    on: () => {},
+  };
+}
+
+// 完整版 chromium 可执行文件（登录要真窗口，headless-shell 无界面）：与 chromium.mjs 同一
+// ms-playwright 缓存族，目录族是 chromium-<rev>（shell 族是 chromium_headless_shell-<rev>）。
+// 优先 expectedRevision() 同版本（playwright-core 配套构建），无则取最高修订号；
+// RESUME_CHROMIUM 显式指定且不是 shell 二进制时优先。
+function bossHeadedBin() {
+  const envBin = process.env.RESUME_CHROMIUM;
+  if (envBin && fs.existsSync(envBin) && !/headless.shell/i.test(envBin)) return envBin;
+  const base = path.join(os.homedir(), 'Library', 'Caches', 'ms-playwright');
+  const want = 'chromium-' + expectedRevision();
+  let dirs = [];
+  try {
+    dirs = fs.readdirSync(base).filter((d) => /^chromium-\d+$/.test(d))
+      .sort((a, b) => parseInt(b.split('-')[1], 10) - parseInt(a.split('-')[1], 10));
+  } catch {}
+  for (const d of [...dirs.filter((x) => x === want), ...dirs.filter((x) => x !== want)]) {
+    // chrome-mac(-arm64)/Google Chrome for Testing.app 或经典 chrome-mac/Chromium.app：精确 -name 取主二进制
+    // （Helper 进程名带后缀，精确匹配不会误中；execFileSync 不做 shell 插值，同 chromium.mjs binIn 口径）
+    try {
+      const out = execFileSync('find', [path.join(base, d), '-type', 'f', '(', '-name', 'Google Chrome for Testing', '-o', '-name', 'Chromium', ')'], { maxBuffer: 4 * 1024 * 1024 }).toString();
+      const bin = out.split('\n').map((s) => s.trim()).filter(Boolean)[0] || null;
+      if (bin) return bin;
+    } catch {}
+  }
+  return null;
+}
+
+// ===== 登录（并发防护：模块级 loginInFlight）=====
+let loginInFlight = null;
+async function bossLoginFlow() {
+  const noBrowser = process.env.RESUME_TEST_NO_BROWSER === '1';
+  let bin = null;
+  if (!noBrowser) {
+    bin = bossHeadedBin();
+    if (!bin) return { ok: false, error: '未找到完整版 Chromium（登录要开真窗口，headless shell 不行）' };
+  }
+  let context = null;
+  try {
+    fs.mkdirSync(BOSS_SESSION_DIR, { recursive: true });
+    context = await bossLaunchContext(BOSS_PROFILE_DIR, { headless: false, executablePath: bin, viewport: { width: 420, height: 700 } });
+    const page = context.pages()[0] || await context.newPage();
+    await page.goto(BOSS_LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    let closed = false;
+    try { context.on('close', () => { closed = true; }); } catch {}
+    const deadline = Date.now() + BOSS_LOGIN_DEADLINE_MS;
+    let loggedNames = false;
+    while (Date.now() < deadline && !closed) {
+      let cookies = [], pages = [];
+      try { cookies = await context.cookies('https://www.zhipin.com'); pages = context.pages(); }
+      catch { break; }   // context 已关（用户关窗）→ 按未登录收
+      if (!pages.length) break;   // 用户关窗
+      const names = new Set(cookies.map((c) => c.name));
+      if (!loggedNames) { loggedNames = true; console.error('[boss-login] 首轮 cookie 名：' + [...names].join(',') + '（T5 实测后收窄登录判据）'); }
+      const hit = BOSS_LOGIN_COOKIES.some((n) => names.has(n))
+        // URL 兜底判据：任一页面已在 zhipin 域内且离开 /web/user 登录页
+        || pages.map((p) => { try { return p.url(); } catch { return ''; } })
+            .some((x) => { try { const pu = new URL(x); return (pu.hostname === 'zhipin.com' || pu.hostname.endsWith('.zhipin.com')) && !pu.pathname.startsWith('/web/user'); } catch { return false; } });
+      if (hit) {
+        bossMarkLogged();
+        try { await context.close(); } catch {}
+        return { ok: true, logged: true };
+      }
+      await new Promise((r) => setTimeout(r, BOSS_LOGIN_POLL_MS));
+    }
+    try { await context.close(); } catch {}
+    return { ok: false, error: '未检测到登录' };
+  } catch (e) {
+    try { if (context) await context.close(); } catch {}
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+// 返回 {status, body}：已登录短路 200；进行中 409；跑完一轮按结果 200 {ok, logged?/error}
+async function bossSessionLogin() {
+  if (bossSessionStatus().logged) return { status: 200, body: { ok: true, logged: true } };
+  if (loginInFlight) return { status: 409, body: { ok: false, error: '登录进行中' } };
+  loginInFlight = bossLoginFlow().finally(() => { loginInFlight = null; });
+  return { status: 200, body: await loginInFlight };
+}
+
+// ===== headless 带会话抓取（串行锁：并发第二抓排队，不打爆风控）=====
+let bossFetchChain = Promise.resolve();
+async function bossFetchOnce(url) {
+  if (!bossSessionStatus().logged) { const e = new Error('Boss 会话未登录'); e.code = 'NO_SESSION'; throw e; }
+  let bin = null;
+  if (process.env.RESUME_TEST_NO_BROWSER !== '1') bin = await resolveChromium();   // headless-shell 定位 = PDF 导出同一探测链
+  const context = await bossLaunchContext(BOSS_PROFILE_DIR, { headless: true, executablePath: bin });
+  try {
+    // Boss visibility 反爬对策（社区已知）：headless 下页面判 hidden 就走安全验证——覆盖为恒可见
+    await context.addInitScript(() => {
+      Object.defineProperty(document, 'hidden', { get: () => false });
+      Object.defineProperty(document, 'visibilityState', { get: () => 'visible' });
+    });
+    const page = context.pages()[0] || await context.newPage();
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForFunction(() => window._jobInfo || document.querySelector('.job-sec-text'), { timeout: 8000 }).catch(() => {});
+    const html = await page.content();
+    const finalUrl = page.url();
+    // 失效判定（抓取后判）：跳去安全/登录页 = 会话死；跳到 zhipin 域外同理（顺带收口 SSRF：
+    // 302 跟跳后落点非 zhipin 时，带会话 profile 抓回的任意内网页不得进 meta）
+    if (finalUrl.includes('/security') || finalUrl.includes('/web/user') || !isZhipinUrl(finalUrl)) {
+      const e = new Error('落地页为安全/登录页或非 zhipin 域'); e.code = 'SESSION_DEAD'; throw e;
+    }
+    return html;
+  } finally { try { await context.close(); } catch {} }
+}
+function fetchBossPage(url) {
+  const run = () => bossFetchOnce(url);
+  const p = bossFetchChain.then(run, run);   // 前一抓失败也不阻塞队尾
+  bossFetchChain = p.then(() => {}, () => {});
+  return p;
+}
+
 async function computeFpGuard(jd, jdLink, company, metaAll) {
   try {
     const { fingerprintText } = await import('./vendors/jd-fingerprint/fingerprint-core.mjs');
@@ -384,8 +565,9 @@ async function createJobDraft(root, o) {
   const roleRaw = String(o.role || '').trim();
   // 公司/岗位改可选（渐进呈现 spec §4）：全空 → 「未命名·定制」；缺一项 → 「未命名公司/岗位」。
   // 去重身份不能再用纯 (母版,公司,岗位)——任一侧落占位值时，不同 JD 会撞名；补 jd 指纹段（T4 复核 I-1）。
-  const company = companyRaw || (roleRaw ? '未命名公司' : '未命名');
-  const role = roleRaw || (companyRaw ? '未命名岗位' : '定制');
+  // let 而非 const：轨 B（Boss 会话抓取）在用户未填时回填提取出的公司/岗位（见下方 JD 抓取块）。
+  let company = companyRaw || (roleRaw ? '未命名公司' : '未命名');
+  let role = roleRaw || (companyRaw ? '未命名岗位' : '定制');
   const hasPlaceholder = !companyRaw || !roleRaw;
   if (!VALID_ID.test(from)) return { ok: false, status: 400, body: { ok: false, error: 'invalid from' } };
   const nb = normBrief(o.brief);   // S4a-T5：brief 可选（缺省渐进默认），非法值 400
@@ -451,16 +633,41 @@ async function createJobDraft(root, o) {
     // 截断与「链接读取失败」是两回事，todo 文案必须分开：复用后者的模板会显示成
     // 「JD 链接读取失败（…），请粘贴 JD 文本」——用户明明已经粘贴了，让他再粘一次是荒谬的（2026-10-18 实测）。
     let jdError = '';
-    let jdTruncNote = jdTruncated ? 'JD 超过 64 KB，仅前 64 KB 纳入分析（尾部未读）。JD 过长通常意味着粘进了整页网页，可只保留「岗位职责 + 任职要求」两段。' : '';
+    const JD_TRUNC_NOTE = 'JD 超过 64 KB，仅前 64 KB 纳入分析（尾部未读）。JD 过长通常意味着粘进了整页网页，可只保留「岗位职责 + 任职要求」两段。';
+    let jdTruncNote = jdTruncated ? JD_TRUNC_NOTE : '';
     if (!jd && jdLink) {
+      // 轨 B（spec §10.20 §2.4）：zhipin 链接 + 已登录 Boss 会话 → 跳过静态 fetch（必被登录墙挡），
+      // 带会话 headless 抓详情页。无会话 → 维持静态 fetch 现状（失败记 jdError）。
+      const viaBoss = isZhipinUrl(jdLink) && bossSessionStatus().logged;
       try {
         if (!/^https?:\/\//.test(jdLink)) throw new Error('仅支持 http/https 链接');
         // SSRF 防线：与 /ai/jd-text 同一道 assertSafeBaseURL（2026-10-22 审查 [高]）——
         // 原先这里只有 ^https?://，任意内网/云元数据地址都能被服务端抓取，原文写进 meta.jd 并回显。
         // redirect:'error'：不跟随 302，否则首跳过了校验、跟着跳到黑名单地址。
         assertSafeBaseURL(jdLink);
-        jd = await fetchPageText(jdLink);
-      } catch (e) { jdError = String(e.message || e); }
+        if (viaBoss) {
+          const html = await fetchBossPage(jdLink);   // NO_SESSION/SESSION_DEAD 经 e.code 抛
+          const r = extractJd(html, jdLink);
+          // 失效判定二（spec §2.4）：_jobInfo 缺席且 JD 提取为空 → 也判会话死
+          if (!r.jd && !html.includes('_jobInfo')) { const e = new Error('页面无 _jobInfo 且未提取到 JD'); e.code = 'SESSION_DEAD'; throw e; }
+          jd = r.jd;
+          if (jd.length > JD_MAX_CHARS) { jd = jd.slice(0, JD_MAX_CHARS); jdTruncNote = JD_TRUNC_NOTE; }
+          // 新增行为（轨 B）：提取到的 company/role 仅在用户未填（raw 为空）时才覆盖占位值——
+          // 用户手填永远优先。副作用是故意的：占位身份草稿经回填拿到真名后，同链接再建的
+          // 抓取后重查（下方 dup3）按 (真名,JD) 命中既有草稿，而不是再造一份。
+          if (!companyRaw && r.company) company = r.company;
+          if (!roleRaw && r.role) role = r.role;
+        } else {
+          jd = await fetchPageText(jdLink);
+        }
+      } catch (e) {
+        if (e && e.code === 'SESSION_DEAD') {
+          // 不降级：草稿已按 wx 分配落盘但 meta 未登记 → 与 dup3 同处置清孤儿，再回错误
+          try { fs.rmSync(docPath(to), { force: true }); } catch {}
+          return { ok: false, status: 400, body: { ok: false, error: 'Boss 会话已失效，请重新登录或改用书签' } };
+        }
+        jdError = String(e.message || e);
+      }
     }
     // 抓取回填后重查（T4 复核 I-2）：先贴文本建的草稿 jdSource='手动'，抓取前两轮查重 jd='' 都判不出同 JD——
     // 回填后用新 jd 对 loadMeta() 只比重跑守卫①（链接异 URL 同正文也走这条路）。
@@ -2557,7 +2764,20 @@ function jobNewPage(prefill = null) {
           <div id="jdFailHint" style="display:none;font-size:12px;color:var(--mut);margin-top:var(--space-2)">这个站抓不到（多半要登录）。两个办法：① 回页面复制全文粘贴 ② 用上面的「抓取此页」书签：<a href="${escAttr(BOOKMARKLET)}">抓取此页 → 工作台</a>（拖到书签栏，在职位页点它）</div>
           <div style="font-size:12px;color:var(--mut);margin-top:10px">生成约 2–3 分钟，分批改写并校验。产出一份新草稿，可再编辑。</div></div>
       </form>
-      <div id="evalResult"></div>`}
+      <div id="evalResult"></div>
+      <!-- Boss 会话卡（轨 B，spec §10.20 §2.6）：只随「有母版」分支渲染（与书签同区）；
+           状态点/按钮全部由下方委托脚本按 /boss/session/status 渲染，零内联事件 -->
+      <div class="card" id="bossCard" style="margin-top:var(--space-3)">
+        <b class="card-title">Boss 会话（可选）</b>
+        <div style="font-size:12px;color:var(--mut);margin-top:var(--space-1)">登录后贴 zhipin.com 链接，服务端可直接抓详情页（不用点书签）。会话只存本机浏览器数据目录，不导出不上传；扫码窗口只在点「登录 Boss」时打开。</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:var(--space-2);font-size:13px">
+          <span id="bossDot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--mut)"></span>
+          <span id="bossState" role="status">读取中…</span>
+          <button type="button" class="secondary" id="bossLoginBtn" data-action="bossLogin" style="display:none">登录 Boss</button>
+          <button type="button" class="secondary" id="bossReloginBtn" data-action="bossLogin" style="display:none">重新登录</button>
+          <button type="button" class="secondary" id="bossLogoutBtn" data-action="bossLogout" style="display:none">清除会话</button>
+        </div>
+      </div>`}
     <script nonce="__CSP_NONCE__">
       // 要求卡接线（自首页迁入，逻辑零变化）：chips 切换 / 幅度与页数段选 / 预设（localStorage，不进 meta）
       (function () {
@@ -2710,6 +2930,52 @@ function jobNewPage(prefill = null) {
             location.href = '/edit?id=' + encodeURIComponent(d.id);
           } catch (err) { __status(msg, 'err', err.message); t.disabled = false; }
         });
+      })();
+      // ===== Boss 会话卡（轨 B，spec §10.20 §2.6）：状态轮询 + 登录/登出（data-action 委托进 __acts.click）=====
+      // login 是长请求（服务端等扫码最长 ~5min）：点击后禁全部按钮+忙等文案，响应或网络失败恢复。
+      (function () {
+        var card = document.getElementById('bossCard');
+        if (!card) return;
+        var __acts = window.__acts || (window.__acts = { click: {}, change: {}, input: {}, submit: {}, keydown: {} });
+        var dot = document.getElementById('bossDot'), state = document.getElementById('bossState');
+        var loginBtn = document.getElementById('bossLoginBtn'), reloginBtn = document.getElementById('bossReloginBtn'), logoutBtn = document.getElementById('bossLogoutBtn');
+        var render = function (st) {
+          var logged = !!(st && st.logged);
+          dot.style.background = logged ? 'var(--ok)' : 'var(--mut)';
+          if (logged) {
+            var days = Math.max(0, Math.floor((Date.now() - Date.parse(st.loggedAt || '')) / 86400000));
+            state.textContent = '已登录 · ' + (days <= 0 ? '今天' : days + ' 天前');
+          } else state.textContent = '未登录';
+          loginBtn.style.display = logged ? 'none' : '';
+          reloginBtn.style.display = logged ? '' : 'none';
+          logoutBtn.style.display = logged ? '' : 'none';
+        };
+        var refresh = function () {
+          return fetch('/boss/session/status').then(function (r) { return r.json(); }).then(render)
+            .catch(function () { state.textContent = '状态读取失败'; });
+        };
+        var busy = function (on, txt) {
+          loginBtn.disabled = reloginBtn.disabled = logoutBtn.disabled = on;
+          if (txt != null) state.textContent = txt;
+        };
+        __acts.click.bossLogin = function () {
+          busy(true, '已弹出登录窗口，扫码成功后自动关闭（最长约 5 分钟）…');
+          fetch('/boss/session/login', { method: 'POST' }).then(function (r) { return r.json(); }).then(function (d) {
+            // 失败时把错误文案盖在状态行上（状态点/按钮仍按最新 status 渲染）——不静默回「未登录」
+            return fetch('/boss/session/status').then(function (r) { return r.json(); }).then(function (st) {
+              render(st);
+              if (!(d && d.ok)) state.textContent = (d && d.error) || '未检测到登录';
+            });
+          }).catch(function (e) { state.textContent = '请求失败：' + e.message; })
+            .finally(function () { busy(false); });
+        };
+        __acts.click.bossLogout = function () {
+          if (!confirm('清除 Boss 登录会话？下次抓 Boss 链接需要重新扫码。')) return;
+          busy(true, '清除中…');
+          fetch('/boss/session/logout', { method: 'POST' }).then(function () { return refresh(); })
+            .catch(function () {}).finally(function () { busy(false); });
+        };
+        refresh();
       })();
     </script>`, 'docs');
 }
@@ -4689,6 +4955,22 @@ async function handler(req, res) {
       const srcUrl = String(params.get('url') || '');
       const r = extractJd(htmlTruncated ? htmlParam.slice(0, IMPORT_HTML_MAX) : htmlParam, srcUrl);
       return send(200, importPreviewPage({ srcUrl, title: String(params.get('title') || ''), ...r, htmlTruncated }));
+    }
+    // ===== Boss 会话（轨 B，spec §10.20 §2.4）：状态查询 / 扫码登录 / 清除会话 =====
+    // 登录窗口只在本端点起（用户主动动作，不静默起浏览器）；CSRF/迁移锁按普通写请求口径——
+    // 本机页 fetch 同源放行，跨站表单无法触发登录（origin host 不符被拒，正合意）。
+    if (req.method === 'GET' && url.pathname === '/boss/session/status') {
+      const st = bossSessionStatus();
+      return sendJson(200, { ok: true, logged: st.logged, loggedAt: st.loggedAt || null });
+    }
+    if (req.method === 'POST' && url.pathname === '/boss/session/logout') {
+      // 只删 boss-session/ 整目录（profile + state.json），其他数据文件一律不碰
+      await fs.promises.rm(BOSS_SESSION_DIR, { recursive: true, force: true });
+      return sendJson(200, { ok: true });
+    }
+    if (req.method === 'POST' && url.pathname === '/boss/session/login') {
+      const r = await bossSessionLogin();
+      return sendJson(r.status, r.body);
     }
     // ===== 岗位草稿（独立文档；不依赖模型；同岗位不重复建）=====
     if (req.method === 'POST' && url.pathname === '/job/create') {
