@@ -213,6 +213,13 @@ const mbLabel = (n) => `${Number((Number(n) / (1024 * 1024)).toFixed(1))} MB`;
 // 恢复/撤销的受管项（AUD-09）：存在性台账只覆盖这些；config.json 刻意不在其中（恢复不碰配置）。
 const RESTORE_MANAGED_DIRS = ['docs', 'snapshots', 'pdfs'];
 const RESTORE_MANAGED_FILES = ['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json'];
+// htmlToText：剥 script/style/标签为纯文本（原 fetchPageText 内联链，抽出与 extractJd 共用——
+// 剥离规则逐字节不变；截断口径各自定：fetchPageText 4000、extractJd body 兜底 8000）。
+function htmlToText(html) {
+  return String(html)
+    .replace(/<script[\s\S]*?<\/script>/g, '').replace(/<style[\s\S]*?<\/style>/g, '')
+    .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
 async function fetchPageText(url) {
   const r = await fetch(url, { signal: AbortSignal.timeout(15000), redirect: 'error' });
   if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -224,9 +231,75 @@ async function fetchPageText(url) {
     if (size > JD_PAGE_MAX_BYTES) throw new Error('页面超过 5MB 上限');
     chunks.push(c);
   }
-  return Buffer.concat(chunks).toString('utf8')
-    .replace(/<script[\s\S]*?<\/script>/g, '').replace(/<style[\s\S]*?<\/style>/g, '')
-    .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 4000);
+  return htmlToText(Buffer.concat(chunks).toString('utf8')).slice(0, 4000);
+}
+
+// ===== JD 网址导入 extractJd（spec dev-docs/2026-11-12-jd-import-bookmarklet-design.md §2.3，DESIGN.md §10.20）=====
+// 三层级按序补缺：①站点表（zhipin 先挖 _jobInfo 内嵌对象 → 选择器数组）②JSON-LD JobPosting
+// ③body 纯文本兜底。每级只补缺（jd 有了不覆盖）；via 记产出 jd 的通道，供预览页诊断。
+// liepin/lagou/51job/zhaopin 选择器为公开结构初值、未实测（zhipin 已实测）——不命中自然落下一层。
+const JD_SITE_RULES = [
+  { host: 'zhipin.com',
+    jobInfoVar: 'var _jobInfo',                                  // 内嵌对象取 job_name/job_salary/company
+    jd: [/class="[^"]*job-sec-text[^"]*"[^>]*>([\s\S]*?)<\/div>/i],
+    role: [/<h1[^>]*>([\s\S]*?)<\/h1>/i],
+    company: [/class="company-name"[^>]*>([\s\S]*?)</i] },
+  { host: 'liepin.com',   jd: [/class="[^"]*job-description[^"]*"[^>]*>([\s\S]*?)</i, /class="[^"]*content-word[^"]*"[^>]*>([\s\S]*?)</i], role: [/<h1[^>]*>([\s\S]*?)<\/h1>/i, /class="[^"]*job-title[^"]*"[^>]*>([\s\S]*?)</i], company: [/class="[^"]*company[^"]*"[^>]*>([\s\S]*?)</i] },
+  { host: 'lagou.com',    jd: [/class="[^"]*job-detail[^"]*"[^>]*>([\s\S]*?)</i], role: [/<h1[^>]*>([\s\S]*?)<\/h1>/i], company: [/class="[^"]*company[^"]*"[^>]*>([\s\S]*?)</i] },
+  { host: '51job.com',    jd: [/class="[^"]*bmsg[^"]*"[^>]*>([\s\S]*?)</i, /class="[^"]*job_msg[^"]*"[^>]*>([\s\S]*?)</i], role: [/<h1[^>]*>([\s\S]*?)<\/h1>/i], company: [/class="[^"]*cname[^"]*"[^>]*>([\s\S]*?)</i] },
+  { host: 'zhaopin.com',  jd: [/class="[^"]*describtion[^"]*"[^>]*>([\s\S]*?)</i, /class="[^"]*job-detail[^"]*"[^>]*>([\s\S]*?)</i], role: [/<h1[^>]*>([\s\S]*?)<\/h1>/i], company: [/class="[^"]*company[^"]*"[^>]*>([\s\S]*?)</i] },
+];
+const IMPORT_HTML_MAX = 8 * 1024 * 1024;   // spec §2.2：/import/page 的 html 字段 ≤8MB 截断保护
+function extractJd(html, url) {
+  const src = String(html || '');
+  const link = String(url || '');
+  let company = '', role = '', jd = '', via = '';
+  const pick = (re) => { const m = src.match(re); return m ? htmlToText(m[1]) : ''; };
+
+  // 层级 1：站点表。zhipin 先挖 `var _jobInfo = {…}` 内嵌对象（key:'val' 正则级取值，非 JSON）；
+  // 选择器：jd 候选取首个剥离后 ≥50 字符者，role/company 取首个命中。
+  const site = JD_SITE_RULES.find((s) => link.includes(s.host));
+  if (site) {
+    if (site.jobInfoVar) {
+      const vi = src.indexOf(site.jobInfoVar);
+      const block = vi >= 0 ? (src.slice(vi).match(/\{[\s\S]*?\}/) || [])[0] : '';
+      if (block) {
+        const field = (k) => { const m = block.match(new RegExp("(?:^|[,\\s{])" + k + "\\s*:\\s*(['\"])([\\s\\S]*?)\\1")); return m ? htmlToText(m[2]) : ''; };
+        if (!role) role = field('job_name');
+        if (!company) company = field('company');
+        // job_salary 可作附加信息——当前不落字段（spec §2.3）
+      }
+    }
+    for (const re of site.jd || []) { const t = pick(re); if (t.length >= 50) { jd = t; break; } }
+    if (!role) for (const re of site.role || []) { role = pick(re); if (role) break; }
+    if (!company) for (const re of site.company || []) { company = pick(re); if (company) break; }
+    if (jd) via = 'site-selectors';
+  }
+
+  // 层级 2：JSON-LD JobPosting——兼容顶层数组与 @graph；@type 可为字符串或数组。
+  if (!jd) {
+    for (const m of src.matchAll(/<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+      let j = null;
+      try { j = JSON.parse(m[1].trim()); } catch { continue; }
+      const arr = Array.isArray(j) ? j : (j && Array.isArray(j['@graph']) ? j['@graph'] : [j]);
+      const jp = arr.find((o) => o && [].concat(o['@type'] || []).includes('JobPosting'));
+      if (!jp) continue;
+      jd = htmlToText(String(jp.description || ''));
+      if (!role) role = htmlToText(String(jp.title || ''));
+      const org = jp.hiringOrganization;
+      if (!company && org) company = htmlToText(String(typeof org === 'string' ? org : (org.name || '')));
+      if (jd) { via = 'json-ld'; break; }
+    }
+  }
+
+  // 层级 3：body 兜底——剥 script/style/标签取纯文本，截 8000 字符
+  // （比 fetchPageText 的 4000 宽：书签递交的是人工可见页，给更长额度）。
+  if (!jd) {
+    const body = (src.match(/<body[\s\S]*<\/body>/i) || [src])[0];
+    jd = htmlToText(body).slice(0, 8000);
+  }
+  if (!via) via = 'body';
+  return { company, role, jd, via };
 }
 
 async function computeFpGuard(jd, jdLink, company, metaAll) {
@@ -2367,6 +2440,47 @@ function listPage(showArchived = false) {
 // 不进 topnav（/evals 不占导航位；渐进呈现 T2 起导航收敛为 3 项：简历/投递/设置）；active 传 'docs'（由首页进入，归属「简历」高亮）。
 // 页题右侧「评估历史 →」= /evals 入口（批 1 §0.3：首页评估历史卡撤除后，评估归 /evals；
 // 评估在本页发起（先评估这个岗位），故入口落本页题右侧；入口不进导航）。
+// ===== JD 导入预览页（spec §10.20）：POST /import/page 的提取结果呈现 + 「带去定制」表单 =====
+// 纯表单零脚本需求（page() 外壳自带 nonce 脚本位，本页不新增脚本）。外部输入（url/title/提取文本）
+// 全走 escHtml/escAttr；来源链接过 safeUrl 协议白名单（html 是任意网页递交的，javascript: 不渲染成 href）。
+function importPreviewPage({ srcUrl, title, company, role, jd, via, htmlTruncated }) {
+  const meta = loadMeta();
+  // 母版下拉口径 = jobNewPage 的 infos（在盘且未归档全部文档）——两页同一口径，不各写一份。
+  const infos = docIdsOnDisk().map((did) => docInfo(did, meta[did])).filter(Boolean).filter((d) => !((meta[d.id] || {}).archivedAt));
+  const href = safeUrl(srcUrl);
+  const td = (k, v) => `<tr><td style="padding:4px 16px 4px 0;color:var(--mut);vertical-align:top;white-space:nowrap">${k}</td><td>${v}</td></tr>`;
+  const rows = [
+    td('来源', srcUrl ? (href ? `<a href="${escAttr(href)}">${escHtml(srcUrl)}</a>` : escHtml(srcUrl)) : '—'),
+    td('页面标题', title ? escHtml(title) : '—'),
+    td('提取通道', escHtml(via)),
+    td('公司', company ? `<b>${escHtml(company)}</b>` : '（未识别）'),
+    td('岗位', role ? `<b>${escHtml(role)}</b>` : '（未识别）'),
+    td('JD 长度', `${jd.length} 字符`),
+  ].join('');
+  // JD <50：如实警示 + 两条退路（回来源页复制全文 / 仍要带入——表单照渲染，带不带由用户定）
+  const warn = jd.length < 50 ? `<div class="card" style="border-color:var(--warn);margin-bottom:var(--space-3)"><b style="color:var(--warn)">没提到 JD——这个页面可能不是职位详情，或提取失败了。</b>
+    <p style="font-size:13px;margin:var(--space-1) 0 0">${href ? `<a href="${escAttr(href)}">回来源页复制全文</a>` : '回来源页复制全文'} · <a href="#bringForm">仍要带入</a></p></div>` : '';
+  const pre = `<pre style="white-space:pre-wrap;font-size:13px;background:var(--card-2);padding:var(--space-3);border-radius:var(--radius);max-height:480px;overflow:auto;margin:0">${escHtml(jd.slice(0, 4000)) || '（空）'}${jd.length > 4000 ? `\n…共 ${jd.length} 字符` : ''}</pre>`;
+  // 带去定制 = 普通 POST form（预填实现属 /job/new POST，见 spec §2.5）；隐藏字段带 jd/company/role/jdLink + 母版 from。
+  const form = `<form id="bringForm" method="post" action="/job/new">
+      <input type="hidden" name="jd" value="${escAttr(jd)}">
+      <input type="hidden" name="company" value="${escAttr(company)}">
+      <input type="hidden" name="role" value="${escAttr(role)}">
+      <input type="hidden" name="jdLink" value="${escAttr(srcUrl)}">
+      ${infos.length ? `<label style="display:block;font-size:13px;margin-bottom:var(--space-2)">用哪份简历改
+        <select name="from" style="width:100%">${infos.map((d) => `<option value="${escAttr(d.id)}">${d.title}（${d.id}）</option>`).join('')}</select></label>
+        <button type="submit">带去定制</button>`
+      : `<p style="font-size:13px;color:var(--mut)">还没有简历文档，先去<a href="/">建一份</a>。</p>`}
+    </form>`;
+  return page('提取结果', `
+    <div class="page-head"><h1>提取结果</h1><a href="/job/new" style="font-size:13px;font-weight:400">手动粘贴 JD →</a></div>
+    ${htmlTruncated ? `<p style="font-size:12px;color:var(--warn)">页面超过 8MB，已截断后提取</p>` : ''}
+    <div class="card"><table style="border-collapse:collapse;font-size:13px">${rows}</table></div>
+    ${warn}
+    <div class="card" style="margin-top:var(--space-3)"><b class="card-title">JD 内容</b><div style="margin-top:var(--space-2)">${pre}</div></div>
+    <div class="card" style="margin-top:var(--space-3)"><b class="card-title">带入定制</b><div style="margin-top:var(--space-2)">${form}</div></div>`);
+}
+
 function jobNewPage() {
   const meta = loadMeta();
   // 母版下拉口径与拆出前 listPage infos 完全一致（在盘且未归档的全部文档，jobInfo 派生不筛选）。
@@ -4067,10 +4181,23 @@ async function handler(req, res) {
   // 绑 127.0.0.1 防的是网络，防不住浏览器——用户在同一台机器上开网页是日常。
   const reqHost = String(req.headers.host || '');
   if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d{1,5})?$/.test(reqHost)) return send(421, 'bad Host', 'text/plain');
+  // ===== OPTIONS /import/page 预检（JD 书签跨站递交，spec §10.20）：最前短路——预检不是写请求，
+  // 不进 mutating/CSRF/锁/路由。https→localhost 的 Private Network Access 要求 Allow-Private-Network。
+  if (req.method === 'OPTIONS' && url.pathname === '/import/page') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Private-Network': 'true',
+    });
+    return res.end();
+  }
   // 跨进程排他锁：迁移/保存持有 .migrate.lock（他人新鲜持锁）期间，一切写请求一律 503；纯读不受影响。
   // 写请求 = 非 GET/HEAD，外加 WRITE_ON_GET 里"读名义下的写"（GET /pdf、/export 会 renderCurrent→updateMeta 并覆写 PDF）。
-  const mutating = (req.method !== 'GET' && req.method !== 'HEAD')
-    || (req.method === 'GET' && WRITE_ON_GET.has(url.pathname));
+  // /import/page 除外：书签跨站递交的只读预览（零写盘零副作用，spec §10.20）——不算写请求：
+  // 迁移锁不拦它；下方 CSRF 跨源检查也对它豁免（表单导航的 Origin 必为招聘站域，不豁免则轨 A 整路死）。
+  const mutating = ((req.method !== 'GET' && req.method !== 'HEAD') || (req.method === 'GET' && WRITE_ON_GET.has(url.pathname)))
+    && url.pathname !== '/import/page';
   if (mutating && rootLock.isHeld(root)) {
     return send(503, '迁移/维护进行中（.migrate.lock 被持有），写请求与渲染类 GET（/pdf、/export）暂不可用，请稍后重试', 'text/plain');
   }
@@ -4500,6 +4627,18 @@ async function handler(req, res) {
     // ===== /job/new「为岗位定制简历」（批 1 §0.3 拆页）：表单页，提交契约零变化（仍 POST /job/create 与 /eval/create）=====
     if (req.method === 'GET' && url.pathname === '/job/new') {
       return send(200, jobNewPage());
+    }
+    // ===== JD 书签导入预览（轨 A 共享轨，spec §10.20）：跨站表单递交 html/url/title → extractJd → 预览 =====
+    // 零写盘零副作用——这是跨源豁免的依据（mutating 定义处统一）；ACAO:* 供 fetch 类调用方（表单导航本身不需要）。
+    if (req.method === 'POST' && url.pathname === '/import/page') {
+      const text = await readBody(req);   // 共享 10MB body 上限（urlencoded 编码膨胀在外层兜底）；超限走统一 catch → 413
+      const params = new URLSearchParams(text);
+      const htmlParam = params.get('html') || '';
+      const htmlTruncated = htmlParam.length > IMPORT_HTML_MAX;
+      const srcUrl = String(params.get('url') || '');
+      const r = extractJd(htmlTruncated ? htmlParam.slice(0, IMPORT_HTML_MAX) : htmlParam, srcUrl);
+      return send(200, importPreviewPage({ srcUrl, title: String(params.get('title') || ''), ...r, htmlTruncated }),
+        'text/html; charset=utf-8', { 'Access-Control-Allow-Origin': '*' });
     }
     // ===== 岗位草稿（独立文档；不依赖模型；同岗位不重复建）=====
     if (req.method === 'POST' && url.pathname === '/job/create') {

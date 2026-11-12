@@ -1,0 +1,425 @@
+<!-- JD 导入夹具：真实 Boss 详情页修剪版（源 /tmp/jd-poc/last.html 2026-11-12 POC 抓取，459KB→~29KB）。
+     保留：title / var _jobInfo 内嵌对象 / _PAGE 配置块 / job-primary(h1+salary) / sider-company /
+     相似职位 li(class=company-name) / job-sec-text JD 块 / fold-text 公司介绍 / 工商信息块。
+     清洗：securityId / user_id / reportedId / targetId / uid / name / token / clientIP /
+     go_chat_done 参数值一律替换为 XXX 或 0；≥11 位数字串归零（隐私门禁口径）——公开 JD 可入仓，会话凭据不可。 -->
+<html class="standard"><script crossorigin="Anonymous" src="https://static.zhipin.com/assets/sdk/ka/ka.v2.min.js"></script><script src="//hm.baidu.com/hm.js?194df3105ad7148dcf2b98a91b5e727a"></script><script src="chrome-extension://ogkmgjbagackkdlcibcailacnncgonbn/boss.js"></script><!--<![endif]--><head>
+    <meta charset="utf-8">
+    <title>「数据标注项目管理 双休远程面试招聘」_中软国际招聘-BOSS直聘</title>
+<script src="https://static.zhipin.com/assets/sdk/apm/patas.2.3.0.min.js" crossorigin="anonymous"></script>
+<script>
+    try {
+        function getCookieValue(name) {
+            var match = document.cookie.match(new RegExp('(?:^|;\\s*)' + name + '=([^;]*)'));
+            return match ? decodeURIComponent(match[1]) : '';
+        }
+
+        var __aValue = getCookieValue('__a');
+        var isProd = window.location.host.indexOf('.zhipin.com') !== -1 && window.location.host.indexOf('pre-www.zhipin.com') === -1;
+
+        window.APM &&window.APM.init({
+            appKey: isProd ? 'ObsSRskiryhn60pf' : '4Dcq7jBIr5VWWi1Q',
+            bizType: 'zhipin_web_geek_jsp',
+            isBizResponseError: (response,metrics) => false,
+            hasSkeleton: false,
+            extraData: {
+                buildVersion: '',
+                staticPath: 'https://static.zhipin.com/zhipin-geek-seo/v5487',
+                kaUid: localStorage.getItem('ka-uid'),
+                deviceId: __aValue,
+            },
+            ignoreErrors: [
+                'ResizeObserver',
+                'Script error',
+                'Unexpected token',
+            ], //需要忽略的错误，支持字符串或正则表达式(https://zhishu.zhipin.com/wiki/4qwXA47VQMg)
+            // 需要忽略的文件
+            ignoreSources: [
+                '后羿采集器',
+                /program files/i,
+                /^(.*-extension:\/\/)/, // 浏览器插件
+                'geetest',
+                'cstaticdun',
+            ],
+            // 需要忽略的控制台报错
+            ignoreConsoleErrorPatterns: [
+                '终止请求',
+                '拒绝访问。',
+                'Request aborted',
+                'Network Error',
+                'timeout of 60000ms exceeded',
+                'SecurityError',
+                'Request failed'
+            ], // 过滤不需要上报的console.error
+            ignoreUrls:[] // 需要忽略的接口
+        });
+    } catch (e) {}
+</script>
+
+<script>
+    window.kaConfig = {
+        openKaToWarlockAdaptor: true,
+        stopAutoSendPV: false,
+        appname: 'zhipin_web_geek_jsp',
+        uid: (window._PAGE && (window._PAGE.uid || window._PAGE.userId)) || '',
+        topicId: 'XXX',
+    }
+</script>
+
+<script>
+    function loadLastbackScript() {
+        var fallbackScript = document.createElement('script')
+        fallbackScript.src = 'https://logapi.zhipin.com/dap/jssdk/warlockdata.min.2.2.15.js'
+
+        fallbackScript.onerror = function () {
+        }
+        fallbackScript.onload = function () {
+            // 重新初始化
+            initWarlockData()
+        }
+        // 将备用脚本插入<head>，开始加载
+        document.head.appendChild(fallbackScript)
+    }
+    function loadFallbackScript() {
+        var fallbackScript = document.createElement('script')
+        fallbackScript.src = 'https://z.zhipin.com/assets/zhipin/sdk/datastar/warlockdata.min.2.2.15.js'
+
+        fallbackScript.onerror = function () {
+            // 注意：此步骤为有必要时再加就行
+            loadLastbackScript()
+        }
+        fallbackScript.onload = function () {
+            // 重新初始化
+            initWarlockData()
+        }
+        // 将备用脚本插入<head>，开始加载
+        document.head.appendChild(fallbackScript)
+    }
+
+    function initWarlockData() {
+        var isProd = window.location.host.indexOf('.zhipin.com') !== -1 && window.location.host.indexOf('pre-www.zhipin.com') === -1;
+        var serverUrl = isProd
+            ? 'https://shink.zhipin.com/wapi/dapCommon/json'
+            : 'https://boss-m-qa.weizhipin.com/wapi/dapCommon/json'
+
+        // 初始化埋点信息测试
+        var props = {
+            server_url: serverUrl,
+            token: 'XXX', // 埋点新干线页面查看应用信息获取
+            // app_ver: '1.0.0', // 项目版本，如果没有也可以不设置
+            app_name: 'zhipin_web_geek_jsp', // 项目名称
+            auto_track_page_view: false, // 收集PageView 事件
+            auto_track_web_click: false, // 收集WebClick事件
+            track_ka: true,
+            max_string_length: 10000,
+            env: isProd ? 'prod' : 'dev', // 项目所在环境 dev 或者 prod，默认值是：prod
+        }
+        try {
+            window.Warlock && window.Warlock.init(props)
+            console.log('%c数星埋点初始化成功', 'color: #00bebd')
+        } catch (e) {
+            console.log('数星埋点初始化失败', e)
+        }
+    }
+</script>
+
+<link id="warlock-script" rel="preload" as="script" crossorigin="anonymous" href="https://static.zhipin.com/assets/sdk/warlock/warlockdata.min.2.2.15.js" onerror="loadFallbackScript()">
+<script crossorigin="anonymous" src="https://static.zhipin.com/assets/sdk/warlock/warlockdata.min.2.2.15.js" onload="initWarlockData()">
+</script>    <meta name="keywords" content="数据标注项目管理 双休远程面试,数据标注项目管理 双休远程面试招聘,中软国际数据标注项目管理 双休远程面试招聘">
+    <meta name="description" content="中软国际数据标注项目管理 双休远程面试招聘，薪资：6-7K，地点：深圳，要求：3-5年，学历：大专，福利：节日福利、免费班车、零食下午茶、带薪年假、节假日加班费、年终奖、定期体检、五险一金，招聘经理刚刚在线，随时随地直接开聊。">
+    <link rel="alternate" media="only screen and (max-width: 640px)" href="https://m.zhipin.com/job_detail/7ad5d5939a74640b1XN63dy-E1RS.html">
+    <link rel="canonical" href="https://www.zhipin.com/job_detail/7ad5d5939a74640b1XN63dy-E1RS.html">
+    <meta name="applicable-device" content="pc">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+    <link rel="shortcut icon" href="https://static.zhipin.com/favicon.ico">
+    <script src="https://img.bosszhipin.com/static/zhipin/geek/sdk/browser-check-v2.js" crossorigin="anonymous" async=""></script>
+    <link href="https://static.zhipin.com/zhipin-geek-seo/v5487/web/geek/css/main.css" crossorigin="anonymous" type="text/css" rel="stylesheet">
+    <script type="text/javascript">
+        var _userInfo = {
+            showTip: false,
+            text: '',
+            isLogin: true,
+            isPerfect: true,
+            hasKaAnotherS: true
+        };
+        var _reportData = {
+            reportedId: 'XXX',
+            targetId: '0'
+        };
+        var _jobInfo = {
+            job_id: '7ad5d5939a74640b1XN63dy-E1RS',
+            user_id: 'XXX',
+            job_name: '数据标注项目管理 双休远程面试',
+            job_salary: '6-7K',
+            company:'中软国际',
+            brand_logo:'https://img.bosszhipin.com/beijin/upload/com/workfeel/20251029/7bf6f160950405e9ac4f8cdda606cef7f2582ab95c0f40e66304d5b44c39a7afd22923ace459f643.png.webp',
+            securityId:'XXX',
+            position:'130121',
+        };
+        var _STGY = {
+            login_source:1
+        };
+    </script>
+    <meta property="bytedance:lrDate_time" content="2026-11-12T21:07:41+08:00">
+    <meta property="bytedance:updated_time" content="2026-11-12T21:07:41+08:00">
+<style>@charset "utf-8";
+<body class="job-body-wrapper" data-pv="cpc_job_detail">
+<div id="wrap">
+<script>
+    var staticPath = 'https://static.zhipin.com/v2';
+    _PAGE = {
+        checkMobileUrl: "/registe/sendSms.json",
+        regMobileUrl: "/registe/save.json",
+        loginMobileUrl: "/login/phone.json",
+        loginAccountUrl: "/login/account.json",
+        getRandomKeyUrl: "/captcha/randkey.json",
+        verifyImgUrl: "/captcha/?randomKey={randomKey}",
+        getPositionUrl: "/user/position.json",
+        homeRedirectUrl: "",
+        citySiteName:"全国站",
+        citySiteCode:"100010000",
+        skillsUrl: "/common/data/positionSkill",
+        isLogin: true,
+        identity: 0
+            ,
+            uid:0,
+            name: "测试用户",
+            face: "https://img.bosszhipin.com/boss/avatar/avatar_13.png",
+            token: "XXX",
+            clientIP: "0.0.0.0",
+                ws: {
+                    useSSL: true,
+                    server: "ws6.zhipin.com",
+                    port: 443
+                }
+    }
+</script>
+<div id="header" class="header-v2">
+<div id="main"><div class="inner home-inner">
+                <div class="job-primary detail-box">
+                    <div class="info-primary">
+                        <div class="job-status"><span>招聘中</span></div>
+                        <div class="name">
+                            <h1 title="数据标注项目管理 双休远程面试">数据标注项目管理 双休远程面试</h1>
+                            <span class="salary">6-7K</span>
+                        </div>
+                        <p><a class="text-desc text-city" href="/shenzhen/">深圳</a>        <span class="text-desc text-experiece">3-5年</span>
+<span class="text-desc text-degree">大专</span></p>
+                        <div class="job-op">
+                            <div class="btn-container">
+            <a class="btn btn-interest " ka="top_job_detail_like" href="javascript:;" data-url="/wapi/zprelation/geekTag/job/interest?securityId=XXX&amp;jobId=7ad5d5939a74640b1XN63dy-E1RS&amp;tag=4&amp;lid=">感兴趣</a>
+
+
+                <div class="btn btn-startchat-wrap">
+                    <a class="btn btn-startchat" ka="go_chat_done_0" href="javascript:;" redirect-url="/web/geek/chat?id=XXX&amp;jobId=7ad5d5939a74640b1XN63dy-E1RS&amp;securityId=XXX&amp;lid=" data-url="/wapi/zpgeek/friend/add.json?securityId=XXX&amp;jobId=7ad5d5939a74640b1XN63dy-E1RS" data-isfriend="false">
+                        立即沟通
+                    </a>
+                </div>
+                            </div>
+                            <div class="op-container">
+                                        <a href="/web/geek/resume" class="fl icon-resume-login" ka="job_online_resume_1"><i class="icon"></i>完善在线简历</a>
+                                            <a href="javascript:;" class="fr icon-upload-login attachment-resume-upload" ka="job_attach_resume_1"><i class="icon"></i>新增附件简历</a>
+                            </div>
+                        </div>
+                    </div>
+        <div class="tag-container-new" style="padding-right: 43px;">
+            <div class="tag-more" style="opacity: 1; display: block; left: auto; right: 0px;">
+                <span class="link-more">...</span>
+                <div class="tag-all job-tags">
+                    <span>节日福利</span><span>免费班车</span><span>零食下午茶</span><span>带薪年假</span><span>节假日加班费</span><span>年终奖</span><span>定期体检</span><span>五险一金</span>
+                </div>
+            </div>
+            <div class="job-tags">
+                <span>节日福利</span><span>免费班车</span><span>零食下午茶</span><span>带薪年假</span><span>节假日加班费</span><span>年终奖</span><span>定期体检</span><span>五险一金</span>
+            </div>
+        </div>
+                </div>
+            </div>
+        </div>
+        <div class="smallbanner" style="display: none;">
+            <div class="inner home-inner">
+                <div class="company-info">
+                    <div class="name">
+                        
+                        <span class="job-title">数据标注项目管理 双休远程面试</span>
+                        <span class="badge">6-7K</span>
+                    </div>
+                </div>
+        <div class="tag-container-new" style="padding-right: 43px;">
+            <div class="tag-more" style="opacity: 1; display: block; left: auto; right: 0px;">
+                <span class="link-more">...</span>
+                <div class="tag-all job-tags">
+                    <span>节日福利</span><span>免费班车</span><span>零食下午茶</span><span>带薪年假</span><span>节假日加班费</span><span>年终奖</span><span>定期体检</span><span>五险一金</span>
+                </div>
+            </div>
+            <div class="job-tags">
+                <span>节日福利</span><span>免费班车</span><span>零食下午茶</span><span>带薪年假</span><span>节假日加班费</span><span>年终奖</span><span>定期体检</span><span>五险一金</span>
+            </div>
+        </div>
+                <div class="detail-op">
+                    <div class="btns">
+            <a class="btn btn-interest " ka="ceiling_job_detail_like" href="javascript:;" data-url="/wapi/zprelation/geekTag/job/interest?securityId=XXX&amp;jobId=7ad5d5939a74640b1XN63dy-E1RS&amp;tag=4&amp;lid=">感兴趣</a>
+
+
+                <div class="btn btn-startchat-wrap">
+                    <a class="btn btn-startchat" ka="ceiling_job_detail_gochat" href="javascript:;" redirect-url="/web/geek/chat?id=XXX&amp;jobId=7ad5d5939a74640b1XN63dy-E1RS&amp;securityId=XXX&amp;lid=" data-url="/wapi/zpgeek/friend/add.json?securityId=XXX&amp;jobId=7ad5d5939a74640b1XN63dy-E1RS" data-isfriend="false">
+                        立即沟通
+                    </a>
+                </div>
+                    </div>
+                    <div class="info">
+                        中软国际
+                        <a href="/gongsi/job/c272ec369ff11e6a03V82d29EFE~.html" target="_blank" class="link-more" ka="look-all-position">查看所有职位</a>
+                            <div class="job-detail-guide-download-app">
+                                <div class="job-detail-guide-download-app-icon"></div>
+                                下载App, 不错过Boss每一条消息
+                            </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="job-box">
+            <div class="inner home-inner">
+                <div class="job-sider">
+                        <div class="sider-company">
+                            <p class="title">公司基本信息</p>
+                            <div class="company-info">
+                                <a ka="job-detail-company-logo_custompage" href="/gongsi/c272ec369ff11e6a03V82d29EFE~.html" title="中软国际" target="_blank">
+                                        <img src="https://img.bosszhipin.com/beijin/upload/com/workfeel/20251029/7bf6f160950405e9ac4f8cdda606cef7f2582ab95c0f40e66304d5b44c39a7afd22923ace459f643.png.webp?x-oss-process=image/resize,w_120,limit_0" alt="">
+                                </a>
+                                <a ka="job-detail-company_custompage" href="/gongsi/c272ec369ff11e6a03V82d29EFE~.html" title="中软国际" target="_blank">
+                                    中软国际
+                                </a>
+                            </div>
+                                 <p><i class="icon-stage"></i>已上市</p>
+                                <p><i class="icon-scale"></i>10000人以上</p>
+                                <p><i class="icon-industry"></i><a ka="job-detail-brandindustry" href="/i100021/">计算机软件</a></p>
+                            <a href="/gongsi/job/c272ec369ff11e6a03V82d29EFE~.html" class="look-all" ka="more-similar-jobs1">查看全部职位</a>
+                        </div>
+
+        <div class="similar-job-wrapper">
+            <h3>相似职位<a href="/c101280600-p130121/e_105-y_3/" rel="nofollow" ka="more-similar-jobs2" target="_blank">更多相似职位</a></h3>
+            <ul class="similar-job-list">
+                    <li>
+                        <a ka="job_sug_1" href="/job_detail/aea1831c1c8961071XJ83d27GFNQ.html" target="_blank">
+                            <div class="similar-job-info">
+                                <span class="similar-job-name">数据标注专员 双休 线上面试</span>
+                                <span class="similar-job-salary">6-7K</span>
+                            </div>
+                            <p class="similar-job-attr">
+                                <span class="similar-job-company" data-url="/gongsi/job/c272ec369ff11e6a03V82d29EFE~.html" ka="job_sug_brandjob1_custompage">
+                                    <span class="job-company-logo" data-url="/gongsi/c272ec369ff11e6a03V82d29EFE~.html" ka="job_sug_brand1_custompage">
+                                        <img src="https://img.bosszhipin.com/beijin/upload/com/workfeel/20251029/7bf6f160950405e9ac4f8cdda606cef7f2582ab95c0f40e66304d5b44c39a7afd22923ace459f643.png.webp?x-oss-process=image/resize,w_100,limit_0" alt="">
+                                    </span>
+                                    <span class="company-name">中软国际</span>
+                                </span>
+                                <span class="similar-job-location">深圳</span>
+                            </p>
+                        </a>
+                        <a href="/job_pk/7ad5d5939a74640b1XN63dy-E1RS/aea1831c1c8961071XJ83d27GFNQ.html" target="_blank" class="job_pk" data-id="7ad5d5939a74640b1XN63dy-E1RS" data-subid="aea1831c1c8961071XJ83d27GFNQ">
+                            职位对比
+                        </a>
+                    </li>
+</ul></div>
+                </div>
+
+                <div class="job-detail">
+                    
+
+                    <div class="job-detail-section" style="user-select: none;"><style>.JrcxyyGEXYQn{display:none!important;}.ezZbZwHfpXX{display:inline-block;font-size:0!important;width:1em;height:1em;visibility:hidden;line-height:0;}.PkEpySMwypC{display:inline-block;font-size:0!important;width:1em;height:1em;visibility:hidden;line-height:0;}.HrHAjRsA{display:inline-block;font-size:0!important;width:1em;height:1em;visibility:hidden;line-height:0;}.ymrJehPX{display:inline-block;width:0.1px;height:0.1px;overflow:hidden;visibility: hidden;}.PxcAtDcs{font-style:normal;font-weight:normal}.CRhkATawbb{font-style:normal;font-weight:normal}.QjdyyPwXJ{font-style:normal;font-weight:normal}.YzTQtWDmCe{font-style:normal;font-weight:normal}.wWEfnSfNRjX{font-style:normal;font-weight:normal}</style>
+                        <div class="detail-section-operate">
+                            <div class="op-links">
+                                <a ka="job_detail_wechat_share" href="javascript:;" class="link-wechat-share" data-url="/wapi/zpgeek/job/share/qr.json?jobId=7ad5d5939a74640b1XN63dy-E1RS&amp;source=2">微信<span class="PkEpySMwypC">kanzhun</span>扫码分享</a>
+                                <a ka="job_detail_report" href="javascript:;" class="link-report"><span class="JrcxyyGEXYQn">直聘</span>举报</a>
+                            </div>
+                        </div>
+                        <div class="detail-content-header">
+                            <h3>职<span class="HrHAjRsA">kanzhun</span>位描述</h3>
+                        </div>
+                            <ul class="job-keyword-list">
+                                    <li>数<span class="ymrJehPX">kanzhun</span>据标注</li>
+                                    <li>文本标<span class="HrHAjRsA">kanzhun</span>注</li>
+                                    <li>语音标注</li>
+                                    <li>英文标注项目</li>
+                                    <li>数据分析能力强</li>
+                                    <li>描点标注</li>
+                                    <li>文本语义分析</li>
+                                    <li>标注工具</li>
+                                    <li>标框标注</li>
+                                    <li>图片标注</li>
+                                    <li>分类标注</li>
+                            </ul>
+                            <div class="job-sec-text">必须有带团队经验，文本标注<br>岗位职责：<br>1、根据给出的标准进行文本、语音、图像等数据标注，配合完成算法、测试、产品的数据需求，保证数据质量、效率；<br>2、定期总结标注经验，提供标注工具的使用完善建议；<br>3、负责标注任务审核、任务管理工作；<br>4、负责对接标注供应商、需求方，进行标注质量、进度管理<br>岗位要求：<br>1、有标注管理经验者优先，有文本语义分析标注项目经验者优先；<br>2、文本理解能力较强，有内容创作经验者优先；<br>3、有英文标注项目管理经验者，或有CET6等证书者优先；<br>4、熟练使用word、excel等常用办公软件；</div>
+                        <div class="job-boss-info">
+                            <div class="detail-figure">
+                                    <img src="https://img.bosszhipin.com/beijin/upload/avatar/20231205/607f1f3d68754fd010f26514ad874c7f2466e6d7c3881d5614970ffe45e40553d9e5877d7710c500_s.jpg.webp?x-oss-process=image/resize,w_100,limit_0" alt="">
+                            </div>
+                            <h2 class="name">冯女士<i class="icon-vip"></i>
+                                    
+                                    <span class="boss-active-time">刚刚活跃</span>
+                            </h2>
+                            <div class="boss-info-attr">
+                                中软国际<em class="vdot">·</em>招聘经理
+                                
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="job-detail-section prop-item">
+                        <h3>竞争力分析</h3>
+                        <div class="">
+                            <div class="prop-detail">
+                                <div class="pull-right"><a href="javascript:;" class="link-detail" ka="check_personal_competitive_detail">查看完整个人竞争力</a></div>
+                                <div>个人综合排名：<span>在<img src="https://img.bosszhipin.com/static/file/2022/4jo15bijai00000000000.png">人中排名第<img src="https://img.bosszhipin.com/static/file/2022/4jo15bijai00000000000.png"></span></div>
+                            </div>
+                            <div class="prop-container"><p class="text-position">你在？位置</p>
+                                <span class="level-1"></span>
+                                <span class="level-2"><em>一般</em></span>
+                                <span class="level-3"><em>良好</em></span>
+                                <span class="level-4"><em>优秀</em></span>
+                                <span class="level-5"><em>极好</em></span>
+                            </div>
+                        </div>
+                    </div>
+
+                        <div class="job-detail-section security-box">
+                            <h3>BOSS 安全提示</h3>
+                            <p>BOSS直聘严禁用人单位和招聘者用户做出任何损害求职者合法权益的违法违规行为，包括但不限于扣押求职者证件、收取求职者财物、向求职者集资、让求职者入股、诱导求职者异地入职、异地参加培训、违法违规使用求职者简历等，您一旦发现此类行为，
+                                <a href="javascript:;" class="link-report">请立即举报</a>
+                            </p>
+                            
+                        </div>
+
+                        <div class="job-detail-section job-detail-company">
+                                    <div class="detail-section-item company-info-box">
+                                        <h3>公司介绍</h3>
+                                        <div class="job-sec-text fold-text">中软国际有限公司（以下简称：中软国际）是中国领先的大型综合性软件与信息服务企业，成立于2000年，为香港主板上市公司，股票代码00354，员工约62,000人。面对当今互联网化，以及云计算、大数据的挑战，中软国际建立了线下与线上互动的业务结构（O2O）。<br><br>线下业务依托中软国际多年积累起来的传统IT服务，包括技术服务、专业服务以及IT培训服务等，已经成为立足中国、服务全球、行业领先的全链条技术服务供应商。在地域上，中软国际业务覆盖中国大陆主要城市和香港特别行政区，以及美国、日本、英国和爱尔兰等国家；在行业上，已经覆盖电信、政府、金融银行、高科技、电子商务、制造流通、公用事业、保险证券、移动应用、能源等主要行业；在能力上，中软国际以云产品、云服务、物联网以及大数据能力，服务于上百家跨国企业、银行、金融、国有大型企业客户；在IT培训上，校企合作以及大学生培训（实训）基地已经遍布中国。中软国际已建立了完备的、覆盖面广的IT服务体系。<br><br>通过师从大师，见贤思齐，中软国际与华为、微软、阿里巴巴等行业巨人展开了深入全面的战略合作，中软国际也在这样的合作中，深耕金融、电信等重点行业，并在全球拓展、管理体系、交付体系上不断深入，为公司业绩增长奠定了坚实基础。<br><br>线上业务以“解放号”（JointForce）为核心。它既是一个通过可信人脉组织、由最佳管理实践背书的IT服务众包平台，也是一个海量解决方案研发、实施和集成的工作平台。通过建立IT 服务生态圈，帮助IT 服务企业有效利用社会资源组织项目提交，为客户提供“快，省好多”的可信IT服务。与IT在线培训服务平台“宅客学院”一起，“解放号”不仅可以推动产业效率提升，与线下业务形成良性互动，也是中软国际实现高速增长，应对IT产业转型的利器。<br><br>依托线下业务和线上业务的双轮驱动，中软国际秉承“奋斗为本，成就客户，创造分享，共同成长”的核心价值观，服务于大企业、大行业，与合作伙伴、员工、股东一起聚愿同行，为成为世界级IT服务企业而奋斗！</div>
+                                        <a ka="job-comintroduce" href="/gongsi/c272ec369ff11e6a03V82d29EFE~.html" target="_blank" class="look-all" style="display: inline;">查看全部</a>
+                                    </div>
+                                    <div class="detail-section-item business-info-box">
+                                        <h3>工商信息</h3>
+                                        <div class="level-list-box">
+                                            <ul class="level-list">
+                                                <li class="company-name"><span>公司名称</span>中软国际科技服务有限公司</li>
+                                                <li class="company-user"><span>法定代表人</span>陈宇红</li>
+                                                <li class="res-time"><span>成立日期</span>2012-04-01</li>
+                                                <li class="company-type"><span>企业类型</span>有限责任公司（外商投资企业法人独资）</li>
+                                                <li class="manage-state"><span>经营状态</span>开业</li>
+                                                <li class="company-fund"><span>注册资金</span>30000万人民币</li>
+                                            </ul>
+                                            <a ka="job-cominfo" href="/gongsi/c272ec369ff11e6a03V82d29EFE~.html" target="_blank" class="look-all">查看全部</a>
+                                        </div>
+                                    </div>
+                            <div class="detail-section-item company-address">
+                                <h3>工作地址</h3>
+                                    <div class="job-location">
+                                        <div class="location-address">深圳南山区金地威新中心1</div>
+                                        <div class="job-location-map js-open-map" data-content="深圳南山区金地威新中心1" data-addressid="0c95bed20d0b9d410HJ93d64Elc~" data-lat="113.951714,22.527285" data-gray="1">
+                                                <img src="https://img.bosszhipin.com/beijin/amap/staticMap/905003f34929909d44cca0c33190a4c2" alt="公司地址">
+                                                <p>点击查看地图</p>
+                                        </div>
+                                    </div>
+                            </div>
+                        </div>
+
+</div></div></div></body></html>
