@@ -2694,7 +2694,8 @@ function importPreviewPage({ srcUrl, title, company, role, jd, via, htmlTruncate
   // 母版下拉口径 = jobNewPage 的 infos（在盘且未归档全部文档）——两页同一口径，不各写一份。
   const infos = docIdsOnDisk().map((did) => docInfo(did, meta[did])).filter(Boolean).filter((d) => !((meta[d.id] || {}).archivedAt));
   const href = safeUrl(srcUrl);
-  const td = (k, v) => `<tr><td style="padding:4px 16px 4px 0;color:var(--mut);vertical-align:top;white-space:nowrap">${k}</td><td>${v}</td></tr>`;
+  // 值列 overflow-wrap:anywhere：来源 URL/长标题是无空格整串，窄屏下不换行会把表格顶出视口（T5 点验实测 523px）。
+  const td = (k, v) => `<tr><td style="padding:4px 16px 4px 0;color:var(--mut);vertical-align:top;white-space:nowrap">${k}</td><td style="overflow-wrap:anywhere">${v}</td></tr>`;
   const rows = [
     td('来源', srcUrl ? (href ? `<a href="${escAttr(href)}">${escHtml(srcUrl)}</a>` : escHtml(srcUrl)) : '—'),
     td('页面标题', title ? escHtml(title) : '—'),
