@@ -2448,7 +2448,9 @@ function listPage(showArchived = false) {
 // 用表单导航而非 fetch——目标站 CSP 的 connect-src 管不到表单提交；target=_blank 在新标签看结果。
 // action 端口 = 本机实际绑定端口（boundPort 在 listen 回调定型：7766 占用顺延 7767/7768、
 // PORT 环境指定都生效——spec「端口不写死」）；body 保持可读书写不 encodeURI，href 属性值整体 escAttr。
-const BOOKMARKLET_JS = "(()=>{var f=document.createElement('form');f.method='POST';f.action='http://localhost:__PORT__/import/page';f.target='_blank';f.style.display='none';var h=document.createElement('textarea');h.name='html';h.value=document.documentElement.outerHTML;f.appendChild(h);var u=document.createElement('input');u.name='url';u.value=location.href;f.appendChild(u);var t=document.createElement('input');t.name='title';t.value=document.title;f.appendChild(t);document.body.appendChild(f);f.submit();f.remove();})()";
+// 注：目标站若显式设了 CSP `form-action` 不含本机源，表单导航也会被拦（Boss 实测未设——POC 验证）；
+// 那种站点只剩复制粘贴一条路，提示行里如实告知。
+const BOOKMARKLET_JS = "(()=>{var f=document.createElement('form');f.method='POST';f.action='http://localhost:__PORT__/import/page';f.target='_blank';f.style.display='none';var h=document.createElement('textarea');h.name='html';h.value=document.documentElement.outerHTML;f.appendChild(h);var u=document.createElement('input');u.name='url';u.value=location.href;f.appendChild(u);var t=document.createElement('input');t.name='title';t.value=document.title;f.appendChild(t);(document.body||document.documentElement).appendChild(f);f.submit();f.remove();})()";
 function bookmarkletHref() { return 'javascript:' + BOOKMARKLET_JS.replace('__PORT__', String(boundPort)); }
 
 // ===== JD 导入预览页（spec §10.20）：POST /import/page 的提取结果呈现 + 「带去定制」表单 =====
@@ -2524,7 +2526,7 @@ function jobNewPage(prefill = null) {
         <div class="step"><div style="font-size:13px;font-weight:600;margin-bottom:6px"><span style="color:var(--mut)">1</span> 岗位描述 <span style="font-weight:400;font-size:12px;color:var(--mut)">粘贴招聘页全文即可</span></div>
           <textarea id="jobJd" rows="6" style="width:100%" placeholder="把职位描述整段粘进来，公司、岗位会尽量自己识别">${escHtml(pfJd)}</textarea>
           <div style="font-size:12px;color:var(--mut);margin-top:var(--space-1)">或 <a href="#" id="jdModeLink" style="color:inherit">粘贴招聘页链接</a>（读取失败可改回贴文本）</div>
-          <div style="font-size:12px;color:var(--mut);margin-top:var(--space-2)">Boss/猎聘等要登录的站抓不到：把这个拖到书签栏 → <a href="${escAttr(BOOKMARKLET)}">抓取此页 → 工作台</a>，在职位页点它</div>
+          <div style="font-size:12px;color:var(--mut);margin-top:var(--space-2)">Boss/猎聘等要登录的站抓不到：把这个拖到书签栏 → <a href="${escAttr(BOOKMARKLET)}">抓取此页 → 工作台</a>，在职位页点它（页面上直接点没反应，是拖到书签栏用；换了端口要重拖）</div>
           <div id="jdLinkRow" style="${pfLink ? '' : 'display:none;'}margin-top:6px"><input id="jobLink" placeholder="https://…" style="width:100%"${pfLink ? ` value="${escAttr(pfLink)}"` : ''}></div></div>
         <div class="step"><div style="font-size:13px;font-weight:600;margin-bottom:6px"><span style="color:var(--mut)">2</span> 用哪份简历改</div>
           <select id="jobFrom" style="width:100%">${infos.map((d) => `<option value="${escAttr(d.id)}"${d.id === pfFrom ? ' selected' : ''}>${d.title}（${d.id}）</option>`).join('')}</select></div>
