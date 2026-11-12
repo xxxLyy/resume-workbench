@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>简历工作台 — 首页重设计预览</title>
+<style>
+  :root {
+    --bg: #f6f5f3;
+    --surface: #ffffff;
+    --ink: #1c1b1a;
+    --ink-2: #57534e;
+    --ink-3: #a8a29e;
+    --line: #e7e5e4;
+    --accent: #ea580c;
+    --accent-ink: #c2410c;
+    --ok: #15803d;
+    --r: 10px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "PingFang SC", "SF Pro Text", "Helvetica Neue", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---- 预览工具条（不属于设计） ---- */
+  .devbar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 99;
+    background: #292524; color: #d6d3d1;
+    font: 12px/1 ui-monospace, monospace;
+    display: flex; align-items: center; gap: 4px;
+    padding: 8px 16px;
+  }
+  .devbar span { color: #78716c; margin-right: 8px; }
+  .devbar button {
+    background: transparent; color: #d6d3d1; border: 1px solid #44403c;
+    border-radius: 6px; padding: 4px 10px; font: inherit; cursor: pointer;
+  }
+  .devbar button.on { background: #f5f5f4; color: #1c1b1a; border-color: #f5f5f4; }
+  body { padding-top: 36px; }
+
+  /* ---- 顶导航 ---- */
+  .topnav {
+    height: 52px; background: var(--surface); border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; padding: 0 24px; gap: 32px;
+  }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; }
+  .brand svg { display: block; }
+  .nav { display: flex; gap: 4px; margin-left: auto; }
+  .nav a {
+    display: flex; align-items: center; gap: 6px;
+    color: var(--ink-2); text-decoration: none; font-size: 13px;
+    padding: 6px 12px; border-radius: 8px; border-bottom: 2px solid transparent;
+  }
+  .nav a.on { color: var(--ink); border-bottom-color: var(--ink); border-radius: 0; }
+  .nav a:hover { color: var(--ink); }
+  .nav svg { opacity: .7; }
+
+  .wrap { max-width: 960px; margin: 0 auto; padding: 32px 24px 80px; }
+  .view { display: none; }
+  body[data-view="s0"] .v-s0, body[data-view="s1"] .v-s1,
+  body[data-view="s2"] .v-s2, body[data-view="job"] .v-job { display: block; }
+
+  /* ---- 通用元件 ---- */
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 500;
+    cursor: pointer; border: 1px solid transparent; text-decoration: none;
+  }
+  .btn-p { background: #1c1b1a; color: #fff; }
+  .btn-p:hover { background: #000; }
+  .btn-g { background: var(--surface); color: var(--ink); border-color: var(--line); }
+  .btn-g:hover { border-color: var(--ink-3); }
+  .btn-o { background: var(--surface); color: var(--accent-ink); border-color: #f3c9ae; }
+  .btn-o:hover { border-color: var(--accent); }
+  .quiet-link { color: var(--ink-2); font-size: 13px; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
+  .quiet-link:hover { color: var(--ink); }
+
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); }
+
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
+  .dot-draft { background: var(--ink-3); }
+  .dot-ready { background: var(--accent); }
+  .dot-sent  { background: var(--ok); }
+  .st { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
+
+  h1 { font-size: 22px; font-weight: 600; }
+  h2 { font-size: 13px; font-weight: 600; color: var(--ink-2); margin-bottom: 12px; }
+  .sub { color: var(--ink-2); font-size: 13px; }
+
+  /* ---- 简历缩略图（moment：产品自己的文档） ---- */
+  .mini {
+    background: #fff; border: 1px solid var(--line); border-radius: 6px;
+    box-shadow: 0 1px 2px rgba(28,25,23,.05);
+    padding: 14px 14px 10px; width: 108px; flex: none;
+  }
+  .mini .nm { height: 7px; width: 46%; background: #44403c; border-radius: 2px; margin-bottom: 5px; }
+  .mini .ct { height: 3px; width: 80%; background: #d6d3d1; border-radius: 2px; margin-bottom: 10px; }
+  .mini .ln { height: 3px; background: #e7e5e4; border-radius: 2px; margin-bottom: 4px; }
+  .mini .ln.s { width: 62%; }
+  .mini .hd { height: 3px; width: 30%; background: #a8a29e; border-radius: 2px; margin: 8px 0 5px; }
+  .mini .ph { position: absolute; top: 14px; right: 14px; width: 18px; height: 22px; background: #f0ede9; border-radius: 2px; }
+  .mini-wrap { position: relative; }
+
+  /* ---- 状态 0：新用户 ---- */
+  .v-s0 .hero { text-align: center; padding: 72px 0 48px; }
+  .v-s0 .hero h1 { font-size: 26px; margin-bottom: 10px; }
+  .v-s0 .hero .sub { max-width: 420px; margin: 0 auto; }
+  .starts { display: flex; gap: 16px; justify-content: center; margin-top: 36px; }
+  .start-card {
+    width: 280px; text-align: left; padding: 20px;
+    cursor: pointer; transition: border-color .15s;
+  }
+  .start-card:hover { border-color: var(--ink-3); }
+  .start-card .ic {
+    width: 34px; height: 34px; border-radius: 8px; background: var(--bg);
+    display: flex; align-items: center; justify-content: center; margin-bottom: 14px;
+  }
+  .start-card h3 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .start-card p { font-size: 13px; color: var(--ink-2); }
+  .v-s0 .proof { display: flex; justify-content: center; margin-top: 56px; }
+
+  /* ---- 继续卡（s1/s2 共用） ---- */
+  .resume-card { display: flex; gap: 20px; padding: 20px; align-items: flex-start; }
+  .resume-card .info { flex: 1; min-width: 0; }
+  .resume-card h3 { font-size: 16px; font-weight: 600; margin-bottom: 2px; }
+  .resume-card .meta { font-size: 12px; color: var(--ink-3); margin-bottom: 10px; }
+  .resume-card .acts { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+
+  /* ---- 待办 ---- */
+  .todo { padding: 6px 0; }
+  .todo li {
+    list-style: none; display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px; font-size: 13px;
+  }
+  .todo li + li { border-top: 1px solid var(--line); }
+  .todo .t { flex: 1; }
+  .todo .act { font-size: 12px; color: var(--accent-ink); text-decoration: none; white-space: nowrap; }
+  .todo .act:hover { text-decoration: underline; }
+
+  /* ---- 文档列表 ---- */
+  .docrow {
+    display: flex; align-items: center; gap: 14px; padding: 12px 16px;
+  }
+  .docrow + .docrow { border-top: 1px solid var(--line); }
+  .docrow .thumb {
+    width: 34px; height: 44px; background: #fff; border: 1px solid var(--line);
+    border-radius: 3px; flex: none; padding: 5px;
+  }
+  .docrow .thumb i { display: block; height: 2px; background: #e7e5e4; margin-bottom: 3px; border-radius: 1px; }
+  .docrow .thumb i:first-child { width: 50%; background: #a8a29e; }
+  .docrow .nm { font-weight: 500; font-size: 13px; }
+  .docrow .mt { font-size: 12px; color: var(--ink-3); }
+  .docrow .ops { margin-left: auto; display: flex; gap: 14px; }
+  .docrow .ops a { font-size: 12px; color: var(--ink-2); text-decoration: none; }
+  .docrow .ops a:hover { color: var(--ink); }
+
+  .section { margin-top: 28px; }
+  .footer-new { margin-top: 20px; display: flex; gap: 18px; align-items: center; }
+
+  /* ---- 日程 ---- */
+  .sched { padding: 4px 0; }
+  .sched li { list-style: none; display: flex; align-items: center; gap: 10px; padding: 10px 16px; font-size: 13px; }
+  .sched .when { color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .overdue { color: var(--accent-ink); }
+
+  /* ---- 岗位定制页 ---- */
+  .v-job .col { max-width: 600px; margin: 0 auto; }
+  .v-job h1 { margin-bottom: 6px; }
+  .v-job .lead { color: var(--ink-2); font-size: 13px; margin-bottom: 28px; }
+  .step { margin-bottom: 20px; }
+  .step .lb { display: flex; align-items: baseline; gap: 8px; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+  .step .no { color: var(--ink-3); font-weight: 500; font-size: 12px; }
+  .step .opt { margin-left: auto; font-weight: 400; font-size: 12px; color: var(--ink-3); }
+  .v-job textarea, .v-job input[type=text], .v-job input[type=url] {
+    width: 100%; border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px; font: inherit; font-size: 13px; background: var(--surface);
+    color: var(--ink); resize: vertical;
+  }
+  .v-job textarea:focus, .v-job input:focus { outline: none; border-color: var(--ink-3); }
+  .v-job textarea { min-height: 140px; }
+  .swapline { font-size: 12px; color: var(--ink-2); margin-top: 6px; }
+  .swapline a { color: var(--ink-2); }
+  .master-line {
+    display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+    font-size: 13px;
+  }
+  .master-line .chg { margin-left: auto; font-size: 12px; color: var(--ink-2); }
+  .job-actions { display: flex; align-items: center; gap: 14px; margin-top: 24px; }
+  .expect { font-size: 12px; color: var(--ink-3); margin-top: 14px; }
+  details.adv { margin-top: 4px; }
+  details.adv summary { font-size: 12px; color: var(--ink-2); cursor: pointer; list-style: none; }
+  details.adv summary::before { content: '▸ '; }
+  details.adv[open] summary::before { content: '▾ '; }
+
+  .foot { text-align: center; color: var(--ink-3); font-size: 12px; margin-top: 64px; }
+</style>
+</head>
+<body data-view="s1">
+
+<div class="devbar">
+  <span>预览</span>
+  <button data-v="s0">新用户（空）</button>
+  <button data-v="s1" class="on">有简历</button>
+  <button data-v="s2">求职中</button>
+  <button data-v="job">为岗位定制</button>
+</div>
+
+<nav class="topnav">
+  <div class="brand">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1c1b1a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>
+    简历工作台
+  </div>
+  <div class="nav">
+    <a class="on" href="#"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>简历</a>
+    <a href="#"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>投递</a>
+    <a href="#"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置</a>
+  </div>
+</nav>
+
+<div class="wrap">
+
+  <!-- ============ 状态 0：新用户 ============ -->
+  <section class="view v-s0">
+    <div class="hero">
+      <h1>建你的第一份简历</h1>
+      <p class="sub">一份母版，按岗位出不同版本。数据只存在这台机器上。</p>
+    </div>
+    <div class="starts">
+      <div class="card start-card">
+        <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#57534e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
+        <h3>导入现有简历</h3>
+        <p>拖入 PDF，自动整理成可编辑的简历</p>
+      </div>
+      <div class="card start-card">
+        <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#57534e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></div>
+        <h3>从零开始</h3>
+        <p>分步填写，每步可跳过，写完就是完整简历</p>
+      </div>
+    </div>
+    <div class="proof">
+      <div class="mini-wrap" style="width:140px">
+        <div class="mini" style="width:140px;padding:18px">
+          <div class="ph"></div>
+          <div class="nm"></div><div class="ct"></div>
+          <div class="hd"></div>
+          <div class="ln"></div><div class="ln"></div><div class="ln s"></div>
+          <div class="hd"></div>
+          <div class="ln"></div><div class="ln s"></div>
+          <div class="hd"></div>
+          <div class="ln"></div><div class="ln"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 状态 1：有简历、未投递 ============ -->
+  <section class="view v-s1">
+    <h2 style="margin-bottom:12px">继续</h2>
+    <div class="card resume-card">
+      <div class="mini-wrap">
+        <div class="mini">
+          <div class="ph"></div>
+          <div class="nm"></div><div class="ct"></div>
+          <div class="hd"></div>
+          <div class="ln"></div><div class="ln"></div><div class="ln s"></div>
+          <div class="hd"></div>
+          <div class="ln"></div><div class="ln s"></div>
+          <div class="hd"></div>
+          <div class="ln"></div><div class="ln"></div>
+        </div>
+      </div>
+      <div class="info">
+        <h3>凌浩翔</h3>
+        <div class="meta">更新于 2026/9/26 · 16 份历史版本</div>
+        <span class="st"><i class="dot dot-draft"></i>草稿 · PDF 不是最新，导出时会重新生成</span>
+        <div class="acts">
+          <a class="btn btn-p" href="#">继续编辑</a>
+          <a class="btn btn-o" href="#">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            导出 PDF
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>接下来可以</h2>
+      <div class="card" style="padding:16px 20px;display:flex;align-items:center;gap:12px">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#57534e" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1" fill="#57534e"/></svg>
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:500">要投某个岗位？</div>
+          <div style="font-size:12px;color:var(--ink-2)">按 JD 生成一份定制副本，母版不动</div>
+        </div>
+        <a class="quiet-link" href="#">为岗位定制 →</a>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>全部文档</h2>
+      <div class="card">
+        <div class="docrow">
+          <div class="thumb"><i></i><i></i><i></i><i></i><i></i></div>
+          <div><div class="nm">凌浩翔</div><div class="mt">更新于 2026/9/26</div></div>
+          <span class="st"><i class="dot dot-draft"></i>草稿</span>
+          <div class="ops"><a href="#">编辑</a><a href="#">导出</a></div>
+        </div>
+        <div class="docrow">
+          <div class="thumb"><i></i><i></i><i></i><i></i><i></i></div>
+          <div><div class="nm">old-resume</div><div class="mt">更新于 2026/9/26</div></div>
+          <span class="st"><i class="dot dot-draft"></i>草稿</span>
+          <div class="ops"><a href="#">编辑</a><a href="#">导出</a></div>
+        </div>
+      </div>
+      <div class="footer-new">
+        <a class="quiet-link" href="#">+ 新建空白简历</a>
+        <a class="quiet-link" href="#">导入 PDF</a>
+      </div>
+    </div>
+    <div class="foot">简历工作台 · 本地优先 · 数据在 ~/resume</div>
+  </section>
+
+  <!-- ============ 状态 2：求职中 ============ -->
+  <section class="view v-s2">
+    <h2 style="margin-bottom:12px">待办</h2>
+    <div class="card todo">
+      <ul>
+        <li><i class="dot dot-ready"></i><span class="t">「字节-感知算法」的 PDF 还是旧版</span><a class="act" href="#">重新导出</a></li>
+        <li><i class="dot dot-sent"></i><span class="t">面试已过 3 天，可以写一句跟进</span><a class="act" href="#">起草跟进语</a></li>
+        <li><i class="dot dot-draft"></i><span class="t">「old-resume」还没整理成结构化简历</span><a class="act" href="#">去整理</a></li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <h2>简历</h2>
+      <div class="card">
+        <div class="docrow">
+          <div class="thumb"><i></i><i></i><i></i><i></i><i></i></div>
+          <div><div class="nm">凌浩翔 · 母版</div><div class="mt">更新于 2026/9/26</div></div>
+          <span class="st"><i class="dot dot-ready"></i>可投递</span>
+          <div class="ops"><a href="#">编辑</a><a href="#">导出</a></div>
+        </div>
+        <div class="docrow">
+          <div class="thumb"><i></i><i></i><i></i><i></i><i></i></div>
+          <div><div class="nm">字节 · 感知算法工程师</div><div class="mt">基于母版 · 更新于 2026/11/8</div></div>
+          <span class="st"><i class="dot dot-sent"></i>已投递</span>
+          <div class="ops"><a href="#">编辑</a><a href="#">导出</a></div>
+        </div>
+        <div class="docrow">
+          <div class="thumb"><i></i><i></i><i></i><i></i><i></i></div>
+          <div><div class="nm">美团 · 视觉算法</div><div class="mt">基于母版 · 更新于 2026/11/10</div></div>
+          <span class="st"><i class="dot dot-draft"></i>草稿</span>
+          <div class="ops"><a href="#">编辑</a><a href="#">导出</a></div>
+        </div>
+      </div>
+      <div class="footer-new">
+        <a class="quiet-link" href="#">+ 为岗位定制</a>
+        <a class="quiet-link" href="#">新建空白简历</a>
+        <a class="quiet-link" href="#">导入 PDF</a>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>近期日程</h2>
+      <div class="card sched">
+        <ul>
+          <li><i class="dot dot-ready"></i><span style="flex:1">字节 · 面试第 2 轮</span><span class="when overdue">已逾期 2 天</span></li>
+          <li><i class="dot dot-draft"></i><span style="flex:1">美团 · 笔试</span><span class="when">11/16 14:00</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="foot">简历工作台 · 本地优先 · 数据在 ~/resume</div>
+  </section>
+
+  <!-- ============ 为岗位定制（单动线） ============ -->
+  <section class="view v-job">
+    <div class="col">
+      <h1>为岗位定制一份简历</h1>
+      <p class="lead">粘岗位描述，基于母版生成一份独立草稿。母版不动。</p>
+
+      <div class="step">
+        <div class="lb"><span class="no">1</span>岗位描述<span class="opt">粘贴招聘页全文即可</span></div>
+        <textarea placeholder="把职位描述整段粘进来，公司、岗位、要求会自己提取"></textarea>
+        <div class="swapline">或 <a href="#">粘贴招聘页链接</a>（读取失败可改回贴文本）</div>
+      </div>
+
+      <div class="step">
+        <div class="lb"><span class="no">2</span>用哪份简历改</div>
+        <div class="master-line">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#57534e" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          凌浩翔 · 母版
+          <a class="chg" href="#">更换</a>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="lb"><span class="no">3</span>生成</div>
+        <details class="adv" style="margin-bottom:14px">
+          <summary>补充要求（可选，默认按经验填好）</summary>
+          <textarea style="min-height:64px;margin-top:8px" placeholder="例如：突出机器人项目，弱化实习经历"></textarea>
+        </details>
+        <div class="job-actions">
+          <a class="btn btn-p" href="#">生成岗位草稿</a>
+          <a class="quiet-link" href="#">先评估匹配度</a>
+        </div>
+        <div class="expect">生成约 2–3 分钟，分批改写并校验。产出一份新草稿，可再编辑。</div>
+      </div>
+    </div>
+    <div class="foot">简历工作台 · 本地优先 · 数据在 ~/resume</div>
+  </section>
+
+</div>
+
+<script>
+  const btns = document.querySelectorAll('.devbar button');
+  btns.forEach(b => b.addEventListener('click', () => {
+    document.body.dataset.view = b.dataset.v;
+    btns.forEach(x => x.classList.toggle('on', x === b));
+  }));
+</script>
+</body>
+</html>
