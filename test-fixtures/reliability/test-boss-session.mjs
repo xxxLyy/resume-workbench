@@ -7,11 +7,15 @@
 //   ⑤ 未登录态并发 2×login → 恰一个「登录进行中」（409）+ 一个「未检测到登录」（假上下文模拟关窗）；
 //   ⑥ zhipin 链接 + 有会话 + stub htmlFile=zhipin 夹具 → /job/create 200：jd/company/role 三字段
 //     全落 meta（用户未填时回填——新增行为）；用户已填 company/role 时不被提取值覆盖；
-//   ⑦ stub finalUrl=/security → /job/create → 400「Boss 会话已失效，请重新登录或改用书签」+ 无孤儿文档；
-//      stub 全缺席（空 HTML，_jobInfo 缺席且 jd 空）→ 同判 SESSION_DEAD；
-//   ⑧ /job/new 有母版分支渲染 Boss 会话卡（data-action 委托、零内联事件、status 轮询脚本在场）；
+//   ⑦ stub finalUrl=/security → /job/create → 400「Boss 会话已失效，请重新登录或改用书签」+ 无孤儿文档
+//      + state.json 写 deadAt（status 透传 dead:true）；stub 全缺席（空 HTML）与「无 _jobInfo 的
+//      body 页」→ 同判 SESSION_DEAD（第二判据收紧：_jobInfo 缺席且 via=body）；
+//   ⑧ /job/new 有母版分支渲染 Boss 会话卡（data-action 委托、零内联事件、status 读取脚本在场、
+//      橙点失效态文案「会话失效 · 需重新登录」+ 400 错误分支亮 jdFailHint 接线）；
 //   ⑨ 源级：visibility 覆盖脚本（document.hidden/visibilityState）、串行锁（bossFetchChain）、
-//      launchPersistentContext 唯一调用点（注入点 bossLaunchContext）、userDataDir=profile 子目录。
+//      launchPersistentContext 唯一调用点（注入点 bossLaunchContext）、userDataDir=profile 子目录；
+//   ⑩ 抓取串行锁【行为断言】：两个并发 zhipin 建稿（stub markFile 记 S/E 时间线 + delayMs 撑让行窗口）
+//      → 标记文件恰呈 [S,E,S,E]（无锁时第二抓的 S 必然插进第一抓的 S/E 之间）。
 // 手法：隔离 RESUME_ROOT + 随机端口真实 server + RESUME_TEST_NO_BROWSER=1 假上下文（不真开浏览器）；
 //       RESUME_TEST_BOSS_STUB_FILE 指向 JSON {finalUrl?, htmlFile?}，每请求重读 → 单进程覆盖成败两形。
 // 不读真实数据、不碰 7766、不调真实模型、不真实扫码（真人扫码留 T5 人工点验）。
@@ -82,7 +86,7 @@ try {
   {
     const r = await getJson('/boss/session/status');
     assert.equal(r.status, 200, 'status 应 200');
-    assert.deepEqual(r.json, { ok: true, logged: false, loggedAt: null }, '未登录形应为 {ok:true,logged:false,loggedAt:null}，实际 ' + r.text);
+    assert.deepEqual(r.json, { ok: true, logged: false, loggedAt: null, dead: false, deadAt: null }, '未登录形应为 {ok,logged:false,loggedAt:null,dead:false,deadAt:null}，实际 ' + r.text);
   }
 
   // ===== ② logout 清目录（目录不存在亦 ok:true）=====
@@ -98,7 +102,7 @@ try {
     const ts = new Date().toISOString();
     writeSession(ts);
     const r = await getJson('/boss/session/status');
-    assert.deepEqual(r.json, { ok: true, logged: true, loggedAt: ts }, '已登录形应带 loggedAt');
+    assert.deepEqual(r.json, { ok: true, logged: true, loggedAt: ts, dead: false, deadAt: null }, '已登录形应带 loggedAt 且 dead:false');
     writeSession('not-a-date');
     const r2 = await getJson('/boss/session/status');
     assert.equal((r2.json || {}).logged, false, '非法 loggedAt 应按未登录');
@@ -155,7 +159,7 @@ try {
     assert.equal((r3.json || {}).existing, r.json.id, '409 应回指首份草稿');
   }
 
-  // ===== ⑦ SESSION_DEAD 两判据：/security 落地 URL；_jobInfo 缺席且 jd 空 =====
+  // ===== ⑦ SESSION_DEAD 两判据：/security 落地 URL；_jobInfo 缺席且 via=body =====
   {
     const docsDir = path.join(root, 'docs');
     const before = fs.readdirSync(docsDir).length;
@@ -166,12 +170,30 @@ try {
     assert.equal((r.json || {}).error, 'Boss 会话已失效，请重新登录或改用书签', '400 文案应为会话失效，实际 ' + r.text.slice(0, 160));
     assert.equal(fs.readdirSync(docsDir).length, before, 'SESSION_DEAD 不得留孤儿文档');
     assert.equal(fs.readFileSync(metaPath, 'utf8'), metaBefore, 'SESSION_DEAD 不得写 meta');
-    // _jobInfo 缺席 + jd 空：stub 文件删掉 → 假身回空 HTML → 同判 SESSION_DEAD
+    // §2.6 橙点分支：SESSION_DEAD 应把 state.json 改写为 deadAt 标记，status 透传 dead:true
+    const stDead = await getJson('/boss/session/status');
+    assert.equal((stDead.json || {}).dead, true, 'SESSION_DEAD 后 status 应 dead:true，实际 ' + stDead.text);
+    assert.ok(stDead.json && stDead.json.deadAt && !Number.isNaN(Date.parse(stDead.json.deadAt)), 'deadAt 应为合法时间戳，实际 ' + stDead.text);
+    assert.equal((stDead.json || {}).logged, false, 'dead 在场时 logged 应 false（即便 loggedAt 留档）');
+    // _jobInfo 缺席 + jd 空：stub 文件删掉 → 假身回空 HTML（via=body）→ 同判 SESSION_DEAD。
+    // 注意：上一用例已把会话标 dead（logged:false）——zhipin 请求会回落静态 fetch 而非轨 B，
+    // 这正是「失效后不降级」的语义；故每个失效用例前须复活会话。
+    writeSession(new Date().toISOString());
     fs.rmSync(stubFile, { force: true });
     const r2 = await postJson('/job/create', { from: 'd1', jdLink: 'https://www.zhipin.com/job_detail/dead2.html' });
     assert.equal(r2.status, 400, '_jobInfo 缺席+空 jd 应 400，实际 ' + r2.status + ' ' + r2.text.slice(0, 160));
     assert.equal((r2.json || {}).error, 'Boss 会话已失效，请重新登录或改用书签', '同判 SESSION_DEAD 文案，实际 ' + r2.text.slice(0, 160));
     assert.equal(fs.readdirSync(docsDir).length, before, '空页路径同样不得留孤儿文档');
+    // 收紧后判据的核心场景：墙页同 URL 直出、有 body 文字但无 _jobInfo（旧判据会漏成垃圾 jd）
+    writeSession(new Date().toISOString());   // 上一用例又标 dead → 复活
+    fs.writeFileSync(stubFile, JSON.stringify({ htmlFile: path.join(APP_ROOT, 'test-fixtures', 'jd-pages', 'plain.html') }));
+    const r3 = await postJson('/job/create', { from: 'd1', jdLink: 'https://www.zhipin.com/job_detail/dead3.html' });
+    assert.equal(r3.status, 400, '无 _jobInfo 的 body 页（墙页同 URL 直出）应 400，实际 ' + r3.status + ' ' + r3.text.slice(0, 160));
+    assert.equal((r3.json || {}).error, 'Boss 会话已失效，请重新登录或改用书签', 'via=body+无 _jobInfo 应判 SESSION_DEAD，实际 ' + r3.text.slice(0, 160));
+    assert.equal(fs.readdirSync(docsDir).length, before, '墙页路径同样不得留孤儿文档');
+    // 失效态下 status 应持续 dead（logged:false），登录短路不触发——重登走 login 流程
+    const stDead2 = await getJson('/boss/session/status');
+    assert.equal((stDead2.json || {}).dead, true, '持续 dead:true');
   }
 
   // ===== ⑧ /job/new 有母版分支渲染 Boss 会话卡 =====
@@ -182,7 +204,9 @@ try {
     assert.ok(html.includes('data-action="bossLogout"'), '会话卡应有「清除会话」委托按钮');
     assert.ok(html.includes('__acts.click.bossLogin'), '应注册 __acts.click.bossLogin（零内联事件委托模式）');
     assert.ok(html.includes('__acts.click.bossLogout'), '应注册 __acts.click.bossLogout');
-    assert.ok(html.includes("/boss/session/status"), '会话卡应有 status 轮询调用');
+    assert.ok(html.includes("/boss/session/status"), '会话卡应有 status 读取调用');
+    assert.ok(html.includes('会话失效 · 需重新登录'), '会话卡应有橙点失效态文案「会话失效 · 需重新登录」（§2.6）');
+    assert.ok(html.includes("indexOf('会话已失效')"), 'submit 错误分支应亮 jdFailHint（会话失效 400 → 书签锚点块）');
     assert.ok(!/id="bossLoginBtn"[^>]*on\w+=/.test(html), '会话卡按钮不得带内联事件属性');
     // 「只在有母版分支渲染」的源级钉：卡片字面量必须落在 id="evalResult"（有母版分支专属标记）之后——
     // 空库分支不含 evalResult，卡片在其后 ⇒ 同分支内（与书签同区）。
@@ -203,7 +227,29 @@ try {
     assert.ok(src.includes('boss-session'), '应含 boss-session 目录常量');
   }
 
-  console.log('✅ boss-session：status 未登录/已登录形、logout 清目录、login 短路、并发锁（登录进行中）、轨 B 建稿三字段回填、SESSION_DEAD 双判据零孤儿、会话卡委托 UI、源级钉');
+  // ===== ⑩ 抓取串行锁【行为断言】：两个并发 zhipin 建稿，stub content() 记 S/E 时间线 =====
+  // delayMs 撑出让行窗口——无锁时第二抓的 content() 必插进第一抓的 S/E 之间（[S,S,…]）；
+  // 有锁 ⇒ 文件恰呈 [S,E,S,E]。同 stub html → 同 JD → 后到的被 dup3 重查 409，两态都合法。
+  {
+    writeSession(new Date().toISOString());   // 复活会话（⑦ 已 dead）
+    const markFile = path.join(root, 'boss-marks.txt');
+    // 用 jsonld 夹具（via=json-ld 不触发「无 _jobInfo+body」失效判据，且 JD 与 ⑥ 不同 →
+    // 先到者 200 建稿、后到者同 JD 重查 409；两请求共享同一 stub → 同 html 同提取结果）
+    fs.writeFileSync(stubFile, JSON.stringify({
+      htmlFile: path.join(APP_ROOT, 'test-fixtures', 'jd-pages', 'jsonld-job.html'),
+      delayMs: 250, markFile }));
+    const [ra, rb] = await Promise.all([
+      postJson('/job/create', { from: 'd1', jdLink: 'https://www.zhipin.com/job_detail/lockA.html' }),
+      postJson('/job/create', { from: 'd1', jdLink: 'https://www.zhipin.com/job_detail/lockB.html' }),
+    ]);
+    const codes = [ra.status, rb.status].sort().join(',');
+    assert.equal(codes, '200,409', '并发两抓应一个建稿成功、一个被同 JD 重查 409，实际 ' + codes);
+    assert.ok(fs.existsSync(markFile), 'markFile 应由两抓各自写记');
+    const marks = fs.readFileSync(markFile, 'utf8').trim().split('\n');
+    assert.deepEqual(marks, ['S', 'E', 'S', 'E'], '两抓应严格串行（S,E,S,E），实际 ' + marks.join(',') + '——串行锁失效');
+  }
+
+  console.log('✅ boss-session：status 未登录/已登录/失效三态形、logout 清目录、login 短路、并发锁（登录进行中）、轨 B 建稿三字段回填、SESSION_DEAD 三判据零孤儿+deadAt 透传、会话卡委托 UI+橙点态、源级钉、抓取串行锁行为断言[S,E,S,E]');
 } finally {
   cleanup();
 }
