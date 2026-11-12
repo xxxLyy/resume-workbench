@@ -130,9 +130,10 @@ try {
     assert.ok(html.includes('产出一份新草稿'), '应有诚实预期文案「产出一份新草稿」');
     // 母版下拉：合成母版在场
     assert.ok(html.includes('value="jnmaster"'), '母版下拉应含合成母版 jnmaster');
-    // 按钮：生成岗位草稿（submit）+ 先评估匹配度（evalBtn，T4 起降级为次级文字链接）
+    // 按钮：生成岗位草稿（submit）+ 先评估匹配度（evalBtn，T4 起降级为次级文字链接 <a>）
     assert.ok(html.includes('生成岗位草稿'), '应保留「生成岗位草稿」主按钮');
     assert.ok(html.includes('id="evalBtn"') && html.includes('先评估匹配度'), '应保留「先评估匹配度」评估入口');
+    assert.ok(/<a[^>]*id="evalBtn"/.test(html), 'evalBtn 应为 <a> 次级文字链接形态（T4 降级，不与主按钮平级）');
     // 要求卡：预设/重点/保留/不强调/幅度/页数六要素 label 文案原样（折叠区 T4 改名「补充要求」）
     for (const t of ['补充要求（可选，默认已按经验填好）', '取回常用预设', '存为常用预设',
       '本次重点（点击选中/取消；建议来自素材标签）', '必须保留的项目（一行一个）', '不希望强调（一行一个）',
@@ -198,7 +199,7 @@ try {
     assert.ok(ev.json && ev.json.ok === false && ev.json.settingsPath === '/settings', '/eval/create 409 应带 settingsPath=/settings：' + ev.text.slice(0, 160));
   }
 
-  // ===== D2. 渐进呈现 T4：公司/岗位改可选——缺省落「未命名·定制」占位，去重身份在全缺省时按 JD 指纹区分 =====
+  // ===== D2. 渐进呈现 T4：公司/岗位改可选——缺省落「未命名·定制」占位，去重身份在任一侧占位时按 JD 指纹区分 =====
   {
     // 全缺省：company/role 不传 → meta 占位终值（「未命名·定制」）
     const un1 = await postJson('/job/create', { from: 'jnmaster', jd: 'T4-JD-甲：增长方向' });
@@ -221,6 +222,40 @@ try {
     const metaU4 = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
     assert.equal((metaU4[un4.json.id] || {}).company, '未命名公司', '只给岗位时公司应落「未命名公司」');
     assert.equal((metaU4[un4.json.id] || {}).role, '增长工程师', '给定岗位原样保留');
+    // 对称缺省：只给公司 → 岗位落「未命名岗位」
+    const un5 = await postJson('/job/create', { from: 'jnmaster', company: '定制公司', jd: 'T4-JD-丁' });
+    assert.equal(un5.status, 200, '只给公司应 200');
+    const metaU5 = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    assert.equal((metaU5[un5.json.id] || {}).role, '未命名岗位', '只给公司时岗位应落「未命名岗位」');
+    assert.equal((metaU5[un5.json.id] || {}).tag, '定制公司·未命名岗位', '单侧占位 tag 应为「定制公司·未命名岗位」');
+    // I-1 回归钉：单侧占位 + 不同 JD → 新草稿（不得误 409）；同 JD → 409 existing
+    const un6 = await postJson('/job/create', { from: 'jnmaster', role: '增长工程师', jd: 'T4-JD-戊：另一岗位' });
+    assert.equal(un6.status, 200, '单侧占位+异 JD 不得撞名（I-1），实际 ' + un6.status + ' ' + un6.text.slice(0, 160));
+    assert.notEqual(un6.json.id, un4.json.id, '同岗位异 JD 应产出新草稿');
+    const un7 = await postJson('/job/create', { from: 'jnmaster', role: '增长工程师', jd: 'T4-JD-戊：另一岗位' });
+    assert.equal(un7.status, 409, '单侧占位+同 JD 应查重 409，实际 ' + un7.status + ' ' + un7.text.slice(0, 160));
+    assert.equal((un7.json || {}).existing, un6.json.id, '409 应回指 ' + un6.json.id);
+    // 链接模式查重：同 jdLink 复投 → 409 existing（抓取失败也按来源链接判同）；异链接 → 新草稿
+    const lk1 = await postJson('/job/create', { from: 'jnmaster', jdLink: 'http://127.0.0.1:1/t4-x' });
+    assert.equal(lk1.status, 200, 'jdLink 提交应 200（抓取失败也建稿并记 jdError），实际 ' + lk1.status + ' ' + lk1.text.slice(0, 160));
+    const lk2 = await postJson('/job/create', { from: 'jnmaster', jdLink: 'http://127.0.0.1:1/t4-x' });
+    assert.equal(lk2.status, 409, '同 jdLink 复投应 409 existing，实际 ' + lk2.status + ' ' + lk2.text.slice(0, 160));
+    assert.equal((lk2.json || {}).existing, lk1.json.id, '409 应回指 ' + lk1.json.id);
+    const lk3 = await postJson('/job/create', { from: 'jnmaster', jdLink: 'http://127.0.0.1:1/t4-y' });
+    assert.equal(lk3.status, 200, '异 jdLink 不得撞名（空 jd 互等不算同），实际 ' + lk3.status);
+    // I-2 跨形态重查：链接建稿 → 同文本粘贴撞名；异 URL 同正文链接 → 抓取回填后重查命中
+    // （自服务 /evals 作确定性抓取源：fetchPageText 剥 <script> 后文本按页内容定值，异 query 同正文）
+    const sv1 = await postJson('/job/create', { from: 'jnmaster', jdLink: base + '/evals' });
+    assert.equal(sv1.status, 200, '自服务链接应建稿，实际 ' + sv1.status + ' ' + sv1.text.slice(0, 160));
+    const metaSv = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    const fetchedJd = (metaSv[sv1.json.id] || {}).jd || '';
+    assert.ok(fetchedJd.length > 20, '自服务链接应抓回正文文本，实际 jd=' + fetchedJd.slice(0, 60));
+    const sv2 = await postJson('/job/create', { from: 'jnmaster', jd: fetchedJd });
+    assert.equal(sv2.status, 409, '链接草稿的同文本粘贴应撞名 409，实际 ' + sv2.status);
+    assert.equal((sv2.json || {}).existing, sv1.json.id, '409 应回指链接草稿 ' + sv1.json.id);
+    const sv3 = await postJson('/job/create', { from: 'jnmaster', jdLink: base + '/evals?x=2' });
+    assert.equal(sv3.status, 409, '异 URL 同正文链接应在抓取后重查命中（I-2），实际 ' + sv3.status + ' ' + sv3.text.slice(0, 160));
+    assert.equal((sv3.json || {}).existing, sv1.json.id, 'I-2 重查 409 应回指 ' + sv1.json.id);
     // 既有 400/404 错误路径不动：非法母版 id → 400 invalid from；缺母版文档 → 404
     const bad1 = await postJson('/job/create', { from: '!!!', jd: 'x' });
     assert.equal(bad1.status, 400, '非法母版 id 仍应 400（invalid from），实际 ' + bad1.status);

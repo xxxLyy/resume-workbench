@@ -307,42 +307,44 @@ async function createJobDraft(root, o) {
   const companyRaw = String(o.company || '').trim();
   const roleRaw = String(o.role || '').trim();
   // 公司/岗位改可选（渐进呈现 spec §4）：全空 → 「未命名·定制」；缺一项 → 「未命名公司/岗位」。
-  // 去重身份不能再用 (母版,公司,岗位)——全缺省时不同 JD 会撞名；补 jd 指纹段。
+  // 去重身份不能再用纯 (母版,公司,岗位)——任一侧落占位值时，不同 JD 会撞名；补 jd 指纹段（T4 复核 I-1）。
   const company = companyRaw || (roleRaw ? '未命名公司' : '未命名');
   const role = roleRaw || (companyRaw ? '未命名岗位' : '定制');
-  const unnamed = !companyRaw && !roleRaw;
-  const jdId = createHash('sha1').update(String(o.jd || '').trim() || String(o.jdLink || '').trim()).digest('hex').slice(0, 10);
+  const hasPlaceholder = !companyRaw || !roleRaw;
   if (!VALID_ID.test(from)) return { ok: false, status: 400, body: { ok: false, error: 'invalid from' } };
   const nb = normBrief(o.brief);   // S4a-T5：brief 可选（缺省渐进默认），非法值 400
   if (nb.error) return { ok: false, status: 400, body: { ok: false, error: nb.error } };
   if (!fs.existsSync(docPath(from))) return { ok: false, status: 404, body: { ok: false, error: '母版文档不存在' } };
 
   // JD 输入提前定型（jd = 截断后终值文本；jdLink = 链接终值）：去重谓词要用——链接抓取仍在拿到保留之后。
-  let jdRaw = typeof o.jd === 'string' ? o.jd.trim() : '';
-  let jdTruncated = jdRaw.length > JD_MAX_CHARS;
+  const jdRaw = typeof o.jd === 'string' ? o.jd.trim() : '';
+  const jdTruncated = jdRaw.length > JD_MAX_CHARS;
   let jd = jdTruncated ? jdRaw.slice(0, JD_MAX_CHARS) : jdRaw;
-  let jdLink = typeof o.jdLink === 'string' ? o.jdLink.trim() : '';
-  // 全缺省时「同一岗位」= 同一 JD：文本对文本 / 链接对来源链接 / 双方都无 JD 三种同法。
+  const jdLink = typeof o.jdLink === 'string' ? o.jdLink.trim() : '';
+  // jdId 吃定型后的 jd（截断终值），与 sameJob ① 同口径——吃未截断原文会让 >64KB 仅尾部不同的 JD claim 分叉但查重判同。
+  const jdId = createHash('sha1').update(jd || jdLink).digest('hex').slice(0, 10);
+  // 任一侧落占位值时「同一岗位」= 同一 JD：文本对文本 / 链接对来源链接 / 双方都无 JD 三种同法。
   // 空串互等不算同——不同链接抓取失败都落 m.jd=''，空等空会把不同岗位误判成同一草稿。
+  // 本谓词吃抓取回填前的 jd/jdLink；链接抓取成功回填 jd 后另跑一次守卫①重查（防「先文本后链接」跨形态重复）。
   const sameJob = (m) => {
     if (jd && String(m.jd || '') === jd) return true;                    // 同一份 JD 文本（含对链接抓取结果的回填）
     if (jdLink && String(m.jdSource || '') === jdLink) return true;     // 同一个 JD 链接（抓取成败都记来源链接）
     return !jd && !jdLink && !String(m.jd || '') && !String(m.jdSource || '');   // 双方都没有 JD：同一「无 JD」身份
   };
 
-  // 创建保留（AUD-14）：同一 (母版,公司,岗位) 的并发创建只能成功一个。
+  // 创建保留（AUD-14）：同一创建身份的并发创建只能成功一个（身份 = 母版+公司+岗位，占位身份时含 JD 指纹段）。
   // 原实现的去重检查发生在异步 JD 抓取【之前】→ 两个并发请求都读到同一份 meta、都没查到重复，
   // 各自建出 -v2 / -v3 两份草稿（实测两次都 200）。
   // 这里用「锁文件 + wx 原子创建」做小范围保留：只挡同一创建身份，
   // 不占共享根锁（那会把整个数据根的写操作都挡住，而网络等待可能十几秒），别的文档照常保存。
-  const claim = claimPath(root, from + '|' + company + '|' + role + (unnamed ? '|jd:' + jdId : ''));
+  const claim = claimPath(root, from + '|' + company + '|' + role + (hasPlaceholder ? '|jd:' + jdId : ''));
   if (!acquireClaim(claim)) {
     // 别人正在创建同一身份：等它结束（最多 5s）再看结果
     await waitClaim(claim, 5000);
     const after = loadMeta();
     const dup2 = Object.keys(after).find((k) => {
       const m = after[k];
-      return m && m.parent === from && m.company === company && m.role === role && (!unnamed || sameJob(m)) && fs.existsSync(docPath(k));
+      return m && m.parent === from && m.company === company && m.role === role && (!hasPlaceholder || sameJob(m)) && fs.existsSync(docPath(k));
     });
     if (dup2) return { ok: false, status: 409, body: { ok: false, existing: dup2 } };
     return { ok: false, status: 409, body: { ok: false, error: '同一岗位正在创建中，请稍后重试' } };
@@ -353,7 +355,7 @@ async function createJobDraft(root, o) {
     const metaAll = loadMeta();
     const dup = Object.keys(metaAll).find((k) => {
       const m = metaAll[k];
-      return m && m.parent === from && m.company === company && m.role === role && (!unnamed || sameJob(m)) && fs.existsSync(docPath(k));
+      return m && m.parent === from && m.company === company && m.role === role && (!hasPlaceholder || sameJob(m)) && fs.existsSync(docPath(k));
     });
     if (dup) return { ok: false, status: 409, body: { ok: false, existing: dup } };
     // 冻结来源版本（快照 = freezeHtml + manifest），返回冻结 ts 供之后追溯
@@ -383,6 +385,17 @@ async function createJobDraft(root, o) {
         assertSafeBaseURL(jdLink);
         jd = await fetchPageText(jdLink);
       } catch (e) { jdError = String(e.message || e); }
+    }
+    // 抓取回填后重查（T4 复核 I-2）：先贴文本建的草稿 jdSource='手动'，抓取前两轮查重 jd='' 都判不出同 JD——
+    // 回填后用新 jd 对 loadMeta() 只比重跑守卫①（链接异 URL 同正文也走这条路）。
+    if (hasPlaceholder && !jdRaw && jdLink && jd) {
+      const refilled = loadMeta();
+      const dup3 = Object.keys(refilled).find((k) => {
+        const m = refilled[k];
+        return m && m.parent === from && m.company === company && m.role === role && String(m.jd || '') === jd && fs.existsSync(docPath(k));
+      });
+      // 命中要清孤儿：目标正文已按 wx 分配落盘但 meta 未登记——与 catch 分支同处置。
+      if (dup3) { try { fs.rmSync(docPath(to), { force: true }); } catch {} return { ok: false, status: 409, body: { ok: false, existing: dup3 } }; }
     }
     const { jdFp, dupHints, todos } = await computeFpGuard(jd, jdLink, company, metaAll);
     const nowIso = new Date().toISOString();
@@ -2482,7 +2495,7 @@ function jobNewPage() {
               jdLink: document.getElementById('jobLink').value.trim(), brief: brief }) });
           var d = await r.json().catch(function () { return null; });
           if (r.redirected) { location.href = r.url; return; }
-          if (d && d.existing) { if (confirm('已存在同一母版+岗位的草稿（' + d.existing + '）。打开它？')) location.href = '/edit?id=' + d.existing; return; }
+          if (d && d.existing) { var dupMsg = (document.getElementById('jobCompany').value.trim() && document.getElementById('jobRole').value.trim()) ? '已存在同一母版+岗位的草稿' : '已存在基于同一份 JD 的岗位草稿'; if (confirm(dupMsg + '（' + d.existing + '）。打开它？')) location.href = '/edit?id=' + d.existing; return; }
           if (d && d.ok && d.id) { location.href = '/edit?id=' + d.id; return; }
           var jobErr = (d && d.error) || (await r.text());
           if (jobErr.indexOf('invalid from') >= 0) jobErr = '请先选择母版简历';   // 兜底：服务端校验直出英文会让首用路径断链
@@ -2511,8 +2524,7 @@ function jobNewPage() {
           if (busy) return;
           var from = document.getElementById('jobFrom').value;
           var jd = document.getElementById('jobJd').value.trim();
-          var jdLink = document.getElementById('jobLink').value.trim();
-          if (!jd && !jdLink) { __status(msg, 'err', '评估需要岗位描述文本'); return; }
+          if (!jd) { __status(msg, 'err', '评估需要岗位描述文本'); return; }   // /eval/create 只收 JD 文本（不抓链接）——只贴链接本地即拦（I-3）
           busy = true;
           btn.textContent = '评估中，通常需要 1–5 分钟…';
           msg.textContent = '';
