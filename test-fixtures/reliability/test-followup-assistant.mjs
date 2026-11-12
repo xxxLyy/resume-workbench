@@ -187,7 +187,9 @@ try {
   writeConfig(root);
   const apps = [
     mkApp(APP_IDS.a1, { company: '甲公司', appliedAt: dayStr(8) }),
-    mkApp(APP_IDS.a2, { company: '乙公司', appliedAt: dayStr(2) }),
+    // a2 加过期截止（昨天）：T3 起「逾期」提醒面 = 首页近期日程卡「已逾期」徽章（状态条已撤），
+    // 需要一个真实逾期样本才能复核该口径；a2 的 fuBox 判定只看 appliedAt（2 天）不受影响。
+    mkApp(APP_IDS.a2, { company: '乙公司', appliedAt: dayStr(2), dueDate: dayStr(1) }),
     mkApp(APP_IDS.a3, { company: '丙公司', appliedAt: dayStr(9), status: '面试中' }),
     mkApp(APP_IDS.a4, { company: '丁公司', appliedAt: dayStr(9), interviews: [{ round: '一面', time: '', questions: '', answer: '', feedback: '', next: '' }] }),
     mkApp(APP_IDS.a5, { company: '戊公司', appliedAt: dayStr(9), dueDate: dayStr(-1) }),   // 临近截止（48h 内到期）
@@ -225,10 +227,10 @@ try {
     const b5 = fuBox(html, APP_IDS.a5);
     assert.ok(b5.includes('生成跟进语'), '临近截止的卡也应同时有跟进入口');
     assert.ok(html.includes('临近截止'), '既有「临近截止」提醒必须仍在（不被跟进入口顶掉），实际片段：' + html.slice(0, 400));
-    // 首页既有「逾期/近期面试提醒」日程卡不受影响
+    // 首页既有「逾期/近期面试提醒」日程卡不受影响（T3：提醒面 = 日程卡「已逾期」徽章，状态条已撤）
     const home = (await get(base, '/')).text;
     assert.ok(home.includes('近期日程'), '首页既有「近期日程」卡应仍在（逾期/临近截止提醒并存）');
-    assert.ok(home.includes('逾期'), '首页既有逾期提醒口径应仍在，实际片段：' + home.slice(0, 600));
+    assert.ok(home.includes('已逾期'), '首页既有逾期提醒口径应仍在（日程卡「已逾期」徽章），实际片段：' + home.slice(0, 600));
   }
 
   // ===== ③ 阈值默认 7 且 /settings 可配 =====

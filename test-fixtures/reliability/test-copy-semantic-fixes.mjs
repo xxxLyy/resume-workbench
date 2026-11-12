@@ -1,7 +1,7 @@
 // test-copy-semantic-fixes.mjs — R2 文案与按钮语义修复包（HTTP 夹具，隔离根，无浏览器依赖）
 // 覆盖（断言逐条独立，便于逐条复核）：
-//   ① 首页「待办提醒」只数真待办：空库（零文档零投递）=0；建 1 份待结构化文档后 =1
-//     （投递中/PDF/AI 未配置等状态行仍在 statusline 呈现，但不再计入待办数）。
+//   ① 首页真待办语义（T3 口径）：stat-grid「待办提醒」计数块已随三态撤除——空库 = 起步态无待办卡；
+//     1 份待整理文档（无投递）= 状态 1 行内「· 待整理」标记；有投递后 = 状态 2 待办卡聚合「去整理」条目。
 //   ② 六处「请到侧栏「设置」」死引用清零：未配置 LLM 时 /eval/create 409 JSON 带 settingsPath='/settings'；
 //     /ai/rewrite、/ai/chat、/restructure、/ai/review、/ai/match 五处 409 文体直接给出 /settings 路径。
 //   ⑤ 向导横幅区分 forward/resume 两态；skipped 数组内的步显示「已跳过 X」而非「最近确认 X」。
@@ -23,7 +23,7 @@ const fail = (m) => { console.error('❌ ' + m); process.exit(1); };
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-copy-semantic-'));
 for (const d of ['docs', 'snapshots', 'pdfs', 'logs', 'backups', 'photos']) fs.mkdirSync(path.join(root, d), { recursive: true });
-// 刻意不写 config.json → hasLLM=false（②的前置）；applications.json 缺省 → 空投递（①空库）
+// 刻意不写 config.json → hasLLM=false（②的前置）；applications.json 缺省 → 空投递（①a 起步态/①b 状态 1）
 
 const port = await new Promise((res) => {
   const s = net.createServer();
@@ -57,28 +57,37 @@ try {
     if (i === 149) fail('服务 15s 未就绪\n' + serverLog.slice(-800));
   }
 
-  // ===== ①a 空库：零文档零投递 → 待办提醒 = 0（修复前 todoBits.length 把状态行也算进待办数）=====
+  // ===== ①a 空库：零文档零投递 → 起步态，无待办卡无统计行（T3：stat-grid/statusline 已撤除）=====
   {
     const home = await get('/');
-    const m = home.text.match(/<b>(\d+)<\/b><span>待办提醒<\/span>/);
-    assert.ok(m, '首页应有「待办提醒」统计块');
-    assert.equal(m[1], '0', `空库（零文档零投递）待办提醒应为 0，实际：${m[1]}（页面片段：${(home.text.match(/<div class="stat-grid">[\s\S]{0,400}/) || [''])[0].slice(0, 300)}）`);
-    assert.ok(!/投递中|AI 未配置/.test((home.text.match(/<b>\d+<\/b><span>待办提醒<\/span>/) || [''])[0]), '待办提醒 stat 不承载状态行文案');
+    assert.ok(home.text.includes('建你的第一份简历'), '空库应渲染起步态');
+    assert.ok(!home.text.includes('待办提醒') && !home.text.includes('class="stat-grid"'),
+      '「待办提醒」统计块应已随 T3 撤除');
+    assert.ok(!home.text.includes('<h1>待办</h1>'), '空库不渲染待办卡');
   }
 
-  // ===== ①b 建 1 份待结构化文档 → 待办提醒 = 1 =====
+  // ===== ①b 建 1 份待整理文档（无投递）→ 状态 1：行内「· 待整理」标记，无待办卡 =====
   {
     const DOC = 'degrade1';
     let doc = assembleTemplate('classic');
     for (const [k, v] of [['{{NAME}}', '合成'], ['{{CONTACT}}', ''], ['{{INTENT}}', ''], ['{{SUMMARY}}', ''],
       ['{{SKILLS}}', ''], ['{{WORK}}', ''], ['{{PROJECTS}}', ''], ['{{EDU}}', ''], ['{{DOC_ID}}', DOC]]) doc = doc.replaceAll(k, () => v);
-    doc = doc.replace('</h1>', () => '</h1><p>以下为 PDF 提取的原文（合成待结构化标记）</p>');
+    doc = doc.replace('</h1>', () => '</h1><p>以下为 PDF 提取的原文（合成待整理标记）</p>');
     fs.writeFileSync(path.join(root, 'docs', DOC + '.html'), doc);
     fs.writeFileSync(path.join(root, 'docs-meta.json'), JSON.stringify({ [DOC]: { rev: 1, flow: 'draft' } }, null, 2));
     const home = await get('/');
-    const m = home.text.match(/<b>(\d+)<\/b><span>待办提醒<\/span>/);
-    assert.ok(m, '建文档后首页应有「待办提醒」统计块');
-    assert.equal(m[1], '1', `1 份待结构化文档 → 待办提醒应为 1，实际：${m[1]}`);
+    assert.ok(home.text.includes(' · 待整理'), '待整理文档行元信息应标「· 待整理」');
+    assert.ok(!home.text.includes('<h1>待办</h1>'), '状态 1 不渲染待办卡（待办卡属状态 2）');
+    // ===== ①c 补一条投递 → 状态 2：待办卡聚合「去整理」条目（同一真待办，呈现面迁移）=====
+    fs.writeFileSync(path.join(root, 'applications.json'), JSON.stringify([
+      { id: 'app-cs-001', company: '合成投递', role: '后端', docId: DOC, status: '已投递', createdAt: '2026-01-01', updatedAt: '2026-01-01', interviews: [] }
+    ]));
+    const home2 = await get('/');
+    assert.ok(home2.text.includes('<h1>待办</h1>'), '状态 2 有真待办应渲染待办卡');
+    const li = (home2.text.match(/<li>[\s\S]{0,400}?还没整理成结构化简历[\s\S]{0,200}?<\/li>/) || [''])[0];
+    assert.ok(li.includes('还没整理成结构化简历'), '待办卡应含待整理条目：' + li.slice(0, 200));
+    assert.ok(li.includes('>去整理<') && li.includes('/edit?id=' + DOC), '待整理条目应指向「去整理 → /edit」');
+    assert.ok(!home2.text.includes('待办提醒'), '状态 2 不得复现「待办提醒」计数文案');
   }
 
   // ===== ② 六处未配置 LLM 的 409：死文案清零，路径可达 =====
@@ -157,7 +166,7 @@ try {
     assert.ok(/文本层字符量：<\/span>0/.test(ex.text) || charRow.includes('0'), '合成假 PDF 的文本层字符量应为 0（走告警分支）：' + charRow);
   }
 
-  console.log('✅ R2 文案与按钮语义：①空库待办=0/1 待结构化=1 ②六处 409 无死文案且带 /settings ⑤横幅两态+已跳过 ⑥确认按钮 secondary 去括号 ⑦导出对象 ⑧字符量告警带阈值原因');
+  console.log('✅ R2 文案与按钮语义：①起步态无待办块/状态1行内待整理/状态2待办卡「去整理」 ②六处 409 无死文案且带 /settings ⑤横幅两态+已跳过 ⑥确认按钮 secondary 去括号 ⑦导出对象 ⑧字符量告警带阈值原因');
 } catch (e) {
   console.error('❌ ' + (e && e.message || e));
   process.exitCode = 1;

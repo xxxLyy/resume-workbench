@@ -299,8 +299,8 @@ wait_ready "$SRV" "$B/" "$TEST_DIR/server.log" "简历平台: http://localhost:$
 
 # ===== 1. 首页与文档创建 =====
 curl -sf "$B/" | grep -q '简历工作台' || fail '首页缺标题'
-# 批 1 拆页：岗位表单迁 /job/new，首页只留入口按钮；空库时新页渲染空态（A3 契约）
-curl -sf "$B/" | grep -q '为岗位定制简历' || fail '首页缺岗位定制入口'
+# 渐进呈现 T3：空库渲染起步态（建你的第一份简历）；岗位定制入口只在有母版时出现（下方 :357 钉 href="/job/new"）
+curl -sf "$B/" | grep -q '建你的第一份简历' || fail '首页空库缺起步态'
 curl -sf "$B/job/new" | grep -q '还没有母版简历' || fail '/job/new 空库缺空态'
 curl -sf "$B/" | grep -q 'BENTO-V1' || fail '首页缺设计系统'
 echo '✅ 首页（岗位定制入口 + 设计系统）'
@@ -314,7 +314,7 @@ CNT=$(curl -sf "$B/edit?id=$DOCID" | grep -o 'SHELL-INJECT' | wc -l | tr -d ' ')
 [ "$CNT" = "2" ] || fail "外壳注入非幂等（${CNT}）"
 curl -sf "$B/edit?id=$DOCID" | grep -q '__MATS__' || fail '缺素材数据注入'
 curl -sf "$B/" | grep -q "/edit?id=$DOCID" || fail '新文档未出现在首页列表'
-curl -sf "$B/" | grep -q 'class="card doc-card"' || fail '首页缺文档卡片'
+curl -sf "$B/" | grep -q 'class="docrow"' || fail '首页缺文档行'
 echo "✅ 新建文档与编辑器注入幂等（${DOCID}）"
 
 # 安全回归（2026-10-18 蓝军审查 R1）：/save 的 stripInjections 回溯放大。
@@ -343,53 +343,54 @@ curl -s -X POST "$B/delete?id=$RD_ID" -o /dev/null || fail 'ReDoS 临时文档�
 grep -q 'contenteditable' <(curl -sf "$B/edit?id=$DOCID") || fail '主文档 $DOCID 被本次用例破坏'
 echo "✅ stripInjections 回溯放大已修复（10 万未闭合标记 ${RD_EL}s < 6s，服务未冻结）"
 
-# S2-T3: 首页结构（任务卡 / 一行状态摘要 / 次级入口行 / 继续上次任务）+ /job/new 表单迁移
-# 2026-11-05 批 1：hero 区退役（标记与死 CSS 同删，DESIGN.md §4.2 撤销登记），h1「文档」升为页面第一标题；
-# 岗位表单整体迁出 → /job/new（§0.3 拆页），首页只留入口按钮；首页表单结构类断言随迁到 /job/new（下方 JOBNEW_HTML 段）。
-# 任务卡三态/首屏次序/回退链行为细断言见 test-fixtures/reliability/test-home-taskbench.mjs（test-structure.sh 调用）。
-# 放在文档创建之后：有文档（无草稿）时任务卡走「为岗位定制简历」态，continueBtn/data-doc-ids 在场（回退链契约如此）
+# S2-T3: 首页结构（渐进呈现 T3 三态：起步卡 / 继续卡+引导 / 待办卡+行式列表）+ /job/new 表单迁移
+# 2026-11-12 T3：任务卡/统计行/状态行/栅格卡退役，改三态——0 起步卡；1 继续 hero+全部简历行式列表；
+# 2 待办卡+行式列表。行式是唯一形态（viewToggle/list-view 退役）；⋯ 菜单收全量文档操作。
+# 三态分支/状态点/回退链行为细断言见 test-fixtures/reliability/test-home-taskbench.mjs（test-structure.sh 调用）。
+# 放在文档创建之后：有文档（无投递）时首页走状态 1，resume-hero/continueBtn/data-doc-ids 在场（回退链契约如此）
 HOME_HTML=$(curl -s "$B/")
 if echo "$HOME_HTML" | grep -qE 'class="hero|hero-title|hero-art'; then fail 'hero 标记应已退役（批 1 §0.2）'; fi
-echo "$HOME_HTML" | grep -qF '<h1>文档</h1>' || fail '首页缺 h1「文档」（页面第一标题）'
-echo "$HOME_HTML" | grep -qF 'id="taskCard"' || fail '首页缺任务卡（首屏主行动）'
-echo "$HOME_HTML" | grep -qF 'id="continueBtn"' || fail '首页缺「继续上次任务」入口'
+echo "$HOME_HTML" | grep -qF '<h1>继续</h1>' || fail '首页缺 h1「继续」（状态 1 页面第一标题）'
+echo "$HOME_HTML" | grep -qF 'class="card resume-hero"' || fail '首页缺继续卡（resume-hero）'
+echo "$HOME_HTML" | grep -qF 'id="continueBtn"' || fail '首页缺「继续编辑」入口'
 echo "$HOME_HTML" | grep -qF 'data-doc-ids=' || fail '继续按钮缺 data-doc-ids（回退链无依据）'
-echo "$HOME_HTML" | grep -qF 'href="/job/new"' || fail '首页缺「为岗位定制简历」入口（/job/new 拆页）'
+echo "$HOME_HTML" | grep -qF 'href="/job/new"' || fail '首页缺「为岗位定制」入口（/job/new 拆页）'
 if echo "$HOME_HTML" | grep -qE 'id="jobForm"|id="jobCard"'; then fail '岗位表单应已整体迁出首页（/job/new 承接）'; fi
 # 表单结构契约随迁（原首页四钉：表单骨架 id/公司/JD 字段/表单 id 全保留）
 JOBNEW_HTML=$(curl -s "$B/job/new")
 echo "$JOBNEW_HTML" | grep -qF 'id="jobForm"' || fail '/job/new 缺岗位表单 id（既有脚本依赖）'
 echo "$JOBNEW_HTML" | grep -qF 'id="jobCompany"' || fail '/job/new 岗位表单公司字段丢失（业务契约破坏）'
 echo "$JOBNEW_HTML" | grep -qF 'id="jobJd"' || fail '/job/new 岗位表单 JD 字段丢失'
-[ "$(printf '%s' "$HOME_HTML" | grep -cF 'class="card statusline"')" = "1" ] || fail '状态摘要应为一行（0 处或多处）'
+[ "$(printf '%s' "$HOME_HTML" | grep -cF 'class="card statusline"')" = "0" ] || fail '状态摘要行应已随三态撤除'
+[ "$(printf '%s' "$HOME_HTML" | grep -cF 'class="stat-grid"')" = "0" ] || fail '统计行应已随三态撤除'
 if printf '%s' "$HOME_HTML" | grep -qE 'https?://[^"'"'"']*\.(png|jpg|jpeg|svg)'; then fail '首页出现外链图片'; fi
-echo '✅ S2-T3 首页结构（任务卡/次级行入口/一行状态摘要/继续上次任务）+ /job/new 表单迁移'
+echo '✅ S2-T3 首页结构（三态起步/继续/待办 + 行式列表）+ /job/new 表单迁移'
 
-# S4a-T1b F1: 首页 PDF 单摘要 chip 三态（已同步/较旧/未生成，零项省略）；空列表隐藏 chip；独立「份 PDF 较旧」行撤除
+# S4a-T1b F1: 首页 PDF 较旧提示（T3 口径：文档行元信息「· PDF 不是最新」+ 待办卡「重新导出」）；
+# 空列表（全归档）不显示；归档视图保留标记；独立「份 PDF 较旧」行与计数 chip 已撤除。
 # 夹具 = 当前唯一文档 DOCID，走 未生成→最新→较旧→归档筛选→空列表 全周期；结尾还原内容与归档态。
 HOME_HTML=$(curl -s "$B/")
-echo "$HOME_HTML" | grep -qF 'PDF 未生成 1' || fail "F1 未生成口径: $(printf '%s' "$HOME_HTML" | grep -oE 'PDF (未生成|较旧) [0-9]+|PDF 全部同步' | head -1)"
-echo "$HOME_HTML" | grep -qF 'PDF 全部同步' && fail 'F1 存在未生成文档却显示「全部同步」'
+echo "$HOME_HTML" | grep -qF 'PDF 不是最新' && fail 'F1 未生成态不应出现「PDF 不是最新」'
 curl -s -X POST "$B/render?id=$DOCID" | grep -q '"ok":true' || fail 'F1 渲染夹具失败'
 HOME_HTML=$(curl -s "$B/")
-echo "$HOME_HTML" | grep -qF 'PDF 全部同步' || fail "F1 全同步应显示「全部同步」: $(printf '%s' "$HOME_HTML" | grep -oE 'PDF (未生成|较旧) [0-9]+|PDF 全部同步' | head -1)"
-# 较旧：保存新内容但不渲染 → 单 chip 含「较旧 1」段，独立较旧行不再出现
+echo "$HOME_HTML" | grep -qF 'PDF 不是最新' && fail 'F1 最新态不应出现「PDF 不是最新」'
+# 较旧：保存新内容但不渲染 → 文档行元信息出「· PDF 不是最新」，独立较旧行不再出现
 curl -s -X POST "$B/save?id=$DOCID" --data-binary "$(sed 's/点击开始编辑…/F1-STALE-MARKER/' "$RESUME_ROOT/docs/$DOCID.html")" | grep -q '"ok":true' || fail 'F1 较旧夹具保存失败'
 HOME_HTML=$(curl -s "$B")
-CHIP=$(printf '%s' "$HOME_HTML" | grep -oE 'PDF (未生成|较旧) [0-9]+|PDF 全部同步' | head -1)
-[ "$CHIP" = 'PDF 较旧 1' ] || fail "F1 较旧口径（零项省略后应恰为「较旧 1」）: $CHIP"
+echo "$HOME_HTML" | grep -qF 'PDF 不是最新' || fail 'F1 较旧态应出现「PDF 不是最新」（T3 行内提示口径）'
 printf '%s' "$HOME_HTML" | grep -qF '份 PDF 较旧，导出时重渲' && fail 'F1 独立较旧行应已撤除'
-# 归档筛选 + 空列表：归档唯一文档后默认视图为空 → chip 不显示；?archived=1 → 分母含归档文档
+# 归档筛选 + 空列表：归档唯一文档后默认视图无可显示文档 → 起步态；?archived=1 → 文档行保留较旧标记
 curl -s -X POST "$B/archive" -H 'Content-Type: application/json' -d "{\"id\":\"$DOCID\",\"archived\":true}" | grep -q '"ok":true' || fail 'F1 归档夹具失败'
 HOME_HTML=$(curl -s "$B/")
-if echo "$HOME_HTML" | grep -qE 'PDF (未生成|较旧) [0-9]+|PDF 全部同步'; then fail 'F1 空列表不应显示 PDF chip'; fi
+echo "$HOME_HTML" | grep -qF '建你的第一份简历' || fail 'F1 全归档默认视图应回起步态（无可显示文档）'
+echo "$HOME_HTML" | grep -qF 'PDF 不是最新' && fail 'F1 空列表不应出现较旧标记'
 ARCH_HTML=$(curl -s "$B/?archived=1")
-ARCH_CHIP=$(printf '%s' "$ARCH_HTML" | grep -oE 'PDF (未生成|较旧) [0-9]+|PDF 全部同步' | head -1)
-[ "$ARCH_CHIP" = 'PDF 较旧 1' ] || fail "F1 归档筛选分母应含归档文档: $ARCH_CHIP"
-# 还原夹具：取消归档 + 内容还原（还原后 renderInputId 与渲染基线一致 → fresh，与卡片徽章口径自洽）
+echo "$ARCH_HTML" | grep -qF 'PDF 不是最新' || fail 'F1 归档视图文档行应保留较旧标记'
+echo "$ARCH_HTML" | grep -qF '已归档' || fail 'F1 归档视图文档行应标「已归档」'
+# 还原夹具：取消归档 + 内容还原（还原后 renderInputId 与渲染基线一致 → fresh，与行内提示口径自洽）
 curl -s -X POST "$B/archive" -H 'Content-Type: application/json' -d "{\"id\":\"$DOCID\",\"archived\":false}" -o /dev/null
 curl -s -X POST "$B/save?id=$DOCID" --data-binary "$(sed 's/F1-STALE-MARKER/点击开始编辑…/' "$RESUME_ROOT/docs/$DOCID.html")" | grep -q '"ok":true' || fail 'F1 夹具内容还原失败'
-echo '✅ F1 首页 PDF 状态口径（fresh 数/分母 infos/空列表不显示）'
+echo '✅ F1 首页 PDF 较旧提示口径（T3 行内标记/全归档起步态/归档视图保留标记）'
 
 # S2-T3 修复轮1：撇号标题回归 —— data-doc-titles 单引号属性不得被 ' 截断，内联脚本不得抛未捕获异常
 # 夹具为假数据（Jane's Resume）；块末删除夹具，后续段落看到的文档集合与本块之前一致。
@@ -428,7 +429,7 @@ function attrsOf(tag) {
   return out;
 }
 const btnTag = tagOf('continueBtn');
-if (!btnTag) die('首页缺 id="continueBtn"（撇号夹具应使命中任务卡次级行非空态）');
+if (!btnTag) die('首页缺 id="continueBtn"（撇号夹具应使命中状态 1 继续卡非空态）');
 const btnAttrs = attrsOf(btnTag);
 for (const n of ['data-doc-ids', 'data-doc-titles', 'data-fallback']) {
   if (!(n in btnAttrs)) die('继续按钮缺 ' + n);
@@ -2524,29 +2525,29 @@ else
   fail "面试准备建议持久化回归未通过 (exit $?)"
 fi
 
-# ===== 16s. F4 首页近期日程聚合视图：upcoming 复用展开（截止/面试条目 + 逾期排最前 + 整行 /app 链接与转义）+ 状态条锚链 + 空表无卡（独立隔离根，动态日期，非浏览器段）=====
+# ===== 16s. F4 首页近期日程聚合视图：upcoming 复用展开（截止/面试条目 + 逾期排最前 + 整行 /app 链接与转义）+ 状态条已撤锚点保留（T3）+ 空表无卡（独立隔离根，动态日期，非浏览器段）=====
 if node test-fixtures/reliability/test-home-agenda.mjs; then
-  echo '✅ 近期日程聚合回归（前两条入卡且终态排除 / 逾期排最前+类型徽章 / 链接与转义 / 空表无卡 / 状态条锚链文案不变）'
+  echo '✅ 近期日程聚合回归（前两条入卡且终态排除 / 逾期排最前+类型徽章 / 链接与转义 / 空表无卡 / 状态条已撤锚点保留）'
 else
   fail "近期日程聚合回归未通过 (exit $?)"
 fi
 
-# ===== 16t. 批1 首页任务卡徽章间距：gap 容器内徽章自带右距归零（DESIGN.md §5.3 双倍计距禁令）+ 草稿卡行内徽章仍 6px（浏览器段，真渲染量测）=====
+# ===== 16t. T3 首页日程卡徽章间距：gap 容器内徽章自带右距归零（DESIGN.md §5.3 双倍计距禁令）+ 看板卡行内徽章仍 6px（浏览器段，真渲染量测）=====
 if node test-fixtures/reliability/test-home-task-badge.mjs; then
-  echo '✅ 任务卡徽章间距回归（gap 容器内 margin-right 归零 / 徽章后距 = gap / 草稿卡行内徽章保留 6px）'
+  echo '✅ 日程卡徽章间距回归（gap 容器内 margin-right 归零 / 徽章后距 = gap / 看板卡行内徽章保留 6px）'
 else
   RC=$?
   if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
     BROWSER_CHECK_SKIPPED=1
-    echo '⚠️ 任务卡徽章间距回归未执行：Chromium 不可用'
+    echo '⚠️ 日程卡徽章间距回归未执行：Chromium 不可用'
   else
-    fail "任务卡徽章间距回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+    fail "日程卡徽章间距回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
   fi
 fi
 
-# ===== 16u. 批1 /job/new「为岗位定制简历」拆页卡：表单整体迁移 + 空态/契约零变化/首页只留入口 + §9.1-2 空态不复述页题 + 入口间距 token（隔离 HTTP 夹具）=====
+# ===== 16u. 批1 /job/new「为岗位定制简历」拆页卡：表单整体迁移 + 空态/契约零变化/首页只留引导卡入口（T3 唯一）+ §9.1-2 空态不复述页题 + 入口间距 token（隔离 HTTP 夹具）=====
 if node test-fixtures/reliability/test-job-new-page.mjs; then
-  echo '✅ /job/new 拆页回归（空态不渲染表单/字段与提交契约零变化/首页只留入口按钮/空态不复述页题/入口内边距用 token）'
+  echo '✅ /job/new 拆页回归（空态不渲染表单/字段与提交契约零变化/首页引导卡入口唯一/空态不复述页题/卡内间距用 token）'
 else
   fail "「/job/new」拆页回归未通过 (exit $?)"
 fi

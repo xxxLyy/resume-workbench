@@ -5,7 +5,7 @@
 //   ② 链接 href 与转义正确（整行 <a href="/app?id=…">，id 过 escAttr；公司·岗位注入探针被 escHtml）；
 //   ③ 已逾期条目排最前并标「已逾期」；类型徽章「截止」/「面试·轮次」可见；
 //   ④ 空投递表时无该卡；
-//   ⑤ 状态条「N 份逾期/近期面试提醒」文案不变且包成锚链指向该卡。
+//   ⑤ T3：状态摘要条（statusline）已撤除——计数锚链不再渲染；近期日程卡保留锚点 id 且居文档列表之后。
 // 日期红线：dueDate/interviews[].time 全部测试运行时动态生成（Date.now()±偏移的 ISO），不写死日期。
 // HTTP 类夹具：隔离 RESUME_ROOT + 随机端口 + assembleTemplate 合成文档；真实数据禁写禁删。
 import assert from 'node:assert/strict';
@@ -96,7 +96,7 @@ try {
   const html = home.html;
   const cardIdx = html.indexOf('近期日程');
   assert.ok(cardIdx > 0, '① 首页应有「近期日程」卡');
-  const cardHtml = (() => { const end = html.indexOf('searchrow', cardIdx); return html.slice(cardIdx, end); })();   // 卡体 = 标题到下一段
+  const cardHtml = (() => { const end = html.indexOf('<script', cardIdx); return html.slice(cardIdx, end); })();   // 卡体 = 标题到页内脚本（日程卡是末位卡）
 
   // ①③ 前两条出现、终态不出现
   assert.ok(cardHtml.includes('2026-01-01-000000-001'), '① 逾期截止条目应出现在卡内');
@@ -126,13 +126,12 @@ try {
   assert.ok(!/<a [^>]*>[^]*?(<button|<input|<select|<textarea)[^]*?<\/a>/.test(cardHtml), '② 日程行内不得有交互元素（badge 只能是 span）');
   assert.ok(cardHtml.includes('<span class="badge'), '③ 徽章为 span（合法嵌套 a）');
 
-  // ⑤ 状态条锚链（文案不变）
-  const statusIdx = html.indexOf('card statusline');
-  assert.ok(statusIdx > 0 && statusIdx < cardIdx, '⑤ 近期日程卡应在状态摘要条下方');
-  const statusHtml = html.slice(statusIdx, cardIdx);
-  assert.ok(statusHtml.includes('href="#upcomingAgenda"'), '⑤ 状态条计数应包成锚链指向近期日程卡');
-  assert.ok(/份逾期\/近期面试提醒/.test(statusHtml), '⑤ 状态条文案应保持不变');
+  // ⑤ T3：状态摘要条已撤除（计数锚链不再渲染）；日程卡保留锚点 id，且在文档列表之后（末位卡）
+  const listIdx = html.indexOf('id="doclistCard"');
+  assert.ok(listIdx > 0 && cardIdx > listIdx, '⑤ 近期日程卡应在文档列表之后（末位卡）');
   assert.ok(html.includes('id="upcomingAgenda"'), '⑤ 近期日程卡应带锚点 id');
+  assert.ok(!html.includes('份逾期/近期面试提醒') && !html.includes('href="#upcomingAgenda"'),
+    '⑤ 状态条计数与锚链应已随 statusline 撤除');
 
   // ===== ④ 空投递表：无该卡 =====
   const rootEmpty = mkRoot('empty');
@@ -143,9 +142,9 @@ try {
   const home2 = await s2.get('/');
   assert.equal(home2.status, 200, '空表 GET / 应 200');
   assert.ok(!home2.html.includes('近期日程'), '④ 空投递表时不得渲染近期日程卡');
-  assert.ok(!home2.html.includes('upcomingAgenda'), '④ 空投递表时不得有锚点与锚链残留');
+  assert.ok(!home2.html.includes('id="upcomingAgenda"'), '④ 空投递表时不得有锚点 id 残留（#upcomingAgenda 规则属 CSS 钉值，markup 不得出现）');
 
-  console.log('✅ F4 近期日程聚合：三条记录前两条入卡且终态排除（①）/ 链接与转义（②）/ 逾期排最前+类型徽章（③）/ 空表无卡（④）/ 状态条锚链文案不变（⑤）');
+  console.log('✅ F4 近期日程聚合：三条记录前两条入卡且终态排除（①）/ 链接与转义（②）/ 逾期排最前+类型徽章（③）/ 空表无卡（④）/ 锚点保留+状态条已撤（⑤ T3）');
 } catch (e) {
   cleanup();
   fail(e && e.message || String(e));

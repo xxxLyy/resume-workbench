@@ -1811,6 +1811,44 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .doc-card:hover{transform:perspective(900px) rotateX(2deg) rotateY(-2px) translateY(-3px);box-shadow:var(--shadow-up)}}
 .doc-card:focus-within{outline:2px solid var(--accent);outline-offset:2px}
 @media(prefers-reduced-motion:reduce){.doc-card{transition:none!important}.doc-card:hover{transform:none!important}button{transition:none!important}button:hover,button:active{transform:none!important}}
+/* 渐进呈现 T3 首页三态（2026-11-12）：状态点 / 起步卡 / 继续卡 / 文档行 / 待办列表 / 底部入口行。
+   间距一律 §5.1 token（与 --space-* 档重合的值写 var()；6px/10px/14px/18px/20px/34px/44px/48px 等
+   不在档内的留字面值——档内替换按 T3 简报「凡等于 4/8/12/16/24 一律 token」执行）。 */
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;flex:none}
+.dot-draft{background:var(--mut)}.dot-ready{background:var(--warn)}.dot-sent{background:var(--ok)}
+.st{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--mut)}
+.home-start{text-align:center;padding:48px 0 32px}
+.home-start h1{font-size:22px;margin-bottom:var(--space-2)}
+.start-cards{display:flex;gap:var(--space-4);justify-content:center;margin-top:var(--space-6);flex-wrap:wrap}
+.start-card{width:260px;text-align:left;padding:20px;display:block;color:inherit;text-decoration:none}
+.start-card:hover{border-color:var(--mut)}
+.start-card h3{font-size:15px;font-weight:600;margin:10px 0 var(--space-1)}
+.start-card p{font-size:13px;color:var(--mut)}
+.doc-thumb{width:34px;height:44px;background:var(--panel);border:1px solid var(--line);border-radius:3px;flex:none;padding:5px;display:flex;flex-direction:column;gap:3px}
+.doc-thumb i{display:block;height:2px;background:var(--line);border-radius:1px}
+.doc-thumb i:first-child{width:50%;background:var(--mut)}
+.docrow{display:flex;align-items:center;gap:14px;padding:10px var(--space-4);flex-wrap:wrap}
+.docrow+.docrow{border-top:1px solid var(--line)}
+.docrow .tx{flex:1;min-width:0}
+.docrow .nm{font-weight:600;font-size:13px}
+.docrow .mt{font-size:12px;color:var(--mut);overflow-wrap:anywhere}
+.docrow .ops{margin-left:auto;display:flex;gap:14px}
+.docrow .ops a{font-size:12px;color:var(--mut)}
+.docrow .ops a:hover{color:var(--ink)}
+.resume-hero{display:flex;gap:20px;padding:20px;align-items:flex-start}
+.resume-hero .mt{font-size:12px;color:var(--mut)}
+.resume-hero .mini{width:108px;flex:none;border:1px solid var(--line);border-radius:6px;padding:14px;background:var(--panel)}
+.resume-hero .mini i{display:block;height:3px;background:var(--line);border-radius:2px;margin-bottom:var(--space-1)}
+.resume-hero .mini i:first-child{height:7px;width:46%;background:var(--ink);margin-bottom:10px}
+.todo-list{list-style:none;padding:0;margin:0}
+.todo-list li{display:flex;align-items:center;gap:10px;padding:10px var(--space-4);font-size:13px}
+.todo-list li+li{border-top:1px solid var(--line)}
+.todo-list .t{flex:1}
+.todo-list .act{font-size:12px;color:var(--warn);white-space:nowrap}
+/* §5.3：日程行是 inline gap 容器（gap:var(--space-2)），徽章自带 6px 右距必须归零，否则双倍计距 */
+#upcomingAgenda .badge{margin-right:0}
+.foot-links{margin-top:var(--space-4);display:flex;gap:18px;align-items:center;font-size:13px}
+.foot-links a,.foot-links summary{color:var(--mut);font-size:13px}
 </style></head><body${wide ? ' class="wide"' : ''}>
 <script nonce="__CSP_NONCE__">${STATUS_SCRIPT}${ACT_DISPATCH_JS}</script>
 <nav class="topnav"><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><span class="links">${nav('docs', '/', '简历', 'file-text')}${nav('apps', '/applications', '投递', 'columns-3')}${nav('settings', '/settings', '设置', 'settings')}</span></nav>
@@ -2101,7 +2139,6 @@ function listPage(showArchived = false) {
   const infos = [...docInfoMap.values()].filter(Boolean).filter((d) => showArchived || !isArchived(d.id));
   const activeApps = loadApps().filter((a) => !APP_TERMINAL.includes(a.status)).length;
   const { active, profiles } = loadProfiles(root);
-  const cfg = profiles[active];
   // 陈旧计数按 staleInfo（渲染标识），mtime 不参与；PDF 摘要单 chip 三态 = fresh/stale/none 计数
   const siState = (d) => staleInfo(meta[d.id] || {}, { renderInputId: d.renderInputId, pdfExists: fs.existsSync(pdfPath(d.id)) }).state;
   const degradedCount = infos.filter((d) => d.degraded).length;
@@ -2121,21 +2158,6 @@ function listPage(showArchived = false) {
     const ivs = Array.isArray(a.interviews) ? a.interviews : [];
     return ivs.some((iv) => { const t = iv.time ? new Date(iv.time).getTime() : null; return t && t - nowMs < 48 * 3600 * 1000; });
   });
-  // 状态摘要：一行、按优先级排序（告警 > 时限 > 进行中 > 同步口径 > 配置）；PDF 单 chip 三态（§7.2，零项段省略）
-  const pdfChip = infos.length === 0 ? ''
-    : pdfFresh === infos.length ? icon('file-text', 12) + ' PDF 全部同步'
-    : icon('file-text', 12) + ' PDF ' + [
-      pdfFresh > 0 && `已同步 ${pdfFresh}`,
-      pdfStale > 0 && `较旧 ${pdfStale}`,
-      pdfNone > 0 && `未生成 ${pdfNone}`
-    ].filter(Boolean).join(' · ');
-  const todoBits = [
-    { p: 1, t: degradedCount && icon('circle-alert', 12) + ` ${degradedCount} 份待结构化` },
-    { p: 2, t: upcoming.length && `<a href="#upcomingAgenda" style="color:inherit">${icon('clock', 12)} ${upcoming.length} 份逾期/近期面试提醒</a>` },
-    { p: 3, t: activeApps && icon('list-checks', 12) + ` ${activeApps} 份投递中` },
-    { p: 4, t: pdfChip },
-    { p: 5, t: cfg ? icon('bot', 12) + ` AI：${escHtml(cfg.name || '')}` : icon('bot', 12) + ' AI 未配置（岗位草稿仍可手动生成）' }
-  ].filter((b) => b.t).sort((a, b) => a.p - b.p).map((b) => b.t);
   // F4 近期日程聚合视图：条目视图从已计算的 upcoming 即时展开（同一 48h 窗口判定，数据零新算、零新字段）。
   // 每条日程一行（同一投递的截止与多轮面试各自成行）：类型徽章 + 时间原样 + 公司·岗位 + 投递状态，
   // 整行 <a href="/app?id=…">（行内全为 span/文本，无交互元素，徽章合法嵌套）；纯时间升序 =
@@ -2151,8 +2173,8 @@ function listPage(showArchived = false) {
     });
   }
   agendaItems.sort((x, y) => x.t - y.t);
-  const agendaCard = agendaItems.length ? `<div class="card" id="upcomingAgenda" style="margin-top:12px"><b class="card-title">近期日程</b>
-      ${agendaItems.map((it) => `<a href="/app?id=${escAttr(it.app.id)}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 0;border-top:1px solid var(--line);color:inherit;font-weight:400;font-size:13px">
+  const agendaCard = agendaItems.length ? `<div class="card" id="upcomingAgenda" style="margin-top:var(--space-3)"><b class="card-title">近期日程</b>
+      ${agendaItems.map((it) => `<a href="/app?id=${escAttr(it.app.id)}" style="display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap;padding:var(--space-2) 0;border-top:1px solid var(--line);color:inherit;font-weight:400;font-size:13px">
         ${badge('', it.kind + escHtml(it.round))}${it.t < nowMs ? badge('warn', '已逾期') : ''}
         <span style="font-size:12px;color:var(--mut)">${escHtml(fmtWhen(it.when))}</span>
         <span>${escHtml(String(it.app.company || ''))}·${escHtml(String(it.app.role || ''))}</span>
@@ -2170,55 +2192,9 @@ function listPage(showArchived = false) {
       : badge('warn', '已审阅·PDF 未同步');
     return f === 'reviewing' ? badge('warn', '审阅中') : badge('warn', '草稿');
   };
-  const cardHtml = (id) => {
-    const m = meta[id] || {};
-    const info = docInfoMap.get(id);
-    if (!info) return '';
-    const tag = m.tag || '';
-    const snaps = fs.existsSync(snapDir(id)) ? fs.readdirSync(snapDir(id)).filter((s) => s.endsWith('.html')).length : 0;
-    // 徽章三态 = staleInfo（渲染标识）：none 未生成｜stale 较旧｜fresh 同步（mtime 不参与判定）
-    const si = staleInfo(m, { renderInputId: info.renderInputId, pdfExists: fs.existsSync(pdfPath(id)) });
-    const pdfBadge = si.state === 'none' ? badge('warn', 'PDF 未生成')
-      : si.state === 'stale' ? badge('warn', 'PDF 较旧')
-      : badge('ok', 'PDF 同步');
-    return `<li class="card doc-card"><b class="card-title">${info.title}</b>
-      <div style="color:var(--mut);font-size:12px;margin:6px 0">${id} · 更新于 ${info.mtime}</div>
-      <div style="margin-bottom:8px"><span class="badge">快照 ${snaps}</span>${pdfBadge}${m.job ? jobStatusBadge(id) : ''}${m.archivedAt ? badge('', '已归档', 'archive') : ''}${tag ? `<span class="badge">${escHtml(tag)}</span>` : ''}${info.degraded ? badge('warn', '待结构化') : ''}</div>
-      ${m.parent ? `<div style="font-size:12px;color:var(--mut)">岗位版：${escHtml((m.company || '') + '·' + (m.role || ''))}（母版 ${escHtml(m.parent)}）</div>` : ''}
-      <a href="/edit?id=${id}">继续编辑</a> ·
-      <a href="/export?id=${id}">导出</a>
-      <details class="more" style="display:inline"><summary style="display:inline;cursor:pointer;color:var(--mut)">⋯</summary>
-      <div style="margin-top:4px;font-size:13px">
-      <a href="/pdf?id=${id}" target="_blank">最新 PDF</a> ·
-      <a href="/snapshots?id=${id}">历史版本</a> ·
-      <a href="/diff?base=${id}">对比</a> ·
-      ${m.parent ? `<a href="/diff?base=${escAttr(m.parent)}&to=${id}">对比母版</a> · ` : ''}
-      ${info.degraded ? `<form method="post" action="/restructure?id=${id}" style="display:inline" data-action="confirmSubmit" data-msg="${escAttr('用 LLM 重新结构化这份文档？会先自动留快照')}"><button class="secondary">${icon('refresh-cw', 13)} 结构化</button></form> · ` : ''}
-      <form method="post" action="/archive?id=${id}" style="display:inline" data-action="homeArchive" data-id="${escAttr(id)}"><button class="secondary">${m.archivedAt ? icon('archive', 13) + ' 取消归档' : icon('archive', 13) + ' 归档'}</button></form> ·
-      <!-- tag 是任意文本（company·role 派生，不经 /tag 的 '" 清洗）：data-* 属性上下文 → escAttr；
-           提交处理在下方脚本按 data-tag 原样读回（getAttribute 返回实体解码后的原文）。b5c1 前 tag 落在
-           onsubmit 的 JS 单引号串里，须 JSON.stringify 后再转义——委托化后属性即原文，不再有 JS 串上下文。 -->
-      <form method="post" action="/tag" style="display:inline" data-action="homeTag" data-id="${escAttr(id)}" data-tag="${escAttr(tag)}"><button class="secondary" aria-label="标签" title="标签">${icon('tag', 13)}</button></form> ·
-      <form method="post" action="/duplicate?id=${id}" style="display:inline" data-action="homeDup" data-id="${escAttr(id)}"><button>复制</button></form> ·
-      <form method="post" action="/delete?id=${id}" style="display:inline;margin-left:12px;padding-left:12px;border-left:1px solid var(--line)" data-action="confirmSubmit" data-msg="${escAttr('确认删除 ' + id + '？快照会保留')}"><button class="danger">删除</button></form>
-      </div></details>
-    </li>`;
-  };
   const drafts = jobDocs
     .filter((d) => !deliveredRefs(d.id, allApps).length)   // 已投递 = 派生自 applications.json（权威来源），不再读存储状态
     .sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 4);
-  const byTag = new Map();
-  for (const d of docInfoMap.keys()) {
-    if (!showArchived && isArchived(d)) continue;   // archived 默认隐藏
-    const key = (meta[d] && meta[d].tag) || '未标记';
-    if (!byTag.has(key)) byTag.set(key, []);
-    byTag.get(key).push(cardHtml(d));
-  }
-  const keys = [...byTag.keys()].sort((x, y) => (x === '未标记') - (y === '未标记') || x.localeCompare(y));
-  const cards = keys.length === 1 && keys[0] === '未标记'
-    ? byTag.get('未标记').join('\n')
-    : keys.map((k) => `<li class="group-head">${escHtml(k)}</li>\n${byTag.get(k).join('\n')}`).join('\n');
-  const doclistEmpty = cards.trim() === '';   // A4：无文档，或文档都在归档态被隐藏
   // 「继续上次任务」回退链数据源：最近 mtime 排序（浏览器端再按 localStorage['resume-last-active-doc'] 优先）
   const byMtime = [...infos].sort((a, b) => b.mtimeMs - a.mtimeMs);
   const fallbackId = byMtime.length ? byMtime[0].id : '';
@@ -2229,66 +2205,96 @@ function listPage(showArchived = false) {
   for (const mt of loadMats()) for (const t of (Array.isArray(mt.tags) ? mt.tags : [])) if (typeof t === 'string' && t.trim()) tagCount.set(t.trim(), (tagCount.get(t.trim()) || 0) + 1);
   const tagChips = [...tagCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)
     .map(([t]) => `<button type="button" class="chip" data-tag="${escAttr(t)}">${escHtml(t)}</button>`).join('');
-  // 任务卡（2026-11-05 批 1 §0.2/§0.3）：hero 退役后的首屏主行动，三态由流水线状态派生——
-  // ① 有进行中岗位草稿 → 「▶ 继续处理」+ deliverableNow 口径徽章摘要（与下方草稿卡同一函数同口径）；
-  // ② 无母版（无非岗位版文档，归档同不计）→ 「＋ 从零建简历」（八步向导）；
-  // ③ 有母版无草稿 → 「为岗位定制简历」直达独立页 /job/new（§0.3 拆页：表单整体迁移，/job/create 与 /eval/create 契约零变化）。
-  // 次级行（有文档态）：「继续上次任务」回退链保持既有契约（id/data-* 与内联脚本零变化）；
-  // 另保留「从零建简历」显式入口——S5 暂存续作契约要求有文档用户也能从首页重进向导（落地页渲染续作列表），
-  // hero 退役后若无此入口，暂存过的从零建简历会话将不可达（test-onboarding-ui ③ 钉此动线）。
   const latestDraft = drafts[0] || null;
-  const draftReady = latestDraft ? deliverableNow(latestDraft.id, meta[latestDraft.id] || {}, latestDraft) : false;
-  const taskMain = latestDraft
-    ? `<a class="cta" href="/edit?id=${escAttr(latestDraft.id)}">▶ 继续处理：${latestDraft.title}</a>`
-      + badge(draftReady ? 'ok' : 'warn', draftReady ? '可投递' : '草稿')
-      + `<span style="color:var(--mut);font-size:12px">${escHtml(((meta[latestDraft.id] || {}).company || '') + '·' + ((meta[latestDraft.id] || {}).role || ''))}</span>`
-    : hasMaster
-      ? `<a class="cta" href="/job/new">为岗位定制简历</a>`
-      : `<a class="cta" href="/onboarding/guided" title="八步从零建简历：可跳过、可暂存续作，已有简历可预填补缺">＋ 从零建简历</a>`;
-  return page('简历工作台', `
-    <div class="card taskcard" id="taskCard">
-      <div class="task-acts">${taskMain}</div>
-      ${fallbackId
-        ? `<div class="task-side"><a id="continueBtn" class="cta-alt" href="/edit?id=${encodeURIComponent(fallbackId)}" data-fallback="${escAttr(fallbackId)}" data-doc-ids='${jsonAttr(docIds)}' data-doc-titles='${jsonAttr(docTitles)}'>▶ 继续上次任务</a><a href="/onboarding/guided" title="八步从零建简历：可跳过、可暂存续作，已有简历可预填补缺">从零建简历</a></div>`
-        : ''}
-    </div>
-    ${corruptBanner()}
-    <h1>文档</h1>
-    <div class="stat-grid">
-      <div class="stat"><b>${infos.length}</b><span>文档</span></div>
-      <div class="stat"><b>${degradedCount}</b><span>待结构化</span></div>
-      <div class="stat"><b>${activeApps}</b><span>投递中</span></div>
-      <!--R2①：待办提醒=真待办（待结构化+逾期与面试提醒）；投递中/PDF/AI 配置是状态行，只呈现在 statusline 不计入。-->
-      <div class="stat"><b>${degradedCount + upcoming.length}</b><span>待办提醒</span></div>
-    </div>
-    <div class="searchrow">
-      <input id="searchBox" placeholder="搜索文档（标题/id/标签）" aria-label="搜索文档">
-      <button class="secondary" id="viewToggle">▤ 切换</button>
-      <a class="secondary" style="border:1px solid var(--line);border-radius:var(--radius);padding:7px 12px;background:var(--panel);color:var(--ink);font-weight:600;font-size:13px" href="${showArchived ? '/' : '/?archived=1'}">${showArchived ? icon('archive', 13) + ' 隐藏已归档' : icon('archive', 13) + ' 显示已归档'}</a>
-    </div>
-    <ul class="doclist" id="doclist">${cards}${doclistEmpty ? (docInfoMap.size
-      ? `<li class="list-empty">没有可显示的文档——可能都已归档。<a href="/?archived=1">查看已归档</a></li>`
-      : `<li class="list-empty">还没有简历文档。点上方「从零建简历」开始，或 <a href="#up">上传 PDF 导入</a>。</li>`)
-      : ''}<li class="search-empty" style="display:none">没有匹配「<span class="q"></span>」的文档。<button type="button" class="secondary" id="clearSearch">清除搜索</button></li></ul>
-    ${drafts.length ? `<div class="card" style="margin-top:12px"><b class="card-title">继续处理岗位草稿</b>
-      ${drafts.map((d) => { const dl = deliverableNow(d.id, meta[d.id] || {}, d);   // 每草稿只算一次：原写法在同一模板串里调两次，2N 次同步解析卡首屏
-        return `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><span><b>${d.title}</b> ${badge(dl ? 'ok' : 'warn', dl ? '可投递' : '草稿')}<span style="color:var(--mut);font-size:12px">${escHtml(((meta[d.id] || {}).company || '') + '·' + ((meta[d.id] || {}).role || ''))} · ${d.mtime}</span></span><a href="/edit?id=${escAttr(d.id)}"><button>继续处理</button></a></div>`; }).join('')}
-    </div>` : ''}
-    <div class="card" style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-      <form method="post" action="/new"><button class="secondary">＋ 新建空白文档</button></form>
-      <!-- 次级行入口按钮（批 1 §0.2/§0.3）：岗位定制表单已整体迁出 → /job/new，这里只留入口（非表单）。
-           内边距按 §5.1 引用 token（原字面 7px→--space-2 = 8px，1px 差已登记于 DESIGN.md §5.1 可见差异）。
-           注意：搜索行同类次级链接仍是字面 7px 12px，两者现已不同款——要恢复「同款」须两处同改（收口归后续卡）。 -->
-      <a class="secondary" style="border:1px solid var(--line);border-radius:var(--radius);padding:var(--space-2) var(--space-3);background:var(--panel);color:var(--ink);font-weight:600;font-size:13px" href="/job/new">${icon('target', 13)} 为岗位定制简历</a>
-      <details class="import-box" style="flex:1;min-width:220px"><summary style="cursor:pointer;font-weight:700">${icon('file-text', 13)} 导入 PDF</summary>
-        <form id="up" style="margin-top:8px">
-          <input type="file" id="upfile" accept="application/pdf" aria-label="选择 PDF 文件">
-          <button>导入</button><span id="upmsg" role="status"></span>
-        </form>
-      </details>
-    </div>
-    <div class="card statusline" role="status">${todoBits.join('<span class="sep">·</span>')}</div>
-    ${agendaCard}
+  // ===== 渐进呈现 T3（2026-11-12）：首页按数据状态渲染三态 ——
+  //   0 起步态（磁盘无任何文档）：起步卡两张（导入现有 PDF / 从零开始分步向导），无列表无搜索；
+  //   1 有文档无投递：「继续」hero（最近文档 + 回退链 continueBtn，契约同前）+ 岗位定制引导（有母版时）
+  //     + 「全部简历」行式列表 + 底部入口行；
+  //   2 有投递：真待办卡（陈旧 PDF 重导 / 无回应满阈值可跟进 / 未整理文档）+ 「简历」行式列表 + 底部入口行。
+  // 文档行 = 缩略占位 + 标题/元信息 + 状态点（已投递=绿 / 可投递=黄 / 草稿=灰）+ 行内操作（⋯ 收全量操作）。
+  const hasApps = allApps.length > 0;
+  const homeState = infos.length === 0 ? 0 : (hasApps ? 2 : 1);
+  const fuDays = followUpDays(root);
+  const fuDueApps = hasLLM(root) ? allApps.filter((a) => !APP_TERMINAL.includes(a.status) && followUpState(a, { nowMs, thresholdDays: fuDays }).due) : [];
+  const staleDocs = infos.filter((d) => siState(d) === 'stale');
+  const todoItems = [
+    ...staleDocs.slice(0, 3).map((d) => ({ dot: 'ready', t: `「${d.title}」的 PDF 不是最新`, act: `/export?id=${d.id}`, actLabel: '重新导出' })),
+    ...fuDueApps.slice(0, 3).map((a) => ({ dot: 'sent', t: `${escHtml(a.company || '')} 已过 ${fuDays} 天无回应，可以写一句跟进`, act: `/app?id=${escAttr(a.id)}`, actLabel: '起草跟进语' })),
+    ...infos.filter((d) => d.degraded).slice(0, 2).map((d) => ({ dot: 'draft', t: `「${d.title}」还没整理成结构化简历`, act: `/edit?id=${d.id}`, actLabel: '去整理' })),
+  ];
+  // 状态点口径 = 原岗位徽章同源派生（S1-T8）：已投递 ← applications.json（权威）；可投递 ← flow+冲突+stale；其余草稿。
+  const docStatus = (id) => {
+    const m = meta[id] || {};
+    if (deliveredRefs(id, allApps).length) return ['sent', '已投递'];
+    const f = flowOf(m);
+    if (f === 'reviewed' && deliverableNow(id, m, docInfoMap.get(id))) return ['ready', '可投递'];
+    return ['draft', '草稿'];
+  };
+  const docRow = (d) => {
+    const m = meta[d.id] || {};
+    const tag = m.tag || '';
+    const [dc, sl] = docStatus(d.id);
+    const si = siState(d);
+    // id 与标签进元信息行（原 doc-card 同款可见口径）：搜索契约「标题/id/标签」按行文本过滤；
+    // tag 可见性也是 /tag 打标回显的既有契约（岗位草稿 tag=company·role 派生）。
+    const sub = (m.parent ? '基于母版 · ' : '') + `${d.id} · 更新于 ${d.mtime}`;
+    return `<div class="docrow"><span class="doc-thumb"><i></i><i></i><i></i><i></i><i></i></span>
+    <div class="tx"><div class="nm">${d.title}</div><div class="mt">${escHtml(sub)}${si === 'stale' ? ' · PDF 不是最新' : ''}${d.degraded ? ' · 待整理' : ''}${m.archivedAt ? ' · 已归档' : ''}${tag ? ' · ' + escHtml(tag) : ''}</div></div>
+    <span class="st"><i class="dot dot-${dc}"></i>${sl}</span>
+    <div class="ops"><a href="/edit?id=${encodeURIComponent(d.id)}">编辑</a><a href="/export?id=${escAttr(d.id)}">导出</a>
+    <details class="more" style="display:inline"><summary style="display:inline;cursor:pointer;color:var(--mut)">⋯</summary>
+    <div style="margin-top:var(--space-1);font-size:13px;display:flex;gap:10px;flex-wrap:wrap">
+    <a href="/pdf?id=${escAttr(d.id)}" target="_blank">最新PDF</a><a href="/snapshots?id=${escAttr(d.id)}">历史版本</a><a href="/diff?base=${escAttr(d.id)}">对比</a>
+    ${m.parent ? `<a href="/diff?base=${escAttr(m.parent)}&to=${escAttr(d.id)}">对比母版</a>` : ''}
+    ${d.degraded ? `<form method="post" action="/restructure?id=${escAttr(d.id)}" style="display:inline" data-action="confirmSubmit" data-msg="${escAttr('用 LLM 重新结构化这份文档？会先自动留快照')}"><button class="secondary">结构化</button></form>` : ''}
+    <form method="post" action="/archive?id=${escAttr(d.id)}" style="display:inline" data-action="homeArchive" data-id="${escAttr(d.id)}"><button class="secondary">${m.archivedAt ? '取消归档' : '归档'}</button></form>
+    <!-- tag 是任意文本（company·role 派生，不经 /tag 的 '" 清洗）：data-* 属性上下文 → escAttr；
+         提交处理在下方脚本按 data-tag 原样读回（getAttribute 返回实体解码后的原文）。 -->
+    <form method="post" action="/tag" style="display:inline" data-action="homeTag" data-id="${escAttr(d.id)}" data-tag="${escAttr(tag)}"><button class="secondary" aria-label="标签" title="标签">标签</button></form>
+    <form method="post" action="/duplicate?id=${escAttr(d.id)}" style="display:inline" data-action="homeDup" data-id="${escAttr(d.id)}"><button class="secondary">复制</button></form>
+    <form method="post" action="/delete?id=${escAttr(d.id)}" style="display:inline" data-action="confirmSubmit" data-msg="${escAttr('确认删除 ' + d.id + '？快照会保留')}"><button class="danger">删除</button></form>
+    </div></details></div></div>`;
+  };
+  // 行序：母版在前、岗位版在后，同层按 mtime 倒序（最新优先）
+  const sortedRows = [...infos].sort((a, b) => ((meta[b.id] || {}).parent ? 0 : 1) - ((meta[a.id] || {}).parent ? 0 : 1) || b.mtimeMs - a.mtimeMs).map(docRow).join('');
+  // ===== 三态公共件：上传区（#up 三态都在）、底部入口行、搜索行、文档行列表卡 =====
+  const uploadBox = `<details class="import-box"><summary style="cursor:pointer">导入 PDF</summary>
+    <form id="up" style="margin-top:var(--space-2)"><input type="file" id="upfile" accept="application/pdf" aria-label="选择 PDF 文件"><button>导入</button><span id="upmsg" role="status"></span></form></details>`;
+  // 入口唯一：/job/new 全页至多一次。状态 1 由岗位定制引导卡承载（强调位），底部入口行不再重复；
+  // 状态 2 无引导卡，底部入口行在有母版时给出唯一入口；状态 0 不渲染本行。
+  const footLinks = (withJob) => `<div class="foot-links">
+    <form method="post" action="/new" style="display:inline"><button class="secondary">新建空白简历</button></form>
+    <a href="/onboarding/guided">从零开始（分步向导）</a>
+    ${withJob ? '<a href="/job/new">为岗位定制</a>' : ''}
+    ${uploadBox}
+    <a href="${showArchived ? '/' : '/?archived=1'}">${showArchived ? '隐藏已归档' : '显示已归档'}</a></div>`;
+  const searchRow = `<div class="searchrow"><input id="searchBox" placeholder="搜索文档（标题/id/标签）" aria-label="搜索文档"></div>`;
+  const docListCard = (rows) => `<div class="card" id="doclistCard">${rows}
+    <div class="docrow search-empty" style="display:none">没有匹配「<span class="q"></span>」的文档。<button type="button" class="secondary" id="clearSearch">清除搜索</button></div></div>`;
+  const inner = homeState === 0
+    ? `<div class="home-start"><h1>建你的第一份简历</h1><p style="color:var(--mut);font-size:13px">一份母版，按岗位出不同版本。数据只存在这台机器上。</p></div>
+    <div class="start-cards">
+      <div class="card start-card"><span class="doc-thumb" style="width:34px;height:34px;padding:var(--space-2)"><i></i><i></i><i></i></span><h3>导入现有简历</h3><p>拖入 PDF，自动整理成可编辑的简历</p>${uploadBox}</div>
+      <a class="card start-card" href="/onboarding/guided"><span class="doc-thumb" style="width:34px;height:34px;padding:var(--space-2)"><i></i><i></i><i></i></span><h3>从零建简历</h3><p>从零开始分步填写，每步可跳过，写完就是完整简历</p></a>
+    </div>`
+    : homeState === 1
+      ? `${corruptBanner()}
+    <h1>继续</h1>
+    <div class="card resume-hero"><span class="mini"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+      <div style="flex:1;min-width:0"><h3 style="font-size:16px;margin:0">${docTitles[fallbackId] || ''}</h3>
+        <div class="mt">更新于 ${(docInfoMap.get(fallbackId) || {}).mtime || ''}</div>
+        <span class="st" style="margin-top:6px"><i class="dot dot-${escAttr(docStatus(fallbackId)[0])}"></i>${docStatus(fallbackId)[1]}</span>
+        <div style="display:flex;gap:var(--space-2);margin-top:14px"><a class="cta" id="continueBtn" href="/edit?id=${encodeURIComponent(fallbackId)}" data-fallback="${escAttr(fallbackId)}" data-doc-ids='${jsonAttr(docIds)}' data-doc-titles='${jsonAttr(docTitles)}'>继续编辑</a><a class="cta-exp" href="/export?id=${escAttr(fallbackId)}">导出 PDF</a></div></div></div>
+    ${hasMaster ? `<div class="card" style="margin-top:var(--space-4);padding:14px var(--space-4);display:flex;align-items:center;gap:var(--space-3)"><div style="flex:1"><b style="font-size:13px">要投某个岗位？</b><div style="font-size:12px;color:var(--mut)">按 JD 生成一份定制副本，母版不动</div></div><a href="/job/new" style="font-size:13px">为岗位定制 →</a></div>` : ''}
+    <h1 style="margin-top:var(--space-6)">全部简历</h1>
+    ${searchRow}${docListCard(sortedRows || `<div class="docrow" style="color:var(--mut)">没有可显示的文档——可能都已归档。<a href="/?archived=1">查看已归档</a></div>`)}
+    ${footLinks(false)}${agendaCard}`
+      : `${corruptBanner()}
+    ${todoItems.length ? `<h1>待办</h1><div class="card"><ul class="todo-list">${todoItems.map((i) => `<li><i class="dot dot-${i.dot}"></i><span class="t">${i.t}</span><a class="act" href="${i.act}">${i.actLabel}</a></li>`).join('')}</ul></div>` : ''}
+    <h1 style="margin-top:var(--space-6)">简历</h1>
+    ${searchRow}${docListCard(sortedRows)}
+    ${footLinks(hasMaster)}${agendaCard}`;
+  return page('简历工作台', `${inner}
     <script nonce="__CSP_NONCE__">
       document.getElementById('up').addEventListener('submit', async function (e) {
         e.preventDefault();
@@ -2299,38 +2305,37 @@ function listPage(showArchived = false) {
         if (r.redirected) { location.href = r.url; return; }
         document.getElementById('upmsg').textContent = ' ' + (await r.text());
       });
-      // 评估记录列表已整体迁出首页（批 1 §0.3：评估归 /evals）：本页不再内联评估记录载荷，
-      // 也不再挂报告渲染器（EVAL_CARD_JS）与历史接线（EVAL_HISTORY_JS）——该列表的唯一落点是 /evals 页。
-      document.getElementById('searchBox').addEventListener('input', function () {
+      // 搜索过滤：行式是唯一形态（viewToggle/list-view 随栅格卡一并退役）；
+      // 起步态（homeState 0）无搜索行无文档卡，listener 一律判空再挂。
+      var searchBox = document.getElementById('searchBox');
+      if (searchBox) searchBox.addEventListener('input', function () {
         var q = this.value.toLowerCase();
-        var any = false;   // A4：空态行（list-empty/search-empty）不参与过滤，否则关键词清空后无匹配行残留
-        document.querySelectorAll('#doclist > li:not(.search-empty):not(.list-empty)').forEach(function (li) {
-          var hit = !q || li.textContent.toLowerCase().includes(q);
-          li.style.display = hit ? '' : 'none';
+        var any = false;
+        document.querySelectorAll('#doclistCard .docrow:not(.search-empty)').forEach(function (row) {
+          var hit = !q || row.textContent.toLowerCase().includes(q);
+          row.style.display = hit ? '' : 'none';
           if (hit) any = true;
         });
-        var nm = document.querySelector('#doclist > li.search-empty');
+        var nm = document.querySelector('#doclistCard .search-empty');
         if (nm) {
           var show = q && !any;
           nm.style.display = show ? '' : 'none';
           if (show) nm.querySelector('.q').textContent = this.value;
         }
       });
-      document.getElementById('clearSearch').addEventListener('click', function () {
-        var sb = document.getElementById('searchBox'); sb.value = ''; sb.dispatchEvent(new Event('input'));
+      var clearSearchBtn = document.getElementById('clearSearch');
+      if (clearSearchBtn) clearSearchBtn.addEventListener('click', function () {
+        var sb = document.getElementById('searchBox'); if (sb) { sb.value = ''; sb.dispatchEvent(new Event('input')); }
       });
-      document.getElementById('viewToggle').onclick = function () {
-        document.getElementById('doclist').classList.toggle('list-view');
-      };
       document.addEventListener('click', function (e) {
         document.querySelectorAll('details.more[open]').forEach(function (d) {
           if (!d.contains(e.target)) d.removeAttribute('open');
         });
       });
-      // 任务卡「为岗位定制简历」已改为直接链接 /job/new（拆页），无需展开脚本；本 IIFE 只剩 continueBtn 回退链。
+      // 继续编辑回退链（仅状态 1 渲染 continueBtn；0/2 无此元素，IIFE 自判空返回）。
       (function () {
         var btn = document.getElementById('continueBtn');
-        if (!btn) return;                                    // 空库不渲染次级行，无此按钮
+        if (!btn) return;                                    // 起步态与有投递态不渲染此按钮
         // 解析必须非致命：属性损坏时抛出的 SyntaxError 会中断整段内联脚本（含 localStorage 陈旧键清理）。
         // 兜底 = 服务端已渲染好的 mtime 链接与原文案，故此处直接 return，不走下面的隐藏分支。
         // 修复轮1 起 jsonAttr() 已保证属性不可能被 ' 截断，本分支只是纵深防御，正常路径永不触发。

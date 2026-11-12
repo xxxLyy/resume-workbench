@@ -984,9 +984,10 @@ try {
   const t0 = Date.now();
   while (Date.now() - t0 < 12000) { if (srv.exitCode !== null) break; try { await fetch(B + '/'); up = true; break; } catch {} await sleep(80); }
   if (!up) fail('测试服务启动失败: ' + serr.slice(0, 500));
-  // —— none 态：无 PDF → 徽章「PDF 未生成」；GET /pdf 组装渲染 → fresh 并记 meta.lastRenderInputId/lastRenderAt ——
+  // —— none 态：无 PDF → 无较旧标记；GET /pdf 组装渲染 → fresh 并记 meta.lastRenderInputId/lastRenderAt ——
+  // （渐进呈现 T3 起首页不再渲染「PDF 未生成/同步」徽章：fresh/none 无行内标记，stale 出「PDF 不是最新」）
   const home1 = await (await fetch(B + '/')).text();
-  if (!home1.includes('PDF 未生成')) fail('none 态首页徽章应「PDF 未生成」');
+  if (home1.includes('PDF 不是最新')) fail('none 态首页不应出现「PDF 不是最新」标记');
   const rid1 = freezeHtml(fs.readFileSync(docFile, 'utf8'), {}).renderInputId;
   const r1 = await fetch(B + '/pdf?id=sc1');
   if (r1.status !== 200) { const t = await r1.text().catch(() => ''); fail('/pdf 应 200，实际 ' + r1.status + '：' + t.slice(0, 200) + ' | 服务端日志：' + serr.slice(-1200)); }
@@ -998,7 +999,7 @@ try {
   if (m1.lastRenderInputId !== rid1) fail('成功渲染应记该任务标识 lastRenderInputId: ' + JSON.stringify(m1));
   if (!m1.lastRenderAt) fail('成功渲染应记 lastRenderAt: ' + JSON.stringify(m1));
   const home2 = await (await fetch(B + '/')).text();
-  if (!home2.includes('PDF 同步')) fail('fresh 态首页徽章应「PDF 同步」');
+  if (home2.includes('PDF 不是最新')) fail('fresh 态首页不应出现「PDF 不是最新」标记');
   // —— 仅 mtime 变（输入不变）→ 不 stale、不重渲（mtime 不作正确性依据）——
   const future = (Date.now() + 10000) / 1000;
   fs.utimesSync(docFile, future, future);
@@ -1006,11 +1007,11 @@ try {
   if (r2.headers.get('X-PDF-Stale') !== '0') fail('仅 mtime 变不应判 stale');
   if (renderCount() !== 1) fail('仅 mtime 变不应触发重渲（' + renderCount() + '）');
   const home2b = await (await fetch(B + '/')).text();
-  if (!home2b.includes('PDF 同步')) fail('仅 mtime 变徽章仍应「PDF 同步」');
-  // —— stale 态：正文改 → 徽章「PDF 较旧」、/save pdfStale=true；GET /pdf 重渲并更新为该任务标识 ——
+  if (home2b.includes('PDF 不是最新')) fail('仅 mtime 变首页仍不应出现「PDF 不是最新」标记');
+  // —— stale 态：正文改 → 行内标记「PDF 不是最新」、/save pdfStale=true；GET /pdf 重渲并更新为该任务标识 ——
   fs.writeFileSync(docFile, mkHtml('SC-V2'));
   const home3 = await (await fetch(B + '/')).text();
-  if (!home3.includes('PDF 较旧')) fail('stale 态首页徽章应「PDF 较旧」');
+  if (!home3.includes('PDF 不是最新')) fail('stale 态首页文档行应标「PDF 不是最新」');
   const sv1 = await (await fetch(B + '/save?id=sc1', { method: 'POST', headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: mkHtml('SC-V2') })).json();
   if (!sv1.ok) fail('/save 失败: ' + JSON.stringify(sv1));
   if (sv1.pdfStale !== true) fail('标识不符时 /save pdfStale 应 true: ' + JSON.stringify(sv1));
@@ -1024,8 +1025,8 @@ try {
   // —— none 态（删 PDF 后）：标识一致也判 none ——
   fs.rmSync(path.join(ROOT, 'pdfs', 'sc1.pdf'), { force: true });
   const home4 = await (await fetch(B + '/')).text();
-  if (!home4.includes('PDF 未生成')) fail('删 PDF 后应回 none 态（未生成）');
-  console.log('✅ S1-C-2 staleInfo 三态服务级（徽章三态/X-PDF-Stale/lastRenderInputId 记录//save pdfStale；仅 mtime 变不 stale 不重渲）');
+  if (home4.includes('PDF 不是最新')) fail('删 PDF 后应回 none 态（无较旧标记）');
+  console.log('✅ S1-C-2 staleInfo 三态服务级（行内标记/X-PDF-Stale/lastRenderInputId 记录//save pdfStale；仅 mtime 变不 stale 不重渲）');
 } finally {
   srv.kill('SIGKILL');
   await sleep(50);
@@ -1954,7 +1955,7 @@ try {
     exPage = await (await fetch(B + '/export?id=exdoc')).text();
     h = await home();
     if (!exPage.includes('投递使用') || !exPage.includes('甲公司')) fail('② usedBy 应读取时派生自 applications.json（导出页导出记录）');
-    if (!h.includes('已记录投递')) fail('② deliveredRefs 应派生「已记录投递」徽章（applications.json 权威）');
+    if (!h.includes('已投递')) fail('② deliveredRefs 应派生「已投递」状态点（applications.json 权威；T3 徽章→状态点口径迁移）');
     if (metaRaw() !== rawBefore2) fail('② 派生不得写回 docs-meta（字节不变）');
     if (metaRaw().includes('usedBy') || metaRaw().includes('deliveredRefs')) fail('② usedBy/deliveredRefs 绝不存储');
     fs.writeFileSync(path.join(R2, 'applications.json'), JSON.stringify([
@@ -4642,16 +4643,92 @@ const navAt = srv.indexOf('<nav class="topnav">');
 assert(pStart > 0 && listStart > pStart, '应能定位 page() 与 listPage()');
 assert(navAt > pStart && navAt < listStart, 'topnav 模板必须落在 page() 内（不能落进 listPage()——listPage 拿不到 active）');
 assert(/function page\([^)]*active/.test(srv), 'page() 应保留 active 参数（当前项高亮依赖它）');
-// 统计块：原 statusline 横条拆成独立统计块
-assert(/class="stat-grid"/.test(srv), '首页应有统计块区 .stat-grid');
-assert((srv.match(/class="stat"/g) || []).length >= 3, '至少 3 个统计块');
-// hero 已退役（2026-11-05 批 1）：h1「文档」= 页面第一标题，首屏 = 任务卡→统计行→搜索行→文档列表（行为面见 test-home-taskbench.mjs）
-assert(/<h1[^>]*>文档<\/h1>/.test(srv) || /class="mainarea"[\s\S]{0,400}<h1/.test(srv), '内容区应有 H1');
+// 渐进呈现 T3：统计行/状态行随任务台面一并退役——stat-grid/statusline/taskcard 标记不得残留
+assert(!/class="stat-grid"/.test(srv), '首页统计行应已撤除（T3 三态）');
+assert(!/class="card statusline"/.test(srv), '首页状态摘要行应已撤除（T3 三态）');
+assert(!/id="taskCard"/.test(srv), '首页任务卡应已撤除（T3 三态）');
+// T3 三态结构件在场：起步卡 / 继续 hero / 文档行 / 待办列表 / 底部入口行（CSS 规则与 markup 同名）
+for (const cls of ['home-start', 'resume-hero', 'docrow', 'todo-list', 'foot-links']) {
+  assert(srv.includes('.' + cls + '{'), '首页缺 T3 结构件 CSS 规则 .' + cls);
+}
+// 内容区页题（状态 1/2 各一枚 h1；状态 0 起步卡 h1）
+assert(/<h1>继续<\/h1>/.test(srv) && /<h1[^>]*>全部简历<\/h1>/.test(srv) && /<h1>建你的第一份简历<\/h1>/.test(srv),
+  '三态页题应齐全（继续 / 全部简历 / 建你的第一份简历）');
 // 窄屏 scroll-padding 档位（WCAG 2.4.11 Focus Not Obscured）：
 // 窄屏 topnav 折成两行时，默认 64px 不够，必须有媒体查询单独加一档。
 assert(/@media\s*\(max-width:\s*\d+px\)\s*\{html\{[^}]*scroll-padding-top\s*:\s*\d+px/.test(srv),
   '窄屏应有 scroll-padding-top 档位（媒体查询内单独覆盖）');
 console.log('✅ UI-5 首页侧栏 + 内容区');
+EOF
+
+# —— UI-5b：渐进呈现 T3 首页三态（隔离根 + 随机端口；源级判据 + 三态运行响应 + 黑话缺席 + 状态点 + 入口唯一）——
+node --input-type=module << 'EOF'
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import net from 'node:net';
+import { spawn } from 'node:child_process';
+import { assembleTemplate } from './template.mjs';
+const assert = (c, m) => { if (!c) { console.error('❌ UI-5b ' + m); process.exit(1); } };
+const srv = fs.readFileSync('./server.mjs', 'utf8');
+// ① 源级：三态判据在场（infos 空→0；有投递→2；否则→1）
+assert(/const hasApps = allApps\.length > 0/.test(srv), '应有 hasApps 判据（applications.json 非空）');
+assert(/const homeState = infos\.length === 0 \? 0 : \(hasApps \? 2 : 1\)/.test(srv),
+  '应有 homeState 三分支判据（空盘→0 / 有投递→2 / 其余→1）');
+assert(/homeState === 0/.test(srv) && /homeState === 1/.test(srv), '输出应按 homeState 0/1/2 分支');
+// ② 运行级：同一实例顺序演进 0→1→2
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-ui5b-'));
+for (const d of ['docs', 'snapshots', 'pdfs', 'logs', 'backups', 'photos']) fs.mkdirSync(path.join(root, d), { recursive: true });
+const port = await new Promise((res) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); }); });
+const srvp = spawn(process.execPath, ['./server.mjs'], { env: { ...process.env, RESUME_ROOT: root, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
+let slog = ''; srvp.stdout.on('data', (d) => { slog += d; }); srvp.stderr.on('data', (d) => { slog += d; });
+process.on('exit', () => { try { srvp.kill('SIGKILL'); } catch {} });
+const B = `http://127.0.0.1:${port}`;
+const get = async (p) => { const r = await fetch(B + p); return { status: r.status, text: await r.text() }; };
+const JARGON = ['待结构化', 'PDF 较旧', 'AI：'];
+try {
+  for (let i = 0; i < 150; i++) { try { const r = await fetch(B + '/'); if (r.ok) { await r.text(); break; } } catch {} await new Promise((r) => setTimeout(r, 100)); if (i === 149) assert(false, '服务 15s 未就绪：' + slog.slice(-500)); }
+  // 状态 0：起步态（无文档）
+  let home = (await get('/')).text;
+  assert(home.includes('建你的第一份简历'), '状态 0 应渲染起步卡标题「建你的第一份简历」');
+  assert(home.includes('href="/onboarding/guided"'), '状态 0 起步卡应有从零开始入口');
+  assert(home.includes('id="up"'), '状态 0 起步卡应有 PDF 导入区（#up 三态都在）');
+  assert(!home.includes('class="docrow"'), '状态 0 不渲染文档行');
+  assert(!home.includes('id="continueBtn"'), '状态 0 不渲染 continueBtn');
+  assert(!home.includes('href="/job/new"'), '状态 0 不渲染岗位定制入口（无母版）');
+  for (const j of JARGON) assert(!home.includes(j), `状态 0 首页不得含内部词「${j}」`);
+  // 状态 1：有文档无投递 → 继续卡 + 行式列表
+  let doc = assembleTemplate('classic');
+  for (const [k, v] of [['{{NAME}}', '合成'], ['{{CONTACT}}', ''], ['{{INTENT}}', ''], ['{{SUMMARY}}', ''],
+    ['{{SKILLS}}', ''], ['{{WORK}}', ''], ['{{PROJECTS}}', ''], ['{{EDU}}', ''], ['{{DOC_ID}}', 'ui5b']]) doc = doc.replaceAll(k, () => v);
+  doc = doc.replace(/<h1>[^<]*<\/h1>/, () => '<h1>合成母版简历</h1>');
+  fs.writeFileSync(path.join(root, 'docs', 'ui5b.html'), doc);
+  fs.writeFileSync(path.join(root, 'docs-meta.json'), JSON.stringify({ ui5b: { rev: 1, flow: 'draft' } }));
+  home = (await get('/')).text;
+  assert(home.includes('<h1>继续</h1>'), '状态 1 第一标题应为「继续」');
+  assert(home.includes('class="card resume-hero"'), '状态 1 应渲染继续卡 resume-hero');
+  assert(home.includes('id="continueBtn"') && home.includes('data-doc-ids'), '状态 1 回退链契约（continueBtn + data-doc-ids）');
+  assert(home.includes('id="doclistCard"') && home.includes('class="docrow"'), '状态 1 应渲染行式文档列表');
+  assert((home.match(/dot-(draft|ready|sent)/g) || []).length >= 2, '状态 1 应渲染状态点（hero + 文档行）');
+  assert(home.includes('从零开始（分步向导）'), '状态 1 底部入口行应有从零开始入口（暂存续作可达）');
+  assert((home.match(/href="\/job\/new"/g) || []).length === 1, '状态 1（有母版）/job/new 入口应唯一（引导卡承载）');
+  for (const j of JARGON) assert(!home.includes(j), `状态 1 首页不得含内部词「${j}」`);
+  // 状态 2：有投递 → 待办卡/简历列表；/job/new 入口唯一
+  fs.writeFileSync(path.join(root, 'applications.json'), JSON.stringify([
+    { id: 'app-ui5b-001', company: '合成投递', role: '后端', docId: 'ui5b', status: '已投递', createdAt: '2026-01-01', updatedAt: '2026-01-01', interviews: [] }
+  ]));
+  home = (await get('/')).text;
+  assert(home.includes('<h1 style="margin-top:var(--space-6)">简历</h1>') || /<h1[^>]*>简历<\/h1>/.test(home), '状态 2 应渲染「简历」列表标题');
+  assert(home.includes('class="docrow"'), '状态 2 应渲染文档行');
+  assert(home.includes('>已投递<'), '状态 2 已投递文档应出已投递状态点文案');
+  assert(!home.includes('id="continueBtn"'), '状态 2 不渲染 continueBtn（按 T3 模板）');
+  assert((home.match(/href="\/job\/new"/g) || []).length === 1, '状态 2（有母版）/job/new 入口应唯一，实际 ' + (home.match(/href="\/job\/new"/g) || []).length);
+  for (const j of JARGON) assert(!home.includes(j), `状态 2 首页不得含内部词「${j}」`);
+  console.log('✅ UI-5b 渐进呈现 T3 首页三态（源级判据 + 0/1/2 运行响应 + 黑话缺席 + 状态点 + /job/new 入口唯一）');
+} finally {
+  try { srvp.kill('SIGKILL'); } catch {}
+  fs.rmSync(root, { recursive: true, force: true });
+}
 EOF
 
 # —— UI-6：编辑器可拖拽分栏（结构层，浏览器行为见 test-editor.mjs）——
@@ -5432,10 +5509,11 @@ node --input-type=module << 'EOF'
 import { readFileSync } from 'node:fs';
 const assert = (c, m) => { if (!c) { console.error('❌ R2 ' + m); process.exit(1); } };
 const srv = readFileSync('./server.mjs', 'utf8');
-// ① 首页「待办提醒」= 真待办（degradedCount + upcoming）；投递中/PDF/AI 状态行仍在 statusline 全量呈现
-assert(/<div class="stat"><b>\$\{degradedCount \+ upcoming\.length\}<\/b><span>待办提醒<\/span><\/div>/.test(srv),
-  '「待办提醒」stat 应为 degradedCount + upcoming.length（真待办），状态行不得计入');
-assert(srv.includes("${todoBits.join('<span class=\"sep\">·</span>')}"), 'statusline 应保持 todoBits 全量呈现（①不砍状态行）');
+// ① 首页「待办」语义 = 真待办（T3 起走 todoItems：陈旧 PDF / 无回应跟进 / 未整理文档；
+//    stat-grid 计数块与 statusline 状态行已随三态撤除——todoBits 死代码不得残留）
+assert(!/todoBits/.test(srv), 'statusline/todoBits 状态行应已随 T3 三态撤除（不得残留死代码）');
+assert(/staleDocs\.slice\(0, 3\)/.test(srv) && /fuDueApps\.slice\(0, 3\)/.test(srv) && /d\.degraded\)\.slice\(0, 2\)/.test(srv),
+  '待办卡应聚合真待办三源：陈旧 PDF（≤3）/ 无回应跟进（≤3）/ 未整理文档（≤2）');
 // ② 六处「请到侧栏「设置」」死引用清零：sendJson 带 settingsPath 字段，text/plain 直接给出 /settings 路径
 assert(!srv.includes('请到侧栏'), 'server.mjs 不得再有「请到侧栏」死文案（编辑器内无侧栏可点）');
 assert(srv.includes("settingsPath: '/settings'"), '/eval/create 409 JSON 应带 settingsPath 字段（消费方按 :2210 先例渲染链接）');

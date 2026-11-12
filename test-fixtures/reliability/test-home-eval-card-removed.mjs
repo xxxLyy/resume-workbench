@@ -8,7 +8,7 @@
 //     （已转适配且目标文档在盘 → 仍链接 /edit）+ XSS 转义 + 内联载荷 + 导航（topnav 4 链接 / 无 sidenav / 简历高亮；
 //     链接数 7→4 是渐进呈现 T2 的一次性同提交迁移，与 /evals 能力无关）。
 //   C /evals 入口可达：/job/new 页提供 href="/evals"，空库态与有母版态都在场（否则 /evals 成孤页）。
-//   D 阴性对照：撤除范围仅评估历史卡——首页任务卡 / 统计行 / 文档列表仍在，<script> 标签数不变。
+//   D 阴性对照：撤除范围仅评估历史卡——空库起步态结构在场（home-start/起步卡/上传区），<script> 标签数不变。
 // 纪律：隔离 RESUME_ROOT（mkdtemp）+ 随机端口 + 合成数据；不读真实简历、不碰 7766、不调真实模型；仓库零写入。
 // 隐私门禁：合成数据不含 13 位数字（门禁 1[3-9]\d{9} 不适用）。
 // 退出码契约：0=全部通过；1=任一断言失败（本夹具不依赖 Chromium，无 2 分支）。
@@ -105,10 +105,10 @@ try {
     assert.ok(!html.includes('REPORT-BODY-MARKER'), '首页不得再内联评估报告正文');
     assert.ok(!html.includes('href="/evals"'), '首页不再承担 /evals 入口（入口迁至 /job/new）');
     assert.ok(!html.includes('alert(1)'), '首页不得含评估载荷文本');
-    // D 阴性对照：撤除范围仅评估历史卡，其余台面不受影响
-    assert.ok(html.includes('id="taskCard"'), '首页任务卡仍在（撤除范围仅评估历史卡）');
-    assert.ok(html.includes('class="stat-grid"'), '首页统计行仍在');
-    assert.ok(html.includes('id="doclist"'), '首页文档列表仍在');
+    // D 阴性对照：撤除范围仅评估历史卡，其余台面不受影响（T3 空库=起步态；任务卡/统计行/旧列表已按 T3 退役）
+    assert.ok(html.includes('class="home-start"'), '空库起步态容器仍在（撤除范围仅评估历史卡）');
+    assert.ok(html.includes('class="start-cards"'), '起步卡组仍在');
+    assert.ok(html.includes('id="up"'), '起步卡上传区仍在');
     assert.equal((html.match(/<script/g) || []).length, 3, '首页 <script> 标签数应仍为 3（评估渲染器/接线同块撤除，未新增标签）');
   }
 

@@ -1,17 +1,15 @@
-// test-home-task-badge.mjs — 批1 首页任务卡徽章间距（浏览器真渲染量测，无障碍几何为准）
-// 计划：dev-docs/2026-11-05-roadmap-batch-plan.md §2 首页；规则依据 DESIGN.md §5.3
-//   「`.badge` 自带 `margin-right`（徽章后分隔的唯一机制）；放进 `gap` 容器时**必须**给
-//     `.badge{margin-right:0}`，否则双倍计距。」
-// 背景：b1c1 的 `.taskcard .task-acts` 是 flex+gap 容器（有草稿态内含徽章），
-//   徽章自带 6px 右距与容器 gap 叠加 → 徽章后距 = gap+6 ≠ gap（同页行内徽章却只有 6px）。
+// test-home-task-badge.mjs — 首页日程卡徽章间距（浏览器真渲染量测，无障碍几何为准）
+// 计划：渐进呈现 T3（dev-docs/2026-11-12 spec）——任务卡退役后，首页唯一「gap 容器内含徽章」
+//   的幸存样本是近期日程卡（#upcomingAgenda）：每条日程 = inline flex gap:var(--space-2) 行，
+//   行内含类型徽章（截止/面试·轮次）+「已逾期」徽章 + 投递状态徽章。
+//   规则依据 DESIGN.md §5.3「.badge 自带 margin-right（徽章后分隔的唯一机制）；放进 gap 容器
+//   时必须给 .badge{margin-right:0}，否则双倍计距」——修法落在 #upcomingAgenda .badge{margin-right:0}。
 // 断言（真实浏览器 getBoundingClientRect 量测，不靠样式文本推断）：
-//   ① 任务卡徽章在 gap 容器内 margin-right 归零（§5.3 明文要求）；
-//   ② 徽章→下一项 距离 == 容器 gap（双倍计距消失）；
-//   ③ CTA→徽章 距离 == 容器 gap（未因归零而错位）；
-//   ④ 草稿卡（「继续处理岗位草稿」）行内容器里的徽章仍保留 6px 右距——修法只作用于 gap 容器，不动全局徽章机制。
-//     取样对象显式化：草稿卡 = `.mainarea > .card:not(#taskCard)`（行内容器在行内 span 里，本身无 gap）。
-//     不用「文档序首个 .card .badge」——那会命中文档列表卡（li.card.doc-card）的「快照 N」徽章，与本断言意图不符。
-// 隔离：mkdtemp 根 + 随机端口 + 合成母版/岗位稿；不读真实简历、不碰 7766、不调真实模型。
+//   ① 日程卡徽章在 gap 容器内 margin-right 归零（§5.3 明文要求）；
+//   ② 徽章→徽章/徽章→下一项 距离 == 容器 gap（双倍计距消失）；
+//   ③ 状态徽章→行尾自然收边（gap 均一，无叠加右距）；
+//   ④ /applications 看板卡（非 gap 容器）里的徽章仍保留 6px 右距——修法只作用于日程行，不动全局徽章机制。
+// 隔离：mkdtemp 根 + 随机端口 + 合成母版/投递；不读真实简历、不碰 7766、不调真实模型。
 // 退出码契约：0=全部通过；1=断言失败；2=仅 Chromium 不可用（套件惯例，跳过不假装通过）。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -28,7 +26,7 @@ const fail = (m) => { console.error('❌ ' + m); process.exit(1); };
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-taskbadge-'));
 for (const d of ['docs', 'snapshots', 'pdfs', 'logs', 'backups', 'photos']) fs.mkdirSync(path.join(root, d), { recursive: true });
-// 刻意不写 config.json → 无模型（任务卡三态与徽章口径都是纯服务端派生，不依赖模型）
+// 刻意不写 config.json → 无模型（日程卡与徽章口径都是纯服务端派生，不依赖模型）
 
 const port = await new Promise((res) => {
   const s = net.createServer();
@@ -46,23 +44,21 @@ const cleanup = () => { try { server.kill('SIGKILL'); } catch {} try { fs.rmSync
 process.on('exit', cleanup);
 const base = `http://127.0.0.1:${port}`;
 
-// 合成文档：真模板骨架 + 显式 h1 标题 + meta 直写（母版 + 一份进行中岗位稿 → 任务卡走「▶ 继续处理」态，徽章在场）
+// 合成文档 + 一条「已逾期截止」投递 → 状态 2 + 日程卡单行含三枚徽章（截止/已逾期/已投递）
 const metaPath = path.join(root, 'docs-meta.json');
-const seedDoc = (id, title, metaEntry = {}) => {
+{
   let doc = assembleTemplate('classic');
   for (const [k, v] of [['{{NAME}}', '合成'], ['{{CONTACT}}', ''], ['{{INTENT}}', ''], ['{{SUMMARY}}', ''],
-    ['{{SKILLS}}', ''], ['{{WORK}}', ''], ['{{PROJECTS}}', ''], ['{{EDU}}', ''], ['{{DOC_ID}}', id]]) doc = doc.replaceAll(k, () => v);
-  doc = doc.replace(/<h1>[^<]*<\/h1>/, () => `<h1>${title}</h1>`);
-  fs.writeFileSync(path.join(root, 'docs', id + '.html'), doc);
-  const meta = fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, 'utf8')) : {};
-  meta[id] = { rev: 1, flow: 'draft', ...metaEntry };
-  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
-};
-seedDoc('badgemaster', '合成母版简历');
-seedDoc('badgedraft', '合成岗位稿', {
-  parent: 'badgemaster', company: '合成公司', role: '合成岗位',
-  job: { kind: 'job', status: 'draft', flow: 'draft' }
-});
+    ['{{SKILLS}}', ''], ['{{WORK}}', ''], ['{{PROJECTS}}', ''], ['{{EDU}}', ''], ['{{DOC_ID}}', 'badgemaster']]) doc = doc.replaceAll(k, () => v);
+  doc = doc.replace(/<h1>[^<]*<\/h1>/, () => '<h1>合成母版简历</h1>');
+  fs.writeFileSync(path.join(root, 'docs', 'badgemaster.html'), doc);
+  fs.writeFileSync(metaPath, JSON.stringify({ badgemaster: { rev: 1, flow: 'draft' } }));
+}
+const overdueDue = new Date(Date.now() - 2 * 3600 * 1000).toISOString();   // 2h 前 → 已逾期
+fs.writeFileSync(path.join(root, 'applications.json'), JSON.stringify([
+  { id: 'badge-app-001', company: '合成截止公司', role: '后端', docId: 'badgemaster',
+    status: '已投递', dueDate: overdueDue, createdAt: '2026-01-01', updatedAt: '2026-01-01', interviews: [] }
+]));
 
 let browser = null;
 try {
@@ -75,55 +71,57 @@ try {
 
   let bin;
   try { bin = await resolveChromium(); }
-  catch (e) { console.log('⚠️  Chromium 不可用，跳过任务卡徽章间距量测：' + (e && e.message || e)); cleanup(); process.exit(2); }
+  catch (e) { console.log('⚠️  Chromium 不可用，跳过日程卡徽章间距量测：' + (e && e.message || e)); cleanup(); process.exit(2); }
   browser = await chromium.launch({ executablePath: bin, headless: true });
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   await page.goto(base + '/', { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('#taskCard .task-acts .badge');
+  await page.waitForSelector('#upcomingAgenda .badge');
 
   const m = await page.evaluate(() => {
-    const acts = document.querySelector('#taskCard .task-acts');
-    const kids = Array.from(acts.children);
-    const badge = acts.querySelector('.badge');
-    const bi = kids.indexOf(badge);
+    const row = document.querySelector('#upcomingAgenda a');
+    const badges = Array.from(row.querySelectorAll('.badge'));
     const box = (el) => { const b = el.getBoundingClientRect(); return { left: b.left, right: b.right, width: b.width }; };
-    // 草稿卡（「继续处理岗位草稿」）行内容器里的同款徽章——修法不应波及它
-    const inlineBadge = document.querySelector('.mainarea > .card:not(#taskCard) .badge');
+    const kids = Array.from(row.children);
     return {
-      gap: getComputedStyle(acts).gap,
-      badgeMarginRight: getComputedStyle(badge).marginRight,
-      cta: box(kids[bi - 1]),
-      badge: box(badge),
-      next: kids[bi + 1] ? box(kids[bi + 1]) : null,
-      inlineBadgeText: inlineBadge ? inlineBadge.textContent.trim() : null,
-      inlineBadgeMarginRight: inlineBadge ? getComputedStyle(inlineBadge).marginRight : null
+      gap: getComputedStyle(row).gap,
+      badgeMargins: badges.map((b) => getComputedStyle(b).marginRight),
+      badgeTexts: badges.map((b) => b.textContent.trim()),
+      first: badges[0] ? box(badges[0]) : null,
+      second: badges[1] ? box(badges[1]) : null,
+      afterFirst: kids.indexOf(badges[0]) >= 0 && kids[kids.indexOf(badges[0]) + 1] ? box(kids[kids.indexOf(badges[0]) + 1]) : null
     };
   });
 
   const gapPx = parseFloat(m.gap);
-  assert.ok(Number.isFinite(gapPx) && gapPx > 0, '任务卡操作行应是 gap 容器，实际 gap=' + m.gap);
+  assert.ok(Number.isFinite(gapPx) && gapPx > 0, '日程行应是 gap 容器，实际 gap=' + m.gap);
+  assert.ok(m.badgeMargins.length >= 3, `日程行应含 ≥3 枚徽章（截止/已逾期/已投递），实际 ${m.badgeMargins.length}：${m.badgeTexts.join('/')}`);
 
   // ① gap 容器内徽章自带右距必须归零（DESIGN.md §5.3：否则双倍计距）
-  assert.equal(m.badgeMarginRight, '0px',
-    '任务卡徽章在 gap 容器内须 margin-right:0（§5.3 双倍计距禁令），实际=' + m.badgeMarginRight);
+  for (const [i, mr] of m.badgeMargins.entries()) {
+    assert.equal(mr, '0px', `日程卡第 ${i + 1} 枚徽章「${m.badgeTexts[i]}」在 gap 容器内须 margin-right:0（§5.3），实际=${mr}`);
+  }
 
-  // ② 徽章→下一项 = gap（归零后不再叠加 6px）
-  assert.ok(m.next, '任务卡徽章后应有下一项（公司·岗位）');
-  const afterBadge = Math.round((m.next.left - m.badge.right) * 100) / 100;
-  assert.ok(Math.abs(afterBadge - gapPx) < 0.5,
-    `徽章→下一项应为 gap(${gapPx}px)，实际 ${afterBadge}px（双倍计距）`);
+  // ② 徽章→徽章 距离 = gap（归零后不再叠加 6px）
+  const badgeToBadge = Math.round((m.second.left - m.first.right) * 100) / 100;
+  assert.ok(Math.abs(badgeToBadge - gapPx) < 0.5,
+    `徽章→徽章应为 gap(${gapPx}px)，实际 ${badgeToBadge}px（双倍计距）`);
 
-  // ③ CTA→徽章 = gap（回归护栏：归零只影响徽章右距）
-  const beforeBadge = Math.round((m.badge.left - m.cta.right) * 100) / 100;
-  assert.ok(Math.abs(beforeBadge - gapPx) < 0.5,
-    `CTA→徽章应为 gap(${gapPx}px)，实际 ${beforeBadge}px`);
+  // ③ 徽章→下一项（时间 span）距离 = gap（行内其余项未被归零波及）
+  const badgeToSpan = Math.round((m.afterFirst.left - m.first.right) * 100) / 100;
+  assert.ok(Math.abs(badgeToSpan - gapPx) < 0.5,
+    `徽章→下一项应为 gap(${gapPx}px)，实际 ${badgeToSpan}px`);
 
-  // ④ 草稿卡行内的徽章仍保留 6px 右距（徽章后分隔的唯一机制，全站 43 处在用）
-  assert.ok(m.inlineBadgeText, '未取到草稿卡行内的徽章（取样对象缺失，无法校验 gap 容器外的徽章右距）');
-  assert.equal(m.inlineBadgeMarginRight, '6px',
-    `gap 容器外（草稿卡行内）的徽章「${m.inlineBadgeText}」须保留自带右距 6px（修法只作用于 .task-acts 内的徽章），实际=${m.inlineBadgeMarginRight}`);
+  // ④ 对照：/applications 看板卡的徽章在普通流内（非 gap 容器）仍保留 6px 右距
+  await page.goto(base + '/applications', { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.app-card .badge');
+  const ctrl = await page.evaluate(() => {
+    const b = document.querySelector('.app-card .badge');
+    return { marginRight: getComputedStyle(b).marginRight, text: b.textContent.trim() };
+  });
+  assert.equal(ctrl.marginRight, '6px',
+    `gap 容器外（看板卡行内）的徽章「${ctrl.text}」须保留自带右距 6px（修法只作用于 #upcomingAgenda），实际=${ctrl.marginRight}`);
 
-  console.log(`✅ 任务卡徽章间距（gap 容器内 margin-right 归零；徽章后距 ${afterBadge}px = gap ${gapPx}px；草稿卡行内徽章「${m.inlineBadgeText}」仍 6px）`);
+  console.log(`✅ 日程卡徽章间距（gap ${gapPx}px 容器内 margin-right 归零 ×${m.badgeMargins.length}；徽章后距 ${badgeToBadge}px = gap；看板卡行内徽章「${ctrl.text}」仍 6px）`);
 } catch (e) {
   console.error('❌ ' + (e && e.message));
   process.exitCode = 1;

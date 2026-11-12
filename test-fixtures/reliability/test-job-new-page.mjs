@@ -3,13 +3,14 @@
 // 覆盖（断言逐条独立）：
 //   A 空库：/job/new 200 + 页题/h1「为岗位定制简历」+ 无母版空态（既有 jobCard 空态口径迁入）+ 不渲染表单。
 //   B 有母版：表单字段/结构与首页拆出前零变化（id/label/默认值/按钮全保留）+ 提交与评估接线字符串在场。
-//   C 首页拆出：首页无表单（#jobCard/#jobForm/brief*/evalBtn/evalResult 全不在场）；任务卡主行动与次级行均以
-//     「为岗位定制简历」入口按钮（href="/job/new"，非表单）进新页。
+//   C 首页拆出：首页无表单（#jobCard/#jobForm/brief*/evalBtn/evalResult 全不在场）；T3 起入口收敛为
+//     状态 1 的岗位定制引导卡（href="/job/new"，非表单，全页唯一）。
 //   D 契约零变化（行为面）：/job/new 页内联脚本按原字段构建的 payload POST /job/create → 200 {ok:true,id}、
 //     meta.parent 继承；/eval/create 未配置 LLM → 409 JSON 带 settingsPath='/settings'（R2② 契约原样）。
 //   E 名称统一与截图路由：server.mjs/editor-shell.js 旧名「针对岗位生成」零残留；弹层标题改「为岗位定制简历」；
 //     视觉截图夹具 routes 含 ['job-new', '/job/new']。
-//   F DESIGN.md 红线自查（本卡新写代码）：首页次级行入口按钮间距引用 --space-* token 且不留字面 px 间距（§5.1）。
+//   F DESIGN.md 红线自查（本卡新写代码）：首页引导卡内联样式与档内间距一律 --space-* token（§5.1），
+//     不留与 4/8/12/16/24 档重合的字面 px（14px 不在档内，登记为字面层级）。
 //     （§9.1-2 空态不复述页题的钉在 A 段——空态只在空库渲染，须在播种母版前断言）
 // 纪律：隔离 RESUME_ROOT（mkdtemp）+ 随机端口 + 合成数据；不读真实简历、不碰 7766、不调真实模型；仓库零写入。
 // 隐私门禁：合成数据不含 13 位数字（门禁 1[3-9]\d{9} 不适用）。
@@ -155,18 +156,17 @@ try {
       'id="evalResult"', 'id="taskJobCta"', '生成岗位草稿', '先评估这个岗位', '还没有母版简历']) {
       assert.ok(!html.includes(marker), `首页不得再含岗位表单标记「${marker}」（已迁 /job/new）`);
     }
-    // 任务卡主行动（有母版无草稿态）：「为岗位定制简历」直达新页
-    const tcA = html.indexOf('id="taskCard"'), tcB = html.indexOf('<h1>文档</h1>');
-    assert.ok(tcA >= 0 && tcB > tcA, '任务卡窗口应可定位');
-    const tc = html.slice(tcA, tcB);
-    assert.ok(tc.includes('为岗位定制简历'), '有母版无草稿任务卡主行动应为「为岗位定制简历」');
-    assert.ok(tc.includes('href="/job/new"'), '任务卡「为岗位定制简历」应直达 /job/new');
-    // 次级行（空白新建 / 导入 PDF 同卡）：「为岗位定制简历」入口按钮（非表单）
-    const rowA = html.indexOf('action="/new"'), rowB = html.indexOf('class="import-box"');
-    assert.ok(rowA >= 0 && rowB > rowA, '次级行（新建/导入卡）应可定位');
-    const row = html.slice(rowA, rowB);
-    assert.ok(row.includes('href="/job/new"'), '次级行应含「为岗位定制简历」入口按钮（入口非表单）');
-    assert.ok(!row.includes('<form'), '次级行的定制入口不得是表单（入口按钮口径）');
+    // T3 引导卡（有母版态）：「为岗位定制 →」直达新页，全页入口唯一
+    const gcA = html.indexOf('要投某个岗位');
+    assert.ok(gcA >= 0, '有母版时首页应渲染岗位定制引导卡「要投某个岗位？」');
+    const gc = html.slice(Math.max(0, gcA - 400), gcA + 900);
+    assert.ok(gc.includes('为岗位定制') && gc.includes('href="/job/new"'), '引导卡应含「为岗位定制 →」入口直达 /job/new');
+    assert.equal((html.match(/href="\/job\/new"/g) || []).length, 1,
+      '首页 /job/new 入口应唯一（引导卡承载，底部入口行不重复）');
+    // 底部入口行（新建/从零开始/导入/归档开关）：定制入口不在此行（状态 1 由引导卡承载）
+    const foot = html.slice(html.indexOf('class="foot-links"'), html.indexOf('class="foot-links"') + 1600);
+    assert.ok(foot.includes('action="/new"'), '底部入口行应保留「新建空白简历」');
+    assert.ok(!foot.includes('href="/job/new"'), '状态 1 底部入口行不得重复 /job/new 入口');
   }
 
   // ===== D. 契约零变化（行为面）：payload 形状 = /job/new 表单构建的形状 =====
@@ -190,17 +190,16 @@ try {
 
   // ===== F. DESIGN.md 红线自查（本卡新写代码）：间距 token =====
   {
-    // F1 首页次级行入口按钮：间距用 --space-* token，style 内不留字面 px 间距
-    // （DESIGN.md §5.1「新写的间距一律引用 token」；7px→8px = --space-2，可见差异登记于 §5.1）
+    // F1 首页岗位定制引导卡：与 --space-* 档重合的间距（外边距/纵向内边距/列距）一律 var()；
+    // 14px 不在 4/8/12/16/24 档内，登记为字面层级（§5.1「凡等于档内值必须 token」的反向边界钉）。
     const home = await get('/');
-    const homeHtml = home.text;
-    const entry = homeHtml.match(/<a class="secondary"[^>]*href="\/job\/new"[^>]*>/);
-    assert.ok(entry, '次级行入口应为 <a class="secondary" href="/job/new">（入口按钮，非表单）');
-    assert.ok(entry[0].includes('padding:var(--space-2) var(--space-3)'),
-      '入口按钮内边距应引用 --space-* token（§5.1），实际：' + entry[0]);
-    const spacingLiteral = entry[0].match(/(?:padding|margin|gap)(?:-(?:top|right|bottom|left))?:[^;"]*?\d+px/g) || [];
-    assert.deepEqual(spacingLiteral, [],
-      '入口按钮样式不得留字面 px 间距（§5.1），实际：' + JSON.stringify(spacingLiteral));
+    const gcTag = (home.text.match(/<div class="card" style="[^"]*">(?=\s*<div style="flex:1"><b[^>]*>要投某个岗位)/) || [])[0];
+    assert.ok(gcTag, '引导卡应为 <div class="card" style="…"> 且首子块为「要投某个岗位？」，实际取样失败');
+    assert.ok(gcTag.includes('margin-top:var(--space-4)'), '引导卡外边距应引用 token：' + gcTag);
+    assert.ok(gcTag.includes('var(--space-4)') && gcTag.includes('gap:var(--space-3)'), '引导卡内边距/列距应引用 token：' + gcTag);
+    const rampLiteral = gcTag.match(/(?:padding|margin|gap)(?:-(?:top|right|bottom|left))?:(?:[^;"]*?\s)?(4|8|12|16|24)px/g) || [];
+    assert.deepEqual(rampLiteral, [],
+      '引导卡样式不得留与档内值重合的字面 px（§5.1），实际：' + JSON.stringify(rampLiteral));
   }
 
   // ===== E. 名称统一 + 编辑器弹层标题 + 视觉截图夹具路由（源级钉）=====

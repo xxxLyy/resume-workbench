@@ -464,8 +464,14 @@ async function runS1T4Tests() {
       else if (!ex.includes('PDF 与当前内容一致')) bad('③ 导出页应显示 PDF 与当前内容一致');
       else if (!sv.ok || sv.pdfStale !== false) bad('③ /save 响应 pdfStale 应 false（typo 经 meta 往返，标识不变）', JSON.stringify(sv));
       else if ((readMeta7().t4 || {}).typo !== TYPO) bad('③ /edit→/save 往返后 meta.typo 应保持', JSON.stringify((readMeta7().t4 || {}).typo));
-      else if (!home.includes('PDF 同步')) bad('③ 首页徽章应「PDF 同步」');
-      else ok('③ 仅 mtime 变而输入不变 → 不 stale 不重渲（且 /edit→/save 往返 typo 不丢）');
+      else {
+        // T3 口径：fresh = 文档行元信息不出「· PDF 不是最新」（旧「PDF 同步」徽章已撤除）；锚点取 t4 行的「id · 更新于」
+        const i = home.indexOf('t4 · 更新于');
+        const seg = i < 0 ? '' : home.slice(i, i + 500);
+        if (i < 0) bad('③ 首页应有 t4 文档行');
+        else if (seg.includes('PDF 不是最新')) bad('③ fresh 文档行不得标「PDF 不是最新」（仅 mtime 变不 stale）');
+        else ok('③ 仅 mtime 变而输入不变 → 不 stale 不重渲（且 /edit→/save 往返 typo 不丢）');
+      }
     }
 
     // ④a 仅「复用既有不可变文件」路径校验文件哈希：/snapshot/pdf 二次请求不重渲且 md5 不变
@@ -2854,24 +2860,26 @@ try {
   await narrow.goto(`${base}/`, { waitUntil: 'networkidle' });
   const ov = await narrow.evaluate(() => ({
     scrollW: document.documentElement.scrollWidth, inner: window.innerWidth,
-    // 2026-11-05 批 1：hero 区退役，heroArtHidden 采样（.hero-art）随元素一并移除——不再有可隐藏的插画位
-    cols: (() => { const el = document.getElementById('doclist'); return el ? getComputedStyle(el).gridTemplateColumns.split(' ').length : 0; })()
+    // T3：栅格卡与 #doclist 随三态退役——文档行是唯一形态（.docrow 块级纵向，天然单栏）；
+    // 采样改为行数 + 行内自身是否出现横向溢出（flex-wrap+min-width:0 应兜住长标题/长 id）。
+    rows: document.querySelectorAll('#doclistCard .docrow:not(.search-empty)').length,
+    rowOverflow: [...document.querySelectorAll('#doclistCard .docrow')].some((r) => r.scrollWidth > r.clientWidth + 1)
   }));
   if (ov.scrollW > ov.inner + 1) bad(`首页窄屏横向溢出 scrollW=${ov.scrollW} inner=${ov.inner}`); else ok('首页窄屏无横向溢出');
-  if (ov.cols > 1) bad(`窄屏文档列表仍 ${ov.cols} 栏`); else ok('窄屏文档列表单栏');
-  // 14b [T3 遗留缺陷] 窄屏搜索行：视图切换按钮标签不得竖排（被挤到 min-content 后逐字换行）。
-  //     判据用文本节点的客户端矩形数（一行一个矩形），比量高度更直接、不受按钮内边距影响。
+  if (ov.rowOverflow) bad('窄屏文档行自身横向溢出（.docrow 子项挤出卡宽）');
+  else if (ov.rows < 1) bad('窄屏文档列表应有 .docrow 行（行式是唯一形态，旧 #doclist 栅格已退役）');
+  else ok(`窄屏文档行式列表单栏不破（${ov.rows} 行无行内溢出）`);
+  // 14b 窄屏搜索行：viewToggle 退役后搜索行只剩单个 input（flex:1 1 180px min-width:0）。
+  //     判据改为「输入框右边沿不出视口」——单行控件无竖排问题，溢出才是唯一破法。
   const vt = await narrow.evaluate(() => {
-    const b = document.getElementById('viewToggle');
+    const b = document.getElementById('searchBox');
     if (!b) return null;
-    const tn = [...b.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim());
-    if (!tn) return { lines: 0, label: b.textContent };
-    const r = document.createRange(); r.selectNodeContents(tn);
-    return { lines: r.getClientRects().length, label: tn.textContent.trim(), h: Math.round(b.getBoundingClientRect().height) };
+    const r = b.getBoundingClientRect();
+    return { right: Math.round(r.right), w: Math.round(r.width), inner: window.innerWidth };
   });
-  if (!vt) bad('首页缺 #viewToggle（窄屏搜索行结构变了，需同步本断言）');
-  else if (vt.lines !== 1) bad(`窄屏「${vt.label}」按钮标签竖排换行（${vt.lines} 行，高 ${vt.h}px）`);
-  else ok(`窄屏「${vt.label}」按钮标签单行不竖排（高 ${vt.h}px）`);
+  if (!vt) bad('首页缺 #searchBox（窄屏搜索行结构变了，需同步本断言）');
+  else if (vt.right > vt.inner - 1 || vt.w < 120) bad(`窄屏搜索输入框越界或过窄（right=${vt.right} w=${vt.w} inner=${vt.inner}）`);
+  else ok(`窄屏搜索输入框单行不越界（宽 ${vt.w}px）`);
   await narrow.goto(`${base}/applications`, { waitUntil: 'networkidle' });
   const kb = await narrow.evaluate(() => ({ scrollW: document.documentElement.scrollWidth, inner: window.innerWidth }));
   if (kb.scrollW > kb.inner + 1) bad(`窄屏看板横向溢出 scrollW=${kb.scrollW}（应纵向堆叠）`); else ok('窄屏看板纵向堆叠不溢出');
@@ -2879,9 +2887,9 @@ try {
   const ctx14 = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const wide = await ctx14.newPage();
   await wide.goto(`${base}/`, { waitUntil: 'networkidle' });
-  // 2026-11-04 文案减负：.hero-sub 与岗位卡流程句(.card p) 已移除（DESIGN.md §9）；
-  // 13px+ 档采样位改为 .statusline(13px/1.7) 与 .import-box summary(继承 body 14px/1.6；岗位表单迁出后首页同类的 summary 元素)
-  const read = await wide.evaluate(() => ['.statusline', '.import-box summary', '.doc-card', '.doclist .doc-card b'].map((s) => {
+  // T3：statusline/doc-card 随三态退役；13px+ 档采样位移到行式列表与底部入口行——
+  // .docrow .nm(13px/继承 body 1.6) / .foot-links a(13px) / .import-box summary(继承 14px/1.6)
+  const read = await wide.evaluate(() => ['.docrow .nm', '.foot-links a', '.import-box summary'].map((s) => {
     const el = document.querySelector(s);
     if (!el) return { sel: s, missing: true };
     const cs = getComputedStyle(el), fs = parseFloat(cs.fontSize);
