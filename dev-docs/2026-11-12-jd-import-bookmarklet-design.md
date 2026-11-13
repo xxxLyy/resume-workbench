@@ -1,5 +1,7 @@
 # JD 网址导入 双轨设计 spec — 2026-11-12
 
+> **2026-11-13 更新：轨 B（Boss 会话）已移除。** 服务端读取 Boss 详情页 7 种方式实测全部被拦，书签是唯一的链接导入方式。下文轨 B 内容只作历史记录，现行结论见 DESIGN.md §10.20。
+
 > 上游：`渐进呈现` 主线 T4 已把 /job/new 收敛为单动线；本 spec 解决「贴 JD 链接」在 Boss 直聘等登录墙站点必然失败的问题。调研与 POC 结论：Boss job_detail 对一切非真实浏览器访问设三层墙（连接层拒绝 → JS 安全验证 → 登录重定向），服务端 fetch、headless Chromium、Jina Reader、Firecrawl stealth、移动端 UA 全部实测失败。
 >
 > **双轨并行，用户裁决对比**：

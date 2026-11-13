@@ -1605,3 +1605,11 @@ Flash 23 条要点见各提交信息与 `b47-report` 工作流报告；收口时
 - **修订**：登录窗 = `open -na "Google Chrome"` 独立 profile + 随机调试口（`DevToolsActivePort` 回执，复用活实例）；登录成功 `bossSnapshotSession` 快照 cookie+`Browser.getVersion` 拼的 UA 入 `state.json`；抓换取缔 headless 改 `bossFetchHttp` 纯 HTTP 手动跟跳（≤5 跳、每跳查 security/passport/web-user/出域即 `bossMarkDead`）。修掉的真 bug：`chromium` 顶层引用未定义（它只在 `bossLaunchContext` 函数内动态导入）→ 登录流跑完开窗后立刻 ReferenceError，用户扫码无人监听 = 「已登录仍显示未登录」。
 - **测试钉更新**：源级钉由「visibility 覆盖」改为「bossFetchHttp/手动跟跳/bossSnapshotSession」三钉（反爬对策形态变了）。桩测路径 `bossStubFetchOnce` 原样保留。
 - **已知边界**：`test-gen-retry-ui.mjs` 是时序抖动测试（HEAD 干净树 2 跑 1 败 1 过，与本轮改动无关）；纯 HTTP 带活 cookie 能否过 Boss 安全挑战待用户重新扫码后实测（会话曾被 headless 探测烧掉，需重扫）。
+
+## JD 导入 · 轨 B 移除（2026-11-13）
+
+- **登录修复后验证的结论**：`0fdeefc` 修好「扫码后仍显示未登录」（Chrome 退出不删 `DevToolsActivePort`，旧端口让等待循环被跳过）后，用真实登录会话测试服务端取 JD。纯 HTTP 带登录 cookie 302 到安全验证页；有界面真 Chrome 带调试端口打开在架职位也跳回首页。加上此前 5 种方式，共 7 种全部被拦（明细见 DESIGN.md §10.20）。
+- **用户裁决**：移除轨 B，书签成为唯一的链接导入方式。
+- **删除范围**：server.mjs 会话代码块（登录/快照/抓取/桩）、`/boss/session/status|login|logout`、`/job/new` 会话卡及脚本、`/job/create` zhipin 会话分支与 SESSION_DEAD 清孤儿分支、前端「会话已失效」提示分支、`chromium.mjs` 的 `expectedRevision` 导入；`test-boss-session.mjs`；test-structure.sh 的会话测试入口、boss-session gitignore 探针、ROUTES_FROZEN 三项；`.gitignore` 的 `boss-session/`；运行目录 `boss-session/`（含登录 profile 与 cookie）。
+- **保留**：书签、`/import/page`、extractJd 的 zhipin 选择器（书签递交的页面仍靠它提取）、`/job/new` POST 预填、链接读取失败时的书签引导。
+- **前面「轨 B 实测修订」一节**描述的架构已作废，只保留作为实验记录。

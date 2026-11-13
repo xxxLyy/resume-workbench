@@ -524,7 +524,7 @@ FIELDS（editor-shell.js） → typoCss(v) → #typo-custom（落盘进 <head>�
 - **文案**：品牌与页脚统一「简历工作台」；首页不出现「待结构化 / PDF 较旧 / AI：xx」状态行。
 - **本轮不做**：编辑器密度、网申包/复盘页内结构、真实渲染缩略图、状态点全站迁移。
 
-### 10.20 JD 网址导入双轨：书签递交 + Boss 会话（2026-11-12 登记 · spec `dev-docs/2026-11-12-jd-import-bookmarklet-design.md`）
+### 10.20 JD 网址导入：书签递交（原双轨，轨 B Boss 会话 2026-11-13 移除；2026-11-12 登记 · spec `dev-docs/2026-11-12-jd-import-bookmarklet-design.md`）
 
 > 用户裁决：双轨并行实测对比。轨 A 书签（POC 已验证：隐藏表单 POST 渲染好的页面 HTML 到本机，绕开目标站 CSP/反爬/登录墙）；轨 B Boss 会话（playwright 持久 profile 扫码登录 → 服务端带会话抓详情页）。两轨共用 `extractJd` 提取与「预览→带入 /job/new」出口。
 
@@ -532,5 +532,5 @@ FIELDS（editor-shell.js） → typoCss(v) → #typo-custom（落盘进 <head>�
 - **`extractJd(html,url)` 三层级**：站点表（zhipin 优先 `_jobInfo` 内嵌对象+`.job-sec-text`/`.company-name`，liepin/lagou/51job/zhaopin 备选择器未实测）→ JSON-LD `JobPosting` → body 纯文本兜底（8000 字符，与远程抓取 4000 分口径）。
 - **`POST /job/new` 预填**：预览页表单携带 jd/company/role/jdLink/from → /job/new 渲染预填表单；GET 与提交管线零变化，jdSource=原链接复用查重指纹。
 - **书签交付**：/job/new 链接区渲染 `javascript:` 可拖书签（action=当次实际端口 /import/page；target=_blank 隐藏表单 POST——fetch 会被目标站 CSP connect-src 拦，表单导航不会）。
-- **Boss 会话（轨 B，2026-11-13 实测修订）**：`boss-session/` 持久 profile（gitignore，运行时数据）；`POST /boss/session/login` 经 `open` 直拉**真 Chrome**（独立 user-data-dir + 随机调试口）等扫码，服务端 `connectOverCDP` 只挂**浏览器域**被动监听（读 cookie/页面列表，不进页面——Boss 反爬不可见）；登录成功把 cookie+UA 快照进 `state.json`（会话凭据仅本机，logout 整目录清）。抓取走**纯 HTTP**（cookie 头+同款 UA，手动跟跳每跳查 security/passport/web-user 落点）——实测 playwright 驱动的页面（headed/headless/CDP goto）一律被杀回 about:blank 且烧掉会话 cookie，浏览器进程抓页此路不通。失效判据=落地安全/登录页或非 zhipin 域；串行锁保留。登录窗口只由用户主动动作触发，不静默起浏览器。
+- **轨 B 已移除（2026-11-13 用户裁决）**：扫码登录本身可行（真 Chrome + CDP 只挂浏览器域被动监听），但服务端拿 Boss 详情页 7 种方式全部被拦——静态 fetch 断连；playwright headless 与 headless_shell 带登录 cookie 杀回 about:blank（后者还作废会话）；Chrome `--headless=new` 导出 DOM 与 CDP 打开均跳首页或 about:blank；纯 HTTP 带登录 cookie+同款 UA 302 到安全验证页；有界面真 Chrome 带调试端口打开在架职位也跳回首页。结论：只有用户自己的浏览器能读到详情页，即轨 A。已删除 `/boss/session/*` 三路由、会话卡、`/job/create` 的 zhipin 会话分支与 `boss-session/` 运行目录；zhipin 链接回到普通静态读取，失败时引导书签。以后若要再试服务端读取，前提是先证明某种方式能打开详情页，不再从登录侧入手。
 - **测试**：Boss 修剪 fixture 剔除 `securityId`/`user_id` 类会话令牌（公开 JD 可入仓，凭据不可）。

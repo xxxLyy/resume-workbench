@@ -1,5 +1,7 @@
 # JD 网址导入（双轨）实施计划 — 2026-11-12
 
+> **2026-11-13 更新：轨 B（Boss 会话）已移除。** 服务端读取 Boss 详情页 7 种方式实测全部被拦，书签是唯一的链接导入方式。下文轨 B 内容只作历史记录，现行结论见 DESIGN.md §10.20。
+
 > Spec：`dev-docs/2026-11-12-jd-import-bookmarklet-design.md`（91a2294）。轨 A 书签已 POC 验证（/tmp/jd-poc：表单 POST→localhost→提取 Boss `_jobInfo` 成功）。执行方式：Subagent-Driven，每任务实现→规格复核→返工→质量复核，main 分支直推。
 >
 > **红线**：零 npm 依赖；template.html/render.mjs/themes 零改动；真实数据文件与 7766 常驻进程只在 T5 验收时动；断言适配走 R3① 先例（意图不变同提交）；`boss-session/` 进 .gitignore 且永不入仓。
