@@ -2630,24 +2630,34 @@ function bookmarkletHref() { return 'javascript:' + BOOKMARKLET_JS.replace('__PO
 // 端口漂移提醒（2026-11-13 spec §2.9）：PORT 未显式指定且实际端口 ≠ 7766 → 旧书签打到了别的实例，
 // 在 /job/new、/inbox、importHelpPage 三处顶部提示重拖书签（书签 action 跟随 boundPort，不影响新拖）。
 const portNotice = () => (!process.env.PORT && boundPort !== 7766)
-  ? `<div class="card" style="border-color:var(--warn);margin-bottom:var(--space-3)"><b style="color:var(--warn)">服务这次跑在 ${boundPort} 端口，书签要重新拖一次。</b></div>`
+  ? warnCard(`服务这次跑在 ${boundPort} 端口，书签要重新拖一次。`)
   : '';
 
 // ===== JD 导入预览页（spec §10.20）：POST /import/page 的提取结果呈现 + 「带去定制」表单 =====
 // 纯表单零脚本需求（page() 外壳自带 nonce 脚本位，本页不新增脚本）。外部输入（url/title/提取文本）
 // 全走 escHtml/escAttr；来源链接过 safeUrl 协议白名单（html 是任意网页递交的，javascript: 不渲染成 href）。
 // 「带去定制」表单（预览页与「已收入」页共用，spec §2.3/§2.5）：隐藏字段 jd/company/role/jdLink + 母版 from。
-// 母版下拉口径 = jobNewPage 的 infos（在盘且未归档全部文档）——三页同一口径，不各写一份。
+// ===== 页面小件（2026-11-13 清理：多处同款提取共用）=====
+// 母版下拉口径 = 在盘且未归档全部文档（jobNewPage/applyProfilePage/inboxPage/bringFormHtml 同一口径，不各写一份）。
+function activeDocInfos(meta = loadMeta()) {
+  return docIdsOnDisk().map((did) => docInfo(did, meta[did])).filter(Boolean).filter((d) => !((meta[d.id] || {}).archivedAt));
+}
+// d.title 已是 escHtml 产物（docInfo 内转义），这里不二次转义。
+const docOptions = (infos, sel = '') => infos.map((d) => `<option value="${escAttr(d.id)}"${d.id === sel ? ' selected' : ''}>${d.title}（${d.id}）</option>`).join('');
+// 值列 overflow-wrap:anywhere：来源 URL/长标题是无空格整串，窄屏下不换行会把表格顶出视口（T5 点验实测 523px）。
+const kvRow = (k, v) => `<tr><td style="padding:4px 16px 4px 0;color:var(--mut);vertical-align:top;white-space:nowrap">${k}</td><td style="overflow-wrap:anywhere">${v}</td></tr>`;
+const cnDay = (s) => { const t = new Date(String(s || '')); return isNaN(t) ? '' : `${t.getMonth() + 1} 月 ${t.getDate()} 日`; };
+const warnCard = (inner) => `<div class="card" style="border-color:var(--warn);margin-bottom:var(--space-3)"><b style="color:var(--warn)">${inner}</b></div>`;
+
 function bringFormHtml({ jd, company, role, srcUrl, cta = '带去定制' }) {
-  const meta = loadMeta();
-  const infos = docIdsOnDisk().map((did) => docInfo(did, meta[did])).filter(Boolean).filter((d) => !((meta[d.id] || {}).archivedAt));
+  const infos = activeDocInfos();
   return `<form id="bringForm" method="post" action="/job/new">
       <input type="hidden" name="jd" value="${escAttr(jd)}">
       <input type="hidden" name="company" value="${escAttr(company)}">
       <input type="hidden" name="role" value="${escAttr(role)}">
       <input type="hidden" name="jdLink" value="${escAttr(srcUrl)}">
       ${infos.length ? `<label style="display:block;font-size:13px;margin-bottom:var(--space-2)">用哪份简历改
-        <select name="from" style="width:100%">${infos.map((d) => `<option value="${escAttr(d.id)}">${d.title}（${d.id}）</option>`).join('')}</select></label>
+        <select name="from" style="width:100%">${docOptions(infos)}</select></label>
         <button type="submit">${escHtml(cta)}</button>`
       : `<p style="font-size:13px;color:var(--mut)">还没有简历文档，先去<a href="/">建一份</a>。</p>`}
     </form>`;
@@ -2655,16 +2665,14 @@ function bringFormHtml({ jd, company, role, srcUrl, cta = '带去定制' }) {
 
 function importPreviewPage({ srcUrl, title, company, role, salary, jd, via, htmlTruncated, legacy, notice }) {
   const href = safeUrl(srcUrl);
-  // 值列 overflow-wrap:anywhere：来源 URL/长标题是无空格整串，窄屏下不换行会把表格顶出视口（T5 点验实测 523px）。
-  const td = (k, v) => `<tr><td style="padding:4px 16px 4px 0;color:var(--mut);vertical-align:top;white-space:nowrap">${k}</td><td style="overflow-wrap:anywhere">${v}</td></tr>`;
   const rows = [
-    td('来源', srcUrl ? (href ? `<a href="${escAttr(href)}">${escHtml(srcUrl)}</a>` : escHtml(srcUrl)) : '—'),
-    td('页面标题', title ? escHtml(title) : '—'),
-    td('提取通道', escHtml(via)),
-    td('公司', company ? `<b>${escHtml(company)}</b>` : '（未识别）'),
-    td('岗位', role ? `<b>${escHtml(role)}</b>` : '（未识别）'),
-    td('薪资', salary ? `<b>${escHtml(salary)}</b>` : '（未识别）'),
-    td('JD 长度', `${jd.length} 字符`),
+    kvRow('来源', srcUrl ? (href ? `<a href="${escAttr(href)}">${escHtml(srcUrl)}</a>` : escHtml(srcUrl)) : '—'),
+    kvRow('页面标题', title ? escHtml(title) : '—'),
+    kvRow('提取通道', escHtml(via)),
+    kvRow('公司', company ? `<b>${escHtml(company)}</b>` : '（未识别）'),
+    kvRow('岗位', role ? `<b>${escHtml(role)}</b>` : '（未识别）'),
+    kvRow('薪资', salary ? `<b>${escHtml(salary)}</b>` : '（未识别）'),
+    kvRow('JD 长度', `${jd.length} 字符`),
   ].join('');
   // JD <50：如实警示 + 两条退路（回来源页复制全文 / 仍要带入——表单照渲染，带不带由用户定）
   const warn = jd.length < 50 ? `<div class="card" style="border-color:var(--warn);margin-bottom:var(--space-3)"><b style="color:var(--warn)">没提到 JD——这个页面可能不是职位详情，或提取失败了。</b>
@@ -2674,8 +2682,8 @@ function importPreviewPage({ srcUrl, title, company, role, salary, jd, via, html
   const form = bringFormHtml({ jd, company, role, srcUrl });
   return page('提取结果', `
     <div class="page-head"><h1>提取结果</h1><a href="/job/new" style="font-size:13px;font-weight:400">手动粘贴 JD →</a></div>
-    ${legacy ? `<div class="card" style="border-color:var(--warn);margin-bottom:var(--space-3)"><b style="color:var(--warn)">这是旧书签，不会存进收件箱。到 <a href="/job/new">定制页</a> 重新拖一次书签。</b></div>` : ''}
-    ${notice ? `<div class="card" style="border-color:var(--warn);margin-bottom:var(--space-3)"><b style="color:var(--warn)">${escHtml(notice)}</b></div>` : ''}
+    ${legacy ? warnCard(`这是旧书签，不会存进收件箱。到 <a href="/job/new">定制页</a> 重新拖一次书签。`) : ''}
+    ${notice ? warnCard(escHtml(notice)) : ''}
     ${htmlTruncated ? `<p style="font-size:12px;color:var(--warn)">页面超过 8MB，已截断后提取</p>` : ''}
     <div class="card"><table style="border-collapse:collapse;font-size:13px">${rows}</table></div>
     ${warn}
@@ -2688,8 +2696,7 @@ function importPreviewPage({ srcUrl, title, company, role, salary, jd, via, html
 // 内联脚本带 nonce（__CSP_NONCE__ 占位符由响应层现发替换）：2s 后尝试自动关闭，用户有任何交互即取消。
 function importSavedPage({ added, item, total, srcUrl }) {
   const href = safeUrl(srcUrl);
-  const created = new Date(item.createdAt || '');
-  const day = isNaN(created) ? '' : `${created.getMonth() + 1} 月 ${created.getDate()} 日`;
+  const day = cnDay(item.createdAt);
   // 去重命中文案随条目状态分流（复核修复②）：不考虑过 / 已建过草稿 / 其他在收状态
   const head = added ? `已收入收件箱 · 共 ${total} 条待评估`
     : item.status === 'dismissed' ? `这个岗位之前标记过不考虑${day ? `（${day}收入）` : ''}`
@@ -2697,17 +2704,16 @@ function importSavedPage({ added, item, total, srcUrl }) {
     : `已在收件箱${day ? `（${day}收入）` : ''} · 共 ${total} 条待评估`;
   const draftLink = (!added && item.status === 'drafted' && VALID_ID.test(item.draftId || ''))
     ? ` <a href="/edit?id=${escAttr(item.draftId)}">打开草稿 →</a>` : '';
-  const td = (k, v) => `<tr><td style="padding:4px 16px 4px 0;color:var(--mut);vertical-align:top;white-space:nowrap">${k}</td><td style="overflow-wrap:anywhere">${v}</td></tr>`;
   const rows = [
-    td('来源', srcUrl ? (href ? `<a href="${escAttr(href)}">${escHtml(srcUrl)}</a>` : escHtml(srcUrl)) : '—'),
-    td('公司', item.company ? `<b>${escHtml(item.company)}</b>` : '（未识别）'),
-    td('岗位', item.role ? `<b>${escHtml(item.role)}</b>` : '（未识别）'),
-    td('薪资', item.salary ? `<b>${escHtml(item.salary)}</b>` : '（未识别）'),
+    kvRow('来源', srcUrl ? (href ? `<a href="${escAttr(href)}">${escHtml(srcUrl)}</a>` : escHtml(srcUrl)) : '—'),
+    kvRow('公司', item.company ? `<b>${escHtml(item.company)}</b>` : '（未识别）'),
+    kvRow('岗位', item.role ? `<b>${escHtml(item.role)}</b>` : '（未识别）'),
+    kvRow('薪资', item.salary ? `<b>${escHtml(item.salary)}</b>` : '（未识别）'),
   ].join('');
   // JD <50：沿用预览页同一警示口径（页面可能不是职位详情，建议回原页复制全文）
   const warn = item.jd.length < 50 ? `<div class="card" style="border-color:var(--warn);margin-bottom:var(--space-3)"><b style="color:var(--warn)">没提到 JD——这个页面可能不是职位详情，或提取失败了。</b>
     <p style="font-size:13px;margin:var(--space-1) 0 0">${href ? `<a href="${escAttr(href)}">回来源页复制全文</a>` : '回来源页复制全文'}</p></div>` : '';
-  const dup = (item.dupHints || []).length ? `<div class="card" style="border-color:var(--warn);margin-bottom:var(--space-3)"><b style="color:var(--warn)">之前做过 / 投过：${item.dupHints.map((h) => escHtml(h.label || '')).join('、')}</b></div>` : '';
+  const dup = (item.dupHints || []).length ? warnCard(`之前做过 / 投过：${item.dupHints.map((h) => escHtml(h.label || '')).join('、')}`) : '';
   return page('已收入收件箱', `
     <div class="page-head"><h1>已收入收件箱</h1></div>
     <div class="card"><b>${escHtml(head)}</b>${draftLink}
@@ -2724,10 +2730,7 @@ function importSavedPage({ added, item, total, srcUrl }) {
 // 页面不暴露内部字段（via/jdFp/urlKey/状态枚举原文）——只出中文徽章。
 function inboxPage() {
   const items = loadInbox().filter((x) => x && x.status !== 'dismissed');
-  const meta = loadMeta();
-  // 母版下拉口径 = jobNewPage 的 infos（在盘且未归档全部文档）
-  const infos = docIdsOnDisk().map((did) => docInfo(did, meta[did])).filter(Boolean).filter((d) => !((meta[d.id] || {}).archivedAt));
-  const dayText = (s) => { const t = new Date(String(s || '')); return isNaN(t) ? '' : `${t.getMonth() + 1} 月 ${t.getDate()} 日`; };
+  const infos = activeDocInfos();
   const stBadge = (it) => {
     if (it.status === 'new') return badge('mute', '待评估');
     if (it.status === 'queued') return badge('mute', '排队中');
@@ -2751,7 +2754,7 @@ function inboxPage() {
     return `<div data-ib="${escAttr(it.id)}" style="display:flex;align-items:center;gap:var(--space-3);padding:8px 0;${i ? 'border-top:1px solid var(--line);' : ''}flex-wrap:wrap">
       <input type="checkbox" name="ib" value="${escAttr(it.id)}" aria-label="选择 ${escAttr(it.company || '')} ${escAttr(it.role || '')}">
       <span style="flex:1;min-width:220px"><b>${name}</b>
-        <div style="font-size:12px;color:var(--mut)">${escHtml(dayText(it.createdAt))}收入${href ? ` · <a href="${escAttr(href)}">原链接</a>` : ''}</div></span>
+        <div style="font-size:12px;color:var(--mut)">${escHtml(cnDay(it.createdAt))}收入${href ? ` · <a href="${escAttr(href)}">原链接</a>` : ''}</div></span>
       <span class="st">${stBadge(it)}${dupBadge(it)}</span>
       <span class="ops" style="display:flex;gap:6px">
         <button type="button" class="secondary" data-ib-act="draft" data-ib-id="${escAttr(it.id)}">建草稿</button>
@@ -2761,7 +2764,7 @@ function inboxPage() {
   const controls = infos.length
     ? `<div style="display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap;margin-bottom:var(--space-3)">
         <label style="font-size:13px"><input type="checkbox" id="ibAll" aria-label="全选"> 全选</label>
-        <label style="font-size:13px">用哪份简历评估 <select id="ibFrom">${infos.map((d) => `<option value="${escAttr(d.id)}">${d.title}（${d.id}）</option>`).join('')}</select></label>
+        <label style="font-size:13px">用哪份简历评估 <select id="ibFrom">${docOptions(infos)}</select></label>
         <button type="button" id="ibEval" disabled>批量评估所选</button>
         <span id="ibCount" style="font-size:13px;color:var(--mut)">已选 0 条</span>
         <span id="ibMsg" role="status" class="ap-note"></span></div>`
@@ -2851,7 +2854,7 @@ function importHelpPage() {
 function jobNewPage(prefill = null) {
   const meta = loadMeta();
   // 母版下拉口径与拆出前 listPage infos 完全一致（在盘且未归档的全部文档，jobInfo 派生不筛选）。
-  const infos = docIdsOnDisk().map((did) => docInfo(did, meta[did])).filter(Boolean).filter((d) => !((meta[d.id] || {}).archivedAt));
+  const infos = activeDocInfos(meta);
   // ===== JD 导入预填（轨 A 收口，spec §10.20 §2.5）：POST /job/new 的带入值 → 同一表单回填 =====
   // GET 不带 prefill（null → 全空串），渲染与旧版一致——预填属性只在值非空时才出现。
   const pf = prefill || {};
@@ -2883,7 +2886,7 @@ function jobNewPage(prefill = null) {
           <div style="font-size:12px;color:var(--mut);margin-top:var(--space-2)">Boss/猎聘等要登录的站抓不到：把这个拖到书签栏 → <a href="${escAttr(BOOKMARKLET)}">抓取此页 → 工作台</a>，在职位页点它（页面上直接点没反应，是拖到书签栏用；换了端口要重拖）</div>
           <div id="jdLinkRow" style="${pfLink ? '' : 'display:none;'}margin-top:6px"><input id="jobLink" placeholder="https://…" style="width:100%"${pfLink ? ` value="${escAttr(pfLink)}"` : ''}></div></div>
         <div class="step"><div style="font-size:13px;font-weight:600;margin-bottom:6px"><span style="color:var(--mut)">2</span> 用哪份简历改</div>
-          <select id="jobFrom" style="width:100%">${infos.map((d) => `<option value="${escAttr(d.id)}"${d.id === pfFrom ? ' selected' : ''}>${d.title}（${d.id}）</option>`).join('')}</select></div>
+          <select id="jobFrom" style="width:100%">${docOptions(infos, pfFrom)}</select></div>
         <div class="step"><div style="font-size:13px;font-weight:600;margin-bottom:6px"><span style="color:var(--mut)">3</span> 生成</div>
           <details style="border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);margin-bottom:var(--space-3)">
             <summary style="cursor:pointer;padding:var(--space-2) var(--space-3);font-size:13px;font-weight:600">补充要求（可选，默认已按经验填好）</summary>
@@ -3229,7 +3232,7 @@ function applyProfilePage() {
   const view = led.view;
   const raw = led.data;
   const meta = loadMeta();
-  const infos = docIdsOnDisk().map((did) => docInfo(did, meta[did])).filter(Boolean).filter((d) => !((meta[d.id] || {}).archivedAt));
+  const infos = activeDocInfos(meta);
   // 文档标题取原文（docInfo.title 已转义，这里再转义会双重转义）→ 先建 id→原标题表。
   // docLabel 返回**原文**，转义只在渲染处做一次（apFieldRow 的 escHtml）。
   // 只对在盘文档建表（docIdsOnDisk 出来的文件名无路径分隔符），账本里的未知 docId 走纯 id 分支。
