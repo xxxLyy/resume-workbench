@@ -9,7 +9,9 @@
 //      带 ACAO 反而让跨站 fetch 读得到预览——母版简历标题清单不跨站暴露；T2 复核返工）；
 //   ⑥ 9MB html → 不炸、截断提取（200 + 截断提示）；
 //   ⑦ XSS：<img src=x onerror=alert(1)> 递交后预览页不出现 onerror 原文（剥离后文本，非回显原文）；
-//   ⑧ 表单含 name=jd/company/role/jdLink/from（带去定制的契约字段）。
+//   ⑧ 表单含 name=jd/company/role/jdLink/from（带去定制的契约字段）；
+//   ⑨ 端到端带入 /job/new 预填；⑩ extractJd 薪资（zhipin job_salary / JSON-LD baseSalary 对象与字符串）；
+//   ⑪ 书签 href 带导入口令 k（32hex，.import-token 0600，两次 GET 稳定）。
 // 手法：隔离 RESUME_ROOT + 一份母版文档（from select 非空断言）+ 随机端口真实 server + fetch 递交。
 // 不读真实数据、不碰 7766、不调真实模型、零写盘断言（端点本身零写盘）。
 import fs from 'node:fs';
@@ -152,7 +154,28 @@ try {
   if (!bp.includes('job_detail/7ad5d5939a74640b1XN63dy-E1RS.html')) fail('端到端：jobLink 未预填来源 URL');
   if (!bp.includes(`<option value="${fromSel}" selected>`)) fail('端到端：jobFrom 未预选预览表单选中的母版');
 
-  console.log('✅ import-page：zhipin site-selectors(公司/岗位/JD 260+) / json-ld / body 三层级命中；OPTIONS 四头；POST 无 ACAO；9MB 截断；XSS 剥离；表单五字段；端到端带入 /job/new 预填');
+  // ===== ⑩ extractJd 薪资（2026-11-13 收件箱 spec §2.4）：zhipin job_salary / JSON-LD baseSalary =====
+  if (!cell(b1, '薪资').includes('6-7K')) fail('zhipin 薪资未提取：' + cell(b1, '薪资'));
+  const jlNum = jl.replace('"minValue": 25000', '"minValue": 20000').replace('"maxValue": 40000', '"maxValue": 30000');
+  const b2n = await (await post({ html: jlNum, url: 'https://example.com/careers/124', title: 'x' })).text();
+  if (!cell(b2n, '薪资').includes('20000-30000 MONTH')) fail('JSON-LD 对象薪资未拼出：' + cell(b2n, '薪资'));
+  const jlTalk = jl.replace(/"baseSalary":\s*\{[\s\S]*?\}\s*\}/, '"baseSalary": "面议"');
+  const b2t = await (await post({ html: jlTalk, url: 'https://example.com/careers/125', title: 'x' })).text();
+  if (!cell(b2t, '薪资').includes('面议')) fail('JSON-LD 字符串薪资未原样落：' + cell(b2t, '薪资'));
+
+  // ===== ⑪ 书签带本机导入口令 k（2026-11-13 收件箱 spec §2.1/§2.2）=====
+  const jn = await (await fetch(base + '/job/new')).text();
+  if (!jn.includes("k.name='k'")) fail('书签缺口令字段 k.name');
+  const tok = (jn.match(/k\.value='([0-9a-f]{32})'/) || [])[1] || '';
+  if (!/^[0-9a-f]{32}$/.test(tok)) fail('书签口令非 32 位 hex：' + tok);
+  const tf = path.join(root, '.import-token');
+  if (!fs.existsSync(tf)) fail('隔离根未生成 .import-token');
+  if ((fs.statSync(tf).mode & 0o777) !== 0o600) fail('.import-token 权限非 0600：' + (fs.statSync(tf).mode & 0o777).toString(8));
+  const jn2 = await (await fetch(base + '/job/new')).text();
+  const tok2 = (jn2.match(/k\.value='([0-9a-f]{32})'/) || [])[1] || '';
+  if (tok2 !== tok) fail('两次 GET /job/new 口令不一致');
+
+  console.log('✅ import-page：zhipin site-selectors(公司/岗位/JD 260+) / json-ld / body 三层级命中；OPTIONS 四头；POST 无 ACAO；9MB 截断；XSS 剥离；表单五字段；端到端带入 /job/new 预填；薪资三通道；书签口令 32hex+0600+稳定');
 } finally {
   cleanup();
 }

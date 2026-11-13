@@ -3,6 +3,8 @@ config.json
 applications.json
 materials.json
 evaluations.json
+.import-token
+inbox.json
 docs-meta.json
 apply-profiles.json
 docs/

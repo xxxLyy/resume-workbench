@@ -4,7 +4,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { randomUUID, randomBytes, createHash } from 'node:crypto';
+import { randomUUID, randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { structureText } from './structure.mjs';
@@ -253,7 +253,7 @@ const IMPORT_HTML_MAX = 8 * 1024 * 1024;   // spec §2.2：/import/page 的 html
 function extractJd(html, url) {
   const src = String(html || '');
   const link = String(url || '');
-  let company = '', role = '', jd = '', via = '';
+  let company = '', role = '', jd = '', via = '', salary = '';
   const pick = (re) => { const m = src.match(re); return m ? htmlToText(m[1]) : ''; };
 
   // 层级 1：站点表。host 精确匹配（new URL 解析）：host === rule.host 或其子域——
@@ -263,14 +263,16 @@ function extractJd(html, url) {
   const site = JD_SITE_RULES.find((s) => pageHost === s.host || pageHost.endsWith('.' + s.host));
   if (site) {
     if (site.jobInfoVar) {
-      const vi = src.indexOf(site.jobInfoVar);
+      // 锚点要求是「名 =」赋值形态：页面注释/文案里出现同名字样不算（夹具头注释「var _jobInfo」即误命中）
+      const viM = src.match(new RegExp(site.jobInfoVar + '\\s*='));
+      const vi = viM ? viM.index : -1;
       // _jobInfo 实测为平铺键值对 → lazy 到首个 } 截块成立；若未来含嵌套对象会提前截断，届时再修。
       const block = vi >= 0 ? (src.slice(vi).match(/\{[\s\S]*?\}/) || [])[0] : '';
       if (block) {
         const field = (k) => { const m = block.match(new RegExp("(?:^|[,\\s{])" + k + "\\s*:\\s*(['\"])([\\s\\S]*?)\\1")); return m ? htmlToText(m[2]) : ''; };
         if (!role) role = field('job_name');
         if (!company) company = field('company');
-        // job_salary 可作附加信息——当前不落字段（spec §2.3）
+        salary = field('job_salary');   // job_salary 落 salary 字段（spec 2026-11-13 §2.4）
       }
     }
     for (const re of site.jd || []) { const t = pick(re); if (t.length >= 50) { jd = t; break; } }
@@ -291,6 +293,10 @@ function extractJd(html, url) {
       if (!role) role = htmlToText(String(jp.title || ''));
       const org = jp.hiringOrganization;
       if (!company && org) company = htmlToText(String(typeof org === 'string' ? org : (org.name || '')));
+      // baseSalary：字符串原样落；对象拼 minValue-maxValue unitText（spec 2026-11-13 §2.4）
+      const bs = jp.baseSalary;
+      if (!salary && bs) salary = typeof bs === 'string' ? htmlToText(bs)
+        : (() => { const v = bs.value || bs; const lo = v.minValue ?? v.value ?? '', hi = v.maxValue ?? ''; return [hi !== '' ? `${lo}-${hi}` : String(lo), v.unitText || ''].filter(Boolean).join(' ').trim(); })();
       if (jd) { via = 'json-ld'; break; }
     }
   }
@@ -302,7 +308,7 @@ function extractJd(html, url) {
     jd = htmlToText(body).slice(0, 8000);
   }
   if (!via) via = 'body';
-  return { company, role, jd, via };
+  return { company, role, jd, via, salary };
 }
 
 async function computeFpGuard(jd, jdLink, company, metaAll) {
@@ -2453,13 +2459,28 @@ function listPage(showArchived = false) {
 // PORT 环境指定都生效——spec「端口不写死」）；body 保持可读书写不 encodeURI，href 属性值整体 escAttr。
 // 注：目标站若显式设了 CSP `form-action` 不含本机源，表单导航也会被拦（Boss 实测未设——POC 验证）；
 // 那种站点只剩复制粘贴一条路，提示行里如实告知。
-const BOOKMARKLET_JS = "(()=>{var f=document.createElement('form');f.method='POST';f.action='http://localhost:__PORT__/import/page';f.target='_blank';f.style.display='none';var h=document.createElement('textarea');h.name='html';h.value=document.documentElement.outerHTML;f.appendChild(h);var u=document.createElement('input');u.name='url';u.value=location.href;f.appendChild(u);var t=document.createElement('input');t.name='title';t.value=document.title;f.appendChild(t);(document.body||document.documentElement).appendChild(f);f.submit();f.remove();})()";
-function bookmarkletHref() { return 'javascript:' + BOOKMARKLET_JS.replace('__PORT__', String(boundPort)); }
+const BOOKMARKLET_JS = "(()=>{var f=document.createElement('form');f.method='POST';f.action='http://localhost:__PORT__/import/page';f.target='_blank';f.style.display='none';var h=document.createElement('textarea');h.name='html';h.value=document.documentElement.outerHTML;f.appendChild(h);var u=document.createElement('input');u.name='url';u.value=location.href;f.appendChild(u);var t=document.createElement('input');t.name='title';t.value=document.title;f.appendChild(t);var k=document.createElement('input');k.name='k';k.value='__TOKEN__';f.appendChild(k);(document.body||document.documentElement).appendChild(f);f.submit();f.remove();})()";
+// 导入口令（spec 2026-11-13 §2.1）：书签带的写授权——任意网页本就能跨站 POST 本机，
+// 收件箱写入改由这串本机口令承担；口令只出现在本机渲染的书签里，不落网络。
+let importTokenCache = '';
+function importToken() {
+  if (importTokenCache) return importTokenCache;
+  const f = path.join(root, '.import-token');
+  let t = '';
+  try { t = fs.readFileSync(f, 'utf8').trim(); } catch {}
+  if (!/^[0-9a-f]{32}$/.test(t)) { t = randomBytes(16).toString('hex'); fs.writeFileSync(f, t, { mode: 0o600 }); }
+  return (importTokenCache = t);
+}
+function importTokenOk(k) {
+  const a = Buffer.from(String(k || '')), b = Buffer.from(importToken());
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+function bookmarkletHref() { return 'javascript:' + BOOKMARKLET_JS.replace('__PORT__', String(boundPort)).replace('__TOKEN__', importToken()); }
 
 // ===== JD 导入预览页（spec §10.20）：POST /import/page 的提取结果呈现 + 「带去定制」表单 =====
 // 纯表单零脚本需求（page() 外壳自带 nonce 脚本位，本页不新增脚本）。外部输入（url/title/提取文本）
 // 全走 escHtml/escAttr；来源链接过 safeUrl 协议白名单（html 是任意网页递交的，javascript: 不渲染成 href）。
-function importPreviewPage({ srcUrl, title, company, role, jd, via, htmlTruncated }) {
+function importPreviewPage({ srcUrl, title, company, role, salary, jd, via, htmlTruncated }) {
   const meta = loadMeta();
   // 母版下拉口径 = jobNewPage 的 infos（在盘且未归档全部文档）——两页同一口径，不各写一份。
   const infos = docIdsOnDisk().map((did) => docInfo(did, meta[did])).filter(Boolean).filter((d) => !((meta[d.id] || {}).archivedAt));
@@ -2472,6 +2493,7 @@ function importPreviewPage({ srcUrl, title, company, role, jd, via, htmlTruncate
     td('提取通道', escHtml(via)),
     td('公司', company ? `<b>${escHtml(company)}</b>` : '（未识别）'),
     td('岗位', role ? `<b>${escHtml(role)}</b>` : '（未识别）'),
+    td('薪资', salary ? `<b>${escHtml(salary)}</b>` : '（未识别）'),
     td('JD 长度', `${jd.length} 字符`),
   ].join('');
   // JD <50：如实警示 + 两条退路（回来源页复制全文 / 仍要带入——表单照渲染，带不带由用户定）
