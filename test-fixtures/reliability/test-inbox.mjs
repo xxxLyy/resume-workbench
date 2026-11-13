@@ -411,6 +411,10 @@ try {
     assert.ok(html.includes('>建草稿</button>') && html.includes('>不考虑</button>'), '行应有建草稿/不考虑');
     assert.ok(html.includes('href="/evals#ev-s4"'), 'scored 分数徽章应链到 /evals#evalId');
     assert.ok(html.includes('>待评估</span>'), 'new 应有「待评估」徽章');
+    // 操作条置顶：全选/母版/按钮出现在首个 data-ib 行之前
+    const firstRow = html.indexOf('data-ib="ib-s4"');
+    assert.ok(html.includes('id="ibAll"'), '操作条应有「全选」复选框 id=ibAll');
+    assert.ok(html.indexOf('id="ibAll"') < firstRow && html.indexOf('id="ibEval"') < firstRow && html.indexOf('id="ibFrom"') < firstRow, '操作条应在列表之前');
     // 不暴露内部字段
     assert.ok(!html.includes('jdFp') && !html.includes('urlKey'), '页面不得出现内部字段名');
     // 全部内联脚本带 nonce

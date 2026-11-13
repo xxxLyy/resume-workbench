@@ -2745,10 +2745,10 @@ function inboxPage() {
     ? `<span title="${escAttr(it.dupHints.map((h) => h.label || '').join('；'))}">${badge('warn', '做过/投过')}</span>` : '';
   const scored = items.filter((x) => x.status === 'scored').sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0));
   const rest = items.filter((x) => x.status !== 'scored').sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
-  const row = (it) => {
+  const row = (it, i) => {
     const href = safeUrl(it.url);
     const name = `${escHtml(it.company || '（未识别）')} · ${escHtml(it.role || '（未识别）')}${it.salary ? ' · ' + escHtml(it.salary) : ''}`;
-    return `<div data-ib="${escAttr(it.id)}" style="display:flex;align-items:center;gap:var(--space-3);padding:8px 0;border-top:1px solid var(--line);flex-wrap:wrap">
+    return `<div data-ib="${escAttr(it.id)}" style="display:flex;align-items:center;gap:var(--space-3);padding:8px 0;${i ? 'border-top:1px solid var(--line);' : ''}flex-wrap:wrap">
       <input type="checkbox" name="ib" value="${escAttr(it.id)}" aria-label="选择 ${escAttr(it.company || '')} ${escAttr(it.role || '')}">
       <span style="flex:1;min-width:220px"><b>${name}</b>
         <div style="font-size:12px;color:var(--mut)">${escHtml(dayText(it.createdAt))}收入${href ? ` · <a href="${escAttr(href)}">原链接</a>` : ''}</div></span>
@@ -2759,12 +2759,13 @@ function inboxPage() {
       </span></div>`;
   };
   const controls = infos.length
-    ? `<div style="display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap;margin-top:var(--space-3)">
+    ? `<div style="display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap;margin-bottom:var(--space-3)">
+        <label style="font-size:13px"><input type="checkbox" id="ibAll" aria-label="全选"> 全选</label>
         <label style="font-size:13px">用哪份简历评估 <select id="ibFrom">${infos.map((d) => `<option value="${escAttr(d.id)}">${d.title}（${d.id}）</option>`).join('')}</select></label>
         <button type="button" id="ibEval" disabled>批量评估所选</button>
         <span id="ibCount" style="font-size:13px;color:var(--mut)">已选 0 条</span>
         <span id="ibMsg" role="status" class="ap-note"></span></div>`
-    : `<p style="font-size:13px;color:var(--mut);margin-top:var(--space-2)">还没有简历文档，先去<a href="/">建一份</a>再来批量评估。</p>`;
+    : `<p style="font-size:13px;color:var(--mut);margin-bottom:var(--space-2)">还没有简历文档，先去<a href="/">建一份</a>再来批量评估。</p>`;
   const empty = `<div class="card" style="text-align:center;padding:40px;color:var(--mut)">
       <b>收件箱是空的</b>
       <p style="font-size:13px">把书签拖到书签栏，在招聘网站的职位页点一下，岗位就会收进这里。</p>
@@ -2772,9 +2773,10 @@ function inboxPage() {
       <p style="font-size:12px"><a href="/job/new">或者手动粘贴 JD →</a></p></div>`;
   return page('待筛选', `${portNotice()}
     <div class="page-head"><h1>待筛选</h1></div>${appTabs('inbox')}
-    ${items.length ? `<div class="card">${[...scored, ...rest].map(row).join('')}</div>${controls}` : empty}
+    ${items.length ? `${controls}<div class="card">${[...scored, ...rest].map((it, i) => row(it, i)).join('')}</div>` : empty}
     <script nonce="__CSP_NONCE__">(function(){
       var list = document.querySelectorAll('input[name="ib"]');
+      var all = document.getElementById('ibAll');
       var btn = document.getElementById('ibEval');
       var cnt = document.getElementById('ibCount');
       var msg = document.getElementById('ibMsg');
@@ -2782,8 +2784,13 @@ function inboxPage() {
         var n = 0; list.forEach(function (c) { if (c.checked) n++; });
         if (btn) btn.disabled = n === 0;
         if (cnt) cnt.textContent = '已选 ' + n + ' 条';
+        if (all) { all.checked = n > 0 && n === list.length; all.indeterminate = n > 0 && n < list.length; }
       };
       list.forEach(function (c) { c.addEventListener('change', refresh); });
+      if (all) all.addEventListener('change', function () {
+        list.forEach(function (c) { c.checked = all.checked; });
+        refresh();
+      });
       refresh();
       if (btn) btn.addEventListener('click', function () {
         var ids = []; list.forEach(function (c) { if (c.checked) ids.push(c.value); });
