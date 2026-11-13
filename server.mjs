@@ -356,6 +356,9 @@ async function inboxAdd({ url, title, company, role, salary, jd }) {
   if (hit) return { added: false, item: hit, total: newCount(loadInbox()) };
   const { dupHints } = await computeFpGuard(jd, url, company, loadMeta());
   const list = loadInbox();   // 跨 await 重读：护栏计算期间可能有别的收入先落盘
+  // 重读后再判一次重（复核修复①）：await 期间同 urlKey/jdFp 的并发收入已落盘 → 不新增，返回命中条
+  const late = list.find((x) => x && ((urlKey && x.urlKey === urlKey) || (jdFp && x.jdFp === jdFp)));
+  if (late) return { added: false, item: late, total: newCount(list) };
   const now = new Date().toISOString();
   const idBase = 'ib-' + timestamp();
   let id = idBase;
@@ -367,6 +370,40 @@ async function inboxAdd({ url, title, company, role, salary, jd }) {
   list.unshift(item);
   saveInbox(list);
   return { added: true, item, total: newCount(list) };
+}
+
+// ===== 收件箱批量评估（spec §2.6）：进程内单例串行 worker——一次只占 1 个 AI 槽，另一个留给交互操作 =====
+const inboxWorker = { running: false };
+// 每次写盘前重新 loadInbox 再按 id 改（不持有旧列表跨 await）
+function inboxPatch(id, patch) {
+  const list = loadInbox();
+  const it = list.find((x) => x && x.id === id);
+  if (!it) return null;
+  Object.assign(it, patch, { updatedAt: new Date().toISOString() });
+  saveInbox(list);
+  return it;
+}
+async function inboxDrain() {
+  if (inboxWorker.running) return;
+  inboxWorker.running = true;
+  try {
+    for (;;) {
+      const next = loadInbox().filter((x) => x && x.status === 'queued').sort((a, b) => String(a.updatedAt).localeCompare(String(b.updatedAt)))[0];
+      if (!next) break;
+      let lease;
+      try { lease = aiPool.borrow(); }
+      catch (e) { if (e instanceof ResourceBusy) { await new Promise((r) => setTimeout(r, 3000)); continue; } throw e; }
+      try {
+        inboxPatch(next.id, { status: 'running', error: null });
+        const r = await evalJdCore(root, { from: next.from, jd: next.jd, company: next.company, role: next.role, lease });
+        inboxPatch(next.id, r.ok
+          ? { status: 'scored', evalId: r.rec.id, score: r.rec.score, verdict: r.rec.verdict, error: null }
+          : { status: 'error', error: r.error });
+      } catch (e) {
+        inboxPatch(next.id, { status: 'error', error: '评估异常：' + String((e && e.message) || e).slice(0, 200) });
+      } finally { try { lease.release(); } catch {} }
+    }
+  } finally { inboxWorker.running = false; }
 }
 
 /**
@@ -2628,7 +2665,13 @@ function importSavedPage({ added, item, total, srcUrl }) {
   const href = safeUrl(srcUrl);
   const created = new Date(item.createdAt || '');
   const day = isNaN(created) ? '' : `${created.getMonth() + 1} 月 ${created.getDate()} 日`;
-  const head = added ? `已收入收件箱 · 共 ${total} 条待评估` : `已在收件箱${day ? `（${day}收入）` : ''} · 共 ${total} 条待评估`;
+  // 去重命中文案随条目状态分流（复核修复②）：不考虑过 / 已建过草稿 / 其他在收状态
+  const head = added ? `已收入收件箱 · 共 ${total} 条待评估`
+    : item.status === 'dismissed' ? `这个岗位之前标记过不考虑${day ? `（${day}收入）` : ''}`
+    : item.status === 'drafted' ? '这个岗位已建过草稿'
+    : `已在收件箱${day ? `（${day}收入）` : ''} · 共 ${total} 条待评估`;
+  const draftLink = (!added && item.status === 'drafted' && VALID_ID.test(item.draftId || ''))
+    ? ` <a href="/edit?id=${escAttr(item.draftId)}">打开草稿 →</a>` : '';
   const td = (k, v) => `<tr><td style="padding:4px 16px 4px 0;color:var(--mut);vertical-align:top;white-space:nowrap">${k}</td><td style="overflow-wrap:anywhere">${v}</td></tr>`;
   const rows = [
     td('来源', srcUrl ? (href ? `<a href="${escAttr(href)}">${escHtml(srcUrl)}</a>` : escHtml(srcUrl)) : '—'),
@@ -2642,7 +2685,7 @@ function importSavedPage({ added, item, total, srcUrl }) {
   const dup = (item.dupHints || []).length ? `<div class="card" style="border-color:var(--warn);margin-bottom:var(--space-3)"><b style="color:var(--warn)">之前做过 / 投过：${item.dupHints.map((h) => escHtml(h.label || '')).join('、')}</b></div>` : '';
   return page('已收入收件箱', `
     <div class="page-head"><h1>已收入收件箱</h1></div>
-    <div class="card"><b>${escHtml(head)}</b>
+    <div class="card"><b>${escHtml(head)}</b>${draftLink}
       <table style="border-collapse:collapse;font-size:13px;margin-top:var(--space-2)">${rows}</table></div>
     ${warn}
     ${dup}
@@ -4899,6 +4942,30 @@ async function handler(req, res) {
       const r = await promoteEval(root, body.evalId, body.from);
       if (!r.ok) return sendJson(r.status, r.body);
       return sendJson(200, { ok: true, id: r.id });
+    }
+    // ===== 收件箱批量评估（spec §2.6/§2.7）：入队只置 queued，调模型的是后台串行 worker =====
+    // /inbox/eval 不进 AI 闸门（gatePool 白名单只含请求内直连 chat 的路由）：本路由不碰模型，槽由 inboxDrain 自己 borrow。
+    if (req.method === 'POST' && url.pathname === '/inbox/eval') {
+      if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型：请先完成模型配置', settingsPath: '/settings' });
+      const body = await readBodyAuto(req);
+      const from = String(body.from || '');
+      if (!VALID_ID.test(from)) return sendJson(400, { ok: false, error: 'invalid from' });
+      if (!fs.existsSync(docPath(from))) return sendJson(404, { ok: false, error: '母版文档不存在' });
+      const ids = new Set((Array.isArray(body.ids) ? body.ids : []).map(String));
+      const list = loadInbox();
+      const now = new Date().toISOString();
+      let queued = 0;
+      for (const it of list) {
+        if (it && ids.has(it.id) && (it.status === 'new' || it.status === 'error' || it.status === 'scored')) {
+          it.status = 'queued'; it.from = from; it.error = null; it.updatedAt = now; queued++;
+        }
+      }
+      if (queued) saveInbox(list);
+      inboxDrain().catch((e) => console.error('[inbox] worker', e));
+      return sendJson(200, { ok: true, queued });
+    }
+    if (req.method === 'GET' && url.pathname === '/inbox/status') {
+      return sendJson(200, { ok: true, items: loadInbox().filter((x) => x && x.status !== 'dismissed').map(({ id, status, score, verdict, error, draftId }) => ({ id, status, score, verdict, error, draftId })) });
     }
     // ===== 评估历史（独立页）：全量列表 + 逐条展开报告 =====
     // 服务端渲染全量元数据（evalHistoryRows），报告正文经 jsonScript 内联，
@@ -8805,5 +8872,15 @@ if (foreignMigrateLock) {
   } catch (e) {
     console.error('[tx] 启动恢复异常：', e && e.message || e);
   }
+}
+// 收件箱重启恢复（spec §2.6）：上次中断遗留的 running 一律回到 queued，有排队即拉起串行 worker。
+// 放在 listen 前、与 tx 启动恢复同段：这是数据层修正，不依赖对外服务；inboxDrain 是异步后台任务，不阻塞启动。
+{
+  const ib = loadInbox();
+  let dirty = false;
+  const now = new Date().toISOString();
+  for (const it of ib) if (it && it.status === 'running') { it.status = 'queued'; it.updatedAt = now; dirty = true; }
+  if (dirty) saveInbox(ib);
+  if (ib.some((x) => x && x.status === 'queued')) inboxDrain().catch((e) => console.error('[inbox] worker', e));
 }
 tryListen(0);

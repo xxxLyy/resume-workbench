@@ -5,6 +5,9 @@
 //   ② 同 JD 换 query（?lid=2）→ urlKey 判重 → 「已在收件箱」不新增；同 JD 换 URL → jdFp 判重 → 不新增；
 //   ③ 不带 k / k 错 → 旧预览（含「提取结果」+「重新拖一次」），inbox.json 不变；
 //   ④ .migrate.lock 新鲜持锁 → 带 k POST → 「维护中，本次未收入」，inbox.json 不变。
+//   ⑤ 复核修复：并发同页收入至多 1 条；dismissed/drafted 命中文案分流。
+//   ⑥ T4 批量评估：/inbox/eval 入队 → 串行 worker（桩并发峰值=1）→ scored；
+//     桩 500 → error → 重评 scored；scored 可重评/不存在 id 跳过；重启 running→queued 恢复；未配模型 409。
 // 手法：隔离 RESUME_ROOT + assembleTemplate 合成母版 + 随机端口真实 server + OpenAI 兼容桩
 // （同 test-eval-promote-brief.mjs；口令从 GET /job/new 的书签 href 解析）。不碰 7766，不写真实数据。
 import assert from 'node:assert/strict';
@@ -42,16 +45,31 @@ const EVAL_REPORT = JSON.stringify({
   matches: [{ req: '负责后端服务', status: 'covered', evidence: '负责交易系统', weight: 'must', weightFrom: 'JD 原文' }],
   score: 4.5, verdict: 'apply', verdictReason: '整体匹配', gaps: ['补充量化指标']
 });
+// 桩并发观测：评估请求 inflight 计数 + 峰值记录 + 300ms 延时（串行 worker 的峰值应恒为 1）。
+// 控制文件 llm-eval-fail-once 存在时 → 对第一个评估请求回 HTTP 500 并删除该文件。
+let llmInflight = 0, llmPeak = 0;
 const stub = http.createServer((q, s) => {
   let b = ''; q.on('data', (c) => { b += c; });
   q.on('end', () => {
-    let content = '';
+    let isEval = false, content = '';
     try {
       const sys = JSON.parse(b).messages.find((m) => m.role === 'system').content;
-      if (String(sys).includes('岗位快速评估器')) content = EVAL_REPORT;
+      if (String(sys).includes('岗位快速评估器')) { isEval = true; content = EVAL_REPORT; }
     } catch {}
-    s.writeHead(200, { 'Content-Type': 'application/json' });
-    s.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    if (!isEval) {
+      s.writeHead(200, { 'Content-Type': 'application/json' });
+      return s.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    }
+    llmInflight++; llmPeak = Math.max(llmPeak, llmInflight);
+    const failOnce = path.join(root, 'llm-eval-fail-once');
+    const boom = fs.existsSync(failOnce);
+    if (boom) fs.rmSync(failOnce, { force: true });
+    setTimeout(() => {
+      llmInflight--;
+      if (boom) { s.writeHead(500); return s.end('{"error":"stub fail once"}'); }
+      s.writeHead(200, { 'Content-Type': 'application/json' });
+      s.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    }, 300);
   });
 });
 await new Promise((r) => stub.listen(0, '127.0.0.1', r));
@@ -64,14 +82,17 @@ const port = await new Promise((res) => {
   const s = net.createServer();
   s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); });
 });
-const server = spawn(process.execPath, [path.join(APP_ROOT, 'server.mjs')], {
-  cwd: APP_ROOT, env: { ...process.env, RESUME_ROOT: root, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe']
-});
-let serverLog = '';
-server.stdout.on('data', (d) => { serverLog += d; });
-server.stderr.on('data', (d) => { serverLog += d; });
-let exited = null;
-server.on('exit', (c, sg) => { exited = { c, s: sg }; });
+let server = null, serverLog = '', exited = null;
+const startServer = () => {
+  serverLog = ''; exited = null;
+  server = spawn(process.execPath, [path.join(APP_ROOT, 'server.mjs')], {
+    cwd: APP_ROOT, env: { ...process.env, RESUME_ROOT: root, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe']
+  });
+  server.stdout.on('data', (d) => { serverLog += d; });
+  server.stderr.on('data', (d) => { serverLog += d; });
+  server.on('exit', (c, sg) => { exited = { c, s: sg }; });
+};
+startServer();
 const base = `http://127.0.0.1:${port}`;
 const cleanup = () => { try { server.kill('SIGKILL'); } catch {} try { stub.close(); } catch {} fs.rmSync(root, { recursive: true, force: true }); };
 process.on('exit', cleanup);
@@ -84,14 +105,46 @@ const postImport = (fields) => fetch(base + '/import/page', {
   headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: 'https://www.zhipin.com' },
   body: new URLSearchParams(fields).toString(),
 });
-
-try {
+// 同源写请求（JSON + 同源 Origin，照该夹具现有写请求头约定）
+const postJson = async (p, body) => {
+  const r = await fetch(base + p, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: base }, body: JSON.stringify(body || {}) });
+  return { status: r.status, body: await r.json().catch(() => null) };
+};
+const getJson = async (p) => {
+  const r = await fetch(base + p);
+  return { status: r.status, body: await r.json().catch(() => null) };
+};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const urlKeyOf = (u) => { const x = new URL(u); return x.origin + x.pathname; };
+const ready = async () => {
   for (let i = 0; i < 150; i++) {
     if (exited) fail('服务提前退出：' + JSON.stringify(exited) + '\n' + serverLog.slice(-800));
-    try { if ((await fetch(base + '/')).ok) break; } catch {}
-    await new Promise((r) => setTimeout(r, 200));
-    if (i === 149) fail('服务 30s 未就绪\n' + serverLog.slice(-800));
+    try { if ((await fetch(base + '/')).ok) return; } catch {}
+    await sleep(200);
   }
+  fail('服务 30s 未就绪\n' + serverLog.slice(-800));
+};
+const waitItem = async (id, status, ms = 20000) => {
+  const dl = Date.now() + ms;
+  while (Date.now() < dl) {
+    const st = await getJson('/inbox/status');
+    const it = st.body && st.body.items && st.body.items.find((x) => x.id === id);
+    if (it && it.status === status) return it;
+    await sleep(200);
+  }
+  return null;
+};
+// 收入一条并返回其收件箱 id（按 urlKey 在 inbox.json 里找）
+const collect = async (jdHtml, url, title, k) => {
+  const r = await postImport({ html: jdHtml, url, title, k });
+  await r.text();
+  const it = loadInboxFile().find((x) => x.urlKey === urlKeyOf(url));
+  assert.ok(it, '收入后应在 inbox.json 找到条目：' + url);
+  return it.id;
+};
+
+try {
+  await ready();
 
   // ===== 口令：从 GET /job/new 的书签 href 解析 =====
   const jn = await (await fetch(base + '/job/new')).text();
@@ -149,7 +202,117 @@ try {
   assert.equal(loadInboxFile().length, 1, '④ 持锁期间不得新增收件箱条目');
   fs.rmSync(path.join(root, '.migrate.lock'), { force: true });
 
-  console.log('✅ inbox T2：带口令收入（去 query urlKey/0600/无 ACAO）/ urlKey 与 jdFp 双路判重 / 无口令回退旧预览 / 迁移锁挡写');
+  // ===== 复核修复①：并发同页收入 → 至多 1 条（inboxAdd 跨 await 重读后再判重）=====
+  // 注意用与既有条目不同的 JD 文本——同 jdFp 会被①判重吃掉，测不到并发窗口。
+  const zhR = zh.replace('必须有带团队经验', '必须有带团队经验·竞');
+  const [ra, rb] = await Promise.all([
+    postImport({ html: zhR, url: 'https://www.zhipin.com/job_detail/race.html?lid=1', title: '竞态', k }),
+    postImport({ html: zhR, url: 'https://www.zhipin.com/job_detail/race.html?lid=2', title: '竞态', k }),
+  ]);
+  await ra.text(); await rb.text();
+  assert.equal(loadInboxFile().filter((x) => x.urlKey === 'https://www.zhipin.com/job_detail/race.html').length, 1, '并发同页应只收入 1 条');
+
+  // ===== 复核修复②：去重命中文案随条目状态（dismissed / drafted / 其他）=====
+  {
+    const ib = loadInboxFile();
+    const dup = ib.find((x) => x.urlKey === 'https://www.zhipin.com/job_detail/abc.html');
+    assert.ok(dup, '应能找到 ① 收入的条目');
+    dup.status = 'dismissed';
+    fs.writeFileSync(inboxFile, JSON.stringify(ib));
+    const bd = await (await postImport({ html: zh, url: 'https://www.zhipin.com/job_detail/abc.html?lid=9', title: 'x', k })).text();
+    assert.ok(bd.includes('标记过不考虑'), 'dismissed 命中应显示「标记过不考虑」');
+    dup.status = 'drafted'; dup.draftId = 'd1';
+    fs.writeFileSync(inboxFile, JSON.stringify(ib));
+    const bg = await (await postImport({ html: zh, url: 'https://www.zhipin.com/job_detail/abc.html?lid=10', title: 'x', k })).text();
+    assert.ok(bg.includes('已建过草稿'), 'drafted 命中应显示「已建过草稿」');
+    assert.ok(bg.includes('href="/edit?id=d1"'), 'drafted 命中应带 /edit?id=d1 链接');
+    fs.writeFileSync(inboxFile, '[]');   // 清空，进入评估阶段
+  }
+
+  // ===== T4：批量评估（后台串行 worker，桩并发峰值应 = 1）=====
+  const jdOf = (tag) => zh.replace('必须有带团队经验', '必须有带团队经验·' + tag);
+  const ids = [];
+  for (let i = 0; i < 3; i++) {
+    ids.push(await collect(jdOf('批' + 'ABC'[i]), `https://www.zhipin.com/job_detail/e${i + 1}.html`, '批' + 'ABC'[i], k));
+  }
+  const evr = await postJson('/inbox/eval', { ids, from: DOC });
+  assert.equal(evr.status, 200, '批量评估应 200：' + JSON.stringify(evr.body));
+  assert.ok(evr.body && evr.body.queued === 3, '应入队 3 条，实际：' + JSON.stringify(evr.body));
+  for (const id of ids) assert.ok(await waitItem(id, 'scored'), '条目应到 scored：' + id);
+  assert.equal(llmPeak, 1, '评估并发峰值应为 1（串行 worker 只占 1 个 AI 槽），实际：' + llmPeak);
+  const evalsFile = () => { try { return JSON.parse(fs.readFileSync(path.join(root, 'evaluations.json'), 'utf8')); } catch { return []; } };
+  assert.equal(evalsFile().length, 3, '应落 3 条评估记录');
+  {
+    const ib = loadInboxFile();   // evalId 在 inbox.json 记录上（/inbox/status 契约不含此字段）
+    const stAll = await getJson('/inbox/status');
+    for (const id of ids) {
+      const it = ib.find((x) => x.id === id);
+      assert.ok(it.evalId && evalsFile().some((e) => e.id === it.evalId), '条目 evalId 应指向评估记录：' + id);
+      assert.equal(typeof it.score, 'number', '条目 score 应为数字：' + id);
+      const sv = stAll.body.items.find((x) => x.id === id);
+      assert.equal(sv && sv.status, 'scored', 'status 接口应报 scored：' + id);
+      assert.equal(typeof (sv && sv.score), 'number', 'status 接口 score 应为数字：' + id);
+    }
+  }
+
+  // 失败重试：llm-eval-fail-once → 首个评估请求 500 → 条目 error；再次入队 → scored
+  fs.writeFileSync(path.join(root, 'llm-eval-fail-once'), '1');
+  const id4 = await collect(jdOf('批D'), 'https://www.zhipin.com/job_detail/e4.html', '批D', k);
+  const evr4 = await postJson('/inbox/eval', { ids: [id4], from: DOC });
+  assert.ok(evr4.body && evr4.body.queued === 1, '第 4 条应入队');
+  const errIt = await waitItem(id4, 'error');
+  assert.ok(errIt, '桩 500 后条目应到 error');
+  assert.ok(errIt.error, 'error 字段应非空');
+  await postJson('/inbox/eval', { ids: [id4], from: DOC });
+  assert.ok(await waitItem(id4, 'scored'), '重试后应 scored');
+
+  // 跳过规则：scored 条目计入 queued（允许重评）；不存在 id 不计入
+  const evs = await postJson('/inbox/eval', { ids: [ids[0], 'ib-not-exist'], from: DOC });
+  assert.ok(evs.body && evs.body.queued === 1, 'scored 可重评 + 不存在 id 跳过 → queued=1，实际：' + JSON.stringify(evs.body));
+  assert.ok(await waitItem(ids[0], 'scored'), '重评后应回到 scored');
+
+  // 重启恢复：running → queued → 启动后自动跑完
+  server.kill('SIGKILL');
+  await new Promise((r) => { const t = setInterval(() => { if (exited) { clearInterval(t); r(); } }, 100); });
+  {
+    const ib = loadInboxFile();
+    const t = ib.find((x) => x.id === id4);
+    t.status = 'running'; t.score = null; t.evalId = null;
+    fs.writeFileSync(inboxFile, JSON.stringify(ib));
+  }
+  startServer();
+  await ready();
+  assert.ok(await waitItem(id4, 'scored'), '重启后 running 条应恢复并跑完');
+
+  // 未配置模型：无 config.json 的隔离根 → /inbox/eval 409 + settingsPath
+  {
+    const root2 = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-inbox-nomodel-'));
+    for (const d of ['docs', 'snapshots', 'pdfs', 'logs', 'backups']) fs.mkdirSync(path.join(root2, d), { recursive: true });
+    const port2 = await new Promise((res) => {
+      const s2 = net.createServer();
+      s2.listen(0, '127.0.0.1', () => { const p = s2.address().port; s2.close(() => res(p)); });
+    });
+    const server2 = spawn(process.execPath, [path.join(APP_ROOT, 'server.mjs')], {
+      cwd: APP_ROOT, env: { ...process.env, RESUME_ROOT: root2, PORT: String(port2) }, stdio: ['ignore', 'pipe', 'pipe']
+    });
+    try {
+      const base2 = `http://127.0.0.1:${port2}`;
+      for (let i = 0; i < 150; i++) {
+        try { if ((await fetch(base2 + '/')).ok) break; } catch {}
+        await sleep(200);
+        if (i === 149) fail('未配置模型服务 30s 未就绪');
+      }
+      const nm = await fetch(base2 + '/inbox/eval', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: base2 }, body: JSON.stringify({ ids: ['ib-x'], from: DOC }) });
+      const nmb = await nm.json().catch(() => null);
+      assert.equal(nm.status, 409, '未配置模型应 409，实际：' + nm.status);
+      assert.ok(nmb && nmb.settingsPath, '409 响应应带 settingsPath');
+    } finally {
+      try { server2.kill('SIGKILL'); } catch {}
+      try { fs.rmSync(root2, { recursive: true, force: true }); } catch {}
+    }
+  }
+
+  console.log('✅ inbox T2+T4：口令收入/双路判重/锁挡写/旧预览回退；并发 1 条；dismissed/drafted 文案；批量评估串行(峰值1)/失败重试/重评+跳过/重启恢复/未配模型 409');
 } catch (e) {
   cleanup();
   fail(e && e.message || String(e));
