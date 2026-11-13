@@ -539,6 +539,70 @@ async function createJobDraft(root, o) {
   }
 }
 
+// ===== 岗位评估核心（2026-11-13 spec §2.6 抽出）：/eval/create 与收件箱串行 worker 共用 =====
+// 返回 {ok:true, rec} 或 {ok:false, status, error, ...extra}；HTTP 形态由调用方各自组装。
+async function evalJdCore(root, { from, jd, company, role, lease }) {
+  if (!hasLLM(root)) return { ok: false, status: 409, error: '未配置大模型：请先完成模型配置', settingsPath: '/settings' };   // R2②：settingsPath 供消费方按 :2210 先例渲染真实入口链接（「侧栏「设置」」是死引用）
+  from = String(from || '');
+  if (!VALID_ID.test(from)) return { ok: false, status: 400, error: 'invalid from' };
+  if (!fs.existsSync(docPath(from))) return { ok: false, status: 404, error: '母版文档不存在' };
+  jd = typeof jd === 'string' ? jd.trim() : '';
+  if (!jd) return { ok: false, status: 400, error: 'JD 必填：评估需要岗位描述文本' };
+  if (jd.length > JD_MAX_CHARS) jd = jd.slice(0, JD_MAX_CHARS);   // 与 /job/create 同上限（S4B-12）
+  company = String(company || '').trim();
+  role = String(role || '').trim();
+  // 可见正文（不是原始 HTML）：模型看到的、parser 校验的、hash 绑定的必须是同一份文本（E1/E2）。
+  // 样式变化不得改变正文 hash。
+  const html = fs.readFileSync(docPath(from), 'utf8');
+  const docText = docToText(html, { includeHidden: false });
+  const p = buildEvalPrompt({ docText, jd, company, role });
+  let raw;
+  try { raw = await chat(root, p.sys, p.user, { lease }); }
+  catch (e) { return { ok: false, status: 502, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }; }
+  const parsed = parseEvalReport(raw, { docText });
+  // 解析失败一律不落库：半条/错分记录会进指纹护栏（第五路）反过来污染后续所有岗位提醒
+  if (!parsed.ok) return { ok: false, status: 502, error: '模型报告无法解析：' + parsed.reason };
+  const { fingerprintText } = await import('./vendors/jd-fingerprint/fingerprint-core.mjs');
+  const cfg = loadProfiles(root);
+  const rec = {
+    id: 'ev-' + timestamp(), jd, jdFp: fingerprintText(jd),
+    company, role, score: parsed.report.score, verdict: parsed.report.verdict,
+    blocks: parsed.report, model: (cfg.profiles[cfg.active] || {}).model || '',
+    source: evalSource(docText, from),   // 来源字段由程序赋值：bodyHash 绑定实际送审正文
+    createdAt: new Date().toISOString(), promotedTo: null
+  };
+  saveEvals([rec, ...loadEvals()]);   // 新记录在前：列表按时间倒序读
+  return { ok: true, rec };
+}
+
+// ===== 高分评估转岗位适配（2026-11-13 spec §2.7 抽出）：/eval/promote 与 /inbox/draft 共用 =====
+// 返回 {ok:true, id} 或 {ok:false, status, body}（body 原样可 sendJson，保留 existing）。
+async function promoteEval(root, evalId, from) {
+  const list = loadEvals();
+  const rec = list.find((e) => e && e.id === String(evalId || ''));
+  if (!rec) return { ok: false, status: 404, body: { ok: false, error: '评估记录不存在' } };
+  if (rec.promotedTo) return { ok: false, status: 409, body: { ok: false, error: '该评估已转为岗位草稿', existing: rec.promotedTo } };
+  // F2：评估报告 angle/gaps 预填岗位定制要求——blocks 两字段由 parseEvalReport 契约采集（eval.mjs 输出契约），
+  // focus = [angle, ...gaps] 过滤空串后经 normBrief 统一校验（trim / 20 条上限 / degree=refocus、pages=2 缺省），
+  // 随 createJobDraft 落 meta.job.brief；面板可逐条删除（POST /job/brief 回写），岗位生成 prompt 消费路径不变。
+  const blk = (rec.blocks && typeof rec.blocks === 'object' && !Array.isArray(rec.blocks)) ? rec.blocks : {};
+  const prefillFocus = [blk.angle, ...(Array.isArray(blk.gaps) ? blk.gaps : [])]
+    .filter((x) => typeof x === 'string' && x.trim());
+  const r = await createJobDraft(root, { from, company: rec.company, role: rec.role, jd: rec.jd, jdSource: '评估', brief: { focus: prefillFocus } });
+  if (!r.ok) return { ok: false, status: r.status, body: r.body };
+  // 跨 await 后重新读表（AUD-14）：createJobDraft 可能要等 JD 抓取，
+  // 这期间别的评估可能已落库或已被 promote → 用 await 前的旧列表写回会丢掉它们。
+  const list2 = loadEvals();
+  const rec2 = list2.find((e) => e && e.id === String(evalId || ''));
+  if (!rec2) return { ok: false, status: 409, body: { ok: false, error: '评估记录在转换期间消失，未写入 promotedTo' } };
+  if (rec2.promotedTo && rec2.promotedTo !== r.id) {
+    return { ok: false, status: 409, body: { ok: false, error: '该评估已被转换', existing: rec2.promotedTo } };
+  }
+  rec2.promotedTo = r.id;
+  saveEvals(list2);
+  return { ok: true, id: r.id };
+}
+
 const corruptBanner = () => corrupt.size
   ? `<div class="card" style="border-color:var(--err-soft);background:var(--err-soft);color:var(--err)"><b>${icon('circle-alert', 13)}检测到数据文件损坏，相关写入已停止：</b>${[...corrupt].map((k) => JSON_FILES[k]).join('、')} —— 请先在设置页用备份恢复，或人工修复 JSON 后刷新。</div>`
   : '';
@@ -4823,65 +4887,17 @@ async function handler(req, res) {
     // 超时/失败语义直接沿用 chat() 的 profile 级 timeoutMs（默认 120s）+ withRetry 的 POST 不重试，
     // 失败一律 502 回到调用方，不写半条记录。
     if (req.method === 'POST' && url.pathname === '/eval/create') {
-      if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型：请先完成模型配置', settingsPath: '/settings' });   // R2②：settingsPath 供消费方按 :2210 先例渲染真实入口链接（「侧栏「设置」」是死引用）
       const body = await readBodyAuto(req);
-      const from = String(body.from || '');
-      if (!VALID_ID.test(from)) return sendJson(400, { ok: false, error: 'invalid from' });
-      if (!fs.existsSync(docPath(from))) return sendJson(404, { ok: false, error: '母版文档不存在' });
-      let jd = typeof body.jd === 'string' ? body.jd.trim() : '';
-      if (!jd) return sendJson(400, { ok: false, error: 'JD 必填：评估需要岗位描述文本' });
-      if (jd.length > JD_MAX_CHARS) jd = jd.slice(0, JD_MAX_CHARS);   // 与 /job/create 同上限（S4B-12）
-      const company = String(body.company || '').trim();
-      const role = String(body.role || '').trim();
-      // 可见正文（不是原始 HTML）：模型看到的、parser 校验的、hash 绑定的必须是同一份文本（E1/E2）。
-      // 样式变化不得改变正文 hash。
-      const html = fs.readFileSync(docPath(from), 'utf8');
-      const docText = docToText(html, { includeHidden: false });
-      const p = buildEvalPrompt({ docText, jd, company, role });
-      let raw;
-      try { raw = await chat(root, p.sys, p.user, { lease: leaseOf(req) }); }
-      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
-      const parsed = parseEvalReport(raw, { docText });
-      // 解析失败一律不落库：半条/错分记录会进指纹护栏（第五路）反过来污染后续所有岗位提醒
-      if (!parsed.ok) return sendJson(502, { ok: false, error: '模型报告无法解析：' + parsed.reason });
-      const { fingerprintText } = await import('./vendors/jd-fingerprint/fingerprint-core.mjs');
-      const cfg = loadProfiles(root);
-      const rec = {
-        id: 'ev-' + timestamp(), jd, jdFp: fingerprintText(jd),
-        company, role, score: parsed.report.score, verdict: parsed.report.verdict,
-        blocks: parsed.report, model: (cfg.profiles[cfg.active] || {}).model || '',
-        source: evalSource(docText, from),   // 来源字段由程序赋值：bodyHash 绑定实际送审正文
-        createdAt: new Date().toISOString(), promotedTo: null
-      };
-      saveEvals([rec, ...loadEvals()]);   // 新记录在前：列表按时间倒序读
+      const r = await evalJdCore(root, { from: body.from, jd: body.jd, company: body.company, role: body.role, lease: leaseOf(req) });
+      if (!r.ok) return sendJson(r.status, { ok: false, error: r.error, ...(r.settingsPath ? { settingsPath: r.settingsPath } : {}) });
       // 读时视图：旧记录的 sourced 降级为 missing、历史分数不重算（SRC-04/SRC-06）
-      return sendJson(200, { ok: true, eval: evalRecordView(rec) });
+      return sendJson(200, { ok: true, eval: evalRecordView(r.rec) });
     }
     // 高分评估转岗位适配：与 /job/create 共用 createJobDraft（同一套去重/冻结/截断/指纹/meta 落库）
     if (req.method === 'POST' && url.pathname === '/eval/promote') {
       const body = await readBodyAuto(req);
-      const list = loadEvals();
-      const rec = list.find((e) => e && e.id === String(body.evalId || ''));
-      if (!rec) return sendJson(404, { ok: false, error: '评估记录不存在' });
-      if (rec.promotedTo) return sendJson(409, { ok: false, error: '该评估已转为岗位草稿', existing: rec.promotedTo });
-      // F2：评估报告 angle/gaps 预填岗位定制要求——blocks 两字段由 parseEvalReport 契约采集（eval.mjs 输出契约），
-      // focus = [angle, ...gaps] 过滤空串后经 normBrief 统一校验（trim / 20 条上限 / degree=refocus、pages=2 缺省），
-      // 随 createJobDraft 落 meta.job.brief；面板可逐条删除（POST /job/brief 回写），岗位生成 prompt 消费路径不变。
-      const blk = (rec.blocks && typeof rec.blocks === 'object' && !Array.isArray(rec.blocks)) ? rec.blocks : {};
-      const prefillFocus = [blk.angle, ...(Array.isArray(blk.gaps) ? blk.gaps : [])]
-        .filter((x) => typeof x === 'string' && x.trim());
-      const r = await createJobDraft(root, { from: body.from, company: rec.company, role: rec.role, jd: rec.jd, jdSource: '评估', brief: { focus: prefillFocus } });
+      const r = await promoteEval(root, body.evalId, body.from);
       if (!r.ok) return sendJson(r.status, r.body);
-      // 跨 await 后重新读表（AUD-14）：createJobDraft 可能要等 JD 抓取，
-      // 这期间别的评估可能已落库或已被 promote → 用 await 前的旧列表写回会丢掉它们。
-      const list2 = loadEvals();
-      const rec2 = list2.find((e) => e && e.id === String(body.evalId || ''));
-      if (!rec2) return sendJson(409, { ok: false, error: '评估记录在转换期间消失，未写入 promotedTo' });
-      if (rec2.promotedTo && rec2.promotedTo !== r.id) {
-        return sendJson(409, { ok: false, error: '该评估已被转换', existing: rec2.promotedTo });
-      }
-      rec2.promotedTo = r.id;
-      saveEvals(list2);
       return sendJson(200, { ok: true, id: r.id });
     }
     // ===== 评估历史（独立页）：全量列表 + 逐条展开报告 =====
