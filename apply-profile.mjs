@@ -75,9 +75,7 @@ export const FIELD_CATALOG = [
   { key: 'coverLetter', label: '自荐信', derived: false, ai: true },
   { key: 'followUp', label: '跟进语', derived: false, ai: true },
 ];
-export const FIELD_KEYS = FIELD_CATALOG.map((f) => f.key);
 export const DERIVED_KEYS = FIELD_CATALOG.filter((f) => f.derived).map((f) => f.key);
-export const INDEPENDENT_KEYS = FIELD_CATALOG.filter((f) => !f.derived && !f.ai).map((f) => f.key);
 export const AI_COPY_FIELDS = FIELD_CATALOG.filter((f) => f.ai);
 export const AI_COPY_KEYS = AI_COPY_FIELDS.map((f) => f.key);
 

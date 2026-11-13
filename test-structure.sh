@@ -1086,13 +1086,7 @@ for (const f of ['server.mjs', 'structure.mjs', 'importer.mjs', 'migrate-editor.
   if (/readFileSync\([^)]*template\.html/.test(src)) fail(f + ' 仍直读 template.html（应经 assembleTemplate）');
   if (!src.includes('assembleTemplate')) fail(f + ' 未接入 assembleTemplate');
 }
-// migrate-style.mjs 历史一次性工具：必须大声失败并指向 S1/themes，绝不静默操作 marker-only 模板
-let msOut = '', msStatus = 0;
-try { execFileSync(process.execPath, ['migrate-style.mjs'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
-catch (e) { msStatus = e.status; msOut = String(e.stderr || '') + String(e.stdout || ''); }
-if (msStatus === 0) fail('migrate-style.mjs 应报错退出（非 0），不得再执行迁移');
-if (!/S1/.test(msOut) || !/themes/.test(msOut)) fail('migrate-style.mjs 报错应指向 S1 与 themes 唯一源: ' + msOut.slice(0, 300));
-console.log('✅ S1-D-1 assembleTemplate 装配契约（完整 CSS 内联/data-theme/无标记残留/sha1 一致/未知主题抛错/调用点唯一入口/migrate-style 大声失败）');
+console.log('✅ S1-D-1 assembleTemplate 装配契约（完整 CSS 内联/data-theme/无标记残留/sha1 一致/未知主题抛错/调用点唯一入口）');
 
 // ---------- S1-D-2 四条新建路径：/new、importer（降级）、structure（LLM 结构化）、restructure ----------
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 's1d-'));

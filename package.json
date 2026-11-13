@@ -1,17 +1,11 @@
 {
   "name": "resume",
   "version": "1.0.0",
-  "description": "",
-  "directories": {
-    "doc": "docs"
-  },
   "scripts": {
     "test": "bash test.sh",
     "test:all": "bash test.sh && bash test-structure.sh && bash test-render.sh && bash privacy-check.sh",
     "test:structure": "bash test-structure.sh"
   },
-  "keywords": [],
-  "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
