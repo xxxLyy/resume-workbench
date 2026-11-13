@@ -151,7 +151,7 @@ function timestamp() {
 }
 
 // ===== JSON 数据层：读容忍缺失、损坏必须显式暴露；写前校验，损坏即停写 =====
-const JSON_FILES = { meta: 'docs-meta.json', apps: 'applications.json', mats: 'materials.json', evals: 'evaluations.json' };
+const JSON_FILES = { meta: 'docs-meta.json', apps: 'applications.json', mats: 'materials.json', evals: 'evaluations.json', inbox: 'inbox.json' };
 const corrupt = new Set();
 const dataFile = (name) => path.join(root, JSON_FILES[name]);
 // 根值形状要求：可解析 ≠ 形状正确。docs-meta.json 必须是普通对象，applications/materials 必须是数组。
@@ -195,6 +195,8 @@ const loadEvals = () => { const a = readJson('evals', []); return Array.isArray(
 const saveMats = (mats) => writeJson('mats', mats);
 const saveApps = (apps) => writeJson('apps', apps);
 const saveEvals = (list) => writeJson('evals', list);
+const loadInbox = () => { const a = readJson('inbox', []); return Array.isArray(a) ? a : []; };
+const saveInbox = (list) => writeJson('inbox', list);
 // docs-meta.json 无 saveMeta：唯一写入者为 tx.mjs 的 updateMeta（读最新→只 patch 目标文档→原子 rename），见各写路径。
 // —— JD 指纹护栏（career-ops 移植，设计: dev-docs/2026-10-18-career-ops-jd-fingerprint-design.md）——
 // 用动态 import 而非顶部静态 import：vendors 模块损坏（如上游同步引入语法错误）时
@@ -337,6 +339,34 @@ async function computeFpGuard(jd, jdLink, company, metaAll) {
     const dupHints = findDupHints(jd, records, { newCompany: company, newLink: jdLink || '' });
     return { jdFp, dupHints, todos: fpTodo(dupHints) };
   } catch (e) { console.error('[fp-guard] 降级跳过:', e && e.message); return { jdFp: '', dupHints: [], todos: [] }; }
+}
+
+// ===== JD 收件箱（2026-11-13 spec §2.5）：书签带口令 → 收进来攒着批量评估 =====
+// 规范化链接（origin+pathname，去 query/hash——Boss 详情页带 ?lid= 等追踪参数）作判重键之一。
+const inboxUrlKey = (u) => { try { const x = new URL(u); return x.origin + x.pathname; } catch { return ''; } };
+// 判重 = urlKey 或 jdFp 任一命中（dismissed 也参与：不考虑过的岗别再收一遍）。
+// 返回 {added:true,item,total} 或 {added:false,item:<命中旧条>,total}；total = status==='new' 的条数。
+async function inboxAdd({ url, title, company, role, salary, jd }) {
+  jd = String(jd || '').slice(0, JD_MAX_CHARS);
+  const urlKey = inboxUrlKey(url);
+  let jdFp = '';
+  try { const { fingerprintText } = await import('./vendors/jd-fingerprint/fingerprint-core.mjs'); jdFp = fingerprintText(jd); } catch {}
+  const newCount = (l) => l.filter((x) => x && x.status === 'new').length;
+  const hit = loadInbox().find((x) => x && ((urlKey && x.urlKey === urlKey) || (jdFp && x.jdFp === jdFp)));
+  if (hit) return { added: false, item: hit, total: newCount(loadInbox()) };
+  const { dupHints } = await computeFpGuard(jd, url, company, loadMeta());
+  const list = loadInbox();   // 跨 await 重读：护栏计算期间可能有别的收入先落盘
+  const now = new Date().toISOString();
+  const idBase = 'ib-' + timestamp();
+  let id = idBase;
+  for (let n = 2; list.some((x) => x && x.id === id); n++) id = idBase + '-' + n;
+  const item = { id, url: String(url || ''), urlKey, title: String(title || ''), company: String(company || ''),
+    role: String(role || ''), salary: String(salary || ''), jd, jdFp, dupHints: dupHints || [],
+    status: 'new', from: null, evalId: null, score: null, verdict: null, error: null, draftId: null,
+    createdAt: now, updatedAt: now };
+  list.unshift(item);
+  saveInbox(list);
+  return { added: true, item, total: newCount(list) };
 }
 
 /**
@@ -2480,10 +2510,24 @@ function bookmarkletHref() { return 'javascript:' + BOOKMARKLET_JS.replace('__PO
 // ===== JD 导入预览页（spec §10.20）：POST /import/page 的提取结果呈现 + 「带去定制」表单 =====
 // 纯表单零脚本需求（page() 外壳自带 nonce 脚本位，本页不新增脚本）。外部输入（url/title/提取文本）
 // 全走 escHtml/escAttr；来源链接过 safeUrl 协议白名单（html 是任意网页递交的，javascript: 不渲染成 href）。
-function importPreviewPage({ srcUrl, title, company, role, salary, jd, via, htmlTruncated }) {
+// 「带去定制」表单（预览页与「已收入」页共用，spec §2.3/§2.5）：隐藏字段 jd/company/role/jdLink + 母版 from。
+// 母版下拉口径 = jobNewPage 的 infos（在盘且未归档全部文档）——三页同一口径，不各写一份。
+function bringFormHtml({ jd, company, role, srcUrl, cta = '带去定制' }) {
   const meta = loadMeta();
-  // 母版下拉口径 = jobNewPage 的 infos（在盘且未归档全部文档）——两页同一口径，不各写一份。
   const infos = docIdsOnDisk().map((did) => docInfo(did, meta[did])).filter(Boolean).filter((d) => !((meta[d.id] || {}).archivedAt));
+  return `<form id="bringForm" method="post" action="/job/new">
+      <input type="hidden" name="jd" value="${escAttr(jd)}">
+      <input type="hidden" name="company" value="${escAttr(company)}">
+      <input type="hidden" name="role" value="${escAttr(role)}">
+      <input type="hidden" name="jdLink" value="${escAttr(srcUrl)}">
+      ${infos.length ? `<label style="display:block;font-size:13px;margin-bottom:var(--space-2)">用哪份简历改
+        <select name="from" style="width:100%">${infos.map((d) => `<option value="${escAttr(d.id)}">${d.title}（${d.id}）</option>`).join('')}</select></label>
+        <button type="submit">${escHtml(cta)}</button>`
+      : `<p style="font-size:13px;color:var(--mut)">还没有简历文档，先去<a href="/">建一份</a>。</p>`}
+    </form>`;
+}
+
+function importPreviewPage({ srcUrl, title, company, role, salary, jd, via, htmlTruncated, legacy, notice }) {
   const href = safeUrl(srcUrl);
   // 值列 overflow-wrap:anywhere：来源 URL/长标题是无空格整串，窄屏下不换行会把表格顶出视口（T5 点验实测 523px）。
   const td = (k, v) => `<tr><td style="padding:4px 16px 4px 0;color:var(--mut);vertical-align:top;white-space:nowrap">${k}</td><td style="overflow-wrap:anywhere">${v}</td></tr>`;
@@ -2500,24 +2544,47 @@ function importPreviewPage({ srcUrl, title, company, role, salary, jd, via, html
   const warn = jd.length < 50 ? `<div class="card" style="border-color:var(--warn);margin-bottom:var(--space-3)"><b style="color:var(--warn)">没提到 JD——这个页面可能不是职位详情，或提取失败了。</b>
     <p style="font-size:13px;margin:var(--space-1) 0 0">${href ? `<a href="${escAttr(href)}">回来源页复制全文</a>` : '回来源页复制全文'} · <a href="#bringForm">仍要带入</a></p></div>` : '';
   const pre = `<pre style="white-space:pre-wrap;font-size:13px;background:var(--card-2);padding:var(--space-3);border-radius:var(--radius);max-height:480px;overflow:auto;margin:0">${escHtml(jd.slice(0, 4000)) || '（空）'}${jd.length > 4000 ? `\n…共 ${jd.length} 字符` : ''}</pre>`;
-  // 带去定制 = 普通 POST form（预填实现属 /job/new POST，见 spec §2.5）；隐藏字段带 jd/company/role/jdLink + 母版 from。
-  const form = `<form id="bringForm" method="post" action="/job/new">
-      <input type="hidden" name="jd" value="${escAttr(jd)}">
-      <input type="hidden" name="company" value="${escAttr(company)}">
-      <input type="hidden" name="role" value="${escAttr(role)}">
-      <input type="hidden" name="jdLink" value="${escAttr(srcUrl)}">
-      ${infos.length ? `<label style="display:block;font-size:13px;margin-bottom:var(--space-2)">用哪份简历改
-        <select name="from" style="width:100%">${infos.map((d) => `<option value="${escAttr(d.id)}">${d.title}（${d.id}）</option>`).join('')}</select></label>
-        <button type="submit">带去定制</button>`
-      : `<p style="font-size:13px;color:var(--mut)">还没有简历文档，先去<a href="/">建一份</a>。</p>`}
-    </form>`;
+  // 带去定制 = 普通 POST form（预填实现属 /job/new POST，见 spec §2.5）；与「已收入」页共用 bringFormHtml。
+  const form = bringFormHtml({ jd, company, role, srcUrl });
   return page('提取结果', `
     <div class="page-head"><h1>提取结果</h1><a href="/job/new" style="font-size:13px;font-weight:400">手动粘贴 JD →</a></div>
+    ${legacy ? `<div class="card" style="border-color:var(--warn);margin-bottom:var(--space-3)"><b style="color:var(--warn)">这是旧书签，不会存进收件箱。到 <a href="/job/new">定制页</a> 重新拖一次书签。</b></div>` : ''}
+    ${notice ? `<div class="card" style="border-color:var(--warn);margin-bottom:var(--space-3)"><b style="color:var(--warn)">${escHtml(notice)}</b></div>` : ''}
     ${htmlTruncated ? `<p style="font-size:12px;color:var(--warn)">页面超过 8MB，已截断后提取</p>` : ''}
     <div class="card"><table style="border-collapse:collapse;font-size:13px">${rows}</table></div>
     ${warn}
     <div class="card" style="margin-top:var(--space-3)"><b class="card-title">JD 内容</b><div style="margin-top:var(--space-2)">${pre}</div></div>
     <div class="card" style="margin-top:var(--space-3)"><b class="card-title">带入定制</b><div style="margin-top:var(--space-2)">${form}</div></div>`);
+}
+
+// ===== 「已收入」小卡（spec §2.3）：书签带口令 → extractJd → 去重 → 写入收件箱后的落点 =====
+// 不显示「提取通道」等内部术语；「现在就定制」与预览页共用 bringFormHtml（同一 POST /job/new 预填表单）。
+// 内联脚本带 nonce（__CSP_NONCE__ 占位符由响应层现发替换）：2s 后尝试自动关闭，用户有任何交互即取消。
+function importSavedPage({ added, item, total, srcUrl }) {
+  const href = safeUrl(srcUrl);
+  const created = new Date(item.createdAt || '');
+  const day = isNaN(created) ? '' : `${created.getMonth() + 1} 月 ${created.getDate()} 日`;
+  const head = added ? `已收入收件箱 · 共 ${total} 条待评估` : `已在收件箱${day ? `（${day}收入）` : ''} · 共 ${total} 条待评估`;
+  const td = (k, v) => `<tr><td style="padding:4px 16px 4px 0;color:var(--mut);vertical-align:top;white-space:nowrap">${k}</td><td style="overflow-wrap:anywhere">${v}</td></tr>`;
+  const rows = [
+    td('来源', srcUrl ? (href ? `<a href="${escAttr(href)}">${escHtml(srcUrl)}</a>` : escHtml(srcUrl)) : '—'),
+    td('公司', item.company ? `<b>${escHtml(item.company)}</b>` : '（未识别）'),
+    td('岗位', item.role ? `<b>${escHtml(item.role)}</b>` : '（未识别）'),
+    td('薪资', item.salary ? `<b>${escHtml(item.salary)}</b>` : '（未识别）'),
+  ].join('');
+  // JD <50：沿用预览页同一警示口径（页面可能不是职位详情，建议回原页复制全文）
+  const warn = item.jd.length < 50 ? `<div class="card" style="border-color:var(--warn);margin-bottom:var(--space-3)"><b style="color:var(--warn)">没提到 JD——这个页面可能不是职位详情，或提取失败了。</b>
+    <p style="font-size:13px;margin:var(--space-1) 0 0">${href ? `<a href="${escAttr(href)}">回来源页复制全文</a>` : '回来源页复制全文'}</p></div>` : '';
+  const dup = (item.dupHints || []).length ? `<div class="card" style="border-color:var(--warn);margin-bottom:var(--space-3)"><b style="color:var(--warn)">之前做过 / 投过：${item.dupHints.map((h) => escHtml(h.label || '')).join('、')}</b></div>` : '';
+  return page('已收入收件箱', `
+    <div class="page-head"><h1>已收入收件箱</h1></div>
+    <div class="card"><b>${escHtml(head)}</b>
+      <table style="border-collapse:collapse;font-size:13px;margin-top:var(--space-2)">${rows}</table></div>
+    ${warn}
+    ${dup}
+    <div class="card" style="margin-top:var(--space-3)"><b class="card-title">现在就定制</b><div style="margin-top:var(--space-2)">${bringFormHtml({ jd: item.jd, company: item.company, role: item.role, srcUrl, cta: '现在就定制' })}</div>
+    <p style="font-size:13px;margin:var(--space-2) 0 0"><a href="/inbox">去收件箱 →</a></p></div>
+    <script nonce="__CSP_NONCE__">(function(){var t=setTimeout(function(){window.close();},2000);['pointerdown','keydown','focusin'].forEach(function(e){document.addEventListener(e,function(){clearTimeout(t);},{once:true});});})();</script>`);
 }
 
 // GET /import/page：该地址只收书签 POST；用户把它当网址直接打开时给使用说明，不回裸 404（2026-11-13 实测困惑）
@@ -4278,6 +4345,7 @@ async function handler(req, res) {
   // 写请求 = 非 GET/HEAD，外加 WRITE_ON_GET 里"读名义下的写"（GET /pdf、/export 会 renderCurrent→updateMeta 并覆写 PDF）。
   // /import/page 除外：书签跨站递交的只读预览（零写盘零副作用，spec §10.20）——不算写请求：
   // 迁移锁不拦它；下方 CSRF 跨源检查也对它豁免（表单导航的 Origin 必为招聘站域，不豁免则轨 A 整路死）。
+  // 2026-11-13 起带口令时会写 inbox.json：写授权由口令承担，迁移锁在处理函数内显式检查。
   const mutating = ((req.method !== 'GET' && req.method !== 'HEAD') || (req.method === 'GET' && WRITE_ON_GET.has(url.pathname)))
     && url.pathname !== '/import/page';
   if (mutating && rootLock.isHeld(root)) {
@@ -4731,7 +4799,13 @@ async function handler(req, res) {
       const htmlTruncated = htmlParam.length > IMPORT_HTML_MAX;
       const srcUrl = String(params.get('url') || '');
       const r = extractJd(htmlTruncated ? htmlParam.slice(0, IMPORT_HTML_MAX) : htmlParam, srcUrl);
-      return send(200, importPreviewPage({ srcUrl, title: String(params.get('title') || ''), ...r, htmlTruncated }));
+      const title = String(params.get('title') || '');
+      // 三分支（spec §2.3）：口令不对 → 旧只读预览；口令对但迁移锁被持有 → 预览 + 维护提示；
+      // 口令对 → 收入收件箱（去重）→ 「已收入」小卡。
+      if (!importTokenOk(params.get('k'))) return send(200, importPreviewPage({ srcUrl, title, ...r, htmlTruncated, legacy: true }));
+      if (rootLock.isHeld(root)) return send(200, importPreviewPage({ srcUrl, title, ...r, htmlTruncated, notice: '维护中，本次未收入' }));
+      const saved = await inboxAdd({ url: srcUrl, title, company: r.company, role: r.role, salary: r.salary, jd: r.jd });
+      return send(200, importSavedPage({ added: saved.added, item: saved.item, total: saved.total, srcUrl }));
     }
     // ===== 岗位草稿（独立文档；不依赖模型；同岗位不重复建）=====
     if (req.method === 'POST' && url.pathname === '/job/create') {

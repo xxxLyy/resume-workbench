@@ -165,6 +165,11 @@ node ./test-fixtures/reliability/test-import-placeholder-file.mjs
 #       spec dev-docs/2026-11-12-jd-import-bookmarklet-design.md，DESIGN.md §10.20）=====
 node ./test-fixtures/reliability/test-import-page.mjs
 
+# ===== JD 收件箱 T2（2026-11-13 spec）：带口令 POST /import/page 收进 inbox.json + urlKey/jdFp 判重
+#       + 迁移锁挡写 + 无口令回退旧预览（隔离根 HTTP + stub LLM 骨架；
+#       spec dev-docs/2026-11-13-jd-inbox-batch-eval-design.md）=====
+node ./test-fixtures/reliability/test-inbox.mjs
+
 # ===== BL-P4-07：gen-result 头部契约第 4 条与超时实现对齐（grep 断言；注释级修复、行为零变化）=====
 grep -qF '4) next=null 表示放弃写入（迟到/被替代/已取消），不是「删除文档元数据」；超时例外：写入 error 状态并推进 next。' gen-result.mjs && echo '✅ BL-P4-07 gen-result 头部契约与超时实现对齐'
 
