@@ -787,6 +787,13 @@ CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/restore?apply=0" --dat
 [ "$CODE" = "400" ] || fail "路径穿越包未被拒绝（${CODE}）"
 echo '✅ 非法恢复包拒绝'
 
+# ===== 13b. 恢复撤销还原行为：安全点存在性判定 / 撤销精确还原「原本不存在」/ 旧安全点不猜测删除（AUD-09，独立隔离根 + 合成备份包，非浏览器段）=====
+if node test-fixtures/reliability/test-restore-undo.mjs; then
+  echo '✅ 恢复撤销还原回归（安全点存在性 / 撤销精确还原 / 不猜测删除）'
+else
+  fail "恢复撤销还原回归未通过 (exit $?)"
+fi
+
 # ===== 14. 损坏 JSON：停写 + 明确提示，不静默清空 =====
 cp "$RESUME_ROOT/applications.json" "$TEST_DIR/apps-good.json"
 printf '{broken json' > "$RESUME_ROOT/applications.json"
@@ -2188,6 +2195,19 @@ else
     echo '⚠️ 委托化回归未执行：Chromium 不可用'
   else
     fail "委托化回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi
+
+# ===== 16c-3. R1 壳修复回归：条目菜单 hidden 态不再被 .ed-nav-menu{display:flex} 压过 + 审阅面板空态不渲染死翻页钮（浏览器段）=====
+if node test-shell-review-fixes.mjs; then
+  echo '✅ 壳修复回归（菜单 hidden 生效 / 审阅空态无翻页钮）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 壳修复回归未执行：Chromium 不可用'
+  else
+    fail "壳修复回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
   fi
 fi
 
