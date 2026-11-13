@@ -1595,3 +1595,13 @@ Flash 23 条要点见各提交信息与 `b47-report` 工作流报告；收口时
 - **书签实站复验**：把 /job/new 链接区书签拖入浏览器书签栏 → 在真实 Boss 职位页点 → 新标签出预览页 → 带去定制（验跨站表单递交与真实页面提取，POC 已验过但交付形态未复验）。
 
 （本节为收口会话产物；点验探针 `/tmp/jd-check/probe.mjs`、定位脚本 `/tmp/jd-check/diag.mjs`、截图 `/tmp/jd-check/*.png` 均在 /tmp 不入仓。）
+
+## JD 导入 · 轨 B 实测修订（2026-11-13）
+
+真人扫码闭环走完后记录的反爬实测结论与架构修订：
+
+- **根因**：playwright 驱动的页面一律被 Boss 反爬杀——headed/headless/CDP goto 三种形态下登录页与详情页都在加载后自毁回 `about:blank`（藏 `navigator.webdriver` 无效）；headless_shell 的 UA 自带 HeadlessChrome 更是明牌。且 headless_shell 带真 wt2/zp_at 抓详情页会让服务端**作废会话 cookie**——浏览器进程抓页 = 烧会话。
+- **存活形态**：① 真 Chrome 普通窗口 + CDP 只挂浏览器域（读 cookie/页面列表，不进页面）→ 登录全流程可过；② 纯 HTTP 带 cookie+同款 UA（curl 实测 TLS 不被拦，只收 302 安全挑战）；③ `open` 直拉真 Chrome 窗口天然置顶（修掉 launchd 子进程窗口不抢焦点的体验缺陷）。
+- **修订**：登录窗 = `open -na "Google Chrome"` 独立 profile + 随机调试口（`DevToolsActivePort` 回执，复用活实例）；登录成功 `bossSnapshotSession` 快照 cookie+`Browser.getVersion` 拼的 UA 入 `state.json`；抓换取缔 headless 改 `bossFetchHttp` 纯 HTTP 手动跟跳（≤5 跳、每跳查 security/passport/web-user/出域即 `bossMarkDead`）。修掉的真 bug：`chromium` 顶层引用未定义（它只在 `bossLaunchContext` 函数内动态导入）→ 登录流跑完开窗后立刻 ReferenceError，用户扫码无人监听 = 「已登录仍显示未登录」。
+- **测试钉更新**：源级钉由「visibility 覆盖」改为「bossFetchHttp/手动跟跳/bossSnapshotSession」三钉（反爬对策形态变了）。桩测路径 `bossStubFetchOnce` 原样保留。
+- **已知边界**：`test-gen-retry-ui.mjs` 是时序抖动测试（HEAD 干净树 2 跑 1 败 1 过，与本轮改动无关）；纯 HTTP 带活 cookie 能否过 Boss 安全挑战待用户重新扫码后实测（会话曾被 headless 探测烧掉，需重扫）。

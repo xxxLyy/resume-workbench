@@ -219,8 +219,10 @@ try {
   // ===== ⑨ 源级钉：visibility 覆盖 / 串行锁 / 唯一拉起注入点 / profile 子目录 =====
   {
     const src = fs.readFileSync(path.join(APP_ROOT, 'server.mjs'), 'utf8');
-    assert.ok(src.includes("document,'hidden'") || src.includes("document, 'hidden'"), '应含 document.hidden 覆盖');
-    assert.ok(src.includes('visibilityState'), '应含 visibilityState 覆盖（Boss 反爬对策）');
+    // 反爬实测后改纯 HTTP 抓取：浏览器进程抓页会被 Boss 杀且烧会话——钉死「无浏览器抓取」架构
+    assert.ok(src.includes('bossFetchHttp'), '应有纯 HTTP 抓取函数 bossFetchHttp');
+    assert.ok(src.includes("redirect: 'manual'"), '应手动跟跳（每跳查安全页落点）');
+    assert.ok(src.includes('bossSnapshotSession'), '登录成功应快照 cookie+UA 入 state.json');
     assert.ok(/bossFetchChain\.then/.test(src), '应有串行锁链（bossFetchChain.then）');
     assert.equal((src.match(/launchPersistentContext/g) || []).length, 1, 'launchPersistentContext 应只在注入点 bossLaunchContext 出现一次');
     assert.ok(src.includes("path.join(BOSS_SESSION_DIR, 'profile')"), 'userDataDir 应为 boss-session/profile 子目录');

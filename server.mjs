@@ -24,7 +24,7 @@ import { sumExpandedBytes, MAX_EXPANDED_BYTES } from './restore-guard.mjs';   //
 import { aiPool, renderPool, ResourceBusy } from './resource-slots.mjs';
 import { trustedRenderHtml } from './render-safe.mjs';   // 受信渲染输入（AUD-05）：未知脚本/事件属性/外联载体不得进入渲染
 import { publishPair, makeIdentityValidator } from './render-publish.mjs';   // PDF+旁车成对发布（AUD-07）   // 共享容量池（RES-01/02/03）：AI 与渲染各 2 个并发
-import { resolveChromium, expectedRevision } from './chromium.mjs';   // 轨 B（Boss 会话）：headless 抓取复用 PDF 导出同一 chromium 定位链；expectedRevision 供完整版族同版本优先
+import { expectedRevision } from './chromium.mjs';   // expectedRevision 供 bossHeadedBin 优先匹配 playwright 同版本完整版族
 
 /**
  * JD 文本入库上限（S4B-12）。链接抓取路径 cap 在 4000 字，粘贴路径原本完全没 cap：
@@ -307,9 +307,13 @@ function extractJd(html, url) {
 }
 
 // ===== Boss 会话（轨 B，spec dev-docs/2026-11-12-jd-import-bookmarklet-design.md §2.4，DESIGN.md §10.20）=====
-// 持久 profile 扫码登录一次 → 贴 zhipin 链接且有会话时，服务端带会话 headless 抓详情页。
-// 纪律：boss-session/ 已 gitignore（运行时数据，永不入仓）；cookie 不导出文件——登录态不离开
-// chromium profile 目录；state.json 只记 {loggedAt}；登录窗口只在用户主动 POST /boss/session/login 时起。
+// 持久 profile 扫码登录一次 → 贴 zhipin 链接且有会话时，服务端带会话 cookie 纯 HTTP 抓详情页。
+// 纪律：boss-session/ 已 gitignore（运行时数据，永不入仓）；state.json 记 {loggedAt, deadAt,
+// cookies, ua}——cookie 快照是轨 B 抓取的唯一会话凭据，仅本机、logout 整目录一次清干净；
+// 登录窗口只在用户主动 POST /boss/session/login 时起。
+// 反爬实测结论（T5）：playwright 驱动的页面（headed/headless/CDP goto）一律被杀回 about:blank，
+// 且 headless_shell 的 UA 自带 HeadlessChrome——任何浏览器进程抓页都会烧掉会话；纯 HTTP + 真
+// cookie 不暴露任何自动化指纹，是唯一不撞墙的取数道。
 const BOSS_SESSION_DIR = path.join(root, 'boss-session');
 const BOSS_SESSION_STATE = path.join(BOSS_SESSION_DIR, 'state.json');
 // userDataDir 用单独子目录（state.json 放根、profile 单独子目录，logout 整目录 rm 一次清干净）
@@ -332,9 +336,13 @@ function bossSessionStatus() {
   const deadAt = st && st.deadAt && !Number.isNaN(Date.parse(st.deadAt)) ? st.deadAt : null;
   return { logged: !!loggedAt && !deadAt, loggedAt, dead: !!deadAt, deadAt };
 }
-function bossMarkLogged() {
+function bossMarkLogged(snap) {
   fs.mkdirSync(BOSS_SESSION_DIR, { recursive: true });
-  atomicWrite(BOSS_SESSION_STATE, JSON.stringify({ loggedAt: new Date().toISOString() }));   // 新对象：重登成功 deadAt 自然清掉（复活）
+  atomicWrite(BOSS_SESSION_STATE, JSON.stringify({
+    loggedAt: new Date().toISOString(),   // 新对象：重登成功 deadAt 自然清掉（复活）
+    cookies: (snap && snap.cookies) || [],
+    ua: (snap && snap.ua) || null,
+  }));
 }
 // 会话失效标记（state.json 改写为 {loggedAt 留档, logged:false, deadAt}）
 function bossMarkDead() {
@@ -420,22 +428,102 @@ function bossHeadedBin() {
 }
 
 // ===== 登录（并发防护：模块级 loginInFlight）=====
+// 登录窗直拉真浏览器（非 playwright 驱动）：Boss 反爬杀受控浏览器——playwright 管道驱动时
+// 登录页加载后自毁回 about:blank（T5 实测两次，藏 webdriver 亦无效）；普通浏览器进程 +
+// 被动调试端口监听则对其不可见。优先用户本机 Chrome（独立 profile，不碰个人数据/书签），
+// 缺装退回 CFT 二进制直拉（同样无自动化驱动）。返回起动的应用名，失败 null。
+function bossOpenLoginWindow(profileDir, url) {
+  const args = ['--user-data-dir=' + profileDir, '--remote-debugging-port=0',
+    '--no-first-run', '--no-default-browser-check', '--window-size=430,720', url];
+  try {
+    execFileSync('open', ['-na', 'Google Chrome', '--args', ...args], { timeout: 10000 });
+    try { execFileSync('osascript', ['-e', 'tell application "Google Chrome" to activate'], { timeout: 5000 }); } catch {}
+    return 'Google Chrome';
+  } catch {}
+  const bin = bossHeadedBin();
+  if (!bin) return null;
+  try {
+    spawn(bin, args, { detached: true, stdio: 'ignore' }).unref();
+    try { execFileSync('osascript', ['-e', 'tell application "Google Chrome for Testing" to activate'], { timeout: 5000 }); } catch {}
+    return bin;
+  } catch { return null; }
+}
+
+// CDP 被动监听只接浏览器目标域读 cookie/页面列表，不注入页面——Boss 反爬不可见。
+// 同 bossLaunchContext 的动态导入口径：不起浏览器的进程不背 playwright 载入成本。
+async function bossConnectCDP(port) {
+  const { chromium } = await import('playwright-core');
+  return chromium.connectOverCDP('http://127.0.0.1:' + port);
+}
+
+// 登录成功那一刻快照会话：全量 zhipin cookie（context.cookies 是浏览器域读，不进页面）+
+// 浏览器版本号（Browser.getVersion 同域）→ 拼出真实 UA。UA 与签发 cookie 的客户端一致，
+// 后续纯 HTTP 抓取才像「同一个浏览器」发出的请求。
+async function bossSnapshotSession(context, browser) {
+  let cookies = [];
+  try { cookies = (await context.cookies()).filter((c) => c.domain.includes('zhipin')).map((c) => ({ name: c.name, value: c.value })); } catch {}
+  let product = '';
+  try { const s = await browser.newBrowserCDPSession(); product = (await s.send('Browser.getVersion')).product || ''; } catch {}
+  const m = product.match(/Chrome\/([\d.]+)/);
+  const ua = m ? `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${m[1]} Safari/537.36` : null;
+  return { cookies, ua };
+}
+
+// Chrome 把实际调试端口落盘 <profile>/DevToolsActivePort 首行（--remote-debugging-port=0 随机）。
+function bossReadDebugPort(profileDir) {
+  try {
+    const n = parseInt(fs.readFileSync(path.join(profileDir, 'DevToolsActivePort'), 'utf8').split('\n')[0], 10);
+    return n > 0 ? n : 0;
+  } catch { return 0; }
+}
+function bossPortAlive(port) {
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/json/version', timeout: 1500 }, (res) => {
+      res.resume(); resolve(res.statusCode === 200);
+    });
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.on('error', () => resolve(false));
+  });
+}
+
+// 关登录窗：Browser.close 整体退出（释放 profile 锁——后续 headless 抓页要复用同一目录），
+// 再补 context/browser 断开兜底。全部尽力而为，失败静默。
+async function bossQuitLoginBrowser(browser, context) {
+  if (browser) {
+    try { const s = await browser.newBrowserCDPSession(); await s.send('Browser.close'); } catch {}
+  }
+  try { if (context) await context.close(); } catch {}
+  try { if (browser) await browser.close(); } catch {}
+}
+
 let loginInFlight = null;
 async function bossLoginFlow() {
   const noBrowser = process.env.RESUME_TEST_NO_BROWSER === '1';
-  let bin = null;
-  if (!noBrowser) {
-    bin = bossHeadedBin();
-    if (!bin) return { ok: false, error: '未找到完整版 Chromium（登录要开真窗口，headless shell 不行）' };
-  }
-  let context = null;
+  let context = null, browser = null;
   try {
     fs.mkdirSync(BOSS_SESSION_DIR, { recursive: true });
-    context = await bossLaunchContext(BOSS_PROFILE_DIR, { headless: false, executablePath: bin, viewport: { width: 420, height: 700 } });
-    const page = context.pages()[0] || await context.newPage();
-    await page.goto(BOSS_LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    if (noBrowser) {
+      context = await bossLaunchContext(BOSS_PROFILE_DIR, { headless: false });
+    } else {
+      // 已跑着的实例（上次窗没关）→ 直复用其调试口；否则开新窗并等端口落盘。
+      let port = bossReadDebugPort(BOSS_PROFILE_DIR);
+      if (!port || !(await bossPortAlive(port))) {
+        if (!bossOpenLoginWindow(BOSS_PROFILE_DIR, BOSS_LOGIN_URL)) {
+          return { ok: false, error: '未找到可用浏览器（登录要开真窗口）' };
+        }
+        const deadline = Date.now() + 10000;
+        while (!port && Date.now() < deadline) {
+          port = bossReadDebugPort(BOSS_PROFILE_DIR);
+          if (!port) await new Promise((r) => setTimeout(r, 300));
+        }
+        if (!port) return { ok: false, error: '浏览器调试端口未就绪' };
+      }
+      browser = await bossConnectCDP(port);
+      context = browser.contexts()[0];
+      if (!context) return { ok: false, error: '浏览器上下文未就绪' };
+    }
     let closed = false;
-    try { context.on('close', () => { closed = true; }); } catch {}
+    try { (browser ? browser : context).on(browser ? 'disconnected' : 'close', () => { closed = true; }); } catch {}
     const deadline = Date.now() + BOSS_LOGIN_DEADLINE_MS;
     let loggedNames = false;
     while (Date.now() < deadline && !closed) {
@@ -450,16 +538,17 @@ async function bossLoginFlow() {
         || pages.map((p) => { try { return p.url(); } catch { return ''; } })
             .some((x) => { try { const pu = new URL(x); return (pu.hostname === 'zhipin.com' || pu.hostname.endsWith('.zhipin.com')) && !pu.pathname.startsWith('/web/user'); } catch { return false; } });
       if (hit) {
-        bossMarkLogged();
-        try { await context.close(); } catch {}
+        const snap = browser ? await bossSnapshotSession(context, browser) : null;
+        bossMarkLogged(snap);
+        await bossQuitLoginBrowser(browser, context);
         return { ok: true, logged: true };
       }
       await new Promise((r) => setTimeout(r, BOSS_LOGIN_POLL_MS));
     }
-    try { await context.close(); } catch {}
+    await bossQuitLoginBrowser(browser, context);
     return { ok: false, error: '未检测到登录' };
   } catch (e) {
-    try { if (context) await context.close(); } catch {}
+    await bossQuitLoginBrowser(browser, context);
     return { ok: false, error: String((e && e.message) || e) };
   }
 }
@@ -471,30 +560,70 @@ async function bossSessionLogin() {
   return { status: 200, body: await loginInFlight };
 }
 
-// ===== headless 带会话抓取（串行锁：并发第二抓排队，不打爆风控）=====
+// ===== 带会话抓取（串行锁：并发第二抓排队，不打爆风控）=====
 let bossFetchChain = Promise.resolve();
 async function bossFetchOnce(url) {
   if (!bossSessionStatus().logged) { const e = new Error('Boss 会话未登录'); e.code = 'NO_SESSION'; throw e; }
-  let bin = null;
-  if (process.env.RESUME_TEST_NO_BROWSER !== '1') bin = await resolveChromium();   // headless-shell 定位 = PDF 导出同一探测链
-  const context = await bossLaunchContext(BOSS_PROFILE_DIR, { headless: true, executablePath: bin });
+  if (process.env.RESUME_TEST_NO_BROWSER === '1') return bossStubFetchOnce(url);
+  return bossFetchHttp(url);
+}
+
+// 纯 HTTP 带会话抓取：不起任何浏览器进程。实测 playwright 驱动的页面一律被 Boss 杀回
+// about:blank（headless_shell/CDP goto 都试过），且自动化痕迹会让服务端作废 wt2/zp_at
+// ——浏览器进程抓页 = 烧会话。cookie 快照 + 同款 UA 走请求头，没有任何自动化指纹可抓。
+// 手动跟跳：302 落点带 security/passport/web/user 或跳出 zhipin 域 = 会话失效（SSRF 同口径收口）。
+async function bossFetchHttp(url) {
+  const st = (() => { try { return JSON.parse(fs.readFileSync(BOSS_SESSION_STATE, 'utf8')); } catch { return {}; } })();
+  const cookieHeader = (st.cookies || []).map((c) => c.name + '=' + c.value).join('; ');
+  const uaMaj = ((st.ua || '').match(/Chrome\/(\d+)/) || [])[1] || '157';
+  const headers = {
+    'user-agent': st.ua || `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${uaMaj}.0.0.0 Safari/537.36`,
+    'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'accept-language': 'zh-CN,zh;q=0.9',
+    'referer': 'https://www.zhipin.com/',
+    'sec-ch-ua': `"Chromium";v="${uaMaj}", "Google Chrome";v="${uaMaj}", "Not A(Brand";v="99"`,
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"macOS"',
+    'sec-fetch-dest': 'document',
+    'sec-fetch-mode': 'navigate',
+    'sec-fetch-site': 'same-origin',
+    'upgrade-insecure-requests': '1',
+  };
+  if (cookieHeader) headers.cookie = cookieHeader;
+  let current = url;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 15000);   // 同 fetchPageText 15s 口径
   try {
-    // Boss visibility 反爬对策（社区已知）：headless 下页面判 hidden 就走安全验证——覆盖为恒可见
-    await context.addInitScript(() => {
-      Object.defineProperty(document, 'hidden', { get: () => false });
-      Object.defineProperty(document, 'visibilityState', { get: () => 'visible' });
-    });
+    for (let hop = 0; hop <= 5; hop++) {
+      const res = await fetch(current, { headers, redirect: 'manual', signal: ac.signal });
+      if (res.status >= 300 && res.status < 400) {
+        let abs = '';
+        try { abs = new URL(res.headers.get('location') || '', current).toString(); } catch {}
+        if (!abs || /security|passport|web\/user/i.test(abs) || !isZhipinUrl(abs)) {
+          bossMarkDead();   // §2.6 橙点分支：写 deadAt，UI 状态点转「会话失效」
+          const e = new Error('Boss 会话已失效，请重新登录或改用书签'); e.code = 'SESSION_DEAD'; throw e;
+        }
+        current = abs; continue;
+      }
+      if (!res.ok) { const e = new Error('Boss 页面响应 ' + res.status); e.code = 'FETCH_FAIL'; throw e; }
+      return (await res.text()).slice(0, 5 * 1024 * 1024);   // 同 fetchPageText 5MB 上限
+    }
+    const e = new Error('Boss 页面重定向过深'); e.code = 'FETCH_FAIL'; throw e;
+  } finally { clearTimeout(timer); }
+}
+
+// 测试替身：RESUME_TEST_NO_BROWSER=1 时的假身抓取（原 bossLaunchContext 路径原样保留，
+// stub content() 记 S/E 供串行锁行为断言观测）。语义与真身对齐：落地判死、返回 html。
+async function bossStubFetchOnce(url) {
+  const context = await bossLaunchContext(BOSS_PROFILE_DIR, { headless: true });
+  try {
     const page = context.pages()[0] || await context.newPage();
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    // waitForFunction(pageFunction, arg, options)：options 是第三参——第二参占位 undefined（T4 复核：原先
-    // 把 options 放 arg 位，实际吃了默认 30s 超时）
     await page.waitForFunction(() => window._jobInfo || document.querySelector('.job-sec-text'), undefined, { timeout: 8000 }).catch(() => {});
     const html = await page.content();
     const finalUrl = page.url();
-    // 失效判定（抓取后判）：跳去安全/登录页 = 会话死；跳到 zhipin 域外同理（顺带收口 SSRF：
-    // 302 跟跳后落点非 zhipin 时，带会话 profile 抓回的任意内网页不得进 meta）
     if (finalUrl.includes('/security') || finalUrl.includes('/web/user') || !isZhipinUrl(finalUrl)) {
-      bossMarkDead();   // §2.6 橙点分支：写 deadAt，UI 状态点转「会话失效」
+      bossMarkDead();
       const e = new Error('落地页为安全/登录页或非 zhipin 域'); e.code = 'SESSION_DEAD'; throw e;
     }
     return html;

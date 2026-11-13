@@ -532,5 +532,5 @@ FIELDS（editor-shell.js） → typoCss(v) → #typo-custom（落盘进 <head>�
 - **`extractJd(html,url)` 三层级**：站点表（zhipin 优先 `_jobInfo` 内嵌对象+`.job-sec-text`/`.company-name`，liepin/lagou/51job/zhaopin 备选择器未实测）→ JSON-LD `JobPosting` → body 纯文本兜底（8000 字符，与远程抓取 4000 分口径）。
 - **`POST /job/new` 预填**：预览页表单携带 jd/company/role/jdLink/from → /job/new 渲染预填表单；GET 与提交管线零变化，jdSource=原链接复用查重指纹。
 - **书签交付**：/job/new 链接区渲染 `javascript:` 可拖书签（action=当次实际端口 /import/page；target=_blank 隐藏表单 POST——fetch 会被目标站 CSP connect-src 拦，表单导航不会）。
-- **Boss 会话（轨 B）**：`boss-session/` 持久 profile（gitignore，运行时数据）；`POST /boss/session/login` 开有界面 chromium 等扫码（5min 超时、cookie 判登录）；抓取走 headless-shell+同 profile+visibility 覆盖脚本（Boss visibility 反爬对策）；失效判据=重定向 security/web-user 或 `_jobInfo` 缺席；串行锁。登录窗口只由用户主动动作触发，不静默起浏览器。cookie 不导出为文件——登录态不离开 chromium profile。
+- **Boss 会话（轨 B，2026-11-13 实测修订）**：`boss-session/` 持久 profile（gitignore，运行时数据）；`POST /boss/session/login` 经 `open` 直拉**真 Chrome**（独立 user-data-dir + 随机调试口）等扫码，服务端 `connectOverCDP` 只挂**浏览器域**被动监听（读 cookie/页面列表，不进页面——Boss 反爬不可见）；登录成功把 cookie+UA 快照进 `state.json`（会话凭据仅本机，logout 整目录清）。抓取走**纯 HTTP**（cookie 头+同款 UA，手动跟跳每跳查 security/passport/web-user 落点）——实测 playwright 驱动的页面（headed/headless/CDP goto）一律被杀回 about:blank 且烧掉会话 cookie，浏览器进程抓页此路不通。失效判据=落地安全/登录页或非 zhipin 域；串行锁保留。登录窗口只由用户主动动作触发，不静默起浏览器。
 - **测试**：Boss 修剪 fixture 剔除 `securityId`/`user_id` 类会话令牌（公开 JD 可入仓，凭据不可）。
