@@ -93,6 +93,13 @@ try {
   if (!cell(b3, '提取通道').includes('body')) fail('plain via 非 body：' + cell(b3, '提取通道'));
   if (!b3.includes('运维工程师')) fail('plain body 兜底 jd 为空或不含正文');
 
+  // ===== ④-0 GET → 200 使用说明（用户把地址当网址直接打开，不回裸 404）=====
+  const rg = await fetch(base + '/import/page');
+  const bg = await rg.text();
+  if (rg.status !== 200) fail('GET /import/page 非 200：' + rg.status);
+  if (!bg.includes('只接收书签发来的页面')) fail('GET /import/page 缺使用说明');
+  if (!bg.includes('href="javascript:') || !bg.includes('/import/page')) fail('GET /import/page 说明页缺可拖书签');
+
   // ===== ④ OPTIONS → 204 + 四头 =====
   const r4 = await fetch(base + '/import/page', { method: 'OPTIONS' });
   if (r4.status !== 204) fail('OPTIONS 非 204：' + r4.status);

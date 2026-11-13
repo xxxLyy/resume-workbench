@@ -2498,6 +2498,21 @@ function importPreviewPage({ srcUrl, title, company, role, jd, via, htmlTruncate
     <div class="card" style="margin-top:var(--space-3)"><b class="card-title">带入定制</b><div style="margin-top:var(--space-2)">${form}</div></div>`);
 }
 
+// GET /import/page：该地址只收书签 POST；用户把它当网址直接打开时给使用说明，不回裸 404（2026-11-13 实测困惑）
+function importHelpPage() {
+  return page('抓取此页', `
+    <div class="page-head"><h1>抓取此页</h1><a href="/job/new" style="font-size:13px;font-weight:400">手动粘贴 JD →</a></div>
+    <div class="card">
+      <p style="font-size:13px;margin:0">这个地址只接收书签发来的页面，不能直接打开。</p>
+      <ol style="font-size:13px;margin:var(--space-2) 0 0;padding-left:20px;line-height:1.8">
+        <li>把这个链接拖到浏览器书签栏：<a href="${escAttr(bookmarkletHref())}">抓取此页 → 工作台</a></li>
+        <li>打开招聘网站上的职位页。</li>
+        <li>点书签栏上的「抓取此页 → 工作台」，会新开一页显示提取结果。</li>
+      </ol>
+      <p style="font-size:12px;color:var(--mut);margin:var(--space-2) 0 0">旧书签打不开时，删掉它，按第 1 步重新拖一次。</p>
+    </div>`);
+}
+
 function jobNewPage(prefill = null) {
   const meta = loadMeta();
   // 母版下拉口径与拆出前 listPage infos 完全一致（在盘且未归档的全部文档，jobInfo 派生不筛选）。
@@ -4686,6 +4701,7 @@ async function handler(req, res) {
     // 零写盘零副作用——这是跨源豁免的依据（mutating 定义处统一）。响应刻意不带 ACAO：
     // 表单导航不依赖 CORS（target=_blank 在新标签渲染照常）；不带 ACAO 让跨站 fetch 读不到预览——
     // 预览含母版简历标题清单，跨站暴露即信息泄漏（T2 复核返工）。
+    if (req.method === 'GET' && url.pathname === '/import/page') return send(200, importHelpPage());
     if (req.method === 'POST' && url.pathname === '/import/page') {
       const text = await readBody(req);   // 共享 10MB body 上限（urlencoded 编码膨胀在外层兜底）；超限走统一 catch → 413
       const params = new URLSearchParams(text);
