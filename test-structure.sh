@@ -2224,7 +2224,7 @@ const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','
   '/api/extract','/app','/app/add','/app/archive-regenerate','/app/del','/app/followup/cancel','/app/followup/discard','/app/followup/start','/app/followup/state','/app/ics',
   '/app/practice/answer','/app/practice/feedback/cancel','/app/practice/feedback/start','/app/practice/history','/app/practice/missing/material','/app/practice/start','/app/practice/state',
   '/app/update','/applications',   // 批4 b4c1：练习会话六路由（登记非放宽）
-  '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf','/import/page','/inbox/dismiss','/inbox/draft','/inbox/eval','/inbox/status',
+  '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf','/import/page','/inbox','/inbox/dismiss','/inbox/draft','/inbox/eval','/inbox/status',
   '/job-panel.js','/job/brief','/job/changes','/job/create','/job/feedback-del','/job/generate','/job/gen-cancel','/job/gen-retry','/job/gen-start','/job/new','/layout-info','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',
   '/materials','/new','/onboarding','/onboarding/guided','/onboarding/star-suggest','/onboarding/step','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings','/eval/create','/eval/promote','/evals',
   '/share/copy','/share/pdf',
@@ -5594,6 +5594,24 @@ assert(/function inp\(i, f, label, val, extra\) \{[\s\S]*?<label[\s\S]*?<input [
 assert(/<input type="file" id="restoreFile"[^>]*aria-label="/.test(srv), '备份文件选择应有可访问名（aria-label）');
 assert(srv.includes('guide.hidden = state.profiles.length > 0'), 'render() 应随配置状态显隐说明卡（删光配置后重新出现）');
 console.log('✅ R3 投递看板与设置页表单/可访问性源级钉值');
+EOF
+
+# ===== 收件箱 T6 · portNotice 端口漂移提示（源级钉值；2026-11-13 spec §2.9）=====
+node --input-type=module << 'EOF'
+import { strict as assert } from 'node:assert';
+import fs from 'node:fs';
+const srv = fs.readFileSync('server.mjs', 'utf8');
+assert.ok(srv.includes('书签要重新拖一次'), 'portNotice 文案「书签要重新拖一次」缺失');
+assert.ok(/const portNotice = \(\) =>/.test(srv), 'portNotice 未定义');
+// 三处调用：/job/new（jobNewPage）、/inbox（inboxPage）、importHelpPage——截取各函数体确认调用
+const grab = (fn) => {
+  const i = srv.indexOf('function ' + fn);
+  assert.ok(i >= 0, fn + ' 未定义');
+  const j = srv.indexOf('\nfunction ', i + 9);
+  return srv.slice(i, j > i ? j : srv.length);
+};
+for (const fn of ['jobNewPage', 'inboxPage', 'importHelpPage']) assert.ok(grab(fn).includes('portNotice()'), fn + ' 未调用 portNotice()');
+console.log('✅ portNotice 端口漂移提示：jobNewPage/inboxPage/importHelpPage 三页就位（源级钉值）');
 EOF
 
 # ===== 批 1 · B1C6 复盘层级重排：主卡 2/3 + 侧卡 1/3 + 三分布网格收窄（源级钉值；行为面走 test-stats-loop-view.mjs）=====

@@ -10,6 +10,8 @@
 //     桩 500 → error → 重评 scored；scored 可重评/不存在 id 跳过；重启 running→queued 恢复；未配模型 409。
 //   ⑦ T5 建草稿/不考虑：已评估→promote(brief.focus 含 angle、promotedTo 回写)；未评估→jdSource「收件箱」；
 //     同 JD 409 existing → 仍 ok+drafted；/inbox/dismiss → status 摘除+文件留 dismissed；不存在 id → 404。
+//   ⑧ T6：评估中被 dismiss → 留 dismissed 但补记 evalId（worker 不复活状态）；
+//     /inbox 页（导航/排序/复选框/徽章/空态/nonce/无内部字段）；/evals 行锚点；首页待办。
 // 手法：隔离 RESUME_ROOT + assembleTemplate 合成母版 + 随机端口真实 server + OpenAI 兼容桩
 // （同 test-eval-promote-brief.mjs；口令从 GET /job/new 的书签 href 解析）。不碰 7766，不写真实数据。
 import assert from 'node:assert/strict';
@@ -368,7 +370,74 @@ try {
   assert.equal((await postJson('/inbox/dismiss', { id: 'ib-nope' })).status, 404, '不存在 id 应 404');
   assert.equal((await postJson('/inbox/draft', { id: 'ib-nope', from: DOC })).status, 404, 'draft 不存在 id 应 404');
 
-  console.log('✅ inbox T2+T4+T5：口令收入/判重/锁挡/旧预览回退；并发 1 条；dismissed/drafted 文案；批量评估串行(峰值1)/失败重试/重评+跳过/重启恢复/未配模型 409；建草稿(评估/未评估/同JD 409)/不考虑/404');
+  // ===== T6 复核：worker 回写不复活 status——评估中被 dismiss → 留 dismissed 但补记 evalId =====
+  {
+    const idC = await collect(jdOf('批F'), 'https://www.zhipin.com/job_detail/e6.html', '批F', k);
+    await postJson('/inbox/eval', { ids: [idC], from: DOC });
+    const run = await waitItem(idC, 'running');
+    assert.ok(run, '条目应进入 running');
+    await postJson('/inbox/dismiss', { id: idC });
+    // 等桩返回后 worker 回写：inbox.json 里 evalId 出现，但 status 仍是 dismissed
+    const dl = Date.now() + 20000;
+    let it = null;
+    while (Date.now() < dl) {
+      it = loadInboxFile().find((x) => x.id === idC);
+      if (it && it.evalId) break;
+      await sleep(200);
+    }
+    assert.ok(it && it.evalId, '评估完成后应补记 evalId');
+    assert.equal(it.status, 'dismissed', '被 dismiss 的条目不应被 worker 复活，实际：' + it.status);
+    fs.writeFileSync(inboxFile, '[]');   // 清空进入页面断言
+  }
+
+  // ===== T6：/inbox 页 =====
+  const getHtml = async (p) => { const r = await fetch(base + p); return { status: r.status, html: await r.text() }; };
+  {
+    // 造排序数据：scored 4分、scored 2分、new 各一
+    const ib = [
+      { id: 'ib-s4', url: 'https://www.zhipin.com/job_detail/s4.html', urlKey: 'https://www.zhipin.com/job_detail/s4.html', title: '', company: '甲公司', role: '岗位甲', salary: '30-40K', jd: 'x'.repeat(60), jdFp: 'fp1', dupHints: [], status: 'scored', from: DOC, evalId: 'ev-s4', score: 4, verdict: 'apply', error: null, draftId: null, createdAt: '2026-11-13T01:00:00Z', updatedAt: '2026-11-13T01:00:00Z' },
+      { id: 'ib-s2', url: 'https://www.zhipin.com/job_detail/s2.html', urlKey: 'https://www.zhipin.com/job_detail/s2.html', title: '', company: '乙公司', role: '岗位乙', salary: '', jd: 'y'.repeat(60), jdFp: 'fp2', dupHints: [], status: 'scored', from: DOC, evalId: 'ev-s2', score: 2, verdict: 'caution', error: null, draftId: null, createdAt: '2026-11-13T02:00:00Z', updatedAt: '2026-11-13T02:00:00Z' },
+      { id: 'ib-n1', url: 'https://www.zhipin.com/job_detail/n1.html', urlKey: 'https://www.zhipin.com/job_detail/n1.html', title: '', company: '丙公司', role: '岗位丙', salary: '15-20K', jd: 'z'.repeat(60), jdFp: 'fp3', dupHints: [], status: 'new', from: null, evalId: null, score: null, verdict: null, error: null, draftId: null, createdAt: '2026-11-13T03:00:00Z', updatedAt: '2026-11-13T03:00:00Z' },
+    ];
+    fs.writeFileSync(inboxFile, JSON.stringify(ib));
+    const { status, html } = await getHtml('/inbox');
+    assert.equal(status, 200, '/inbox 应 200');
+    assert.ok(html.includes('<a href="/inbox" class="on" aria-current="page">待筛选</a>'), '投递导航首项应为「待筛选」且高亮');
+    // 排序：4分 → 2分 → new（按 [data-ib] 出现次序）
+    const order = [...html.matchAll(/data-ib="([a-zA-Z0-9_-]+)"/g)].map((m) => m[1]).filter((v, i, a) => a.indexOf(v) === i);
+    assert.deepEqual(order, ['ib-s4', 'ib-s2', 'ib-n1'], '行序应为 scored 降分在前、new 在后：' + order.join(','));
+    assert.ok(html.includes('name="ib" value="ib-s4"'), '每行应有 name=ib 复选框');
+    assert.ok(html.includes('30-40K'), '行应显示薪资');
+    assert.ok(html.includes('>建草稿</button>') && html.includes('>不考虑</button>'), '行应有建草稿/不考虑');
+    assert.ok(html.includes('href="/evals#ev-s4"'), 'scored 分数徽章应链到 /evals#evalId');
+    assert.ok(html.includes('>待评估</span>'), 'new 应有「待评估」徽章');
+    // 不暴露内部字段
+    assert.ok(!html.includes('jdFp') && !html.includes('urlKey'), '页面不得出现内部字段名');
+    // 全部内联脚本带 nonce
+    const scripts = html.match(/<script(?![^>]*nonce=)[^>]*>/g);
+    assert.ok(!scripts, '存在无 nonce 的内联脚本：' + JSON.stringify(scripts));
+    // /applications 页同一条投递导航含 /inbox
+    const apps = await getHtml('/applications');
+    assert.ok(apps.html.includes('href="/inbox"'), '投递页导航应含 /inbox');
+    // /evals 行锚点：evalHistoryRows 行外层 id = evalId
+    const evalsPage = await getHtml('/evals');
+    assert.ok(/id="ev-[^"]+"/.test(evalsPage.html), '/evals 行应有 id=evalId 锚点');
+    // 空态：写空 → 「收件箱是空的」+ 书签 href
+    fs.writeFileSync(inboxFile, '[]');
+    const em = await getHtml('/inbox');
+    assert.ok(em.html.includes('收件箱是空的'), '空态文案缺失');
+    assert.ok(em.html.includes('javascript:'), '空态应给可拖书签链接');
+    // 首页待办（需状态 2：有投递记录才渲染待办列表）
+    fs.writeFileSync(inboxFile, JSON.stringify(ib));
+    fs.writeFileSync(path.join(root, 'applications.json'), JSON.stringify([{ id: 'a-t1', company: '丙公司', role: '岗位丙', status: '已投递', createdAt: '2026-11-13T00:00:00Z' }]));
+    const home = await getHtml('/');
+    assert.ok(home.html.includes('收件箱有 1 个岗位待评估'), '首页应显示收件箱待办：' + (home.html.match(/收件箱有[^<]*/) || ['（无）'])[0]);
+    assert.ok(/href="\/inbox"[^>]*>去筛选</.test(home.html), '待办应链接 /inbox 带「去筛选」');
+    fs.writeFileSync(inboxFile, '[]');
+    fs.rmSync(path.join(root, 'applications.json'), { force: true });
+  }
+
+  console.log('✅ inbox T2+T4+T5+T6：口令收入/判重/锁挡/旧预览回退；并发 1 条；dismissed/drafted 文案；批量评估串行(峰值1)/失败重试/重评+跳过/重启恢复/未配模型 409；建草稿(评估/未评估/同JD 409)/不考虑/404；worker 不复活 dismissed；/inbox 页(导航/排序/徽章/空态/nonce/无内部字段)；/evals 锚点；首页待办');
 } catch (e) {
   cleanup();
   fail(e && e.message || String(e));

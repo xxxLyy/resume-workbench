@@ -396,11 +396,20 @@ async function inboxDrain() {
       try {
         inboxPatch(next.id, { status: 'running', error: null });
         const r = await evalJdCore(root, { from: next.from, jd: next.jd, company: next.company, role: next.role, lease });
-        inboxPatch(next.id, r.ok
-          ? { status: 'scored', evalId: r.rec.id, score: r.rec.score, verdict: r.rec.verdict, error: null }
-          : { status: 'error', error: r.error });
+        // 回写前重读（复核修复）：评估期间用户可能已改状态（如「不考虑」）——
+        // 成功只补记 evalId/score/verdict，不把 status 拉回 scored；仍 running 才走正常终态写入。
+        const cur = loadInbox().find((x) => x && x.id === next.id);
+        if (!cur) { /* 条目在评估期间被物理移除（不应发生，dismiss 只改状态）——跳过回写 */ }
+        else if (cur.status === 'running') {
+          inboxPatch(next.id, r.ok
+            ? { status: 'scored', evalId: r.rec.id, score: r.rec.score, verdict: r.rec.verdict, error: null }
+            : { status: 'error', error: r.error });
+        } else if (r.ok) {
+          inboxPatch(next.id, { evalId: r.rec.id, score: r.rec.score, verdict: r.rec.verdict });
+        }
       } catch (e) {
-        inboxPatch(next.id, { status: 'error', error: '评估异常：' + String((e && e.message) || e).slice(0, 200) });
+        const cur = loadInbox().find((x) => x && x.id === next.id);
+        if (cur && cur.status === 'running') inboxPatch(next.id, { status: 'error', error: '评估异常：' + String((e && e.message) || e).slice(0, 200) });
       } finally { try { lease.release(); } catch {} }
     }
   } finally { inboxWorker.running = false; }
@@ -2084,7 +2093,7 @@ ${WRITE_HELPER_JS}</body></html>`;
 // 只是三个已有页面的互链，不是新路由。
 // 模块级（与 page() 同级）：各路由把 inner 拼好才传进 page()，定义在 page() 体内够不到调用点。
 const appTabs = (on) => `<nav class="apptabs" aria-label="投递">${
-  [['apps', '/applications', '看板'], ['apply', '/apply-profile', '网申包'], ['stats', '/stats', '复盘']]
+  [['inbox', '/inbox', '待筛选'], ['apps', '/applications', '看板'], ['apply', '/apply-profile', '网申包'], ['stats', '/stats', '复盘']]
     .map(([k, href, label]) => `<a href="${href}"${on === k ? ' class="on" aria-current="page"' : ''}>${label}</a>`).join('')
 }</nav>`;
 
@@ -2289,6 +2298,15 @@ const EVAL_HISTORY_JS = `
       } catch (err) { if (msg) __status(msg, 'err', err.message); t.disabled = false; }
     }
   });
+  // hash 锚点展开（收件箱 4 分徽章直达 /evals#<evalId>）：找到行 → 程序化点「查看报告」→ 滚到视图
+  if (location.hash) {
+    var anchor = document.getElementById(decodeURIComponent(location.hash.slice(1)));
+    if (anchor) {
+      var rb = anchor.querySelector('[data-eval-hist="report"]');
+      if (rb) rb.click();
+      anchor.scrollIntoView({ block: 'center' });
+    }
+  }
 })();`;
 
 // ===== 评估历史（/evals 页专用渲染函数；批 1 §0.3 起首页评估历史卡已撤除）=====
@@ -2328,7 +2346,7 @@ function evalHistoryRows(records, docExists) {
     const promoteBtn = canPromote
       ? `<button type="button" data-eval-hist="promote" data-eval-id="${escAttr(rid)}" data-eval-from="${escAttr(srcDoc)}">转入适配</button>`
       : `<button type="button" disabled style="visibility:hidden">转入适配</button>`;
-    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap">
+    return `<div id="${escAttr(rid)}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap">
       <span>${badge('ai', ((rec && rec.score) == null ? '—' : String(rec.score)) + ' / 5')}${badge(cls, EVAL_VERDICT_TEXT[v] || '未定')}<span style="color:var(--mut);font-size:12px">${escHtml(String((rec && rec.company) || '') + '·' + String((rec && rec.role) || ''))} · ${escHtml(evalTimeText(rec && rec.createdAt))}</span>${status}</span>
       <span style="display:flex;gap:6px;align-items:center"><button type="button" class="secondary" data-eval-hist="report" data-eval-id="${escAttr(rid)}">查看报告</button>${promoteBtn}</span>
     </div>
@@ -2414,7 +2432,9 @@ function listPage(showArchived = false) {
   const fuDays = followUpDays(root);
   const fuDueApps = hasLLM(root) ? allApps.filter((a) => !APP_TERMINAL.includes(a.status) && followUpState(a, { nowMs, thresholdDays: fuDays }).due) : [];
   const staleDocs = infos.filter((d) => siMap.get(d.id) === 'stale');
+  const inboxNew = loadInbox().filter((x) => x && x.status === 'new').length;
   const todoItems = [
+    ...(inboxNew ? [{ dot: 'ready', t: `收件箱有 ${inboxNew} 个岗位待评估`, act: '/inbox', actLabel: '去筛选' }] : []),
     ...staleDocs.slice(0, 3).map((d) => ({ dot: 'ready', t: `「${d.title}」的 PDF 不是最新`, act: `/export?id=${escAttr(d.id)}`, actLabel: '重新导出' })),
     ...fuDueApps.slice(0, 3).map((a) => ({ dot: 'sent', t: `${escHtml(a.company || '')} 已过 ${fuDays} 天无回应，可以写一句跟进`, act: `/app?id=${escAttr(a.id)}`, actLabel: '起草跟进语' })),
     ...infos.filter((d) => d.degraded).slice(0, 2).map((d) => ({ dot: 'draft', t: `「${d.title}」还没整理成结构化简历`, act: `/edit?id=${escAttr(d.id)}`, actLabel: '去整理' })),
@@ -2607,6 +2627,11 @@ function importTokenOk(k) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 function bookmarkletHref() { return 'javascript:' + BOOKMARKLET_JS.replace('__PORT__', String(boundPort)).replace('__TOKEN__', importToken()); }
+// 端口漂移提醒（2026-11-13 spec §2.9）：PORT 未显式指定且实际端口 ≠ 7766 → 旧书签打到了别的实例，
+// 在 /job/new、/inbox、importHelpPage 三处顶部提示重拖书签（书签 action 跟随 boundPort，不影响新拖）。
+const portNotice = () => (!process.env.PORT && boundPort !== 7766)
+  ? `<div class="card" style="border-color:var(--warn);margin-bottom:var(--space-3)"><b style="color:var(--warn)">服务这次跑在 ${boundPort} 端口，书签要重新拖一次。</b></div>`
+  : '';
 
 // ===== JD 导入预览页（spec §10.20）：POST /import/page 的提取结果呈现 + 「带去定制」表单 =====
 // 纯表单零脚本需求（page() 外壳自带 nonce 脚本位，本页不新增脚本）。外部输入（url/title/提取文本）
@@ -2694,9 +2719,116 @@ function importSavedPage({ added, item, total, srcUrl }) {
     <script nonce="__CSP_NONCE__">(function(){var t=setTimeout(function(){window.close();},2000);['pointerdown','keydown','focusin'].forEach(function(e){document.addEventListener(e,function(){clearTimeout(t);},{once:true});});})();</script>`);
 }
 
+// ===== 收件箱页（2026-11-13 spec §2.8）：勾选 → 后台串行评估 → 按分排序 → 逐条建草稿 =====
+// 排序：scored 按分数降序在前（高分在上），其余（new/queued/running/error/drafted）按收入时间倒序。
+// 页面不暴露内部字段（via/jdFp/urlKey/状态枚举原文）——只出中文徽章。
+function inboxPage() {
+  const items = loadInbox().filter((x) => x && x.status !== 'dismissed');
+  const meta = loadMeta();
+  // 母版下拉口径 = jobNewPage 的 infos（在盘且未归档全部文档）
+  const infos = docIdsOnDisk().map((did) => docInfo(did, meta[did])).filter(Boolean).filter((d) => !((meta[d.id] || {}).archivedAt));
+  const dayText = (s) => { const t = new Date(String(s || '')); return isNaN(t) ? '' : `${t.getMonth() + 1} 月 ${t.getDate()} 日`; };
+  const stBadge = (it) => {
+    if (it.status === 'new') return badge('mute', '待评估');
+    if (it.status === 'queued') return badge('mute', '排队中');
+    if (it.status === 'running') return badge('ai', '评估中');
+    if (it.status === 'scored') {
+      const cls = it.verdict === 'apply' ? 'ok' : 'warn';
+      const txt = `${it.score == null ? '—' : it.score} 分`;
+      return it.evalId ? `<a href="/evals#${escAttr(it.evalId)}">${badge(cls, txt)}</a>` : badge(cls, txt);
+    }
+    if (it.status === 'error') return badge('err', '失败：' + escHtml(String(it.error || '').slice(0, 40)));
+    if (it.status === 'drafted') return VALID_ID.test(it.draftId || '') ? `<a href="/edit?id=${escAttr(it.draftId)}">${badge('ok', '已建稿')}</a>` : badge('ok', '已建稿');
+    return badge('mute', '待处理');
+  };
+  const dupBadge = (it) => (it.dupHints || []).length
+    ? `<span title="${escAttr(it.dupHints.map((h) => h.label || '').join('；'))}">${badge('warn', '做过/投过')}</span>` : '';
+  const scored = items.filter((x) => x.status === 'scored').sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0));
+  const rest = items.filter((x) => x.status !== 'scored').sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  const row = (it) => {
+    const href = safeUrl(it.url);
+    const name = `${escHtml(it.company || '（未识别）')} · ${escHtml(it.role || '（未识别）')}${it.salary ? ' · ' + escHtml(it.salary) : ''}`;
+    return `<div data-ib="${escAttr(it.id)}" style="display:flex;align-items:center;gap:var(--space-3);padding:8px 0;border-top:1px solid var(--line);flex-wrap:wrap">
+      <input type="checkbox" name="ib" value="${escAttr(it.id)}" aria-label="选择 ${escAttr(it.company || '')} ${escAttr(it.role || '')}">
+      <span style="flex:1;min-width:220px"><b>${name}</b>
+        <div style="font-size:12px;color:var(--mut)">${escHtml(dayText(it.createdAt))}收入${href ? ` · <a href="${escAttr(href)}">原链接</a>` : ''}</div></span>
+      <span class="st">${stBadge(it)}${dupBadge(it)}</span>
+      <span class="ops" style="display:flex;gap:6px">
+        <button type="button" class="secondary" data-ib-act="draft" data-ib-id="${escAttr(it.id)}">建草稿</button>
+        <button type="button" class="secondary" data-ib-act="dismiss" data-ib-id="${escAttr(it.id)}">不考虑</button>
+      </span></div>`;
+  };
+  const controls = infos.length
+    ? `<div style="display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap;margin-top:var(--space-3)">
+        <label style="font-size:13px">用哪份简历评估 <select id="ibFrom">${infos.map((d) => `<option value="${escAttr(d.id)}">${d.title}（${d.id}）</option>`).join('')}</select></label>
+        <button type="button" id="ibEval" disabled>批量评估所选</button>
+        <span id="ibCount" style="font-size:13px;color:var(--mut)">已选 0 条</span>
+        <span id="ibMsg" role="status" class="ap-note"></span></div>`
+    : `<p style="font-size:13px;color:var(--mut);margin-top:var(--space-2)">还没有简历文档，先去<a href="/">建一份</a>再来批量评估。</p>`;
+  const empty = `<div class="card" style="text-align:center;padding:40px;color:var(--mut)">
+      <b>收件箱是空的</b>
+      <p style="font-size:13px">把书签拖到书签栏，在招聘网站的职位页点一下，岗位就会收进这里。</p>
+      <p><a href="${escAttr(bookmarkletHref())}">抓取此页 → 工作台</a></p>
+      <p style="font-size:12px"><a href="/job/new">或者手动粘贴 JD →</a></p></div>`;
+  return page('待筛选', `${portNotice()}
+    <div class="page-head"><h1>待筛选</h1></div>${appTabs('inbox')}
+    ${items.length ? `<div class="card">${[...scored, ...rest].map(row).join('')}</div>${controls}` : empty}
+    <script nonce="__CSP_NONCE__">(function(){
+      var list = document.querySelectorAll('input[name="ib"]');
+      var btn = document.getElementById('ibEval');
+      var cnt = document.getElementById('ibCount');
+      var msg = document.getElementById('ibMsg');
+      var refresh = function () {
+        var n = 0; list.forEach(function (c) { if (c.checked) n++; });
+        if (btn) btn.disabled = n === 0;
+        if (cnt) cnt.textContent = '已选 ' + n + ' 条';
+      };
+      list.forEach(function (c) { c.addEventListener('change', refresh); });
+      refresh();
+      if (btn) btn.addEventListener('click', function () {
+        var ids = []; list.forEach(function (c) { if (c.checked) ids.push(c.value); });
+        btn.disabled = true;
+        __wv('/inbox/eval', { ids: ids, from: document.getElementById('ibFrom').value }, msg)
+          .then(function () { location.reload(); }).catch(function () { btn.disabled = false; });
+      });
+      document.addEventListener('click', function (e) {
+        var t = e.target.closest('[data-ib-act]');
+        if (!t) return;
+        t.disabled = true;
+        var id = t.getAttribute('data-ib-id');
+        if (t.getAttribute('data-ib-act') === 'draft') {
+          __wv('/inbox/draft', { id: id, from: (document.getElementById('ibFrom') || {}).value }, msg)
+            .then(function (d) { if (d && d.id) location.href = '/edit?id=' + encodeURIComponent(d.id); else location.reload(); })
+            .catch(function () { t.disabled = false; });
+        } else {
+          __wv('/inbox/dismiss', { id: id }, msg)
+            .then(function () { location.reload(); }).catch(function () { t.disabled = false; });
+        }
+      });
+      // 有排队中/评估中的条目 → 3s 轮询 /inbox/status 更新状态格；全部落定后整页刷新拿终态渲染
+      var pending = ${items.some((x) => x.status === 'queued' || x.status === 'running') ? 'true' : 'false'};
+      if (pending) {
+        var LBL = { 'new': '待评估', 'queued': '排队中', 'running': '评估中', 'error': '失败' };
+        var timer = setInterval(function () {
+          fetch('/inbox/status').then(function (r) { return r.json(); }).then(function (d) {
+            var items = (d && d.items) || [];
+            var busy = false;
+            items.forEach(function (it) {
+              if (it.status === 'queued' || it.status === 'running') busy = true;
+              var row = document.querySelector('[data-ib="' + it.id + '"] .st');
+              if (row && LBL[it.status]) row.textContent = LBL[it.status];
+              if (row && it.status === 'scored') row.textContent = (it.score == null ? '—' : it.score) + ' 分';
+            });
+            if (!busy) { clearInterval(timer); location.reload(); }
+          }).catch(function () {});
+        }, 3000);
+      }
+    })();</script>`, 'apps');
+}
+
 // GET /import/page：该地址只收书签 POST；用户把它当网址直接打开时给使用说明，不回裸 404（2026-11-13 实测困惑）
 function importHelpPage() {
-  return page('抓取此页', `
+  return page('抓取此页', `${portNotice()}
     <div class="page-head"><h1>抓取此页</h1><a href="/job/new" style="font-size:13px;font-weight:400">手动粘贴 JD →</a></div>
     <div class="card">
       <p style="font-size:13px;margin:0">这个地址只接收书签发来的页面，不能直接打开。</p>
@@ -2732,7 +2864,7 @@ function jobNewPage(prefill = null) {
   for (const mt of loadMats()) for (const t of (Array.isArray(mt.tags) ? mt.tags : [])) if (typeof t === 'string' && t.trim()) tagCount.set(t.trim(), (tagCount.get(t.trim()) || 0) + 1);
   const tagChips = [...tagCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)
     .map(([t]) => `<button type="button" class="chip" data-tag="${escAttr(t)}">${escHtml(t)}</button>`).join('');
-  return page('为岗位定制简历', `
+  return page('为岗位定制简历', `${portNotice()}
     <div class="page-head"><h1>为岗位定制简历</h1><a href="/evals" style="font-size:13px;font-weight:400">评估历史 →</a></div>
     ${infos.length === 0 ? `<div class="card" style="border-style:dashed"><b>还没有母版简历</b>
         <p style="font-size:13px;color:var(--mut);margin:6px 0 10px">需要一份母版简历：先新建一份，或到<a href="/#up">首页上传 PDF 导入</a>，再回到这里为岗位定制可投递的两页版本。</p>
@@ -4963,6 +5095,9 @@ async function handler(req, res) {
       if (queued) saveInbox(list);
       inboxDrain().catch((e) => console.error('[inbox] worker', e));
       return sendJson(200, { ok: true, queued });
+    }
+    if (req.method === 'GET' && url.pathname === '/inbox') {
+      return send(200, inboxPage());
     }
     if (req.method === 'GET' && url.pathname === '/inbox/status') {
       return sendJson(200, { ok: true, items: loadInbox().filter((x) => x && x.status !== 'dismissed').map(({ id, status, score, verdict, error, draftId }) => ({ id, status, score, verdict, error, draftId })) });
