@@ -469,17 +469,28 @@ async function bossSnapshotSession(context, browser) {
   return { cookies, ua };
 }
 
-// Chrome 把实际调试端口落盘 <profile>/DevToolsActivePort 首行（--remote-debugging-port=0 随机）。
+// Chrome 把实际调试端口落盘 <profile>/DevToolsActivePort：首行端口（--remote-debugging-port=0 随机），
+// 次行本实例浏览器 ws 路径 /devtools/browser/<uuid>。Chrome 退出**不删**此文件（2026-11-13 实测）——
+// 读到的可能是上一个实例的死端口，必须经 bossDebugAlive 对上 ws 路径才算本 profile 的活实例。
 function bossReadDebugPort(profileDir) {
   try {
-    const n = parseInt(fs.readFileSync(path.join(profileDir, 'DevToolsActivePort'), 'utf8').split('\n')[0], 10);
-    return n > 0 ? n : 0;
-  } catch { return 0; }
+    const [p, ws] = fs.readFileSync(path.join(profileDir, 'DevToolsActivePort'), 'utf8').split('\n');
+    const port = parseInt(p, 10);
+    return port > 0 ? { port, wsPath: String(ws || '').trim() } : null;
+  } catch { return null; }
 }
-function bossPortAlive(port) {
+// 活性 = 端口应答 /json/version 且 webSocketDebuggerUrl 以文件次行 ws 路径收尾——端口被别的
+// 浏览器复用时 uuid 对不上，不会误连别人的实例。
+function bossDebugAlive(info) {
+  if (!info || !info.wsPath) return Promise.resolve(false);
   return new Promise((resolve) => {
-    const req = http.get({ host: '127.0.0.1', port, path: '/json/version', timeout: 1500 }, (res) => {
-      res.resume(); resolve(res.statusCode === 200);
+    const req = http.get({ host: '127.0.0.1', port: info.port, path: '/json/version', timeout: 1500 }, (res) => {
+      let body = '';
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => {
+        try { resolve(res.statusCode === 200 && String(JSON.parse(body).webSocketDebuggerUrl || '').endsWith(info.wsPath)); }
+        catch { resolve(false); }
+      });
     });
     req.on('timeout', () => { req.destroy(); resolve(false); });
     req.on('error', () => resolve(false));
@@ -505,20 +516,24 @@ async function bossLoginFlow() {
     if (noBrowser) {
       context = await bossLaunchContext(BOSS_PROFILE_DIR, { headless: false });
     } else {
-      // 已跑着的实例（上次窗没关）→ 直复用其调试口；否则开新窗并等端口落盘。
-      let port = bossReadDebugPort(BOSS_PROFILE_DIR);
-      if (!port || !(await bossPortAlive(port))) {
+      // 已跑着的实例（上次窗没关）→ 直复用其调试口；否则删旧端口文件、开新窗，
+      // 等到新实例落盘且活性校验通过（旧文件不删 = 读到死端口立刻误连，用户扫码无人监听）。
+      let info = bossReadDebugPort(BOSS_PROFILE_DIR);
+      if (!(await bossDebugAlive(info))) {
+        try { fs.rmSync(path.join(BOSS_PROFILE_DIR, 'DevToolsActivePort'), { force: true }); } catch {}
         if (!bossOpenLoginWindow(BOSS_PROFILE_DIR, BOSS_LOGIN_URL)) {
           return { ok: false, error: '未找到可用浏览器（登录要开真窗口）' };
         }
-        const deadline = Date.now() + 10000;
-        while (!port && Date.now() < deadline) {
-          port = bossReadDebugPort(BOSS_PROFILE_DIR);
-          if (!port) await new Promise((r) => setTimeout(r, 300));
+        const deadline = Date.now() + 15000;
+        info = null;
+        while (Date.now() < deadline) {
+          const cand = bossReadDebugPort(BOSS_PROFILE_DIR);
+          if (await bossDebugAlive(cand)) { info = cand; break; }
+          await new Promise((r) => setTimeout(r, 300));
         }
-        if (!port) return { ok: false, error: '浏览器调试端口未就绪' };
+        if (!info) return { ok: false, error: '登录窗口已打开，但调试端口未就绪，请关掉窗口后重试' };
       }
-      browser = await bossConnectCDP(port);
+      browser = await bossConnectCDP(info.port);
       context = browser.contexts()[0];
       if (!context) return { ok: false, error: '浏览器上下文未就绪' };
     }

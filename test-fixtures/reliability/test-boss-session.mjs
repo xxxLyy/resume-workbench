@@ -223,6 +223,9 @@ try {
     assert.ok(src.includes('bossFetchHttp'), '应有纯 HTTP 抓取函数 bossFetchHttp');
     assert.ok(src.includes("redirect: 'manual'"), '应手动跟跳（每跳查安全页落点）');
     assert.ok(src.includes('bossSnapshotSession'), '登录成功应快照 cookie+UA 入 state.json');
+    // Chrome 退出不删 DevToolsActivePort：开新窗前必须删旧文件，活性必须对上 ws 路径（实测误连死端口）
+    assert.ok(src.includes("fs.rmSync(path.join(BOSS_PROFILE_DIR, 'DevToolsActivePort')"), '开新登录窗前应删旧 DevToolsActivePort');
+    assert.ok(/webSocketDebuggerUrl[^\n]*endsWith\(info\.wsPath\)/.test(src), '调试口活性应校验 ws 路径（防旧端口/别家实例误连）');
     assert.ok(/bossFetchChain\.then/.test(src), '应有串行锁链（bossFetchChain.then）');
     assert.equal((src.match(/launchPersistentContext/g) || []).length, 1, 'launchPersistentContext 应只在注入点 bossLaunchContext 出现一次');
     assert.ok(src.includes("path.join(BOSS_SESSION_DIR, 'profile')"), 'userDataDir 应为 boss-session/profile 子目录');
