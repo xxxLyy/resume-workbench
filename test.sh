@@ -2518,6 +2518,13 @@ else
   fi
 fi
 
+# ===== 16q-3. JD 收件箱 + 批量评估：口令收入 / 双路判重 / 串行 worker（桩并发峰值=1）/ 失败重试 / 重启恢复 / 建草稿与不考虑 / /inbox 页与 /evals 锚点（独立隔离根 + 本地 stub LLM，非浏览器段；2026-11-13 T2–T6）=====
+if node test-fixtures/reliability/test-inbox.mjs; then
+  echo '✅ JD 收件箱回归（口令收入 / 判重 / 串行评估峰值1 / 失败重试 / 重启恢复 / 建草稿 / dismiss / 页面与锚点）'
+else
+  fail "JD 收件箱回归未通过 (exit $?)"
+fi
+
 # ===== 16r. F3 AI 面试准备建议持久化：/ai/prep 成功落 app.preps（最新在前上限 20）+ /app 服务端渲染最近一次与历史生成 + 失败零写入（独立隔离根 + 本地 stub LLM，非浏览器段）=====
 if node test-fixtures/reliability/test-ai-prep-persist.mjs; then
   echo '✅ 面试准备建议持久化回归（双版本可见且最新在前 / 21 次截 20 + 历史转义 / 409 零写入 / 非法 id 400）'

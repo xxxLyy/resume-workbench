@@ -1613,3 +1613,13 @@ Flash 23 条要点见各提交信息与 `b47-report` 工作流报告；收口时
 - **删除范围**：server.mjs 会话代码块（登录/快照/抓取/桩）、`/boss/session/status|login|logout`、`/job/new` 会话卡及脚本、`/job/create` zhipin 会话分支与 SESSION_DEAD 清孤儿分支、前端「会话已失效」提示分支、`chromium.mjs` 的 `expectedRevision` 导入；`test-boss-session.mjs`；test-structure.sh 的会话测试入口、boss-session gitignore 探针、ROUTES_FROZEN 三项；`.gitignore` 的 `boss-session/`；运行目录 `boss-session/`（含登录 profile 与 cookie）。
 - **保留**：书签、`/import/page`、extractJd 的 zhipin 选择器（书签递交的页面仍靠它提取）、`/job/new` POST 预填、链接读取失败时的书签引导。
 - **前面「轨 B 实测修订」一节**描述的架构已作废，只保留作为实验记录。
+
+## JD 收件箱 + 批量评估交付（2026-11-13）
+
+一次性书签预览升级为「收集 + 批量评估」：书签带 `.import-token` 口令 → `POST /import/page` 收进 `inbox.json`（urlKey/jdFp 判重）→ `/inbox` 勾选 → 后台串行 worker 评估（占 1 个 AI 槽）→ 按分排序逐条建草稿。spec `dev-docs/2026-11-13-jd-inbox-batch-eval-design.md`，plan `dev-docs/2026-11-13-jd-inbox-batch-eval-plan.md`，设计决策登记 DESIGN.md §10.21。
+
+- **新路由**：`/inbox`（页面）、`/inbox/status`、`/inbox/eval`、`/inbox/draft`、`/inbox/dismiss`——均已登记 test-structure.sh 路由冻结。
+- **新数据**：`inbox.json`（0600，gitignore）；`.import-token`（0600，32hex，gitignore）。
+- **核心复用**：`evalJdCore`/`promoteEval` 从 /eval/create、/eval/promote 抽出（HTTP 契约零变化）；worker 复用 `aiPool`；草稿走 `createJobDraft`/`promoteEval`。
+- **测试**：`test-fixtures/reliability/test-inbox.mjs`（隔离根 + stub LLM，串行峰值实测=1、失败重试、重启恢复、并发判重、dismiss 不被复活）；已注册 test.sh 16q-3 段与 test-structure.sh。
+- **边界**：串行是有意的（另一槽留给交互）；不做列表页抓取、不批量生成；首页待办只挂状态 2；`/inbox` 页面给真实浏览器点验截图（/tmp/inbox-*.png）。

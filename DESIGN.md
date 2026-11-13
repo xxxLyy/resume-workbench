@@ -534,3 +534,16 @@ FIELDS（editor-shell.js） → typoCss(v) → #typo-custom（落盘进 <head>�
 - **书签交付**：/job/new 链接区渲染 `javascript:` 可拖书签（action=当次实际端口 /import/page；target=_blank 隐藏表单 POST——fetch 会被目标站 CSP connect-src 拦，表单导航不会）。
 - **轨 B 已移除（2026-11-13 用户裁决）**：扫码登录本身可行（真 Chrome + CDP 只挂浏览器域被动监听），但服务端拿 Boss 详情页 7 种方式全部被拦——静态 fetch 断连；playwright headless 与 headless_shell 带登录 cookie 杀回 about:blank（后者还作废会话）；Chrome `--headless=new` 导出 DOM 与 CDP 打开均跳首页或 about:blank；纯 HTTP 带登录 cookie+同款 UA 302 到安全验证页；有界面真 Chrome 带调试端口打开在架职位也跳回首页。结论：只有用户自己的浏览器能读到详情页，即轨 A。已删除 `/boss/session/*` 三路由、会话卡、`/job/create` 的 zhipin 会话分支与 `boss-session/` 运行目录；zhipin 链接回到普通静态读取，失败时引导书签。以后若要再试服务端读取，前提是先证明某种方式能打开详情页，不再从登录侧入手。
 - **测试**：Boss 修剪 fixture 剔除 `securityId`/`user_id` 类会话令牌（公开 JD 可入仓，凭据不可）。
+- **后续（2026-11-13）**：书签从「一次预览」升级为「收进收件箱批量评估」，口令/去重/串行 worker 见 §10.21。
+
+### 10.21 JD 收件箱 + 批量评估（2026-11-13 登记 · spec `dev-docs/2026-11-13-jd-inbox-batch-eval-design.md`）
+
+> 用户裁决：点书签把岗位收进收件箱；收件箱勾选后后台串行批量评估，按分数排序后逐条建草稿。**收集 + 评估**，不批量生成——生成仍要人逐条过目。
+
+- **书签口令**：`.import-token`（0600，32 hex）懒生成 + 进程缓存；书签隐藏字段 `k` 携带；`timingSafeEqual` 比较。口令错 → 旧只读预览 + 「重新拖一次」；口令对但迁移锁持有 → 预览 + 「维护中，本次未收入」（锁在处理函数内查，`/import/page` 的 mutating/CSRF 豁免不变，POST 仍无 ACAO）。
+- **`inbox.json`**（0600，不入 git）：条目 = 提取字段 + `urlKey`（origin+pathname）+ `jdFp` + `dupHints` + `status`（new/queued/running/scored/error/drafted/dismissed）+ `evalId/draftId` + 时间戳。判重 = urlKey 或 jdFp 任一命中（dismissed 也参与）；命中按状态分流文案（待评估/已建稿/标记过不考虑）；新条目先过指纹护栏存 `dupHints`。
+- **批量评估**：`POST /inbox/eval` 只入队（不碰模型，不进 AI 闸门）；进程内单例串行 worker `inboxDrain` 一次占 1 个 AI 槽（`ResourceBusy` 3s 重试），复用 `evalJdCore`；启动恢复 `running→queued`；回写前重读——评估中被 dismiss 只补记结果不复活状态。
+- **建草稿**：`POST /inbox/draft` 有评估未 promote → `promoteEval`（brief 预填 angle/gaps）；否则 `createJobDraft`（`jdSource=收件箱`）。`409+existing` 同样记 `drafted` 指回既有草稿。`POST /inbox/dismiss` 置 dismissed（记录保留参与判重）。
+- **`/inbox` 页面**：投递导航首项「待筛选」（看板/网申包/复盘同栏）；scored 按分降序在前、其余按收入时间倒序；勾选 → 选母版 → 批量评估（按钮有选才亮，无母版给引导）；排队/评估中 3s 轮询 `/inbox/status`；scored 徽章链 `/evals#<evalId>`（hash 展开该条报告）；空态给可拖书签。
+- **首页待办**：状态 2 加「收件箱有 N 个岗位待评估 → 去筛选」（状态 0/1 无待办列表不加）。`portNotice()`：`PORT` 未指定且实际端口 ≠ 7766 时在 /job/new、/inbox、/import/page 提示重拖书签。
+- **明确不做**：列表页抓取（服务端取 JD 已被 §10.20 实测封死）；并行评估（串行 1 槽，另一个槽留给交互）；批量生成（评估后才逐条建草稿）。

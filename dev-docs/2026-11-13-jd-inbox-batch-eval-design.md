@@ -144,3 +144,11 @@
 ## 5. 不做 / 后续
 
 - 批量生成定制稿；列表页一键抓取；其他招聘站选择器实测；口令轮换 UI。
+
+## 6. 实施注记（2026-11-13，与正文有出入处以注记为准）
+
+1. **首页待办只加在状态 2**：状态 0/1 首页没有待办列表可挂；dot 用 `ready`——现有枚举是 `ready/sent/draft`，没有 `warn`。
+2. **`inboxAdd` 并发判重**：`computeFpGuard` 跨 await 重读列表后再做一次 urlKey/jdFp 命中检查——两个并发同页收入只会落 1 条。
+3. **worker 回写不复活状态**：`inboxDrain` 在 `evalJdCore` 返回后重读条目，status 已不是 `running`（如评估中被 dismiss）时只补记 `evalId/score/verdict`，不改 status。
+4. **`importSavedPage` 去重文案按命中条状态分流**：`dismissed` → 「这个岗位之前标记过不考虑（M 月 D 日收入）」；`drafted` → 「这个岗位已建过草稿」+ `/edit?id=` 链接（`VALID_ID` 校验 + escAttr）；其他 → 「已在收件箱（M 月 D 日收入）· 共 N 条待评估」。
+5. **`/inbox/status` 字段 = `{id,status,score,verdict,error,draftId}`**：不含 `evalId`——评估关联从 `inbox.json` 读，页面锚点链接由 `/inbox` 服务端渲染给出。
