@@ -4967,6 +4967,28 @@ async function handler(req, res) {
     if (req.method === 'GET' && url.pathname === '/inbox/status') {
       return sendJson(200, { ok: true, items: loadInbox().filter((x) => x && x.status !== 'dismissed').map(({ id, status, score, verdict, error, draftId }) => ({ id, status, score, verdict, error, draftId })) });
     }
+    // 建草稿（spec §2.7）：有 evalId 且评估未 promote → 走 promoteEval（brief 预填 angle/gaps）；
+    // 否则 createJobDraft（jdSource「收件箱」）。409+existing = 同岗位已建过 → 同样记 drafted 并指回 existing。
+    if (req.method === 'POST' && url.pathname === '/inbox/draft') {
+      const body = await readBodyAuto(req);
+      const it = loadInbox().find((x) => x && x.id === String(body.id || ''));
+      if (!it) return sendJson(404, { ok: false, error: '收件箱条目不存在' });
+      const from = String(body.from || it.from || '');
+      const ev = it.evalId && loadEvals().find((e) => e && e.id === it.evalId);
+      const r = (ev && !ev.promotedTo) ? await promoteEval(root, it.evalId, from)
+        : await createJobDraft(root, { from, company: it.company, role: it.role, jd: it.jd, jdLink: it.url, jdSource: '收件箱' });
+      const draftId = r.ok ? r.id : (r.status === 409 && r.body && r.body.existing);
+      if (!draftId) return sendJson(r.status, r.body);
+      inboxPatch(it.id, { status: 'drafted', draftId });
+      return sendJson(200, { ok: true, id: draftId });
+    }
+    // 不考虑：置 dismissed（记录保留，仍参与去重判重——不考虑过的岗别再收一遍）
+    if (req.method === 'POST' && url.pathname === '/inbox/dismiss') {
+      const body = await readBodyAuto(req);
+      const it = inboxPatch(String(body.id || ''), { status: 'dismissed' });
+      if (!it) return sendJson(404, { ok: false, error: '收件箱条目不存在' });
+      return sendJson(200, { ok: true });
+    }
     // ===== 评估历史（独立页）：全量列表 + 逐条展开报告 =====
     // 服务端渲染全量元数据（evalHistoryRows），报告正文经 jsonScript 内联，
     // 客户端由 evalCardHtml 渲染 —— 本页是评估历史的唯一落点（批 1 §0.3：首页评估历史卡已撤除）。

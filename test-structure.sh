@@ -2224,7 +2224,7 @@ const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','
   '/api/extract','/app','/app/add','/app/archive-regenerate','/app/del','/app/followup/cancel','/app/followup/discard','/app/followup/start','/app/followup/state','/app/ics',
   '/app/practice/answer','/app/practice/feedback/cancel','/app/practice/feedback/start','/app/practice/history','/app/practice/missing/material','/app/practice/start','/app/practice/state',
   '/app/update','/applications',   // 批4 b4c1：练习会话六路由（登记非放宽）
-  '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf','/import/page','/inbox/eval','/inbox/status',
+  '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf','/import/page','/inbox/dismiss','/inbox/draft','/inbox/eval','/inbox/status',
   '/job-panel.js','/job/brief','/job/changes','/job/create','/job/feedback-del','/job/generate','/job/gen-cancel','/job/gen-retry','/job/gen-start','/job/new','/layout-info','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',
   '/materials','/new','/onboarding','/onboarding/guided','/onboarding/star-suggest','/onboarding/step','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings','/eval/create','/eval/promote','/evals',
   '/share/copy','/share/pdf',

@@ -8,6 +8,8 @@
 //   ⑤ 复核修复：并发同页收入至多 1 条；dismissed/drafted 命中文案分流。
 //   ⑥ T4 批量评估：/inbox/eval 入队 → 串行 worker（桩并发峰值=1）→ scored；
 //     桩 500 → error → 重评 scored；scored 可重评/不存在 id 跳过；重启 running→queued 恢复；未配模型 409。
+//   ⑦ T5 建草稿/不考虑：已评估→promote(brief.focus 含 angle、promotedTo 回写)；未评估→jdSource「收件箱」；
+//     同 JD 409 existing → 仍 ok+drafted；/inbox/dismiss → status 摘除+文件留 dismissed；不存在 id → 404。
 // 手法：隔离 RESUME_ROOT + assembleTemplate 合成母版 + 随机端口真实 server + OpenAI 兼容桩
 // （同 test-eval-promote-brief.mjs；口令从 GET /job/new 的书签 href 解析）。不碰 7766，不写真实数据。
 import assert from 'node:assert/strict';
@@ -312,7 +314,61 @@ try {
     }
   }
 
-  console.log('✅ inbox T2+T4：口令收入/双路判重/锁挡写/旧预览回退；并发 1 条；dismissed/drafted 文案；批量评估串行(峰值1)/失败重试/重评+跳过/重启恢复/未配模型 409');
+  // ===== T5：建草稿 / 不考虑 =====
+  // 已评估条目 → promote 路径：brief.focus 含评估 angle，promotedTo 回写，条目 drafted
+  {
+    const it1 = loadInboxFile().find((x) => x.id === ids[0]);
+    const dr = await postJson('/inbox/draft', { id: ids[0], from: DOC });
+    assert.equal(dr.status, 200, '已评估建稿应 200：' + JSON.stringify(dr.body));
+    assert.ok(dr.body && dr.body.id, '应返回草稿 id');
+    const draftId = dr.body.id;
+    const ch = await getJson('/job/changes?id=' + draftId);
+    assert.equal(ch.status, 200, '/job/changes 应 200');
+    assert.ok(ch.body.job.brief.focus.includes('突出高并发交易系统经验'), 'brief.focus 应含评估 angle：' + JSON.stringify(ch.body.job.brief));
+    const it1b = loadInboxFile().find((x) => x.id === ids[0]);
+    assert.equal(it1b.status, 'drafted', '条目应置 drafted');
+    assert.equal(it1b.draftId, draftId, 'draftId 应一致');
+    assert.equal(evalsFile().find((e) => e.id === it1.evalId).promotedTo, draftId, '评估记录 promotedTo 应指向草稿');
+  }
+
+  // 未评估条目 → createJobDraft 路径：jdSource === '收件箱'
+  // （岗位名须不同：createJobDraft 判重是 parent+company+role，同司同岗会被判重指回批A 草稿）
+  const idNew = await collect(zh.replace('必须有带团队经验', '必须有带团队经验·批E').replace("job_name: '数据标注项目管理 双休远程面试'", "job_name: '平台运营专员·批E'"), 'https://www.zhipin.com/job_detail/e5.html', '批E', k);
+  const dr2 = await postJson('/inbox/draft', { id: idNew, from: DOC });
+  assert.equal(dr2.status, 200, '未评估建稿应 200：' + JSON.stringify(dr2.body));
+  assert.ok(dr2.body && dr2.body.id, '应返回草稿 id');
+  {
+    const meta = JSON.parse(fs.readFileSync(path.join(root, 'docs-meta.json'), 'utf8'));
+    assert.equal(meta[dr2.body.id].jdSource, '收件箱', 'jdSource 应为「收件箱」：' + JSON.stringify(meta[dr2.body.id]).slice(0, 200));
+  }
+
+  // 同 JD 另一条（手工插入同 jd 不同 id/urlKey）→ createJobDraft 409 existing → 仍 ok + drafted
+  {
+    const ib = loadInboxFile();
+    const src = ib.find((x) => x.id === idNew);
+    const dup = { ...src, id: 'ib-manual-dup', url: 'https://www.zhipin.com/job_detail/dup.html', urlKey: 'https://www.zhipin.com/job_detail/dup.html', status: 'new', evalId: null, score: null, draftId: null };
+    ib.unshift(dup);
+    fs.writeFileSync(inboxFile, JSON.stringify(ib));
+    const dr3 = await postJson('/inbox/draft', { id: 'ib-manual-dup', from: DOC });
+    assert.equal(dr3.status, 200, '同 JD 重复建稿应仍 200：' + JSON.stringify(dr3.body));
+    assert.equal(dr3.body && dr3.body.id, dr2.body.id, '应指回已存在草稿');
+    const d = loadInboxFile().find((x) => x.id === 'ib-manual-dup');
+    assert.equal(d.status, 'drafted', '重复条目应置 drafted');
+    assert.equal(d.draftId, dr2.body.id, 'draftId 应 = existing');
+  }
+
+  // dismiss：/inbox/status 不再列出；文件里保留 dismissed；不存在 id → 404
+  const dm = await postJson('/inbox/dismiss', { id: idNew });
+  assert.ok(dm.status === 200 && dm.body && dm.body.ok, 'dismiss 应 ok');
+  {
+    const st = await getJson('/inbox/status');
+    assert.ok(!st.body.items.some((x) => x.id === idNew), 'dismiss 后 status 不应再列出');
+    assert.equal(loadInboxFile().find((x) => x.id === idNew).status, 'dismissed', '文件里应留 dismissed');
+  }
+  assert.equal((await postJson('/inbox/dismiss', { id: 'ib-nope' })).status, 404, '不存在 id 应 404');
+  assert.equal((await postJson('/inbox/draft', { id: 'ib-nope', from: DOC })).status, 404, 'draft 不存在 id 应 404');
+
+  console.log('✅ inbox T2+T4+T5：口令收入/判重/锁挡/旧预览回退；并发 1 条；dismissed/drafted 文案；批量评估串行(峰值1)/失败重试/重评+跳过/重启恢复/未配模型 409；建草稿(评估/未评估/同JD 409)/不考虑/404');
 } catch (e) {
   cleanup();
   fail(e && e.message || String(e));
