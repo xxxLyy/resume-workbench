@@ -5696,6 +5696,7 @@ async function handler(req, res) {
         // ponytail：证据失败也接着生成建议（changes 管线不读证据表）；取消/超时（dropped）才停。
         // 另一文档 changes 在跑 → startGenTask 拒绝，链静默停在证据，用户手动点「生成建议」。
         if (then !== 'changes' || !out || out.dropped) return;
+        if ((((loadMeta()[id] || {}).job || {}).changes || []).length) return;   // 证据期间用户已手动生成建议 → 不覆盖
         const st2 = startGenTask(id, 'changes');
         if (st2.reject) return;
         await runGenTask(id, 'changes', st2.taskId, 'all', { lease }).catch((e) => { try { finishGenTask(id, 'changes', st2.taskId, null, '任务失败：' + ((e && e.message) || e)); } catch {} });

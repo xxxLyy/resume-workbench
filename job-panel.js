@@ -1141,8 +1141,6 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       if (anyRunning(gt)) schedulePoll();
     });
   }
-  // 任一生成任务在跑就续排轮询。遍历而非硬编码 kind 名——新增生成类型漏改任一处都会导致
-  // 「页面状态长期陈旧」（2026-10-18 OCR 发现 evidence/changes/interview 三处需同步）。
   // 本机 prefs（s4a-feedback-prefs）与 job.feedback 环形去重后的待并入项（≤20）：
   // 「生成建议」按钮与 gen=1 自动链共用同一份过滤，本地坏 JSON 视作无 prefs。
   function pendingFeedback() {
@@ -1153,6 +1151,8 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     return prefs.filter(function (x) { return typeof x === 'string' && x.trim() && known.indexOf(x) < 0; }).slice(-20);
   }
 
+  // 任一生成任务在跑就续排轮询。遍历而非硬编码 kind 名——新增生成类型漏改任一处都会导致
+  // 「页面状态长期陈旧」（2026-10-18 OCR 发现 evidence/changes/interview 三处需同步）。
   function anyRunning(gt) {
     gt = gt || {};
     for (var k in gt) { if (gt[k] && gt[k].status === 'running') return true; }
