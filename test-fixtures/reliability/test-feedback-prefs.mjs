@@ -163,6 +163,8 @@ try {
     // 生成 → 请求体应并入 prefs（先红：现状空 body）
     await page.click('#ed-pane-review .jp-head button');
     await page.waitForFunction(() => document.querySelectorAll('#ed-pane-review .jp-item').length >= 3, null, { timeout: 30000 });
+    // 生成动作前先等 zid 落盘（__edZidsStart）——请求比按钮点击晚到是预期，断言必须等它真正发出
+    for (let i = 0; i < 40 && !genBody; i++) await page.waitForTimeout(250);
     assert.ok(genBody && Array.isArray(genBody.feedback) && genBody.feedback.length === 2
       && genBody.feedback[0] === '多写量化结果' && genBody.feedback[1] === '不要用夸张形容词',
       '生成请求体应含 feedback=本机 prefs：' + JSON.stringify(genBody));
