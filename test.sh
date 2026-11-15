@@ -1306,6 +1306,13 @@ gt_error "$T4DOC" changes | grep -q '重启中断' || fail 'S4a-T4 重启恢复�
 stop_child "$SRV3"   # 故障副本用完立即回收
 echo '✅ S4a-T4 重启恢复（running → error(重启中断) + taskId 置空 + 落盘数据不动）'
 
+# ===== S4a-T4c. 建稿后自动链：kind=evidence&then=changes 同槽串行（证据与建议均落账 / 桩峰值≤1 / 取消链停 / then 组合 400 / feedback 并入 / 旧契约不变；独立隔离根 + 本地 stub LLM，非浏览器段；2026-11-15）=====
+if node test-fixtures/reliability/test-gen-chain.mjs; then
+  echo '✅ gen 自动链回归（evidence→changes 同槽串行 / 取消链停 / then 400 / feedback 并入）'
+else
+  fail "gen 自动链回归未通过 (exit $?)"
+fi
+
 # ===== S4a-T6：证据表后端（runner 接入 / ID 匹配 / 批次替换时点 / 来源即时计算 / reviewPos）=====
 # 夹具：独立岗位草稿 T6DOC（挂已确认素材「素材甲」——$MATID 已被 S3 段复用指向他表，按标题重解析；
 # 先保存一次让 zid 归一与 zoneSync 有真实输入）。

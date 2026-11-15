@@ -5608,6 +5608,24 @@ for (const fn of ['jobNewPage', 'inboxPage', 'importHelpPage']) assert.ok(grab(f
 console.log('✅ portNotice 端口漂移提示：jobNewPage/inboxPage/importHelpPage 三页就位（源级钉值）');
 EOF
 
+# ===== 建稿后自动链 · 四处 gen=1 跳转 + 面板自动启动缝（源级钉值；2026-11-15）=====
+node --input-type=module << 'EOF'
+import { strict as assert } from 'node:assert';
+import fs from 'node:fs';
+const srv = fs.readFileSync('server.mjs', 'utf8');
+// 四处「刚建稿」成功跳转 /edit 必须带 gen=1（/evals promote、/inbox 建稿、/job/new 建稿、/job/new 评估卡 promote；
+// existing 重复确认分支不带）
+const hits = srv.match(/location\.href = '\/edit\?id='[^;]*'&gen=1'/g) || [];
+assert.equal(hits.length, 4, `gen=1 跳转应为 4 处，实际 ${hits.length}`);
+assert.ok(srv.includes('then 仅支持 kind=evidence'), 'gen-start 缺 then=changes 校验');
+const jp = fs.readFileSync('job-panel.js', 'utf8');
+assert.ok(jp.includes("get('gen') === '1'"), 'job-panel 缺 gen=1 参数读取');
+assert.ok(jp.includes('history.replaceState'), 'job-panel 缺 replaceState 摘参（刷新会二次触发）');
+assert.ok(jp.includes('pendingFeedback'), 'job-panel 缺 pendingFeedback 偏好过滤复用');
+assert.ok(jp.includes('kind=evidence&then=changes'), 'job-panel 未以 evidence&then=changes 启动链');
+console.log('✅ 建稿后自动链：四处 gen=1 跳转 + 面板 replaceState 摘参/三无守护/偏好复用（源级钉值）');
+EOF
+
 # ===== 批 1 · B1C6 复盘层级重排：主卡 2/3 + 侧卡 1/3 + 三分布网格收窄（源级钉值；行为面走 test-stats-loop-view.mjs）=====
 node --input-type=module << 'EOF'
 import { readFileSync } from 'node:fs';

@@ -1192,6 +1192,17 @@ function finishRetryFailure(id, taskId, batch, error, usage) {
 // 任务体（node 单进程 fire-and-forget：Promise 即可，不引调度平台）。interview/evidence 通道完整复用既有链路；
 // changes 通道自 S4b-A 起走 runChangesPipeline 五阶段管线（analyze→locate→rewrite→validate→assemble）；
 // finishGenTask 校验落账——整批替换与批次推进只在成功落账事务内（设计 §5.1 反例2：失败/取消/超时不碰旧数据）。
+// 长期偏好随生成请求并入 job.feedback（S4a-T9，环形 ≤20）：/job/generate 与 /job/gen-start 共用。
+function mergeJobFeedback(id, fb) {
+  if (!Array.isArray(fb) || !fb.length) return;
+  updateMeta(root, id, (m) => {
+    if (!m || !m.job) return m;
+    m.job.feedback = (Array.isArray(m.job.feedback) ? m.job.feedback : [])
+      .concat(fb.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim())).slice(-20);
+    return m;
+  });
+}
+
 async function runGenTask(id, kind, taskId, scope = 'all', { lease } = {}) {
   // 后台任务自己占一个 AI 槽（RES-04）：HTTP 响应早已结束，真实占用才开始。
   // 释放 = 这次后台工作真正结束（最外层 finally）；逻辑取消/超时/HTTP 断连都不等于释放。
@@ -2294,7 +2305,7 @@ const EVAL_HISTORY_JS = `
         var d = await r.json().catch(function () { return null; });
         if (d && d.existing) { location.href = '/edit?id=' + encodeURIComponent(d.existing); return; }
         if (!r.ok || !d || !d.ok || !d.id) { if (msg) __status(msg, 'err', (d && d.error) || ('HTTP ' + r.status)); t.disabled = false; return; }
-        location.href = '/edit?id=' + encodeURIComponent(d.id);
+        location.href = '/edit?id=' + encodeURIComponent(d.id) + '&gen=1';
       } catch (err) { if (msg) __status(msg, 'err', err.message); t.disabled = false; }
     }
   });
@@ -2808,7 +2819,7 @@ function inboxPage() {
         var id = t.getAttribute('data-ib-id');
         if (t.getAttribute('data-ib-act') === 'draft') {
           __wv('/inbox/draft', { id: id, from: (document.getElementById('ibFrom') || {}).value }, msg)
-            .then(function (d) { if (d && d.id) location.href = '/edit?id=' + encodeURIComponent(d.id); else location.reload(); })
+            .then(function (d) { if (d && d.id) location.href = '/edit?id=' + encodeURIComponent(d.id) + '&gen=1'; else location.reload(); })
             .catch(function () { t.disabled = false; });
         } else {
           __wv('/inbox/dismiss', { id: id }, msg)
@@ -2908,7 +2919,7 @@ function jobNewPage(prefill = null) {
                 <button type="button" class="secondary" data-pages="1">1 页</button>
                 <button type="button" class="secondary" data-pages="2" aria-pressed="true">2 页（默认）</button></span></label>
             </div></details>
-          <button type="submit">生成岗位草稿</button>
+          <button type="submit">${hasLLM(root) ? '建稿并开始生成' : '建草稿'}</button>
           <a href="#" id="evalBtn" style="font-size:13px;color:var(--mut);margin-left:14px">先评估匹配度</a>
           <span id="jobMsg" role="status" style="font-size:12px;color:var(--mut)"></span><span id="evalMsg" role="status" style="font-size:12px;color:var(--mut)"></span>
           <div id="jdFailHint" style="display:none;font-size:12px;color:var(--mut);margin-top:var(--space-2)">这个站抓不到（多半要登录）。两个办法：① 回页面复制全文粘贴 ② 用上面的「抓取此页」书签：<a href="${escAttr(BOOKMARKLET)}">抓取此页 → 工作台</a>（拖到书签栏，在职位页点它）</div>
@@ -3007,7 +3018,7 @@ function jobNewPage(prefill = null) {
               if (fh) fh.style.display = 'block';
               return;
             }
-            location.href = '/edit?id=' + d.id; return;
+            location.href = '/edit?id=' + d.id + '&gen=1'; return;
           }
           var jobErr = (d && d.error) || (await r.text());
           if (jobErr.indexOf('invalid from') >= 0) jobErr = '请先选择母版简历';   // 兜底：服务端校验直出英文会让首用路径断链
@@ -3065,7 +3076,7 @@ function jobNewPage(prefill = null) {
             var d = await r.json().catch(function () { return null; });
             if (d && d.existing) { location.href = '/edit?id=' + encodeURIComponent(d.existing); return; }
             if (!r.ok || !d || !d.ok || !d.id) { __status(msg, 'err', (d && d.error) || ('HTTP ' + r.status)); t.disabled = false; return; }
-            location.href = '/edit?id=' + encodeURIComponent(d.id);
+            location.href = '/edit?id=' + encodeURIComponent(d.id) + '&gen=1';
           } catch (err) { __status(msg, 'err', err.message); t.disabled = false; }
         });
       })();
@@ -5655,6 +5666,11 @@ async function handler(req, res) {
         if (kind !== 'changes' || !sm || !ZONE_KEYS.includes(sm[1])) return sendJson(400, { ok: false, error: 'scope 非法（all 或 zone:<区域key>，仅 changes 通道）' });
         scope = scopeRaw;
       }
+      // 链式启动：then=changes 仅在 kind=evidence 且无 scope 时有效——证据完成后同一 AI 槽接棒生成建议
+      const then = url.searchParams.get('then');
+      if (then && (then !== 'changes' || kind !== 'evidence' || scopeRaw)) return sendJson(400, { ok: false, error: 'then 仅支持 kind=evidence&then=changes' });
+      let genBody = {};
+      try { genBody = JSON.parse(await readBody(req) || '{}'); } catch (e) { return sendJson(400, { ok: false, error: 'body 必须是合法 JSON' }); }
       if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型：草稿仍可手动编辑，配置后可生成建议' });
       // 资源准入（RES-02/04）：后台任务与同步 AI 请求共用同一个 aiPool。
       // 先借一个槽（拿不到立刻拒），再登记任务 → 被拒时不会在 meta 里留下「永远 running」的假任务。
@@ -5672,13 +5688,19 @@ async function handler(req, res) {
         throw e;
       }
       if (reject) { try { lease.release(); } catch {} return sendJson(reject.status, { ok: false, error: reject.error }); }
+      // 借槽成功后才做业务写入（与 /job/generate 同口径：容量准入先于偏好合并）
+      mergeJobFeedback(id, genBody.feedback);
       // 槽位透传（RES-02）：后台任务不再二次获取；释放 = 这次后台工作真正结束（最外层 finally）
-      runGenTask(id, kind, taskId, scope, { lease })
-        .catch((e) => {
-          // 任何异常都要收敛任务态：否则 meta 里会留下永远 running 的假任务
-          try { finishGenTask(id, kind, taskId, null, '任务失败：' + ((e && e.message) || e)); } catch {}
-        })
-        .finally(() => { try { lease.release(); } catch {} });
+      const run = async () => {
+        const out = await runGenTask(id, kind, taskId, scope, { lease }).catch((e) => { try { finishGenTask(id, kind, taskId, null, '任务失败：' + ((e && e.message) || e)); } catch {} return null; });
+        // ponytail：证据失败也接着生成建议（changes 管线不读证据表）；取消/超时（dropped）才停。
+        // 另一文档 changes 在跑 → startGenTask 拒绝，链静默停在证据，用户手动点「生成建议」。
+        if (then !== 'changes' || !out || out.dropped) return;
+        const st2 = startGenTask(id, 'changes');
+        if (st2.reject) return;
+        await runGenTask(id, 'changes', st2.taskId, 'all', { lease }).catch((e) => { try { finishGenTask(id, 'changes', st2.taskId, null, '任务失败：' + ((e && e.message) || e)); } catch {} });
+      };
+      run().finally(() => { try { lease.release(); } catch {} });
       return sendJson(200, { ok: true, taskId, status: 'running' });
     }
     // gen-cancel：taskId 匹配当前 running 才置 cancelled（防误取消刚接棒的新任务）；在途结果被回调校验丢弃。
@@ -5797,14 +5819,7 @@ async function handler(req, res) {
       let taskId = null;
       try {
         // 借槽成功后才做业务写入（S4a-T9：长期偏好随生成请求并入 job.feedback，环形 ≤20）
-        if (Array.isArray(genBody.feedback) && genBody.feedback.length) {
-          updateMeta(root, id, (m) => {
-            if (!m || !m.job) return m;
-            m.job.feedback = (Array.isArray(m.job.feedback) ? m.job.feedback : [])
-              .concat(genBody.feedback.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim())).slice(-20);
-            return m;
-          });
-        }
+        mergeJobFeedback(id, genBody.feedback);
         // 借槽之后登记任务若抛错，槽位必须归还
         let reject = null;
         try {

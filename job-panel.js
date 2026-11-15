@@ -1143,6 +1143,16 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
   }
   // 任一生成任务在跑就续排轮询。遍历而非硬编码 kind 名——新增生成类型漏改任一处都会导致
   // 「页面状态长期陈旧」（2026-10-18 OCR 发现 evidence/changes/interview 三处需同步）。
+  // 本机 prefs（s4a-feedback-prefs）与 job.feedback 环形去重后的待并入项（≤20）：
+  // 「生成建议」按钮与 gen=1 自动链共用同一份过滤，本地坏 JSON 视作无 prefs。
+  function pendingFeedback() {
+    var prefs = [];
+    try { prefs = JSON.parse(localStorage.getItem('s4a-feedback-prefs') || '[]') || []; } catch (e) { prefs = []; }
+    if (!Array.isArray(prefs)) prefs = [];
+    var known = Array.isArray(job && job.feedback) ? job.feedback : [];
+    return prefs.filter(function (x) { return typeof x === 'string' && x.trim() && known.indexOf(x) < 0; }).slice(-20);
+  }
+
   function anyRunning(gt) {
     gt = gt || {};
     for (var k in gt) { if (gt[k] && gt[k].status === 'running') return true; }
@@ -1881,11 +1891,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       // A4：本机 prefs（s4a-feedback-prefs，记住偏好时写入但一直没发）随生成请求并入 feedback 数组
       // —— 服务端既有合并逻辑进 job.feedback 环形（≤20）并经 buildJobPrompt【过往反馈】块进下次 prompt。
       // 与服务端环形已有条目去重：重复提交只会稀释环形，不产生新信息；本地坏 JSON 视作无 prefs。
-      var prefs = [];
-      try { prefs = JSON.parse(localStorage.getItem('s4a-feedback-prefs') || '[]') || []; } catch (e) { prefs = []; }
-      if (!Array.isArray(prefs)) prefs = [];
-      var known = Array.isArray(job.feedback) ? job.feedback : [];
-      var fb = prefs.filter(function (x) { return typeof x === 'string' && x.trim() && known.indexOf(x) < 0; }).slice(-20);
+      var fb = pendingFeedback();
       api('/job/generate?id=' + DOC_ID, fb.length ? { feedback: fb } : {}).then(function (d) {
         busy = false;
         if (!d.ok) { note(d.error || '生成失败', 'warn'); gen.disabled = false; return; }
@@ -2074,6 +2080,21 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     render();
     var gt = job.genTasks || {};
     if (anyRunning(gt)) schedulePoll();
+    // gen=1 自动链（建稿后跳入）：参数立即摘掉——刷新绝不能二次触发
+    if (new URLSearchParams(location.search).get('gen') === '1') {
+      var sp = new URLSearchParams(location.search); sp.delete('gen');
+      var qs = sp.toString();
+      history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
+      // 幂等保护：promote 返回已生成的旧稿或老草稿不重启——只认「无证据、无候选、无在跑」的新稿
+      if (!(job.evidence || []).length && !(job.changes || []).length && !anyRunning(job.genTasks || {})) {
+        var fb0 = pendingFeedback();
+        api('/job/gen-start?id=' + DOC_ID + '&kind=evidence&then=changes', fb0.length ? { feedback: fb0 } : {}).then(function (d2) {
+          if (!d2.ok) { note((d2.error || '启动失败') + '。可以手动点「生成证据」和「生成建议」。', 'warn'); return; }
+          note('已开始生成：先分析要求与证据，完成后自动生成修改建议。关掉页面也会继续。');
+          refresh();
+        });
+      }
+    }
   }).catch(function () { root.textContent = '加载失败：网络错误（切到其他 Tab 再切回可重试）。'; });
 
   // 外壳 Tab 切换到「审阅」时刷新（反映最新落盘状态；不重置当前段）

@@ -133,8 +133,9 @@ try {
     assert.ok(html.includes('产出一份新草稿'), '应有诚实预期文案「产出一份新草稿」');
     // 母版下拉：合成母版在场
     assert.ok(html.includes('value="jnmaster"'), '母版下拉应含合成母版 jnmaster');
-    // 按钮：生成岗位草稿（submit）+ 先评估匹配度（evalBtn，T4 起降级为次级文字链接 <a>）
-    assert.ok(html.includes('生成岗位草稿'), '应保留「生成岗位草稿」主按钮');
+    // 按钮：建草稿（submit，未配置模型态；配置模型时显示「建稿并开始生成」）+ 先评估匹配度（evalBtn，T4 起降级为次级文字链接 <a>）
+    assert.ok(html.includes('建草稿'), '未配置模型时主按钮应为「建草稿」');
+    assert.ok(!html.includes('建稿并开始生成'), '未配置模型时不应显示「建稿并开始生成」');
     assert.ok(html.includes('id="evalBtn"') && html.includes('先评估匹配度'), '应保留「先评估匹配度」评估入口');
     assert.ok(/<a[^>]*id="evalBtn"/.test(html), 'evalBtn 应为 <a> 次级文字链接形态（T4 降级，不与主按钮平级）');
     // 要求卡：预设/重点/保留/不强调/幅度/页数六要素 label 文案原样（折叠区 T4 改名「补充要求」）
@@ -182,7 +183,7 @@ try {
     const html = home.text;
     // 表单与其专属 UI 整体迁出（含空态——空态已迁入 /job/new）
     for (const marker of ['id="jobCard"', 'id="jobForm"', 'id="briefFocusChips"', 'id="evalBtn"',
-      'id="evalResult"', 'id="taskJobCta"', '生成岗位草稿', '先评估匹配度', '还没有母版简历']) {
+      'id="evalResult"', 'id="taskJobCta"', '建稿并开始生成', '先评估匹配度', '还没有母版简历']) {
       assert.ok(!html.includes(marker), `首页不得再含岗位表单标记「${marker}」（已迁 /job/new）`);
     }
     // T3 引导卡（有母版态）：「为岗位定制 →」直达新页，全页入口唯一
