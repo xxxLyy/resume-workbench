@@ -2166,7 +2166,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
             if (window.Notification && Notification.permission === 'default') {
               nbtn = document.createElement('button');
               nbtn.type = 'button'; nbtn.textContent = '完成时通知我';
-              nbtn.style.cssText = 'margin-left:8px;background:none;border:none;color:#3457d5;text-decoration:underline;cursor:pointer;font-size:inherit;padding:0';
+              nbtn.style.cssText = 'margin-left:8px;background:none;border:none;color:var(--ed-accent);text-decoration:underline;cursor:pointer;font-size:inherit;padding:0';
               nbtn.addEventListener('click', function () { try { Notification.requestPermission().then(function () { nbtn.remove(); }); } catch (e) { nbtn.remove(); } });
             }
             note('已开始生成：先分析要求与证据，完成后自动生成修改建议。关掉页面也会继续。', '', nbtn);
