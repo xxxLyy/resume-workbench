@@ -134,8 +134,9 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     m.className = 'jp-msg' + (lastNote.kind === 'warn' ? ' is-warn' : lastNote.kind === 'ok' ? ' is-ok' : '');
     if (lastNote.kind) __status(m, lastNote.kind, lastNote.msg);
     else m.textContent = lastNote.msg;
+    if (lastNote.extra) m.appendChild(lastNote.extra);
   }
-  function note(msg, kind) { lastNote = { msg: String(msg), kind: kind || '' }; applyNote(); }
+  function note(msg, kind, extra) { lastNote = { msg: String(msg), kind: kind || '', extra: extra || null }; applyNote(); }
 
   // ===== DOM 定位（章节/条目锚点）=====
   function sections() { return Array.prototype.slice.call(sheet.querySelectorAll('.section')); }
@@ -1132,7 +1133,13 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
   function refresh() {
     return api('/job/changes?id=' + DOC_ID).then(function (d) {
       if (!d.ok) return;
+      // 后台完成检测：running→非 running 的跳变才提醒；隐藏页签才动标题/通知（可见时刷新本身即反馈）
+      var wasRunning = anyRunning((job && job.genTasks) || {});
       job = d.job; doc = d.doc; docRev = d.rev || 0;
+      var gtc = (job && job.genTasks) || {};
+      if (wasRunning && !anyRunning(gtc) && document.hidden) {
+        flagTitle(((gtc.changes || {}).status !== 'error' && (gtc.evidence || {}).status !== 'error'));
+      }
       if (d.genTtlMs) genTtlMs = Number(d.genTtlMs) || 0;   // S4b-B：任务总时限随响应，提示不写死
       render();
     }).catch(function () {}).then(function () {
@@ -1164,13 +1171,28 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
   }
   function schedulePoll() {
     if (pollTimer) return;
-    pollTimer = setTimeout(function () { pollTimer = null; refresh(); }, 2500);
+    // 隐藏页签放宽到 10s——后台生成在隐藏时也要继续推进到「完成提醒」；可见时 2.5s
+    // ponytail: 轻量状态端点（只回 genTasks）可以免去整页 refresh 的重解析
+    var iv = document.hidden ? 10000 : 2500;
+    pollTimer = setTimeout(function () { pollTimer = null; refresh(); }, iv);
   }
   // A9：标签页不可见时暂停轮询（服务端每次 GET 都要重解析全文），重新可见时立即同步一次
+  // 后台生成完成提醒：基线标题只在加前缀时用一次；可见即还原（UI-7：不用 emoji）
+  var baseTitle = document.title, titleFlagged = false;
+  var flagTitle = function (ok) {
+    if (titleFlagged) return;
+    titleFlagged = true;
+    document.title = (ok ? '（已完成）' : '（生成失败）') + baseTitle;
+    if (window.Notification && Notification.permission === 'granted') {
+      try { new Notification(ok ? '修改建议已生成' : '生成失败，回来看看原因', { body: ((doc && doc.company) || '') + ' · ' + ((doc && doc.role) || '') }); } catch (e) {}
+    }
+  };
   document.addEventListener('visibilitychange', function () {
     if (document.hidden) {
-      if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
-    } else if (anyRunning((job && job.genTasks) || {})) refresh();
+    } else {
+      if (titleFlagged) { document.title = baseTitle; titleFlagged = false; }
+      if (anyRunning((job && job.genTasks) || {})) refresh();
+    }
   });
 
   // A9：轮询每 2.5s 全量重建面板会吞掉在途输入与焦点。重建前采集，重建后按「结构未变」回填——
@@ -2139,7 +2161,15 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
         zidsReady().then(function () {
           api('/job/gen-start?id=' + DOC_ID + '&kind=evidence&then=changes', fb0.length ? { feedback: fb0 } : {}).then(function (d2) {
             if (!d2.ok) { note((d2.error || '启动失败') + '。可以手动点「生成证据」和「生成建议」。', 'warn'); return; }
-            note('已开始生成：先分析要求与证据，完成后自动生成修改建议。关掉页面也会继续。');
+            // 完成时通知我：仅权限 default 给入口——requestPermission 必须由用户手势触发，不自动请求
+            var nbtn = null;
+            if (window.Notification && Notification.permission === 'default') {
+              nbtn = document.createElement('button');
+              nbtn.type = 'button'; nbtn.textContent = '完成时通知我';
+              nbtn.style.cssText = 'margin-left:8px;background:none;border:none;color:#3457d5;text-decoration:underline;cursor:pointer;font-size:inherit;padding:0';
+              nbtn.addEventListener('click', function () { try { Notification.requestPermission().then(function () { nbtn.remove(); }); } catch (e) { nbtn.remove(); } });
+            }
+            note('已开始生成：先分析要求与证据，完成后自动生成修改建议。关掉页面也会继续。', '', nbtn);
             refresh();
           });
         });
