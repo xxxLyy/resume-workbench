@@ -5618,6 +5618,7 @@ const srv = fs.readFileSync('server.mjs', 'utf8');
 const hits = srv.match(/location\.href = '\/edit\?id='[^;]*'&gen=1'/g) || [];
 assert.equal(hits.length, 4, `gen=1 跳转应为 4 处，实际 ${hits.length}`);
 assert.ok(srv.includes('then 仅支持 kind=evidence'), 'gen-start 缺 then=changes 校验');
+assert.ok(srv.includes('正文段落还没有编号'), 'startGenTask 缺零段落守卫文案');
 const jp = fs.readFileSync('job-panel.js', 'utf8');
 assert.ok(jp.includes("get('gen') === '1'"), 'job-panel 缺 gen=1 参数读取');
 assert.ok(jp.includes('history.replaceState'), 'job-panel 缺 replaceState 摘参（刷新会二次触发）');

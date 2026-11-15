@@ -2173,6 +2173,20 @@ else
   fi
 fi
 
+# ===== 16c. zid 先落盘 + gen=1 自动链 + 定制效果评估卡 + 隐藏页签完成提醒（浏览器段，2026-11-15）=====
+# 自起隔离服务与浏览器；退出码契约同 16（0 通过 / 1 断言失败 / 2 仅 Chromium 不可用）。
+if node test-fixtures/reliability/test-zid-persist-autogen.mjs; then
+  echo '✅ zid 落盘先行 + 自动链 + 定制效果卡 + 完成提醒'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ zid/自动链浏览器回归未执行：Chromium 不可用'
+  else
+    fail "zid/自动链浏览器回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
+  fi
+fi
+
 # ===== 17. 真实数据指纹比对 =====
 REAL_AFTER=$(real_fp)
 [ "$REAL_BEFORE" = "$REAL_AFTER" ] || fail '真实数据被测试改动（指纹不一致）'
