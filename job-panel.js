@@ -1661,6 +1661,44 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     var head4 = document.createElement('h4');
     head4.textContent = '导出检查（第三步）';
     box.appendChild(head4);
+    // 定制效果（2026-11-15）：母版 vs 定制稿的同 JD 评估分；缺侧显示「未评估」，无 JD 不给按钮
+    var cmpBox = document.createElement('div');
+    cmpBox.className = 'jp-meta';
+    var cmp = (doc && doc.evalCmp) || {};
+    var mkLine = function (label, e2) {
+      var ln = document.createElement('div');
+      ln.appendChild(document.createTextNode(label + '：'));
+      if (e2 && typeof e2.score === 'number') {
+        var a = document.createElement('a'); a.href = '/evals#' + encodeURIComponent(e2.id); a.textContent = e2.score + ' 分';
+        ln.appendChild(a);
+      } else ln.appendChild(document.createTextNode('未评估'));
+      return ln;
+    };
+    cmpBox.appendChild(mkLine('定制前（母版）', cmp.before));
+    cmpBox.appendChild(mkLine('定制后', cmp.after));
+    if (!doc || !doc.jd) {
+      var cmpNo = document.createElement('span');
+      cmpNo.textContent = '没有 JD，无法评估';
+      cmpBox.appendChild(cmpNo);
+    } else {
+      var cmpBtn = document.createElement('button');
+      cmpBtn.type = 'button';
+      cmpBtn.textContent = cmp.after ? '重新评估' : (cmp.before || !doc.parent ? '评估定制效果' : '评估定制效果（会先评估母版）');
+      cmpBtn.addEventListener('click', function () {
+        cmpBtn.disabled = true;
+        var seq = Promise.resolve();
+        if (window.__edIsDirty && window.__edIsDirty() && typeof window.__edFlushSave === 'function') seq = seq.then(function () { return window.__edFlushSave(); });
+        if (!cmp.before && doc.parent) seq = seq.then(function () { return api('/eval/create', { from: doc.parent, jd: doc.jd, company: doc.company, role: doc.role }); });
+        seq.then(function () { return api('/eval/create', { from: DOC_ID, jd: doc.jd, company: doc.company, role: doc.role }); })
+          .then(function (d) {
+            if (!d || !d.ok) { note((d && d.error) || '评估失败', 'warn'); cmpBtn.disabled = false; return; }
+            refresh();
+          })
+          .catch(function (e) { note(e.message || e, 'warn'); cmpBtn.disabled = false; });
+      });
+      cmpBox.appendChild(cmpBtn);
+    }
+    box.appendChild(cmpBox);
     if (!checks) {
       var meta0 = document.createElement('div');
       meta0.className = 'jp-meta';

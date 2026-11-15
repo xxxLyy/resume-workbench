@@ -5486,7 +5486,16 @@ async function handler(req, res) {
         }
         job.saveReceipts = { ...(job.saveReceipts || {}), found, queried: wantReqIds };
       }
-      return sendJson(200, { ok: true, job, rev: Number(m.rev) || 0, zones: m.zones || null, zoneOrder: m.zoneOrder || null, zoneRounds: m.zoneRounds || null, genTtlMs: GEN_TTL_MS, doc: { id, parent: m.parent || '', company: m.company || '', role: m.role || '', jd: m.jd || '', jdSource: m.jdSource || '', mtime: docMtime } });
+      // 定制效果对比：同 JD 的母版/定制稿评估分（导出卡「定制效果」用，jd 文本全等是有意口径——同源经 promote/create 流转）
+      const evalCmp = (() => {
+        const jd0 = m.jd || '';
+        if (!jd0) return { before: null, after: null };
+        const pick = (e) => e ? { id: e.id, score: e.score ?? null, verdict: e.verdict || '', createdAt: e.createdAt || null } : null;
+        const evs = loadEvals();
+        return { before: pick(evs.find((e) => e.jd === jd0 && (e.promotedTo === id || (e.source && e.source.docId === m.parent)))),
+                 after: pick(evs.find((e) => e.jd === jd0 && e.source && e.source.docId === id)) };
+      })();
+      return sendJson(200, { ok: true, job, rev: Number(m.rev) || 0, zones: m.zones || null, zoneOrder: m.zoneOrder || null, zoneRounds: m.zoneRounds || null, genTtlMs: GEN_TTL_MS, doc: { id, parent: m.parent || '', company: m.company || '', role: m.role || '', jd: m.jd || '', jdSource: m.jdSource || '', mtime: docMtime, evalCmp } });
     }
     if (req.method === 'POST' && url.pathname === '/job/changes') {
       const body = JSON.parse(await readBody(req));
