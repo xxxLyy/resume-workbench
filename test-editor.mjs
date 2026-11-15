@@ -17,6 +17,7 @@ import { updateMeta } from './tx.mjs';
 import { freezeHtml } from './freeze.mjs';
 import { assembleTemplate } from './template.mjs';
 import { paraFingerprint, contentFingerprint } from './evidence.mjs';
+import { normalizeZids } from './zone.mjs';
 
 const [base, docId, dataRoot] = process.argv.slice(2);
 // 参数错误是调用方问题，不是环境缺失：返回 1（失败），不得落到 2（仅浏览器环境不可用）。
@@ -1133,6 +1134,8 @@ const JOB_DOC = 'ed-fixture-v2';
   tpl = tpl.replaceAll('{{NAME}}', () => '测试员').replaceAll('{{CONTACT}}', () => 'test@example.com')
     .replaceAll('{{INTENT}}', () => '测试').replaceAll('{{SUMMARY}}', () => '摘要文本').replaceAll('{{SKILLS}}', () => '<p>技能一：内容</p>')
     .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => projects).replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => ED_DOC);
+  // 段落编号打点（2026-11-15）：编辑器首跑发现未打点段落会先 autosave 一次——夹具正文预打 zid 保持「打开不写盘」的旧前提
+  tpl = normalizeZids(tpl);
   fs.writeFileSync(path.join(dataRoot, 'docs', ED_DOC + '.html'), tpl);
   // 外来内联脚本的文档：/edit 的 CSP 必须挡住它（文档正文是外部输入 → 恢复的备份可带 <script>）
   fs.writeFileSync(path.join(dataRoot, 'docs', 'ed-evil.html'),
@@ -2043,7 +2046,7 @@ try {
     const legacyHtml = tpl
       .replace('<style data-theme="classic">', '<style>')
       .replace('</head>', '<style id="typo-custom">.sheet p{letter-spacing:0.02em}</style>\n' + LEGACY_CHROME + '\n</head>');
-    fs.writeFileSync(legacyFile, legacyHtml);
+    fs.writeFileSync(legacyFile, normalizeZids(legacyHtml));   // 预打 zid：编辑器首跑的 zid 落盘 autosave 不改冻结件
     const meta6 = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
     meta6[LEGACY_DOC] = { theme: 'legacy' };
     fs.writeFileSync(metaFile, JSON.stringify(meta6));
@@ -2682,7 +2685,7 @@ try {
     const legacyHtml = tpl
       .replace('<style data-theme="classic">', '<style>')                    // legacy 形态：主题块无 data-theme（同 6d 夹具形态）
       .replace('</head>', '<style id="typo-custom">.sheet p{letter-spacing:0.02em}</style>\n</head>');
-    fs.writeFileSync(stripFile, legacyHtml);
+    fs.writeFileSync(stripFile, normalizeZids(legacyHtml));   // 预打 zid：打开即触发 autosave 会多一条 /save 干扰 posted12
     const metaP = path.join(dataRoot, 'docs-meta.json');
     const mm = JSON.parse(fs.readFileSync(metaP, 'utf8'));
     mm[STRIP_DOC] = { theme: 'legacy' };
@@ -2938,7 +2941,7 @@ try {
       .replaceAll('{{INTENT}}', () => '测试').replaceAll('{{SUMMARY}}', () => '摘要文本').replaceAll('{{SKILLS}}', () => '<p>技能一：内容</p>')
       .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => '<div class="entry-head"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024</div></div>\n<ul><li>项目A描述</li></ul>')
       .replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => REC_DOC);
-    fs.writeFileSync(path.join(dataRoot, 'docs', REC_DOC + '.html'), tpl);
+    fs.writeFileSync(path.join(dataRoot, 'docs', REC_DOC + '.html'), normalizeZids(tpl));   // 预打 zid：打开不触发首跑 autosave
     const ctx15 = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     // 预置离线恢复缓存（正文与服务器不同 → 加载后必出恢复条；比块 2 的失败保存路径更确定）
     await ctx15.addInitScript((id) => {
@@ -2997,7 +3000,7 @@ try {
       .replaceAll('{{INTENT}}', () => '测试').replaceAll('{{SUMMARY}}', () => '摘要文本').replaceAll('{{SKILLS}}', () => '<p>技能一：内容</p>')
       .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => '<div class="entry-head"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024</div></div>\n<ul><li>项目A描述</li></ul>')
       .replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => I2_DOC);
-    fs.writeFileSync(path.join(dataRoot, 'docs', I2_DOC + '.html'), tpl);
+    fs.writeFileSync(path.join(dataRoot, 'docs', I2_DOC + '.html'), normalizeZids(tpl));
     const ctx16 = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     const page16 = await ctx16.newPage();
     let dialogs16 = 0;
@@ -3093,7 +3096,7 @@ try {
       .replaceAll('{{INTENT}}', () => '测试').replaceAll('{{SUMMARY}}', () => '摘要文本').replaceAll('{{SKILLS}}', () => '<p>技能一：内容</p>')
       .replaceAll('{{WORK}}', () => '').replaceAll('{{PROJECTS}}', () => '<div class="entry-head"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024</div></div>\n<ul><li>项目A描述</li></ul>')
       .replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => S3_DOC);
-    fs.writeFileSync(path.join(dataRoot, 'docs', S3_DOC + '.html'), tpl);
+    fs.writeFileSync(path.join(dataRoot, 'docs', S3_DOC + '.html'), normalizeZids(tpl));
     const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } })   // S4a-T9：默认 ≥1440（1280 档右栏按活跃度折叠，避免无关断言被折叠影响）;
     const page = await ctx.newPage();
     await page.goto(`${base}/edit?id=${S3_DOC}`, { waitUntil: 'networkidle' });
@@ -3145,7 +3148,7 @@ try {
       .replaceAll('{{WORK}}', () => '<div class="entry-head"><div class="entry-title">公司甲</div><div class="entry-role">工程师</div><div class="entry-date">2024</div></div>\n<ul><li>公司甲职责</li></ul>')
       .replaceAll('{{PROJECTS}}', () => '<div class="entry-head"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024</div></div>\n<ul><li>项目A描述</li></ul>')
       .replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => S3_DOC);
-    fs.writeFileSync(path.join(dataRoot, 'docs', S3_DOC + '.html'), tpl);
+    fs.writeFileSync(path.join(dataRoot, 'docs', S3_DOC + '.html'), normalizeZids(tpl));
     const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } });   // S4a-T9：≥1440 三栏全开（1280 档右栏按活跃度折叠，不影响本段交互）
     const page = await ctx.newPage();
     await page.goto(`${base}/edit?id=${S3_DOC}`, { waitUntil: 'networkidle' });
@@ -3191,7 +3194,7 @@ try {
       .replaceAll('{{WORK}}', () => '<div class="entry-head"><div class="entry-title">公司甲</div><div class="entry-role">工程师</div><div class="entry-date">2024</div></div>\n<ul><li>公司甲职责一</li><li>公司甲职责二</li></ul>')
       .replaceAll('{{PROJECTS}}', () => '<div class="entry-head"><div class="entry-title">项目A</div><div class="entry-role">负责人</div><div class="entry-date">2024</div></div>\n<ul><li>项目A描述</li></ul>')
       .replaceAll('{{EDU}}', () => '').replaceAll('{{DOC_ID}}', () => S3_DOC);
-    fs.writeFileSync(path.join(dataRoot, 'docs', S3_DOC + '.html'), tpl);
+    fs.writeFileSync(path.join(dataRoot, 'docs', S3_DOC + '.html'), normalizeZids(tpl));
     const zonesOf = () => (JSON.parse(fs.readFileSync(path.join(dataRoot, 'docs-meta.json'), 'utf8'))[S3_DOC] || {}).zones || {};
     const ctx = await browser.newContext({ viewport: { width: 1450, height: 900 } });   // S4a-T9：≥1440 三栏全开
     const page = await ctx.newPage();

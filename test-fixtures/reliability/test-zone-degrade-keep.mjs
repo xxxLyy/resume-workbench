@@ -17,6 +17,7 @@ import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
 import { resolveChromium } from '../../chromium.mjs';
 import { assembleTemplate } from '../../template.mjs';
+import { normalizeZids } from '../../zone.mjs';
 
 const APP_ROOT = new URL('../../', import.meta.url).pathname.replace(/\/$/, '');
 const fail = (m) => { console.error('❌ ' + m); process.exit(1); };
@@ -31,7 +32,7 @@ for (const [k, v] of [['{{NAME}}', '合成'], ['{{CONTACT}}', ''], ['{{INTENT}}'
   ['{{SKILLS}}', ''], ['{{WORK}}', ''], ['{{EDU}}', ''], ['{{DOC_ID}}', DOC]]) doc = doc.replaceAll(k, () => v);
 doc = doc.replace('{{PROJECTS}}', () => '<p data-zid="' + P1 + '">项目一：负责队列服务，把延迟从 80ms 降到 12ms</p>'
   + '<p data-zid="' + P2 + '">项目二：负责限流组件，支撑双十一峰值流量</p>');
-fs.writeFileSync(path.join(root, 'docs', DOC + '.html'), doc);
+fs.writeFileSync(path.join(root, 'docs', DOC + '.html'), normalizeZids(doc));
 // 关键：不写 config.json（hasLLM=false → /ai/zone-analyze 回 409 LLM_NOT_CONFIGURED → degrade 路径）
 fs.writeFileSync(path.join(root, 'docs-meta.json'), JSON.stringify({
   [DOC]: {

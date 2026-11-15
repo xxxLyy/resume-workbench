@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
 import { resolveChromium } from '../../chromium.mjs';
 import { assembleTemplate } from '../../template.mjs';
+import { normalizeZids } from '../../zone.mjs';
 
 export async function bootJobFixture({ name, fillDoc, changes, zones = {}, metaExtra = {} }) {
   const fail = (m) => { console.error('❌ ' + m); process.exit(1); };
@@ -20,7 +21,7 @@ export async function bootJobFixture({ name, fillDoc, changes, zones = {}, metaE
   let doc = assembleTemplate('classic');
   for (const [k, v] of [['{{NAME}}', '合成'], ['{{CONTACT}}', ''], ['{{INTENT}}', ''], ['{{SUMMARY}}', '摘要'],
     ['{{SKILLS}}', ''], ['{{EDU}}', ''], ['{{DOC_ID}}', DOC]]) doc = doc.replaceAll(k, () => v);
-  doc = fillDoc(doc);
+  doc = normalizeZids(fillDoc(doc));   // 预打 zid（2026-11-15）：编辑器首跑对未打点段落会先 autosave，夹具统一全打点保持「打开不写盘」
   const writeMeta = () => {
     fs.writeFileSync(path.join(root, 'docs-meta.json'), JSON.stringify({
       [DOC]: Object.assign({

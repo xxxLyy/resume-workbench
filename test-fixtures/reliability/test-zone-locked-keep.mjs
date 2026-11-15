@@ -22,6 +22,7 @@ import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
 import { resolveChromium } from '../../chromium.mjs';
 import { assembleTemplate } from '../../template.mjs';
+import { normalizeZids } from '../../zone.mjs';
 
 const APP_ROOT = new URL('../../', import.meta.url).pathname.replace(/\/$/, '');
 const fail = (m) => { console.error('❌ ' + m); process.exit(1); };
@@ -36,6 +37,8 @@ for (const [k, v] of [['{{NAME}}', '合成'], ['{{CONTACT}}', ''], ['{{INTENT}}'
   ['{{SKILLS}}', ''], ['{{EDU}}', ''], ['{{DOC_ID}}', DOC]]) doc = doc.replaceAll(k, () => v);
 doc = doc.replace('{{WORK}}', () => '<p data-zid="' + P3 + '">项目三：负责容量规划，支撑三年增长</p>'
   + '<p data-zid="' + P4 + '">项目四：负责日常运维值班与故障演练</p>');
+// 预打 zid（2026-11-15）：编辑器首跑发现未打点段落会先 autosave——其 /save 写锁会挡住本用例的改绑请求
+doc = normalizeZids(doc);
 fs.writeFileSync(path.join(root, 'docs', DOC + '.html'), doc);
 // 初始 meta：P3 已确认（project、无锁），P4 待确认（work、无锁）——两把锁都在面板加载之后才由外部写者设置
 fs.writeFileSync(path.join(root, 'docs-meta.json'), JSON.stringify({

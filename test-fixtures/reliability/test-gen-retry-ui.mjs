@@ -15,6 +15,7 @@ import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
 import { resolveChromium } from '../../chromium.mjs';
 import { assembleTemplate } from '../../template.mjs';
+import { normalizeZids } from '../../zone.mjs';
 
 const APP_ROOT = new URL('../../', import.meta.url).pathname.replace(/\/$/, '');
 const fail = (m) => { console.error('❌ ' + m); process.exit(1); };
@@ -35,7 +36,7 @@ for (const [k, v] of [['{{NAME}}', '合成'], ['{{CONTACT}}', ''], ['{{INTENT}}'
   ['{{SKILLS}}', ''], ['{{EDU}}', ''], ['{{DOC_ID}}', DOC]]) doc = doc.replaceAll(k, () => v);
 doc = doc.replace('{{WORK}}', () => `<p data-zid="${ZW1}">${PARA_W1}</p><p data-zid="${ZW2}">${PARA_W2}</p>`);
 doc = doc.replace('{{PROJECTS}}', () => `<p data-zid="${ZP1}">${PARA_P1}</p><p data-zid="${ZP2}">${PARA_P2}</p><p data-zid="${ZP3}">${PARA_P3}</p><p data-zid="${ZP4}">${PARA_P4}</p>`);
-fs.writeFileSync(path.join(root, 'docs', DOC + '.html'), doc);
+fs.writeFileSync(path.join(root, 'docs', DOC + '.html'), normalizeZids(doc));
 fs.writeFileSync(path.join(root, 'docs-meta.json'), JSON.stringify({
   [DOC]: { rev: 1, flow: 'draft', kind: 'job', company: '合成公司', role: '合成岗位',
     jd: '要求：交易系统与订单经验；网关与链路追踪经验；灰度发布与监控告警经验',

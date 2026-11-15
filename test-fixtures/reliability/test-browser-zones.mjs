@@ -12,6 +12,7 @@ import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
 import { resolveChromium } from '../../chromium.mjs';
 import { assembleTemplate } from '../../template.mjs';
+import { normalizeZids } from '../../zone.mjs';
 
 const APP = new URL('../../', import.meta.url);
 const APP_ROOT = APP.pathname.replace(/\/$/, '');
@@ -29,7 +30,7 @@ let doc = assembleTemplate('classic');
 for (const [k, v] of [['{{NAME}}', '合成'], ['{{CONTACT}}', ''], ['{{INTENT}}', ''], ['{{SUMMARY}}', '摘要'],
   ['{{SKILLS}}', ''], ['{{WORK}}', ''], ['{{EDU}}', ''], ['{{DOC_ID}}', DOC]]) doc = doc.replaceAll(k, () => v);
 doc = doc.replace('{{PROJECTS}}', () => `<p data-zid="${P1}">${T1}</p><p data-zid="${P2}">${T2}</p><p data-zid="${P3}">${T3}</p>`);
-fs.writeFileSync(path.join(root, 'docs', DOC + '.html'), doc);
+fs.writeFileSync(path.join(root, 'docs', DOC + '.html'), normalizeZids(doc));
 fs.writeFileSync(path.join(root, 'docs-meta.json'), JSON.stringify({
   [DOC]: {
     rev: 1, flow: 'draft', kind: 'job', company: '合成公司', role: '合成岗位',
