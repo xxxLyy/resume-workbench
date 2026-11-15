@@ -640,20 +640,25 @@
     });
     return added;
   };
-  // 段落编号先落盘：zid 由编辑器生成、/save 才写盘——首跑发现未打点段落就 autosave 一次
-  // （doSave(true) 无 toast 无快照），让盘上 parasOf 非空；否则 gen=1 自动链与后台生成在
-  // 零段落正文上拿不到引用。zid 是确定性哈希 → 落盘值与 meta 既有 zones 同族，不产生孤儿。
-  // 保存管线缺失（历史/预览视图无 __edFlushSave）或保存失败 → resolve(false)，永不 reject。
+  // 段落编号按需落盘：zid 由编辑器生成、/save 才写盘——首跑只记缺打点数，不主动写盘
+  // （浏览/恢复/冻结件不该被改写）。真正需要盘上编号的一方（job-panel zidsReady → 生成前）
+  // 经 __edZidsStart 触发首次 autosave（doSave(true) 无 toast 无快照），让 parasOf(盘) 非空；
+  // 否则 gen=1 自动链与后台生成在零段落正文上拿不到引用。zid 是确定性哈希 → 落盘值与
+  // meta 既有 zones 同族，不产生孤儿。保存管线缺失或保存失败 → resolve(false)，永不 reject。
   var zidAdded = __edEnsureZids();
-  window.__edZidsReady = (function () {
-    if (!zidAdded) return Promise.resolve(true);
-    var flush = function () {
-      return Promise.resolve(typeof window.__edFlushSave === 'function' ? window.__edFlushSave() : false)
-        .then(function (ok) { return !!ok; }, function () { return false; });
-    };
-    if (typeof window.__edFlushSave === 'function' || document.readyState !== 'loading') return flush();
-    return new Promise(function (resolve) { document.addEventListener('DOMContentLoaded', function () { resolve(flush()); }, { once: true }); });
-  })();
+  window.__edZidsReady = zidAdded ? null : Promise.resolve(true);
+  window.__edZidsStart = function () {
+    if (!window.__edZidsReady) {
+      var flush = function () {
+        return Promise.resolve(typeof window.__edFlushSave === 'function' ? window.__edFlushSave() : false)
+          .then(function (ok) { return !!ok; }, function () { return false; });
+      };
+      window.__edZidsReady = (typeof window.__edFlushSave === 'function' || document.readyState !== 'loading')
+        ? flush()
+        : new Promise(function (resolve) { document.addEventListener('DOMContentLoaded', function () { resolve(flush()); }, { once: true }); });
+    }
+    return window.__edZidsReady;
+  };
   // 初绑：meta 无 zones 时收集段落上送服务端启发式（全 pending，不静默生效）。参数名 ?id=（全局约束 19）
   fetch('/job/changes?id=' + encodeURIComponent(DOC_ID)).then(function (r) { return r.json(); }).then(function (d) {
     if (d && d.zones && Object.keys(d.zones).length) return;

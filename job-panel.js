@@ -1148,9 +1148,9 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       if (anyRunning(gt)) schedulePoll();
     });
   }
-  // zid 落盘就绪缝：editor-shell 首跑发现未打点段落时会先 autosave（__edZidsReady），
-  // 生成动作（证据/建议/追问/自动链）必须等它落定——否则零段落正文被 startGenTask 409 拒绝。
-  function zidsReady() { return window.__edZidsReady || Promise.resolve(true); }
+  // zid 落盘就绪缝：editor-shell 惰性打点——缺编号正文的首个生成动作经 __edZidsStart 触发
+  // autosave 落盘；证据/建议/追问/自动链必须等它——否则零段落正文被 startGenTask 409 拒绝。
+  function zidsReady() { return window.__edZidsStart ? window.__edZidsStart() : (window.__edZidsReady || Promise.resolve(true)); }
 
   // 本机 prefs（s4a-feedback-prefs）与 job.feedback 环形去重后的待并入项（≤20）：
   // 「生成建议」按钮与 gen=1 自动链共用同一份过滤，本地坏 JSON 视作无 prefs。
