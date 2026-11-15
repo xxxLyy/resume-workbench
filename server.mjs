@@ -1302,8 +1302,11 @@ async function runGenTaskInner(id, kind, taskId, scope, held) {
 // 原子启动（设计 §6 v1.4：updateMetaAll 全表事务锁内扫描）：全库同类 running ≤1、两类合计 ≤2，超限 409；
 // 过期残留不计入（读取时清）——启动时拒过期残留为三点校验之一。taskId 在事务内生成写入，无检查与写入分离窗口。
 function startGenTask(id, kind, scope = 'all') {
-  let baseHash = null;
-  try { baseHash = contentHash(fs.readFileSync(docPath(id), 'utf8')); } catch {}   // 仅任务记录用（设计 §4.1）
+  let baseHash = null, html0 = null;
+  try { html0 = fs.readFileSync(docPath(id), 'utf8'); baseHash = contentHash(html0); } catch {}   // 仅任务记录用（设计 §4.1）
+  // 零段落正文拒绝启动：zid 由编辑器生成、/save 才落盘——盘上无 data-zid 时证据与建议拿不到引用
+  // （gen=1 自动链会抢在首次保存前跑）。在编辑页保存一次即可恢复。
+  if (html0 !== null && parasOf(html0).length === 0) return { taskId: null, reject: { status: 409, error: '正文段落还没有编号：在编辑页保存一次（⌘S）后再生成' } };
   let taskId = null, reject = null;
   updateMetaAll(root, (all) => {
     const m = all[id];

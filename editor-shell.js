@@ -621,10 +621,10 @@
     return 'z' + ('00000000' + h.toString(16)).slice(-8);
   }
   window.__edEnsureZids = function () {
-    var seen = {};
+    var seen = {}, added = 0;
     Array.prototype.forEach.call(document.querySelectorAll(ZID_SEL), function (el) {
       var z = el.getAttribute('data-zid');
-      if (!z) z = edHashZid(el.textContent || '');        // 缺失 → 内容哈希（确定性）
+      if (!z) { z = edHashZid(el.textContent || ''); added++; }        // 缺失 → 内容哈希（确定性）
       if (seen[z]) {
         // 重复内容 → 按出现序号**确定性**派生，不是随机重打。
         // 随机会让「两条字面相同的段落」在每次加载拿到不同 zid：首次加载的 zid 已被
@@ -638,8 +638,22 @@
       el.setAttribute('data-zid', z);
       seen[z] = 1;
     });
+    return added;
   };
-  __edEnsureZids();
+  // 段落编号先落盘：zid 由编辑器生成、/save 才写盘——首跑发现未打点段落就 autosave 一次
+  // （doSave(true) 无 toast 无快照），让盘上 parasOf 非空；否则 gen=1 自动链与后台生成在
+  // 零段落正文上拿不到引用。zid 是确定性哈希 → 落盘值与 meta 既有 zones 同族，不产生孤儿。
+  // 保存管线缺失（历史/预览视图无 __edFlushSave）或保存失败 → resolve(false)，永不 reject。
+  var zidAdded = __edEnsureZids();
+  window.__edZidsReady = (function () {
+    if (!zidAdded) return Promise.resolve(true);
+    var flush = function () {
+      return Promise.resolve(typeof window.__edFlushSave === 'function' ? window.__edFlushSave() : false)
+        .then(function (ok) { return !!ok; }, function () { return false; });
+    };
+    if (typeof window.__edFlushSave === 'function' || document.readyState !== 'loading') return flush();
+    return new Promise(function (resolve) { document.addEventListener('DOMContentLoaded', function () { resolve(flush()); }, { once: true }); });
+  })();
   // 初绑：meta 无 zones 时收集段落上送服务端启发式（全 pending，不静默生效）。参数名 ?id=（全局约束 19）
   fetch('/job/changes?id=' + encodeURIComponent(DOC_ID)).then(function (r) { return r.json(); }).then(function (d) {
     if (d && d.zones && Object.keys(d.zones).length) return;

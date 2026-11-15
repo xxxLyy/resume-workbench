@@ -1141,6 +1141,10 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       if (anyRunning(gt)) schedulePoll();
     });
   }
+  // zid 落盘就绪缝：editor-shell 首跑发现未打点段落时会先 autosave（__edZidsReady），
+  // 生成动作（证据/建议/追问/自动链）必须等它落定——否则零段落正文被 startGenTask 409 拒绝。
+  function zidsReady() { return window.__edZidsReady || Promise.resolve(true); }
+
   // 本机 prefs（s4a-feedback-prefs）与 job.feedback 环形去重后的待并入项（≤20）：
   // 「生成建议」按钮与 gen=1 自动链共用同一份过滤，本地坏 JSON 视作无 prefs。
   function pendingFeedback() {
@@ -1428,13 +1432,15 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     } else {
       act.textContent = gt.status === 'done' || gt.status === 'cancelled' ? '重新分析' : (gt.status === 'error' ? '重试' : '生成证据');
       act.addEventListener('click', function () {
-        api('/job/gen-start?id=' + DOC_ID + '&kind=evidence', {}).then(function (d) {
-          if (!d.ok) { note(d.error || '启动失败', 'warn'); return; }
-          job.genTasks = job.genTasks || {};
-          job.genTasks.evidence = { taskId: d.taskId, status: 'running', startedAt: Date.now() };
-          note('正在分析证据…');
-          render();
-          schedulePoll();
+        zidsReady().then(function () {
+          api('/job/gen-start?id=' + DOC_ID + '&kind=evidence', {}).then(function (d) {
+            if (!d.ok) { note(d.error || '启动失败', 'warn'); return; }
+            job.genTasks = job.genTasks || {};
+            job.genTasks.evidence = { taskId: d.taskId, status: 'running', startedAt: Date.now() };
+            note('正在分析证据…');
+            render();
+            schedulePoll();
+          });
         });
       });
     }
@@ -1546,12 +1552,14 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     act.className = 'jp-refbtn';   // 普通操作按钮；jp-ev-cancel 是「取消」语义，只用于取消
     var start = function () {
       act.disabled = true;   // 防连点：下次 render() 重建按钮时自动恢复
-      api('/job/gen-start?id=' + DOC_ID + '&kind=interview', {}).then(function (d) {
-        if (!d.ok) { act.disabled = false; note(d.error || '启动失败', 'warn'); return; }
-        schedulePoll();
-      }, function (e) {
-        act.disabled = false;   // 网络层 reject：api() 内部走 fetch，不接会成未捕获 rejection
-        note(e.message || e, 'warn');
+      zidsReady().then(function () {
+        api('/job/gen-start?id=' + DOC_ID + '&kind=interview', {}).then(function (d) {
+          if (!d.ok) { act.disabled = false; note(d.error || '启动失败', 'warn'); return; }
+          schedulePoll();
+        }, function (e) {
+          act.disabled = false;   // 网络层 reject：api() 内部走 fetch，不接会成未捕获 rejection
+          note(e.message || e, 'warn');
+        });
       });
     };
 
@@ -1892,11 +1900,13 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       // —— 服务端既有合并逻辑进 job.feedback 环形（≤20）并经 buildJobPrompt【过往反馈】块进下次 prompt。
       // 与服务端环形已有条目去重：重复提交只会稀释环形，不产生新信息；本地坏 JSON 视作无 prefs。
       var fb = pendingFeedback();
-      api('/job/generate?id=' + DOC_ID, fb.length ? { feedback: fb } : {}).then(function (d) {
-        busy = false;
-        if (!d.ok) { note(d.error || '生成失败', 'warn'); gen.disabled = false; return; }
-        job = d.job; note('已生成 ' + d.generated + ' 条建议（旧候选标记为 superseded）', 'ok'); render();
-      }).catch(function (e) { busy = false; note(e.message, 'warn'); gen.disabled = false; });
+      zidsReady().then(function () {
+        api('/job/generate?id=' + DOC_ID, fb.length ? { feedback: fb } : {}).then(function (d) {
+          busy = false;
+          if (!d.ok) { note(d.error || '生成失败', 'warn'); gen.disabled = false; return; }
+          job = d.job; note('已生成 ' + d.generated + ' 条建议（旧候选标记为 superseded）', 'ok'); render();
+        }).catch(function (e) { busy = false; note(e.message, 'warn'); gen.disabled = false; });
+      });
     });
     head.appendChild(gen);
     var exp = document.createElement('a');
@@ -2088,10 +2098,12 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       // 幂等保护：promote 返回已生成的旧稿或老草稿不重启——只认「无证据、无候选、无在跑」的新稿
       if (!(job.evidence || []).length && !(job.changes || []).length && !anyRunning(job.genTasks || {})) {
         var fb0 = pendingFeedback();
-        api('/job/gen-start?id=' + DOC_ID + '&kind=evidence&then=changes', fb0.length ? { feedback: fb0 } : {}).then(function (d2) {
-          if (!d2.ok) { note((d2.error || '启动失败') + '。可以手动点「生成证据」和「生成建议」。', 'warn'); return; }
-          note('已开始生成：先分析要求与证据，完成后自动生成修改建议。关掉页面也会继续。');
-          refresh();
+        zidsReady().then(function () {
+          api('/job/gen-start?id=' + DOC_ID + '&kind=evidence&then=changes', fb0.length ? { feedback: fb0 } : {}).then(function (d2) {
+            if (!d2.ok) { note((d2.error || '启动失败') + '。可以手动点「生成证据」和「生成建议」。', 'warn'); return; }
+            note('已开始生成：先分析要求与证据，完成后自动生成修改建议。关掉页面也会继续。');
+            refresh();
+          });
         });
       }
     }

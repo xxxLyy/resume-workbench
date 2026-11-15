@@ -583,6 +583,8 @@ echo '✅ 素材确认状态'
 # ===== 8. 岗位草稿：独立文档、不依赖模型、同岗位幂等、母版不动 =====
 MOTHER_MD5=$(md5 -q "$RESUME_ROOT/docs/$DOCID.html")
 JOBLOC=$(curl -s -X POST "$B/job/create" -H 'Content-Type: application/json' -d "{\"from\":\"$DOCID\",\"company\":\"测试公司\",\"role\":\"后端工程师\",\"jd\":\"负责 Node 服务与数据链路\",\"materials\":[\"$MATID\"]}" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch{console.log('')}})")
+# 段落编号打点：zid 由编辑器生成、/save 才落盘——服务端直建的正文无 data-zid，startGenTask 的零段落守卫会 409（2026-11-15）
+node --input-type=module -e 'import { normalizeZids } from "./zone.mjs"; import fs from "node:fs"; const f = process.argv[1]; fs.writeFileSync(f, normalizeZids(fs.readFileSync(f, "utf8")));' "$RESUME_ROOT/docs/$JOBLOC.html"
 [ -n "$JOBLOC" ] || fail '岗位草稿创建失败'
 [ -f "$RESUME_ROOT/docs/$JOBLOC.html" ] || fail '岗位草稿文件不存在'
 [ "$(md5 -q "$RESUME_ROOT/docs/$DOCID.html")" = "$MOTHER_MD5" ] || fail '创建岗位草稿改动了母版'
@@ -597,6 +599,7 @@ echo "✅ 岗位草稿独立创建（${JOBLOC}）"
 BRIEF0=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const b=(m[process.argv[2]].job||{}).brief;console.log(b?JSON.stringify(b):"")' "$RESUME_ROOT/docs-meta.json" "$JOBLOC")
 [ "$BRIEF0" = '{"focus":[],"keepProjects":[],"deemphasize":[],"degree":"refocus","pages":2,"preset":null}' ] || fail "S4a-T5 无 brief 创建应落渐进默认值: $BRIEF0"
 BRIEFJOB=$(curl -s -X POST "$B/job/create" -H 'Content-Type: application/json' -d "{\"from\":\"$DOCID\",\"company\":\"要求卡公司\",\"role\":\"前端工程师\",\"jd\":\"S4a-T5 验证\",\"brief\":{\"focus\":[\"高并发\",\"\"],\"keepProjects\":[\"订单系统\"],\"deemphasize\":[\"行政实习\"],\"degree\":\"light\",\"pages\":1,\"preset\":\"后端通用\"}}" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch{console.log('')}})")
+node --input-type=module -e 'import { normalizeZids } from "./zone.mjs"; import fs from "node:fs"; const f = process.argv[1]; fs.writeFileSync(f, normalizeZids(fs.readFileSync(f, "utf8")));' "$RESUME_ROOT/docs/$BRIEFJOB.html"
 [ -n "$BRIEFJOB" ] && [ -f "$RESUME_ROOT/docs/$BRIEFJOB.html" ] || fail 'S4a-T5 带 brief 创建失败'
 BRIEF=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(JSON.stringify(m[process.argv[2]].job.brief))' "$RESUME_ROOT/docs-meta.json" "$BRIEFJOB")
 [ "$BRIEF" = '{"focus":["高并发"],"keepProjects":["订单系统"],"deemphasize":["行政实习"],"degree":"light","pages":1,"preset":"后端通用"}' ] || fail "S4a-T5 create 带 brief 落 meta 异常: $BRIEF"
@@ -1122,6 +1125,7 @@ echo '✅ S4a 附加f：保存中断后重启恢复（旧正文+旧 meta 一致�
 # 夹具：独立岗位草稿 T4DOC（无历史 changes，计数干净）；跨文档夹具复用 JOB2；stub 延迟/错误走控制文件。
 T4DOC=$(curl -s -X POST "$B/job/create" -H 'Content-Type: application/json' -d "{\"from\":\"$DOCID\",\"company\":\"任务可靠性公司\",\"role\":\"后端\",\"jd\":\"S4a-T4 验证\"}" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch{console.log('')}})")
 [ -n "$T4DOC" ] && [ -f "$RESUME_ROOT/docs/$T4DOC.html" ] || fail 'S4a-T4 夹具岗位草稿创建'
+node --input-type=module -e 'import { normalizeZids } from "./zone.mjs"; import fs from "node:fs"; const f = process.argv[1]; fs.writeFileSync(f, normalizeZids(fs.readFileSync(f, "utf8")));' "$RESUME_ROOT/docs/$T4DOC.html"
 gt_status() { # $1=doc $2=kind → genTasks[kind].status（经 /job/changes，读取时超时清理随之生效）
   curl -s "$B/job/changes?id=$1" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s).job;console.log(((j.genTasks||{})[process.argv[1]]||{}).status||"")}catch{console.log("")}})' "$2"
 }
@@ -1319,6 +1323,7 @@ fi
 T6MAT=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const x=m.find(v=>v.title==="素材甲");console.log(x?x.id:"")' "$RESUME_ROOT/materials.json")
 [ -n "$T6MAT" ] || fail 'S4a-T6 夹具素材（素材甲）缺失'
 T6DOC=$(curl -s -X POST "$B/job/create" -H 'Content-Type: application/json' -d "{\"from\":\"$DOCID\",\"company\":\"证据公司\",\"role\":\"后端\",\"jd\":\"S4a-T6 JD-EVIDENCE-MARK 验证\",\"materials\":[\"$T6MAT\"]}" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch{console.log('')}})")
+node --input-type=module -e 'import { normalizeZids } from "./zone.mjs"; import fs from "node:fs"; const f = process.argv[1]; fs.writeFileSync(f, normalizeZids(fs.readFileSync(f, "utf8")));' "$RESUME_ROOT/docs/$T6DOC.html"
 [ -n "$T6DOC" ] && [ -f "$RESUME_ROOT/docs/$T6DOC.html" ] || fail 'S4a-T6 夹具岗位草稿创建'
 curl -s -X POST "$B/save?id=$T6DOC" --data-binary "$(cat "$RESUME_ROOT/docs/$T6DOC.html")" | grep -q '"ok":true' || fail 'S4a-T6 夹具保存（zid 归一 + zoneSync）'
 t6_changes() { # 直接读 meta（无 GET 副作用）：T6DOC 的 changes 条数

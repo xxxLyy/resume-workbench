@@ -5,7 +5,8 @@
 //   (c) 证据在跑时取消 → 链停在证据（out.dropped），changes 任务永不创建；
 //   (d) kind=changes&then=changes / kind=evidence&then=x / then=changes&scope=zone:… → 400；
 //   (e) body {feedback:['偏好A']} → 并入 job.feedback；
-//   (f) 不带 then 的普通 gen-start 仍回 {ok,taskId,status:'running'}（旧契约不变）。
+//   (f) 不带 then 的普通 gen-start 仍回 {ok,taskId,status:'running'}（旧契约不变）；
+//   (g) 正文无 data-zid 的草稿 → gen-start 409「正文段落还没有编号」且不消耗模型调用。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -46,11 +47,11 @@ for (const id of ['doc1', 'doc2', 'doc3', 'doc4']) {
 fs.writeFileSync(path.join(root, 'docs-meta.json'), JSON.stringify(meta, null, 2));
 
 // —— 桩 LLM：三通道分应答 + inflight 峰值观测；证据通道延时可调（取消用例要留窗口）——
-let llmInflight = 0, llmPeak = 0, evDelay = 0;
+let llmInflight = 0, llmPeak = 0, evDelay = 0, llmCalls = 0;
 const stub = http.createServer((q, s) => {
   let b = ''; q.on('data', (c) => { b += c; });
   q.on('end', () => {
-    llmInflight++; llmPeak = Math.max(llmPeak, llmInflight);
+    llmInflight++; llmPeak = Math.max(llmPeak, llmInflight); llmCalls++;
     let sys = '';
     try { sys = JSON.parse(b).messages.find((m) => m.role === 'system').content; } catch {}
     const done = (obj, ms = 0) => setTimeout(() => {
@@ -129,6 +130,24 @@ try {
   assert.ok(typeof r.taskId === 'string' && r.taskId.length > 0, '普通 gen-start 应回 taskId');
   assert.equal(r.status, 'running', '普通 gen-start 应回 running');
   await post('/job/gen-cancel?id=doc4&kind=evidence&taskId=' + encodeURIComponent(r.taskId));
+
+  // (g) 无 data-zid 母版 → 建稿 → gen-start 零段落守卫 409（不落 running、不消耗模型调用）
+  {
+    const mz = fs.readFileSync(path.join(root, 'docs', 'doc1.html'), 'utf8').replace(/ data-zid="[^"]*"/g, '');
+    fs.writeFileSync(path.join(root, 'docs', 'mzmaster.html'), mz);
+    const dm = JSON.parse(fs.readFileSync(path.join(root, 'docs-meta.json'), 'utf8'));
+    dm.mzmaster = { rev: 1, flow: 'draft', company: '无编号母版', role: '' };
+    fs.writeFileSync(path.join(root, 'docs-meta.json'), JSON.stringify(dm));
+    const cr = await post('/job/create', { from: 'mzmaster', company: '守卫公司', role: '后端', jd: '守卫验证' });
+    assert.ok(cr.ok && cr.id, '无 zid 母版建稿应成功');
+    const callsBefore = llmCalls;
+    const g = await post('/job/gen-start?id=' + cr.id + '&kind=evidence&then=changes');
+    assert.equal(g.ok, false, '零段落正文 gen-start 应拒绝');
+    assert.ok((g.error || '').includes('正文段落还没有编号'), '409 应带「正文段落还没有编号」文案，实际 ' + g.error);
+    assert.equal(llmCalls, callsBefore, '守卫拒绝不应消耗模型调用');
+    const jg = await jobOf(cr.id);
+    assert.ok(!((jg.genTasks || {}).evidence || {}).taskId, '守卫拒绝不应留下 running 任务');
+  }
 
   console.log('✅ gen 自动链：evidence→changes 同槽串行（证据与建议均落账 / 桩峰值≤1 / 取消链停 / then 组合 400 / feedback 并入 / 旧契约不变）');
 } finally { cleanup(); }
