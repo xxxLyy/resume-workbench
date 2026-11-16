@@ -587,6 +587,7 @@ async function createJobDraft(root, o) {
       createdAt: nowIso,
       tag: (company + '·' + role).slice(0, 20),
       typo: normJob.typo, theme: srcMeta.theme || normJob.theme || null, styleHash: normJob.styleHash, rev: 1,
+      zones: { ...(srcMeta.zones || {}) }, zoneOrder: Array.isArray(srcMeta.zoneOrder) ? srcMeta.zoneOrder.slice() : null,   // 草稿与母版共享同一批 zid——建稿即带区域归属，planBatches 不退化成全文单批（2026-11-17 真模型验证：无 zones → 单批必超时）
       kind: 'job', flow: 'draft', archivedAt: null,
       job: {
         sourceSnap: srcSnap, sourceHash: contentHash(srcHtml),
@@ -731,7 +732,7 @@ function gatePool(method, pathname) {
   }
   return null;
 }
-const GEN_TTL_MS = 10 * 60 * 1000;   // 任务级总时限：启动 / 读取 / 完成回调三点校验（兜底 status 永挂 running）
+const GEN_TTL_MS = 20 * 60 * 1000;   // 任务级总时限：启动 / 读取 / 完成回调三点校验（兜底 status 永挂 running）。多区域分批串行约 5–15 分钟（2026-11-17 glm 实测 rewrite 884s），10 分钟会误杀健康任务
 const genExpired = (t, now) => !!(t && t.status === 'running' && typeof t.startedAt === 'number' && t.startedAt + GEN_TTL_MS < now);
 const newGenTaskId = () => 't-' + randomBytes(4).toString('hex');
 
@@ -8882,7 +8883,10 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       return fs.createReadStream(pdfPath(id)).on('error', () => res.destroy()).pipe(res);
     }
     if (req.method === 'GET' && url.pathname === '/favicon.ico') {
-      const faviconSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#2f5d50"/><text x="16" y="22" font-size="15" text-anchor="middle" fill="#fff" font-family="serif">履</text></svg>';
+      // S4a-T11 favicon：2026-11-16 由「履评」品牌徽章（深绿底 + 履字）改为与页面设计系统一致的近黑文档图形。
+      // 图形 = 白纸 + 右上折角缺口 + 一条近黑高亮条；只两支颜色（近黑底 + 白），零阴影零渐变，16px 仍可辨。
+      // 底色沿用原 rx=7 圆角与 32×32 网格，标签页轮廓不变；灰度渲染，缩小后不糊。
+      const faviconSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#18181b"/><path fill="#fff" d="M9.3 6H19.2L24 10.8V24.7A1.3 1.3 0 0 1 22.7 26H9.3A1.3 1.3 0 0 1 8 24.7V7.3A1.3 1.3 0 0 1 9.3 6Z"/><rect x="10.9" y="19" width="9.6" height="2.2" fill="#18181b"/></svg>';
       return send(200, faviconSvg, 'image/svg+xml');
     }
     if (req.method === 'GET' && url.pathname === '/export') {

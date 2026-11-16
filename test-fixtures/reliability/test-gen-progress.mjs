@@ -3,7 +3,7 @@
 //   ① 任务 stage 只写管线真有的检查点：queued（注册后未拿槽位）→ calling（模型调用中）→ parsing（解析校验）；
 //   ② model 记录 gen-start 时的 active profile 模型名；
 //   ③ usage：桩返回 usage → 记录 {prompt,completion,total}；桩不返回 → null；
-//   ④ /job/changes 响应带 genTtlMs（=服务端 GEN_TTL_MS 10 分钟）；
+//   ④ /job/changes 响应带 genTtlMs（=服务端 GEN_TTL_MS 20 分钟）；
 //   ⑤ 两个慢任务占满 aiPool（容量 2）后，第三个任务 stage='queued'（真实排队可见）。
 // HTTP 类夹具：隔离根 + 合成岗位草稿 + 本机桩 LLM（可控延迟/usage）；零真实模型。
 import assert from 'node:assert/strict';
@@ -122,7 +122,7 @@ try {
 
   // ===== ④：genTtlMs 在响应里 =====
   const ch = await get('/job/changes?id=' + DOC);
-  assert.equal(ch.genTtlMs, 10 * 60 * 1000, '响应应带 genTtlMs=600000，实际：' + ch.genTtlMs);
+  assert.equal(ch.genTtlMs, 20 * 60 * 1000, '响应应带 genTtlMs=1200000，实际：' + ch.genTtlMs);
 
   // ===== ⑤：占满 aiPool（容量 2）→ 第三任务 queued =====
   stubDelayMs = 4000; stubWithUsage = false;
