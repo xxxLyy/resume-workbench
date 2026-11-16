@@ -5518,7 +5518,7 @@ assert(/staleDocs\.slice\(0, 3\)/.test(srv) && /fuDueApps\.slice\(0, 3\)/.test(s
 // ② 六处「请到侧栏「设置」」死引用清零：sendJson 带 settingsPath 字段，text/plain 直接给出 /settings 路径
 assert(!srv.includes('请到侧栏'), 'server.mjs 不得再有「请到侧栏」死文案（编辑器内无侧栏可点）');
 assert(srv.includes("settingsPath: '/settings'"), '/eval/create 409 JSON 应带 settingsPath 字段（消费方按 :2210 先例渲染链接）');
-assert((srv.match(/打开 \/settings 完成模型配置/g) || []).length === 5, '五处 text/plain 409 应直接给出 /settings 路径');
+assert((srv.match(/打开 \/settings 完成模型配置/g) || []).length === 4, '四处 text/plain 409 应直接给出 /settings 路径');
 // ③ .ob-add/.ob-ai/.ob-del 浅底虚线化（background:var(--card)）且 .ob-add 非全宽
 for (const cls of ['ob-add', 'ob-ai', 'ob-del']) {
   const rule = srv.match(new RegExp('\\.' + cls + '\\{[^}]*\\}'));
