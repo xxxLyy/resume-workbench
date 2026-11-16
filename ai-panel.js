@@ -80,7 +80,7 @@
   root.innerHTML = (embedded ? '' : '<button id="ai-toggle" title="AI 助手" aria-label="AI 助手">' + __icon('bot') + '</button>')
     + '<div id="ai-drawer"' + (embedded ? ' style="display:none"' : '') + '><header><span>' + __icon('bot') + ' AI 助手</span><span id="ai-close" role="button" tabindex="0" aria-label="关闭">' + __icon('x') + '</span></header>'
     + '<div id="ai-tabs"><button data-tab="chat" class="on">' + __icon('message-square') + ' 对话</button><button data-tab="review">' + __icon('stethoscope') + ' 体检</button></div>'
-    + '<div id="ai-pane-chat" class="ai-pane on"><div id="ai-log" aria-live="polite"></div><div id="ai-input"><input id="ai-msg" placeholder="例如：把项目3精简一点" aria-label="对话输入"><button id="ai-send">发送</button></div></div>'
+    + '<div id="ai-pane-chat" class="ai-pane on"><div id="ai-log" aria-live="polite"></div><div id="ai-chips" aria-label="常用提示词" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0"></div><div id="ai-input"><input id="ai-msg" placeholder="例如：把项目3精简一点" aria-label="对话输入"><button id="ai-send">发送</button></div></div>'
     + '<div id="ai-pane-review" class="ai-pane"><div class="ai-actions"><input id="ai-review-target" placeholder="目标方向（可选，如：后端开发）" maxlength="60" aria-label="目标方向"><button id="ai-review-full">全面体检</button><button id="ai-review-quant">仅量化增强</button></div><div id="ai-review-out" aria-live="polite"></div></div></div>'
     + '<button id="ai-sel-btn">' + __icon('sparkles') + ' AI 改写</button>'
     + '<div id="ai-pop" role="dialog" aria-modal="true" aria-label="选区改写"><textarea id="ai-inst" placeholder="改写指令，例如：精简到两行、突出量化成果" aria-label="改写指令"></textarea>'
@@ -229,6 +229,37 @@
   }
   $('ai-send').onclick = sendChat;
   $('ai-msg').addEventListener('keydown', function (e) { if (e.key === 'Enter') sendChat(); });
+
+  // 求职提示词模板（2026-11-16）：填入输入框不发送，并选中首个 [目标岗位] 占位便于直接替换；
+  // 覆盖信/面试练习不收录——已有「申请材料」与「投递详情·面试练习」两条正式能力。
+  var CHAT_CHIPS = [
+    { t: '技能差距', text: '我想投 [目标岗位]。只根据我简历里已有的内容，找出和这个岗位相比最关键的 3–5 个技能差距。每条写：差距是什么、简历里哪句话能看出来、怎么补（具体到课程/证书/项目练习）。不要编造我没有的经历；信息不够时先列出要问我的问题。' },
+    { t: '一分钟自我介绍', text: '我要面试 [目标岗位]。根据我的简历写一段 1 分钟的自我介绍（约 250 字）：现在做什么 → 1–2 个最相关的成果（带数字）→ 为什么想做这个岗位。只用简历里有的事实，没有的数字用【待补充】标出。' },
+    { t: '优势与短板', text: '面试 [目标岗位] 时被问到"你的优势和不足"。根据我的简历各写 2 条：优势要有简历里的具体证据；不足要真实、和岗位核心能力无关，并说明我正在怎么改进。只用简历里有的事实。' },
+    { t: '职业目标', text: '面试 [目标岗位] 时被问到"未来 3–5 年的职业规划"。根据我的简历写一段回答：短期目标、长期方向、这个岗位为什么是关键一步。要具体，避免空话。' }
+  ];
+  (function () {
+    var box = $('ai-chips');
+    var lab = document.createElement('span');
+    lab.style.cssText = 'font-size:11px;color:var(--ed-mut)';
+    lab.textContent = '常用：';
+    box.appendChild(lab);
+    CHAT_CHIPS.forEach(function (c) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ai-chip';
+      b.style.cssText = 'font-size:11px;padding:2px 8px;border:1px solid var(--ed-line);border-radius:999px;background:var(--ed-panel);color:var(--ed-ink);cursor:pointer';
+      b.textContent = c.t;
+      b.onclick = function () {
+        var input = $('ai-msg');
+        input.value = c.text;
+        input.focus();
+        var i = c.text.indexOf('[目标岗位]');
+        if (i >= 0 && input.setSelectionRange) input.setSelectionRange(i, i + '[目标岗位]'.length);
+      };
+      box.appendChild(b);
+    });
+  })();
 
   // 定位正文：用原生选区高亮 before 文本（selection 不进 innerHTML，不污染保存内容）
   function locateText(text) {
