@@ -5661,3 +5661,33 @@ const lit = spacingLit(statsBlk);
 assert(lit.length === 0, '/stats 段间距一律走 --space-* token，不得写字面 px：' + lit.join(' | '));
 console.log('✅ B1C6 复盘层级源级钉值（2fr:1fr 栅格 / 三分布收窄进主列 / 侧卡合并 / token 间距 / 零阴影）');
 EOF
+
+# ===== 盲等真实进度（2026-11-18）：体检/对话/区域分析/岗位评估只报真实信号 =====
+# 合同：序数（客户端控制的循环）· 模型标签（picker labelOf）· 已等待 m:ss（秒表）· 不定态动画；
+#       绝不显示假百分比。每处 setInterval 都有落定停表（finally/epoch 自杀）。
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const assert = (c, m) => { if (!c) { console.error('❌ ' + m); process.exit(1); } };
+const ap = readFileSync('./ai-panel.js', 'utf8');
+const zp = readFileSync('./zone-panel.js', 'utf8');
+const srv = readFileSync('./server.mjs', 'utf8');
+// ① 体检进度块三件套 id + 两种 bar 形态（确定性填充 / aip-ind 不定态 keyframes）
+for (const id of ['aip-prog', 'aip-bar', 'aip-stage']) assert(ap.includes("id = '" + id + "'"), 'ai-panel 缺进度节点 #' + id);
+assert(ap.includes('.aip-bar') && ap.includes('@keyframes aip-slide') && ap.includes('aip-ind'), 'ai-panel 缺 bar 样式/不定态动画');
+// ② 阶段行真实信号：多模型「第 k/N 个 · 模型」、单跑「调用中」、对话「回复中」，都带「已等待」
+assert(ap.includes("'第 ' + (k + 1) + '/' + sels.length + ' 个"), 'ai-panel 缺多模型序数文案');
+assert(ap.includes('调用中 · 已等待'), 'ai-panel 缺单跑「调用中 · 已等待」');
+assert(ap.includes('回复中 · 已等待'), 'ai-panel 缺对话「回复中 · 已等待」');
+assert(ap.includes('mp.labelOf(sels[k])') && ap.includes('mp.labelOf(sels[0])'), 'ai-panel 缺 picker 模型标签来源');
+// ③ 三处等待各自落定停表（setInterval 唯一来源 startTicker；调用点 ≥3 次 clearInterval）
+assert((ap.match(/clearInterval\(/g) || []).length >= 3, 'ai-panel 等待秒表 clearInterval 不足（单跑/多模型/对话各一）');
+assert((ap.match(/finally \{\s*\n?\s*clearInterval/g) || []).length >= 2 && ap.includes('clearInterval(chatTick)'), 'ai-panel 等待应在 finally 停表');
+// ④ zone-panel 分析：已等待行 + 落定/被顶都停表（epoch 自杀 + then/catch 清）
+assert(zp.includes('分析中 · 已等待'), 'zone-panel 缺「分析中 · 已等待」');
+assert((zp.match(/clearInterval\(zpTick\)/g) || []).length >= 3, 'zone-panel zpTick 停表点不足（自杀/then/catch 三处）');
+// ⑤ /job/new 评估：秒表 + 多模型内联确定性条 + finally 停表
+assert(srv.includes("已等待 ' + evalFmt"), '/job/new 评估忙标缺「已等待」拼接');
+assert(srv.includes("id = 'evalBar'") && srv.includes('evalFill.style.width'), '/job/new 评估缺内联进度条');
+assert(srv.includes('finally { busy = false; clearInterval(evalTick)'), '/job/new 评估秒表应在 finally 停表');
+console.log('✅ 盲等真实进度：体检块/对话行/区域分析/岗位评估 秒表+停表源级钉值（无假百分比）');
+EOF

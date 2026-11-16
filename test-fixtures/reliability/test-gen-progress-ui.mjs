@@ -112,7 +112,40 @@ try {
   await page.click('#ed-pane-review button:has-text("取消")');
   await waitFor(async () => /不会撤销服务商已发生的计费/.test(await noteText()), 8000, '取消提示含计费说明');
 
-  console.log('✅ 生成进度 UI：running 行（阶段/时长 ticker 递增/模型）+ done 用量（真实数值与「未返回」两态）+ 取消文案含计费说明 + 零百分比');
+  // ===== ④ AI 面板体检盲等进度（真实信号三件套：不定态 bar + 模型标签 + 已等待秒表；零百分比）=====
+  stubDelayMs = 4000;
+  await page.waitForSelector('#ai-review-full', { state: 'attached', timeout: 15000 });
+  // 切到 AI 助手·体检页签（进度块可见才截图留证）。视口调宽避开宽度档竖标签条折叠
+  // （1280–1440 内 selectTab→applyWidthTier 会把 pane 收成 strip → display:none 点击不可见）；
+  // 叠加显式摘 ed-tier-strip/ed-hidden，前序步骤的残留折叠态一并清掉。
+  await page.setViewportSize({ width: 1600, height: 950 });
+  await page.evaluate(() => {
+    if (window.__edSelectTab) window.__edSelectTab('ai');
+    var rt = document.querySelector('#ai-tabs button[data-tab="review"]'); if (rt) rt.click();
+    var r = document.getElementById('ed-right'); if (r) r.classList.remove('ed-hidden');
+    document.body.classList.remove('ed-tier-strip');
+  });
+  await page.waitForSelector('#ai-review-full', { state: 'visible', timeout: 15000 });
+  await page.click('#ai-review-full');
+  const stageSel = '#ai-review-out #aip-stage';
+  await page.waitForSelector(stageSel, { timeout: 15000 });
+  const stageText = () => page.$eval(stageSel, (el) => el.textContent);
+  assert.ok((await stageText()).includes('已等待'), '单跑阶段行应含「已等待」：' + (await stageText()));
+  assert.ok((await stageText()).includes('stub-model-ui'), '阶段行应含模型标签：' + (await stageText()));
+  const indCls = await page.$eval('#ai-review-out #aip-bar', (el) => el.className);
+  assert.ok(/aip-ind/.test(indCls), '单跑 bar 应为不定态（aip-ind），实际：' + indCls);
+  const e1 = await stageText();
+  await page.waitForTimeout(2100);
+  const e2 = await stageText();
+  assert.notEqual(e1, e2, `秒表应递增（「${e1}」→「${e2}」）`);
+  assert.ok(!e2.includes('%'), '阶段行不得出现百分比');
+  await page.screenshot({ path: '/tmp/review-progress.png' });   // 进度块可见瞬间留证（工件路径固定）
+  // 响应落定：renderReport 整覆 out —— bar 与秒表同撤，进度块不得残留
+  await page.waitForFunction(() => !document.querySelector('#ai-review-out #aip-prog'), null, { timeout: 20000 });
+  assert.ok((await page.$eval('#ai-review-out', (el) => el.textContent)).trim().length > 0, '落定后 out 应有结果/回显');
+  stubDelayMs = 0;
+
+  console.log('✅ 生成进度 UI：running 行（阶段/时长 ticker 递增/模型）+ done 用量（真实数值与「未返回」两态）+ 取消文案含计费说明 + 零百分比 + 体检进度块（不定态 bar/模型标签/秒表递增/落定撤除）');
 } finally {
   try { if (browser) await browser.close(); } catch {}
   cleanup();

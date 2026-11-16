@@ -63,6 +63,15 @@
     + '#ai-pop textarea{width:100%;height:56px;font-size:13px;box-sizing:border-box;border:1px solid var(--ed-line);border-radius:8px;background:var(--ed-panel)}'
     + '#ai-pop .preview{max-height:200px;overflow:auto;margin-top:6px}'
     + '#ai-pop .row{margin-top:6px;text-align:right}'
+    // 盲等进度块（诚实进度）：多模型=已完成/总数确定性填充；单模型=不定态往返动画（不显示任何百分比）
+    + '.aip-prog{margin:8px 0}'
+    + '.aip-bar{height:6px;border-radius:999px;background:var(--ed-line);overflow:hidden}'
+    + '.aip-bar>i{display:block;height:100%;width:0;background:var(--ed-accent);border-radius:999px;transition:width .3s}'
+    + '.aip-bar.aip-ind>i{width:40%;animation:aip-slide 1.1s ease-in-out infinite}'
+    + '@keyframes aip-slide{0%{transform:translateX(-110%)}100%{transform:translateX(260%)}}'
+    + '@media (prefers-reduced-motion:reduce){.aip-bar.aip-ind>i{animation:none}}'
+    + '.aip-stage{font-size:11px;color:var(--ed-mut);margin-top:6px}'
+    + '.aip-wait{color:var(--ed-mut)}'
     + '@media print{#ai-toggle,#ai-drawer,#ai-sel-btn,#ai-pop{display:none!important}}'
     + '#ai-drawer button:focus-visible,#ai-drawer input:focus-visible,#ai-pop button:focus-visible,#ai-pop textarea:focus-visible,#ai-toggle:focus-visible,#ai-sel-btn:focus-visible,#ed-right button:focus-visible,#ed-right textarea:focus-visible,#ed-right input:focus-visible{outline:2px solid var(--ed-accent);outline-offset:1px}'
     // 经典文档样式补丁：分页线基座（打印上下文的唯一着色来源——shell 的覆盖在 @media screen 内）。
@@ -184,6 +193,20 @@
     return data;
   }
 
+  // 「已等待 m:ss」秒表（与 job-panel fmtElapsed 同口径）：模型等待期唯一真实的进度信号是耗时，
+  // 绝不造假百分比。startTicker 每秒回调一次耗时文本并立即首刷；返回 interval 句柄，
+  // 调用方在 finally 里 clearInterval（请求落定 = 秒表必停，成功失败同口径）。
+  function fmtElapsed(ms) {
+    var s = Math.max(0, Math.floor(ms / 1000));
+    return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+  }
+  function startTicker(render) {
+    var t0 = Date.now();
+    var tick = function () { render(fmtElapsed(Date.now() - t0)); };
+    tick();
+    return setInterval(tick, 1000);
+  }
+
   // ===== 对话抽屉 =====
   // 嵌入模式：面板常驻右栏，setDrawer 转为「显示右栏 + 切 Tab」；兜底模式维持抽屉开关
   function setDrawer(open) {
@@ -215,7 +238,19 @@
     addMsg(msg, true);
     try {
       var mt = await flushFirst();
-      var data = await postJson('/ai/chat', { id: DOC_ID, message: msg, history: history, baseMtime: mt });
+      // 等待行（真实信号=已等待耗时，不造百分比）：响应落定即撤行停表，成功失败同口径
+      var waitEl = document.createElement('div');
+      waitEl.className = 'msg aip-wait';
+      var chatTick = startTicker(function (mm) { waitEl.textContent = '回复中 · 已等待 ' + mm; });
+      log.appendChild(waitEl);
+      log.scrollTop = log.scrollHeight;
+      var data;
+      try {
+        data = await postJson('/ai/chat', { id: DOC_ID, message: msg, history: history, baseMtime: mt });
+      } finally {
+        clearInterval(chatTick);
+        waitEl.remove();
+      }
       input.value = ''; input.style.height = '';        // 成功后才清空：失败时用户输入保留（AUD-15）
       history.push({ role: 'user', content: msg }, { role: 'assistant', content: JSON.stringify(data) });
       if (data.reply) { addMsg(data.reply, false); return; }
@@ -458,6 +493,29 @@
     runs.forEach(function (r, i) { if (runKey(r) === adoptedKey) ini = i; });
     if (runs.length) show(runs[ini], ini);
   }
+  // 体检进度块：bar（多模型=已完成/总数确定性填充；单模型=不定态动画）+ 阶段行（第 k/N 个·模型·已等待）。
+  // 只报真实信号：序数是我们控制的循环、耗时是秒表；单次调用内部没有任何可度量的百分比。
+  function reviewProgress(out, determinate) {
+    out.innerHTML = '';
+    var box = document.createElement('div');
+    box.className = 'aip-prog';
+    box.id = 'aip-prog';
+    var bar = document.createElement('div');
+    bar.className = 'aip-bar' + (determinate ? '' : ' aip-ind');
+    bar.id = 'aip-bar';
+    var fill = document.createElement('i');
+    bar.appendChild(fill);
+    var stage = document.createElement('div');
+    stage.className = 'aip-stage';
+    stage.id = 'aip-stage';
+    box.appendChild(bar);
+    box.appendChild(stage);
+    out.appendChild(box);
+    return {
+      stage: stage,
+      step: function (done, total) { fill.style.width = Math.round(done * 100 / Math.max(1, total)) + '%'; }
+    };
+  }
   var reviewing = false;
   async function runReview(mode) {
     if (reviewing) return;  // 防连点
@@ -470,19 +528,29 @@
       var target = ($('ai-review-target') || {}).value || '';
       var sels = mp.selected();
       if (sels.length <= 1) {
-        out.textContent = '体检中（整篇分析约几十秒）…';
-        var data = await postJson('/ai/review', { id: DOC_ID, mode: mode, baseMtime: mt, target: target, profile: sels[0] });
-        renderReport(out, data, { prevScore: typeof data.prevScore === 'number' ? data.prevScore : null });
+        var p1 = reviewProgress(out, false);   // 单次调用：不定态 bar（内部无真实进度可报）
+        var label1 = mp.labelOf(sels[0]);      // 无 picker 时 mp 是占位实现，返回 ''
+        var tick1 = startTicker(function (mm) {
+          p1.stage.textContent = (label1 ? label1 + ' ' : '') + '调用中 · 已等待 ' + mm;
+        });
+        try {
+          var data = await postJson('/ai/review', { id: DOC_ID, mode: mode, baseMtime: mt, target: target, profile: sels[0] });
+          renderReport(out, data, { prevScore: typeof data.prevScore === 'number' ? data.prevScore : null });
+        } finally { clearInterval(tick1); }
       } else {
         // 多模型：同批顺序跑（adopt:false，不占采用位），逐条带进度；单条失败不拖垮整批
+        var pN = reviewProgress(out, true);    // 确定性 bar：完成数/总数是我们控制的循环
         var batch = Date.now().toString(36);
         var runs = [];
         for (var k = 0; k < sels.length; k++) {
-          out.textContent = '体检中 ' + (k + 1) + '/' + sels.length + '：' + mp.labelOf(sels[k]) + '…';
+          var prefix = '第 ' + (k + 1) + '/' + sels.length + ' 个 · ' + mp.labelOf(sels[k]);
+          var tickK = startTicker(function (mm) { pN.stage.textContent = prefix + ' · 已等待 ' + mm; });
           try {
             var d = await postJson('/ai/review', { id: DOC_ID, mode: mode, baseMtime: mt, target: target, profile: sels[k], adopt: false, batch: batch });
             if (d && d.run) runs.push(d.run);
           } catch (e2) { /* 单模型失败跳过，继续其余 */ }
+          finally { clearInterval(tickK); }    // 本条落定即停表（下一条重起一块新秒表）
+          pN.step(k + 1, sels.length);         // 每落定一条（成败都算已跑）填一格
         }
         renderCompare(out, runs, null);
       }

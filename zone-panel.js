@@ -93,6 +93,13 @@
     m.textContent = text;
   }
 
+  // 「已等待 m:ss」秒表（与 job-panel fmtElapsed 同口径）：模型等待期唯一真实的进度信号是耗时，
+  // 绝不造假百分比。返回 interval 句柄——调用方在请求落定处 clearInterval（成功/失败/被顶掉同口径）。
+  function fmtElapsed(ms) {
+    var s = Math.max(0, Math.floor(ms / 1000));
+    return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+  }
+
   var state = { zones: {}, zoneOrder: null, zoneRounds: {}, zoneAnalyses: {}, colorOn: false, aiZone: null, aiDegraded: false, aiDegradedMsg: null, lastAnalysis: null };
   var zpMp = { selected: function () { return [undefined]; }, labelOf: function () { return ''; } };   // 模型多选（2026-11-16）：≥2 就绪才渲染
   // ===== ZONE-05：请求身份（epoch）=====
@@ -366,12 +373,20 @@
     var token = beginRequest('analyze', zoneKey);
     setBusy(true);
     var out = document.getElementById('zp-ai-out');
-    if (out) out.textContent = '分析中…';
+    // 等待期真实信号只有耗时（不造百分比）：秒表行随 epoch 自杀——被新请求顶掉即自停，
+    // 不回头写 out（新请求已接管文案）。
+    var zpT0 = Date.now();
+    var zpTick = out ? setInterval(function () {
+      if (!isCurrent(token)) { clearInterval(zpTick); return; }
+      out.textContent = '分析中 · 已等待 ' + fmtElapsed(Date.now() - zpT0);
+    }, 1000) : null;
+    if (out) out.textContent = '分析中 · 已等待 ' + fmtElapsed(0);
     // 保存前置：本地正文先确认落盘，再带基线请求（否则可能基于旧内容给建议）
     ensureSavedForZone().then(function (baseMtime) {
       if (!isCurrent(token)) return null;
       return api('/ai/zone-analyze?id=' + encodeURIComponent(DOC_ID), { zone: zoneKey, extra: extra, baseMtime: baseMtime, profile: profile });
     }).then(function (d) {
+      if (zpTick) { clearInterval(zpTick); zpTick = null; }   // 本请求已落定：无论新旧都停自己的秒表
       if (!d) return;                       // 已被更新的请求取代
       if (!isCurrent(token)) return;        // 旧响应不得渲染、不得改 busy
       setBusy(false);
@@ -385,6 +400,7 @@
       load();                          // 轮次自增后刷新行内计数（load 重绘保留 AI 区）
       showAnalysis(d);
     }).catch(function (e) {
+      if (zpTick) { clearInterval(zpTick); zpTick = null; }   // 落定停表（与 .then 同口径）
       if (!isCurrent(token)) return;
       setBusy(false);
       if (out) out.textContent = (e && e.message) || '分析失败，稍后再试';

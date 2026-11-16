@@ -3130,12 +3130,30 @@ function jobNewPage(prefill = null) {
           if (!jd) { __status(msg, 'err', '评估需要岗位描述文本'); return; }   // /eval/create 只收 JD 文本（不抓链接）——只贴链接本地即拦（I-3）
           busy = true;
           var sels = window.__jnMp ? window.__jnMp.selected() : [undefined];
-          btn.textContent = sels.length > 1 ? '对比评估中（' + sels.length + ' 个模型顺序跑）…' : '评估中，通常需要 1–5 分钟…';
+          // 已等待秒表（与 job-panel fmtElapsed 同口径，不造百分比）：忙标 = 基准文案 + 「· 已等待 m:ss」，
+          // 多模型每跑一档换基准（第 k/N 个 · 档案·模型，客户端控制的循环 = 真实信号）；finally 停表。
+          var evalT0 = Date.now();
+          var evalFmt = function () { var es = Math.max(0, Math.floor((Date.now() - evalT0) / 1000)); return Math.floor(es / 60) + ':' + ('0' + (es % 60)).slice(-2); };
+          var evalBase = sels.length > 1 ? '对比评估中（' + sels.length + ' 个模型顺序跑）…' : '评估中，通常需要 1–5 分钟…';
+          var evalTick = setInterval(function () { btn.textContent = evalBase + ' · 已等待 ' + evalFmt(); }, 1000);
+          btn.textContent = evalBase + ' · 已等待 ' + evalFmt();
+          // 多模型确定性条（完成数/总数是真实计数）：内联样式——本页没有可挂规则的共享样式块（同页其他内联 JS 同法）
+          var evalBar = null, evalFill = null;
+          if (sels.length > 1 && btn.parentNode) {
+            evalBar = document.createElement('span');
+            evalBar.id = 'evalBar';
+            evalBar.style.cssText = 'display:inline-block;vertical-align:middle;width:90px;height:5px;border-radius:999px;background:var(--line);overflow:hidden;margin-left:8px';
+            evalFill = document.createElement('i');
+            evalFill.style.cssText = 'display:block;height:100%;width:0;background:var(--accent);border-radius:999px;transition:width .3s';
+            evalBar.appendChild(evalFill);
+            btn.parentNode.insertBefore(evalBar, btn.nextSibling);
+          }
           msg.textContent = '';
           box.innerHTML = '';
           try {
             var company = document.getElementById('jobCompany').value.trim(), role = document.getElementById('jobRole').value.trim();
             for (var si = 0; si < sels.length; si++) {
+              if (sels.length > 1) { evalBase = '对比评估中（第 ' + (si + 1) + '/' + sels.length + ' 个' + (window.__jnMp ? ' · ' + window.__jnMp.labelOf(sels[si]) : '') + '）…'; btn.textContent = evalBase + ' · 已等待 ' + evalFmt(); }   // 换挡即刷新，不等下一秒 tick
               var r = await fetch('/eval/create', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ from: from, company: company, role: role, jd: jd, profile: sels[si] }) });
               var d = await r.json().catch(function () { return null; });
@@ -3144,9 +3162,10 @@ function jobNewPage(prefill = null) {
               var card = document.createElement('div');
               card.innerHTML = (sels.length > 1 ? '<div style="font-size:12px;color:var(--mut);margin-top:8px">' + String([d.eval.profileName, d.eval.model].filter(Boolean).join('·') || '模型 ' + sels[si]).replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</div>' : '') + evalCardHtml(d.eval);
               box.appendChild(card);
+              if (evalFill) evalFill.style.width = Math.round((si + 1) * 100 / sels.length) + '%';   // 每落定一档填一格
             }
           } catch (err) { __status(msg, 'err', err.message); }
-          finally { busy = false; btn.textContent = '先评估匹配度'; }
+          finally { busy = false; clearInterval(evalTick); if (evalBar) evalBar.remove(); btn.textContent = '先评估匹配度'; }
         };
         // 多模型（2026-11-16）：picker 就绪才出现；多选→顺序评估、每档一张卡（各自「转草稿」=采用该份）
         var mpBox = document.createElement('div');
