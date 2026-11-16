@@ -94,6 +94,8 @@
   }
 
   var state = { zones: {}, zoneOrder: null, zoneRounds: {}, zoneAnalyses: {}, colorOn: false, aiZone: null, aiDegraded: false, aiDegradedMsg: null, lastAnalysis: null };
+  var zpMp = { selected: function () { return [undefined]; }, labelOf: function () { return ''; } };   // 模型多选（2026-11-16）：≥2 就绪才渲染
+  if (window.__modelPicker) window.__modelPicker.mount((function () { var d = document.createElement('div'); d.id = 'zp-mp'; root.insertBefore(d, root.firstChild); return d; })()).then(function (m) { zpMp = m; });
   // ===== ZONE-05：请求身份（epoch）=====
   // 只有「区域键」当守卫不够：A→B→A 时旧 A 的响应会因区域键相同而写进新界面。
   // epoch 随每次新请求/切换递增；旧响应一律不得渲染、不得改 busy。
@@ -272,8 +274,32 @@
     reBtn.type = 'button';
     reBtn.id = 'zp-analyze';
     reBtn.textContent = savedA ? '重新分析' : '分析这个区域';
-    reBtn.addEventListener('click', function () { analyze(zoneKey, ''); });
+    reBtn.addEventListener('click', function () {
+      var sels = zpMp.selected();
+      // 多模型（2026-11-16）：>1 档→顺序各跑一次（各自 epoch 安全；切区即停后续）
+      if (sels.length > 1) { (async function () { for (var i = 0; i < sels.length; i++) { if (state.aiZone !== zoneKey) return; await analyze(zoneKey, '', sels[i]); } })(); }
+      else analyze(zoneKey, '', sels[0]);
+    });
     acts.appendChild(reBtn);
+    // 对比页签：>1 份落盘意见时按「name·model · 日期」切换（无采用——意见只读）
+    if (Array.isArray(state.zoneAnalyses[zoneKey]) && state.zoneAnalyses[zoneKey].length > 1) {
+      var strip = document.createElement('div');
+      strip.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin:6px 0';
+      state.zoneAnalyses[zoneKey].forEach(function (a, i) {
+        var b2 = document.createElement('button');
+        b2.type = 'button';
+        var t2 = new Date(a.at || '');
+        b2.textContent = ((a.name || '?') + '·' + (a.model || '?')) + ' · ' + (isNaN(t2) ? '' : (t2.getMonth() + 1) + ' 月 ' + t2.getDate() + ' 日');
+        if (i === 0) b2.style.fontWeight = '600';
+        b2.addEventListener('click', function () {
+          strip.querySelectorAll('button').forEach(function (x) { x.style.fontWeight = '400'; });
+          b2.style.fontWeight = '600';
+          showAnalysis(a);
+        });
+        strip.appendChild(b2);
+      });
+      acts.appendChild(strip);
+    }
     box.appendChild(acts);
     var ta = document.createElement('textarea');
     ta.id = 'zp-instr';
@@ -335,7 +361,7 @@
       chips.appendChild(b);
     });
   }
-  function analyze(zoneKey, extra) {
+  function analyze(zoneKey, extra, profile) {
     if (state.aiDegraded) return;
     var token = beginRequest('analyze', zoneKey);
     setBusy(true);
@@ -344,7 +370,7 @@
     // 保存前置：本地正文先确认落盘，再带基线请求（否则可能基于旧内容给建议）
     ensureSavedForZone().then(function (baseMtime) {
       if (!isCurrent(token)) return null;
-      return api('/ai/zone-analyze?id=' + encodeURIComponent(DOC_ID), { zone: zoneKey, extra: extra, baseMtime: baseMtime });
+      return api('/ai/zone-analyze?id=' + encodeURIComponent(DOC_ID), { zone: zoneKey, extra: extra, baseMtime: baseMtime, profile: profile });
     }).then(function (d) {
       if (!d) return;                       // 已被更新的请求取代
       if (!isCurrent(token)) return;        // 旧响应不得渲染、不得改 busy
@@ -353,7 +379,9 @@
       if (d._status === 409) { if (out) out.textContent = d.error || '文档已变化，请先同步内容'; return; }
       if (!d.ok) { if (out) out.textContent = d.error || '分析失败，稍后再试'; return; }
       state.lastAnalysis = { zone: zoneKey, data: d };
-      state.zoneAnalyses[zoneKey] = [{ at: new Date().toISOString(), ...d }].concat(state.zoneAnalyses[zoneKey] || []).slice(0, 4);   // 本地同形 unshift（去重由随后的 load() 读服务端真值完成）
+      var za = state.zoneAnalyses[zoneKey] || [];
+      za.unshift({ at: new Date().toISOString(), name: d.name || null, model: d.model || null, ...d });
+      state.zoneAnalyses[zoneKey] = za.slice(0, 4);   // 本地同形 unshift（去重由随后的 load() 读服务端真值完成）
       load();                          // 轮次自增后刷新行内计数（load 重绘保留 AI 区）
       showAnalysis(d);
     }).catch(function (e) {

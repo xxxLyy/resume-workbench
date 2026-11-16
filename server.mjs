@@ -8130,6 +8130,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const zerr = zoneRequestError(id, body);
       if (zerr) return sendJson(zerr.status, { ok: false, code: zerr.code, error: zerr.error });
       if (!hasLLM(root)) return sendJson(409, { ok: false, code: 'LLM_NOT_CONFIGURED', error: '未配置大模型，请先到设置页配置' });
+      const prof = pickProfile(body.profile);
+      if (prof === null) return sendJson(400, { ok: false, error: '模型配置不存在或不完整' });
       const html = fs.existsSync(docPath(id)) ? fs.readFileSync(docPath(id), 'utf8') : '';
       const meta = loadMeta()[id] || {};
       const zoneText = zoneParas(html, meta, body.zone).map((p) => p.text).join('\n');
@@ -8138,21 +8140,21 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       // S3-T6：chips 追问文本（可选字符串）拼进 user prompt；压单行 + 截断，防经换行伪造 prompt 段落结构
       if (typeof body.extra === 'string' && body.extra.trim()) p.user += '\n\n【追问】' + body.extra.trim().replace(/\s+/g, ' ').slice(0, 200);
       let raw;
-      try { raw = await chat(root, p.sys, p.user, { lease: leaseOf(req) }); }
+      try { raw = await chat(root, p.sys, p.user, { lease: leaseOf(req), profile: prof }); }
       catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
       const parsed = parseZoneAnalysis(raw);
       if (parsed) {
         // 意见按模型分槽落盘（2026-11-16）：zoneAnalyses[zone] 为数组、新者在前、name|model 唯一去重、cap 4；
         // 点行不再自动分析，用户显式触发一次即留存、重开可见（多模型对比特性前置结构）
-        const prof = (() => { try { const c = loadProfiles(root); return (c && c.profiles && c.profiles[c.active]) || {}; } catch { return {}; } })();
+        const profM = profileMeta(prof);
         const extraStr = typeof body.extra === 'string' && body.extra.trim() ? body.extra.trim().replace(/\s+/g, ' ').slice(0, 200) : '';
         updateMeta(root, id, (m) => {
           const b = { ...(m || {}) };
           b.zoneRounds = { ...(b.zoneRounds || {}) };
           b.zoneRounds[body.zone] = (b.zoneRounds[body.zone] || 0) + 1;
-          const key = (prof.name || '') + '|' + (prof.model || '');
+          const key = (profM.name || '') + '|' + (profM.model || '');
           const old = Array.isArray(b.zoneAnalyses && b.zoneAnalyses[body.zone]) ? b.zoneAnalyses[body.zone] : [];
-          const arr = [{ name: prof.name || null, model: prof.model || null, at: new Date().toISOString(), extra: extraStr, ...parsed }]
+          const arr = [{ name: profM.name || null, model: profM.model || null, at: new Date().toISOString(), extra: extraStr, ...parsed }]
             .concat(old.filter((a) => ((a.name || '') + '|' + (a.model || '')) !== key)).slice(0, 4);
           b.zoneAnalyses = { ...(b.zoneAnalyses || {}) };
           b.zoneAnalyses[body.zone] = arr;
