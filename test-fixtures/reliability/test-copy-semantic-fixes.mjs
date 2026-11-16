@@ -3,7 +3,7 @@
 //   ① 首页真待办语义（T3 口径）：stat-grid「待办提醒」计数块已随三态撤除——空库 = 起步态无待办卡；
 //     1 份待整理文档（无投递）= 状态 1 行内「· 待整理」标记；有投递后 = 状态 2 待办卡聚合「去整理」条目。
 //   ② 六处「请到侧栏「设置」」死引用清零：未配置 LLM 时 /eval/create 409 JSON 带 settingsPath='/settings'；
-//     /ai/rewrite、/ai/chat、/restructure、/ai/review、/ai/match 五处 409 文体直接给出 /settings 路径。
+//     /ai/rewrite、/ai/chat、/restructure、/ai/review 四处 409 文体直接给出 /settings 路径。
 //   ⑤ 向导横幅区分 forward/resume 两态；skipped 数组内的步显示「已跳过 X」而非「最近确认 X」。
 //   ⑥⑦⑧ 导出页：确认按钮为 secondary 且括号状态说明移出文案；「导出对象：」替代「正在导出：」
 //     （岗位稿 company·role 徽章在前、id 次要）；字符量告警带阈值与原因（<200：图文简历可忽略…）。
@@ -99,7 +99,7 @@ try {
     assert.ok(body && body.ok === false, '/eval/create 409 应为 JSON 错误体：' + ev.text.slice(0, 120));
     assert.equal(body.settingsPath, '/settings', '/eval/create 409 应带 settingsPath="/settings" 字段（前端按 :2210 先例渲染链接），实际：' + ev.text.slice(0, 200));
     assert.ok(!body.error.includes('侧栏'), '/eval/create 错误文案不得再指「侧栏」（编辑器/首页无侧栏）：' + body.error);
-    for (const ep of ['/ai/rewrite', '/ai/chat', '/restructure', '/ai/review', '/ai/match']) {
+    for (const ep of ['/ai/rewrite', '/ai/chat', '/restructure', '/ai/review']) {
       const r = await post(ep, {});
       assert.equal(r.status, 409, `${ep} 未配置 LLM 应 409，实际：${r.status}`);
       assert.ok(r.text.includes('/settings'), `${ep} 409 文体应直接给出 /settings 路径，实际：${r.text.slice(0, 120)}`);

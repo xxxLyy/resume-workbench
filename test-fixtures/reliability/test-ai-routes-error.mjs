@@ -1,5 +1,5 @@
 // test-ai-routes-error.mjs — 7 个 /ai/* 路由必须捕获模型调用异常并回 {ok:false,error} JSON（BL-P4-03）
-// 背景：/ai/prep、/ai/rewrite、/ai/chat、/ai/review、/ai/match、/ai/zone-analyze、/ai/zone-rewrite
+// 背景：/ai/prep、/ai/rewrite、/ai/chat、/ai/review、/ai/zone-analyze、/ai/zone-rewrite
 // 的 await chat()/chatMsgs() 均无 try/catch：模型超时/拒连等异常一路冒到顶层错误出口，
 // 回 500 text/plain（'server error: …'）→ 客户端 postJson 只在 JSON 体里找错误信息，
 // 用户最终只见『HTTP 500』，真因（超时/网络/格式）全丢。对照组 /eval/create 对同一个 chat()
@@ -85,7 +85,6 @@ try {
     ['POST /ai/rewrite',     '/ai/rewrite',                    { text: '负责高并发服务治理', instruction: '改得更量化' }],
     ['POST /ai/chat',        '/ai/chat',                       { id: 'synth', message: '帮我把第一段改量化' }],
     ['POST /ai/review',      '/ai/review',                     { id: 'synth', mode: 'full' }],
-    ['POST /ai/match',       '/ai/match',                      { id: 'synth', jd: '负责存储层改造' }],
     ['POST /ai/zone-analyze','/ai/zone-analyze?id=synth',      { zone: 'work', baseMtime }],
     ['POST /ai/zone-rewrite','/ai/zone-rewrite?id=synth',      { zone: 'work', baseMtime, instruction: '改得更量化' }],
   ];

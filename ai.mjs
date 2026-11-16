@@ -51,13 +51,6 @@ export function buildReview(docText, mode, target = '') {
   return { sys: sys + tgt, user: (t ? `【目标方向】${t}\n\n` : '') + `【当前简历全文】\n${docText}` };
 }
 
-// S2：JD 匹配度分析 prompt（W2：四段式 + 区分两类缺口）
-export function buildMatch(docText, jd) {
-  return {
-    sys: '你是简历与职位匹配分析师。对照 JD 逐条找差距：先区分【有但未表达】（简历有相关经历但没写清楚）与【真缺】（确实没有）两类缺口。每条按四段输出：【要求】→【简历证据】→【缺口】→【建议】。只输出 JSON（不要任何其它文字）：{"score":0-100 匹配度,"summary":"一句话总评","scoreBasis":"匹配度口径一句话（不得暗示录用概率）","items":["【要求】… →【简历证据】… →【缺口】（有但未表达/真缺）… →【建议】…"],"changes":[{"before":"文档中现有原文片段（必须逐字，不超过80字）","after":"改后的文字","note":"这条改的什么"}]} changes 最多 5 条。',
-    user: `【目标职位 JD】\n${jd}\n\n【当前简历全文】\n${docText}`
-  };
-}
 
 // 解析 LLM 输出：修改数组 或 {"reply":...} 对象；坏输出返回 null
 export function parseChanges(raw) {

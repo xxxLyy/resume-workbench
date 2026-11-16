@@ -333,11 +333,11 @@ try {
 console.log('✅ withRetry 七场景正确');
 EOF
 
-# —— S2：parseReport / buildReview / buildMatch 单元测试 ——
+# —— S2：parseReport / buildReview 单元测试 ——
 node --input-type=module << 'EOF'
 import * as ai from './ai.mjs';
-const { parseReport, buildReview, buildMatch } = ai;
-if (typeof parseReport !== 'function' || typeof buildReview !== 'function' || typeof buildMatch !== 'function') { console.error('❌ S2 函数未导出'); process.exit(1); }
+const { parseReport, buildReview } = ai;
+if (typeof parseReport !== 'function' || typeof buildReview !== 'function') { console.error('❌ S2 函数未导出'); process.exit(1); }
 
 // parseReport 五路径
 const clean = parseReport('{"score":85,"summary":"不错","items":["结构 8/10：清晰"],"changes":[{"before":"a","after":"b","note":"n"}]}');
@@ -357,10 +357,12 @@ const rq = buildReview('李四简历内容', 'quant');
 if (!rq || !rq.user.includes('李四简历内容') || !rq.sys.includes('量化')) { console.error('❌ buildReview quant'); process.exit(1); }
 if (rf.sys === rq.sys) { console.error('❌ buildReview 两 mode prompt 不应相同'); process.exit(1); }
 
-// buildMatch：user 同时含简历与 JD 原文
-const bm = buildMatch('王五简历内容', '需要五年Go经验');
-if (!bm || !bm.user.includes('王五简历内容') || !bm.user.includes('需要五年Go经验') || !bm.sys.includes('匹配')) { console.error('❌ buildMatch'); process.exit(1); }
-console.log('✅ S2 parseReport 五路径 + buildReview/buildMatch 正确');
+// 2026-11-16：建议上限放宽（full 12 / quant 8）+ 可选目标方向（空 target 时 prompt 逐字节不变）
+if (!rf.sys.includes('changes 最多 12 条') || !rq.sys.includes('changes 最多 8 条')) { console.error('❌ buildReview 建议上限未放宽'); process.exit(1); }
+if (rf.sys.includes('目标方向') || rf.user.includes('【目标方向】')) { console.error('❌ buildReview 空 target 不该有方向块'); process.exit(1); }
+const rt = buildReview('doc', 'full', '后端开发');
+if (!rt.sys.includes('目标方向【后端开发】') || !rt.user.startsWith('【目标方向】后端开发')) { console.error('❌ buildReview target 块缺失'); process.exit(1); }
+console.log('✅ S2 parseReport 五路径 + buildReview 正确（上限 12/8 + 可选目标方向）');
 EOF
 
 # —— S3：diffLines / docToLines 单元测试 ——
@@ -404,7 +406,7 @@ EOF
 # —— W2：parseReport scoreBasis + prompt 深化 ——
 node --input-type=module << 'EOF'
 import * as ai from './ai.mjs';
-const { parseReport, buildReview, buildMatch } = ai;
+const { parseReport, buildReview } = ai;
 
 // parseReport 透传 scoreBasis（缺省空串）
 const withBasis = parseReport('{"summary":"s","scoreBasis":"按维度均分"}');
@@ -417,11 +419,6 @@ for (const p of ['【结构】', '【量化】', '【动词】', '【冗余】',
   if (!rf.sys.includes(p)) { console.error('❌ buildReview full 缺 ' + p); process.exit(1); }
 }
 
-// buildMatch：四段式 + 两类缺口 + scoreBasis
-const bm = buildMatch('doc', 'jd');
-for (const p of ['【要求】', '【简历证据】', '【缺口】', '【建议】', '有但未表达', '真缺', 'scoreBasis']) {
-  if (!bm.sys.includes(p)) { console.error('❌ buildMatch 缺 ' + p); process.exit(1); }
-}
 console.log('✅ W2 scoreBasis 透传 + prompt 深化正确');
 EOF
 
@@ -2210,9 +2207,9 @@ const COLD = /#F4F5F8|#202737|#697186|#DCE0E8|#5B5DE8|#EEEFFE|#409eff|#2563eb|#d
 fs.readFileSync(F, 'utf8').split('\n').forEach((ln, i) => {
   if (COLD.test(ln)) fail(`${F}:${i + 1} 冷色/靛蓝残留: ${ln.trim().slice(0, 90)}`);
 });
-// 路由集合不变（任何新增 pathname 字面量都会红）。初值 = S2 开工前实测冻结的 54 个字面量；S4a-T10 登记 /export/layout-apply、S4a-T11 登记 /favicon.ico（56），批次2-T2 登记 /eval/create、/eval/promote（58，登记非放宽），2026-11-01 登记 /evals（评估历史独立页，59，登记非放宽），S5 登记 /onboarding、/onboarding/guided、/onboarding/step（引导向导页壳+步进 API，62，登记非放宽），S5F 登记 /onboarding/star-suggest（STAR AI 建议卡，63，登记非放宽；设计 dev-docs/2026-11-02-s5-design.md），S4b-A P3 登记 /job/gen-retry（批次重试端点，64，登记非放宽），批 1 拆页卡登记 /job/new（为岗位定制简历独立页，65，登记非放宽），批 3 网申包页面卡登记 /apply-profile（页面）+ /apply/field、/apply/bind、/apply/package、/apply/source（三态字段写入口）+ /apply/export（整包导出）（71，登记非放宽；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §4 批 3，DESIGN.md §10.11），批 3 AI 文案字段卡登记 /apply/copy/start、/apply/copy/state、/apply/copy/cancel、/apply/copy/confirm、/apply/copy/discard（生成→预览→确认五端点，76，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.12），批 3 跟进助手卡登记 /app/followup/start、/app/followup/state、/app/followup/cancel、/app/followup/discard（生成跟进语草稿四端点，92，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.13），批 3 分享副本卡登记 /share/copy（勾选隐藏字段→独立导出）+ /share/pdf（独立产物伺服）（94，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.14），批 4 练习 UI 卡登记 /app/practice/missing/material（反馈缺项一键转「待补充素材」，登记非放宽；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §5 批 4，DESIGN.md §10.16。总数以本行数组实测为准——早前登记行写的 76/80 是逐卡递增计数，与实测条数有漂移，2026-11-07 以逐条清点为准），JD 导入轨 A T2 登记 /import/page（书签跨站递交→提取预览页；该端点不计写请求——CSRF/迁移锁豁免见 server.mjs mutating 注释，spec dev-docs/2026-11-12-jd-import-bookmarklet-design.md，DESIGN.md §10.20，登记非放宽）；轨 B 三路由 /boss/session/* 于 2026-11-13 随轨 B 整体移除注销（服务端抓取 Boss 详情页 7 种方式实测全部被拦，DESIGN.md §10.20）；2026-11-13 收件箱登记 /inbox、/inbox/status、/inbox/eval、/inbox/dismiss、/inbox/draft（spec dev-docs/2026-11-13-jd-inbox-batch-eval-design.md，登记非放宽）
+// 路由集合不变（任何新增 pathname 字面量都会红）。初值 = S2 开工前实测冻结的 54 个字面量；S4a-T10 登记 /export/layout-apply、S4a-T11 登记 /favicon.ico（56），批次2-T2 登记 /eval/create、/eval/promote（58，登记非放宽），2026-11-01 登记 /evals（评估历史独立页，59，登记非放宽），S5 登记 /onboarding、/onboarding/guided、/onboarding/step（引导向导页壳+步进 API，62，登记非放宽），S5F 登记 /onboarding/star-suggest（STAR AI 建议卡，63，登记非放宽；设计 dev-docs/2026-11-02-s5-design.md），S4b-A P3 登记 /job/gen-retry（批次重试端点，64，登记非放宽），批 1 拆页卡登记 /job/new（为岗位定制简历独立页，65，登记非放宽），批 3 网申包页面卡登记 /apply-profile（页面）+ /apply/field、/apply/bind、/apply/package、/apply/source（三态字段写入口）+ /apply/export（整包导出）（71，登记非放宽；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §4 批 3，DESIGN.md §10.11），批 3 AI 文案字段卡登记 /apply/copy/start、/apply/copy/state、/apply/copy/cancel、/apply/copy/confirm、/apply/copy/discard（生成→预览→确认五端点，76，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.12），批 3 跟进助手卡登记 /app/followup/start、/app/followup/state、/app/followup/cancel、/app/followup/discard（生成跟进语草稿四端点，92，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.13），批 3 分享副本卡登记 /share/copy（勾选隐藏字段→独立导出）+ /share/pdf（独立产物伺服）（94，登记非放宽；计划同上 §4 批 3，DESIGN.md §10.14），批 4 练习 UI 卡登记 /app/practice/missing/material（反馈缺项一键转「待补充素材」，登记非放宽；计划 dev-docs/2026-11-05-roadmap-batch-plan.md §5 批 4，DESIGN.md §10.16。总数以本行数组实测为准——早前登记行写的 76/80 是逐卡递增计数，与实测条数有漂移，2026-11-07 以逐条清点为准），JD 导入轨 A T2 登记 /import/page（书签跨站递交→提取预览页；该端点不计写请求——CSRF/迁移锁豁免见 server.mjs mutating 注释，spec dev-docs/2026-11-12-jd-import-bookmarklet-design.md，DESIGN.md §10.20，登记非放宽）；轨 B 三路由 /boss/session/* 于 2026-11-13 随轨 B 整体移除注销（服务端抓取 Boss 详情页 7 种方式实测全部被拦，DESIGN.md §10.20）；2026-11-13 收件箱登记 /inbox、/inbox/status、/inbox/eval、/inbox/dismiss、/inbox/draft（spec dev-docs/2026-11-13-jd-inbox-batch-eval-design.md，登记非放宽）；2026-11-16 match 路由退役注销（无调用方，岗位匹配由审阅 Tab 证据表与收件箱评估承接），同日登记 GET /ai/review（体检报告回读，pathname 与已冻结 POST 相同，登记非放宽）
 const sm = fs.readFileSync(F, 'utf8');
-const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/match','/ai/prep','/ai/review','/ai/rewrite','/ai/test',
+const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/prep','/ai/review','/ai/rewrite','/ai/test',
   '/ai/zone-analyze','/ai/zone-rewrite',
   '/apply-profile','/apply/bind','/apply/copy/cancel','/apply/copy/confirm','/apply/copy/discard','/apply/copy/start','/apply/copy/state','/apply/export','/apply/field','/apply/package','/apply/source',
   '/api/extract','/app','/app/add','/app/archive-regenerate','/app/del','/app/followup/cancel','/app/followup/discard','/app/followup/start','/app/followup/state','/app/ics',

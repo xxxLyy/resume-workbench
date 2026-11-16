@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { structureText } from './structure.mjs';
 import { importPdfText } from './importer.mjs';   // PDF 上传导入（AUD-12：接回既有首页入口）
 import { loadProfiles, hasLLM, chat, chatMsgs, listModels, assertSafeBaseURL } from './llm.mjs';   // assertSafeBaseURL：/ai/jd-text 的 SSRF 防线
-import { buildRewrite, buildChat, parseChanges, buildReview, buildMatch, parseReport } from './ai.mjs';
+import { buildRewrite, buildChat, parseChanges, buildReview, parseReport } from './ai.mjs';
 import { buildJobPrompt, parseJobOps, pageSuggestions } from './job.mjs';
 import { buildEvalPrompt, parseEvalReport, evalSource, evalRecordView } from './eval.mjs';
 import { docToLines, docToText, contentHash, sectionsOf, bodyOf, decodeEntities } from './extract.mjs';
@@ -7997,23 +7997,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       } catch {}
       return sendJson(200, { ok: true, report: parsed, prevScore, saved });
     }
-    if (req.method === 'POST' && url.pathname === '/ai/match') {
-      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');   // R2②：路径直达（「侧栏「设置」」是死引用）
-      const body = JSON.parse(await readBody(req));
-      if (body.id && !VALID_ID.test(body.id)) return send(400, 'invalid id', 'text/plain');
-      if (typeof body.jd !== 'string' || !body.jd.trim()) return send(400, 'jd 必填', 'text/plain');
-      const docId = body.id || id;
-      if (!fs.existsSync(docPath(docId))) return send(404, 'doc not found', 'text/plain');
-      const stale = staleGuard(docId, body.baseMtime);
-      if (stale) return sendJson(409, stale);
-      const docText = docToText(fs.readFileSync(docPath(docId), 'utf8'), { includeHidden: false });
-      const p = buildMatch(docText, body.jd);
-      let raw;
-      try { raw = await chat(root, p.sys, p.user, { lease: leaseOf(req) }); }
-      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
-      const parsed = parseReport(raw);
-      return sendJson(200, parsed ? { ok: true, report: parsed } : { ok: true, reply: raw });
-    }
+    // （match 路由已于 2026-11-16 退役：岗位匹配由审阅 Tab 证据表与收件箱评估承接，无调用方）
     // ===== S3-T5：区域级 AI（analyze 意见 / rewrite 候选；只带本区域段落 + 有界全文摘要）=====
     const ZONE_KEYS_SET = new Set(ZONE_KEYS);
     if (req.method === 'POST' && url.pathname === '/ai/zone-analyze') {

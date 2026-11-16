@@ -823,7 +823,7 @@ curl -sf "$B/stats" | grep -q '状态分布' || fail '统计页缺状态分布'
 curl -sf "$B/applications?view=table" | grep -q '<table' || fail '表格视图缺失'
 CODE=$(curl -s -X POST "$B/settings" -H 'Content-Type: application/json' -d '{"active":5,"profiles":[{"name":"a","baseURL":"http://x","apiKey":"k","model":"m"}]}' -o /dev/null -w '%{http_code}')
 [ "$CODE" = "400" ] || fail '设置 active 越界未拦'
-for EP in ai/test settings ai/rewrite ai/chat ai/review ai/match tag app/add app/update job/create; do
+for EP in ai/test settings ai/rewrite ai/chat ai/review tag app/add app/update job/create; do
   CODE=$(curl -s -X POST "$B/$EP" -H 'Content-Type: application/json' -d '{bad json' -o /dev/null -w '%{http_code}')
   [ "$CODE" = "400" ] || fail "坏 JSON /$EP 应 400 得 $CODE"
 done
