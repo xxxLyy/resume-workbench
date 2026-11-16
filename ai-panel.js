@@ -417,6 +417,17 @@
     req.send();
   })();
 
+  // 首页「体检」直达（2026-11-16）：?review=1 → 切到 AI 助手/体检子页签并自动跑一次全面体检；参数即摘（刷新不重跑）
+  (function () {
+    if (new URLSearchParams(location.search).get('review') !== '1') return;
+    var u = new URL(location.href); u.searchParams.delete('review');
+    history.replaceState(null, '', u.pathname + u.search + u.hash);
+    if (window.__edSelectTab) window.__edSelectTab('ai');
+    var rt = document.querySelector('#ai-tabs button[data-tab="review"]');
+    if (rt) rt.click();
+    runReview('full');
+  })();
+
   // ===== 选区改写 =====
   // 预设指令（嵌入模式四按钮工具条；沿用 /ai/rewrite 审阅流，不静默覆盖正文）
   var PRESETS = {

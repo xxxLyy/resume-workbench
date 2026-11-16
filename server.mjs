@@ -2472,7 +2472,7 @@ function listPage(showArchived = false) {
     return `<div class="docrow"><span class="doc-thumb"><i></i><i></i><i></i><i></i><i></i></span>
     <div class="tx"><div class="nm">${d.title}</div><div class="mt">${escHtml(sub)}${si === 'stale' ? ' · PDF 不是最新' : ''}${d.degraded ? ' · 待整理' : ''}${m.archivedAt ? ' · 已归档' : ''}${tag ? ' · ' + escHtml(tag) : ''}</div></div>
     <span class="st"><i class="dot dot-${dc}"></i>${sl}</span>
-    <div class="ops"><a href="/edit?id=${escAttr(d.id)}">编辑</a><a href="/export?id=${escAttr(d.id)}">导出</a>
+    <div class="ops"><a href="/edit?id=${escAttr(d.id)}">编辑</a><a href="/edit?id=${escAttr(d.id)}&review=1">体检</a><a href="/export?id=${escAttr(d.id)}">导出</a>
     <details class="more"><summary style="display:inline;cursor:pointer;color:var(--mut)" aria-label="更多操作">⋯</summary>
     <div style="margin-top:var(--space-1);font-size:13px;display:flex;gap:10px;flex-wrap:wrap">
     <a href="/pdf?id=${escAttr(d.id)}" target="_blank">最新PDF</a><a href="/snapshots?id=${escAttr(d.id)}">历史版本</a><a href="/diff?base=${escAttr(d.id)}">对比</a>
@@ -2518,7 +2518,7 @@ function listPage(showArchived = false) {
       <div style="flex:1;min-width:0"><h3 style="font-size:16px;margin:0">${docTitles[fallbackId] || ''}</h3>
         <div class="mt">更新于 ${(docInfoMap.get(fallbackId) || {}).mtime || ''}</div>
         <span class="st" style="margin-top:6px"><i class="dot dot-${escAttr(docStatus(fallbackId)[0])}"></i>${docStatus(fallbackId)[1]}</span>
-        <div style="display:flex;gap:var(--space-2);margin-top:14px"><a class="cta" id="continueBtn" href="/edit?id=${encodeURIComponent(fallbackId)}" data-fallback="${escAttr(fallbackId)}" data-doc-ids='${jsonAttr(docIds)}' data-doc-titles='${jsonAttr(docTitles)}'>继续编辑</a><a class="cta-exp" href="/export?id=${escAttr(fallbackId)}">导出 PDF</a></div></div></div>
+        <div style="display:flex;gap:var(--space-2);margin-top:14px"><a class="cta" id="continueBtn" href="/edit?id=${encodeURIComponent(fallbackId)}" data-fallback="${escAttr(fallbackId)}" data-doc-ids='${jsonAttr(docIds)}' data-doc-titles='${jsonAttr(docTitles)}'>继续编辑</a><a class="cta-exp" id="reviewBtn" href="/edit?id=${encodeURIComponent(fallbackId)}&review=1">体检</a><a class="cta-exp" href="/export?id=${escAttr(fallbackId)}">导出 PDF</a></div></div></div>
     ${hasMaster ? `<div class="card" style="margin-top:var(--space-4);padding:14px var(--space-4);display:flex;align-items:center;gap:var(--space-3)"><div style="flex:1"><b style="font-size:13px">要投某个岗位？</b><div style="font-size:12px;color:var(--mut)">按 JD 生成一份定制副本，母版不动</div></div><a href="/job/new" style="font-size:13px">为岗位定制 →</a></div>` : ''}
     <h1 style="margin-top:var(--space-6)">全部简历</h1>
     ${searchRow}${docListCard(sortedRows)}
@@ -2583,8 +2583,10 @@ function listPage(showArchived = false) {
         try { last = localStorage.getItem('resume-last-active-doc') || ''; } catch (e) { last = ''; }
         if (last && ids.indexOf(last) < 0) { try { localStorage.removeItem('resume-last-active-doc'); } catch (e) {} last = ''; }
         var pick = last || fb;
-        if (!pick || ids.indexOf(pick) < 0) { btn.style.display = 'none'; return; }   // 不展示无效入口
+        var rl = document.getElementById('reviewBtn');
+        if (!pick || ids.indexOf(pick) < 0) { btn.style.display = 'none'; if (rl) rl.style.display = 'none'; return; }   // 不展示无效入口
         btn.href = '/edit?id=' + encodeURIComponent(pick);
+        if (rl) rl.href = '/edit?id=' + encodeURIComponent(pick) + '&review=1';
         btn.textContent = (last ? '▶ 继续：' : '▶ 最近编辑：') + (titles[pick] || pick);
       })();
       // ===== 内联 handler 委托化注册（b5c1）：data-action → 实现（与原内联 onsubmit 行为一致）=====
