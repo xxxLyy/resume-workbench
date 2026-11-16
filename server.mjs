@@ -7983,10 +7983,13 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const last = m.lastReview || null;
       let prevScore = null;
       if (last) {
-        const hist = (m.reviewHist || []).filter((e) => e && e.mode === last.mode);
+        const key = (e) => (e && e.name || '') + '|' + (e && e.model || '');
+        const hist = (m.reviewHist || []).filter((e) => e && e.mode === last.mode && (!last.name || key(e) === key(last)));   // 老数据无 name：按 mode 链兼容
         if (hist.length >= 2 && typeof hist[hist.length - 2].score === 'number') prevScore = hist[hist.length - 2].score;
       }
-      return sendJson(200, { ok: true, last, prevScore });
+      const runs = m.reviewRuns || [];
+      const batchRuns = runs.length ? runs.filter((r) => r && r.batch === runs[0].batch) : [];
+      return sendJson(200, { ok: true, last, prevScore, runs: batchRuns });
     }
     if (req.method === 'POST' && url.pathname === '/ai/review') {
       if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');   // R2②：路径直达（「侧栏「设置」」是死引用）
@@ -7997,29 +8000,51 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       if (!fs.existsSync(docPath(docId))) return send(404, 'doc not found', 'text/plain');
       const stale = staleGuard(docId, body.baseMtime);
       if (stale) return sendJson(409, stale);
+      const prof = pickProfile(body.profile);
+      if (prof === null) return send(400, '模型配置不存在或不完整', 'text/plain');
+      const adopt = body.adopt !== false;   // 缺省采用（多模型对比批传 adopt:false，事后 /ai/review-adopt 选一份）
+      const batch = typeof body.batch === 'string' && body.batch ? body.batch.slice(0, 40) : Date.now().toString(36);
       const target = typeof body.target === 'string' ? body.target.trim().slice(0, 60) : '';
       const docText = docToText(fs.readFileSync(docPath(docId), 'utf8'), { includeHidden: false });
       const p = buildReview(docText, body.mode, target);
       let raw;
-      try { raw = await chat(root, p.sys, p.user, { lease: leaseOf(req) }); }
+      try { raw = await chat(root, p.sys, p.user, { lease: leaseOf(req), profile: prof }); }
       catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
       const parsed = parseReport(raw);
       if (!parsed) return sendJson(200, { ok: true, reply: raw });
-      // 持久化体检报告（lastReview=全量、reviewHist=同 mode 分数环形 ≤10）；写失败不拖累报告回传
-      const prevSame = (((loadMeta()[docId] || {}).reviewHist) || []).filter((e) => e && e.mode === body.mode);
+      // 持久化体检报告：每次跑入 reviewRuns（新者在前 cap12，含批号+模型）；adopt 才覆写 lastReview；
+      // reviewHist 同 mode+同模型链 prevScore；写失败不拖累报告回传
+      const pm = profileMeta(prof);
+      const runKey = (e) => (e && e.name || '') + '|' + (e && e.model || '');
+      const prevSame = (((loadMeta()[docId] || {}).reviewHist) || []).filter((e) => e && e.mode === body.mode && runKey(e) === (pm.name || '') + '|' + (pm.model || ''));
       const prevScore = prevSame.length && typeof prevSame[prevSame.length - 1].score === 'number' ? prevSame[prevSame.length - 1].score : null;
+      const at = new Date().toISOString();
+      const run = { batch, name: pm.name, model: pm.model, mode: body.mode, target, at, ...parsed };
       let saved = false;
       try {
-        const at = new Date().toISOString();
         updateMeta(root, docId, (cur) => {
           cur = cur || {};
-          cur.lastReview = { mode: body.mode, target, at, ...parsed };
-          cur.reviewHist = [...(cur.reviewHist || []), { mode: body.mode, score: parsed.score, at }].slice(-10);
+          cur.reviewRuns = [run, ...(cur.reviewRuns || [])].slice(0, 12);
+          if (adopt) cur.lastReview = { mode: body.mode, target, at, name: pm.name, model: pm.model, ...parsed };
+          cur.reviewHist = [...(cur.reviewHist || []), { mode: body.mode, score: parsed.score, at, name: pm.name, model: pm.model }].slice(-10);
           return cur;
         });
         saved = true;
       } catch {}
-      return sendJson(200, { ok: true, report: parsed, prevScore, saved });
+      return sendJson(200, { ok: true, report: parsed, prevScore, saved, run });
+    }
+    // 多模型对比采用（2026-11-16）：把某个已落盘 run 提为 lastReview；找不到 → 404
+    if (req.method === 'POST' && url.pathname === '/ai/review-adopt') {
+      const body = JSON.parse(await readBody(req));
+      if (body.id && !VALID_ID.test(body.id)) return send(400, 'invalid id', 'text/plain');
+      const docId = body.id || id;
+      if (!fs.existsSync(docPath(docId))) return send(404, 'doc not found', 'text/plain');
+      const runs = (loadMeta()[docId] || {}).reviewRuns || [];
+      const hit = runs.find((r) => r && r.batch === body.batch && r.name === body.name && r.model === body.model);
+      if (!hit) return sendJson(404, { ok: false, error: 'run not found' });
+      const { mode, target, at, ...rest } = hit;
+      updateMeta(root, docId, (cur) => { cur = cur || {}; cur.lastReview = { mode, target, at, name: hit.name, model: hit.model, ...rest }; return cur; });
+      return sendJson(200, { ok: true, last: (loadMeta()[docId] || {}).lastReview || null });
     }
     // （match 路由已于 2026-11-16 退役：岗位匹配由审阅 Tab 证据表与收件箱评估承接，无调用方）
     // ===== S3-T5：区域级 AI（analyze 意见 / rewrite 候选；只带本区域段落 + 有界全文摘要）=====

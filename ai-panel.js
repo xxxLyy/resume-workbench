@@ -407,6 +407,57 @@
   }
 
   // ===== 体检 =====
+  // 模型多选（2026-11-16 多模型对比）：≥2 就绪档案才渲染；多选→同批顺序跑 adopt:false + 页签对比 + 「采用这个结果」
+  var mp = { selected: function () { return [0]; }, labelOf: function () { return ''; } };
+  if (window.__modelPicker) {
+    var mpHost = document.createElement('div');
+    var pane = $('ai-pane-review');
+    pane.insertBefore(mpHost, pane.firstChild);
+    window.__modelPicker.mount(mpHost).then(function (m) { mp = m; });
+  }
+  var runKey = function (r) { return (r.name || '') + '|' + (r.model || ''); };
+  // 对比页签渲染：runs = 同批各模型 run；adoptedKey = 已采用的 name|model（null=尚未采用）
+  function renderCompare(out, runs, adoptedKey) {
+    out.innerHTML = '';
+    var strip = document.createElement('div');
+    strip.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px';
+    var view = document.createElement('div');
+    out.appendChild(strip);
+    out.appendChild(view);
+    var btns = [];
+    function show(r, bi) {
+      btns.forEach(function (x, i) { x.style.fontWeight = i === bi ? '600' : '400'; });
+      renderReport(view, { report: r });
+      if (runKey(r) === adoptedKey) {
+        var mk = document.createElement('div');
+        mk.style.cssText = 'font-size:11px;color:var(--ed-ok,#2F6B4F);margin-top:6px';
+        mk.textContent = '已采用';
+        view.appendChild(mk);
+      } else {
+        var ad = document.createElement('button');
+        ad.type = 'button';
+        ad.textContent = '采用这个结果';
+        ad.onclick = function () {
+          ad.disabled = true;
+          postJson('/ai/review-adopt', { id: DOC_ID, batch: r.batch, name: r.name, model: r.model })
+            .then(function () { adoptedKey = runKey(r); ad.textContent = '已采用'; })
+            .catch(function (e) { ad.disabled = false; __status(view, 'warn', e.message || e); });
+        };
+        view.appendChild(ad);
+      }
+    }
+    runs.forEach(function (r, i) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = runKey(r).replace('|', '·') + ' · ' + (typeof r.score === 'number' ? r.score : '—') + ' 分';
+      b.onclick = function () { show(r, i); };
+      strip.appendChild(b);
+      btns.push(b);
+    });
+    var ini = 0;
+    runs.forEach(function (r, i) { if (runKey(r) === adoptedKey) ini = i; });
+    if (runs.length) show(runs[ini], ini);
+  }
   var reviewing = false;
   async function runReview(mode) {
     if (reviewing) return;  // 防连点
@@ -414,11 +465,27 @@
     var btn = mode === 'full' ? $('ai-review-full') : $('ai-review-quant');
     btn.disabled = true;
     var out = $('ai-review-out');
-    out.textContent = '体检中（整篇分析约几十秒）…';
     try {
       var mt = await flushFirst();
-      var data = await postJson('/ai/review', { id: DOC_ID, mode: mode, baseMtime: mt, target: ($('ai-review-target') || {}).value || '' });
-      renderReport(out, data, { prevScore: typeof data.prevScore === 'number' ? data.prevScore : null });
+      var target = ($('ai-review-target') || {}).value || '';
+      var sels = mp.selected();
+      if (sels.length <= 1) {
+        out.textContent = '体检中（整篇分析约几十秒）…';
+        var data = await postJson('/ai/review', { id: DOC_ID, mode: mode, baseMtime: mt, target: target, profile: sels[0] });
+        renderReport(out, data, { prevScore: typeof data.prevScore === 'number' ? data.prevScore : null });
+      } else {
+        // 多模型：同批顺序跑（adopt:false，不占采用位），逐条带进度；单条失败不拖垮整批
+        var batch = Date.now().toString(36);
+        var runs = [];
+        for (var k = 0; k < sels.length; k++) {
+          out.textContent = '体检中 ' + (k + 1) + '/' + sels.length + '：' + mp.labelOf(sels[k]) + '…';
+          try {
+            var d = await postJson('/ai/review', { id: DOC_ID, mode: mode, baseMtime: mt, target: target, profile: sels[k], adopt: false, batch: batch });
+            if (d && d.run) runs.push(d.run);
+          } catch (e2) { /* 单模型失败跳过，继续其余 */ }
+        }
+        renderCompare(out, runs, null);
+      }
     } catch (e) {
       if (e && e.stale) __status(out, 'warn', '文档有未同步修改，已自动保存，请重试');
       else __status(out, 'warn', e.message || e);
@@ -443,6 +510,10 @@
         var d = JSON.parse(req.responseText);
         if (!d || !d.ok || !d.last) return;
         if (d.last.target && $('ai-review-target')) $('ai-review-target').value = d.last.target;
+        if (d.runs && d.runs.length > 1) {   // 同批多模型：页签对比视图（已采用者标「已采用」）
+          renderCompare($('ai-review-out'), d.runs, runKey(d.last));
+          return;
+        }
         renderReport($('ai-review-out'), { report: d.last }, {
           header: reviewHeader(d.last),
           prevScore: typeof d.prevScore === 'number' ? d.prevScore : null
