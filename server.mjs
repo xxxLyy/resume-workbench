@@ -7948,6 +7948,20 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       return redirect(`/edit?id=${id}`);
       });
     }
+    // 体检报告回读：面板打开时恢复上次报告与上次分数（2026-11-16；同一 pathname 复用已冻结路由，GET 读路径）
+    if (req.method === 'GET' && url.pathname === '/ai/review') {
+      const qid = String(url.searchParams.get('id') || '');
+      if (!VALID_ID.test(qid)) return sendJson(400, { ok: false, error: 'invalid id' });
+      if (!fs.existsSync(docPath(qid))) return sendJson(404, { ok: false, error: 'doc not found' });
+      const m = loadMeta()[qid] || {};
+      const last = m.lastReview || null;
+      let prevScore = null;
+      if (last) {
+        const hist = (m.reviewHist || []).filter((e) => e && e.mode === last.mode);
+        if (hist.length >= 2 && typeof hist[hist.length - 2].score === 'number') prevScore = hist[hist.length - 2].score;
+      }
+      return sendJson(200, { ok: true, last, prevScore });
+    }
     if (req.method === 'POST' && url.pathname === '/ai/review') {
       if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');   // R2②：路径直达（「侧栏「设置」」是死引用）
       const body = JSON.parse(await readBody(req));
@@ -7957,13 +7971,29 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       if (!fs.existsSync(docPath(docId))) return send(404, 'doc not found', 'text/plain');
       const stale = staleGuard(docId, body.baseMtime);
       if (stale) return sendJson(409, stale);
+      const target = typeof body.target === 'string' ? body.target.trim().slice(0, 60) : '';
       const docText = docToText(fs.readFileSync(docPath(docId), 'utf8'), { includeHidden: false });
-      const p = buildReview(docText, body.mode);
+      const p = buildReview(docText, body.mode, target);
       let raw;
       try { raw = await chat(root, p.sys, p.user, { lease: leaseOf(req) }); }
       catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
       const parsed = parseReport(raw);
-      return sendJson(200, parsed ? { ok: true, report: parsed } : { ok: true, reply: raw });
+      if (!parsed) return sendJson(200, { ok: true, reply: raw });
+      // 持久化体检报告（lastReview=全量、reviewHist=同 mode 分数环形 ≤10）；写失败不拖累报告回传
+      const prevSame = (((loadMeta()[docId] || {}).reviewHist) || []).filter((e) => e && e.mode === body.mode);
+      const prevScore = prevSame.length && typeof prevSame[prevSame.length - 1].score === 'number' ? prevSame[prevSame.length - 1].score : null;
+      let saved = false;
+      try {
+        const at = new Date().toISOString();
+        updateMeta(root, docId, (cur) => {
+          cur = cur || {};
+          cur.lastReview = { mode: body.mode, target, at, ...parsed };
+          cur.reviewHist = [...(cur.reviewHist || []), { mode: body.mode, score: parsed.score, at }].slice(-10);
+          return cur;
+        });
+        saved = true;
+      } catch {}
+      return sendJson(200, { ok: true, report: parsed, prevScore, saved });
     }
     if (req.method === 'POST' && url.pathname === '/ai/match') {
       if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');   // R2②：路径直达（「侧栏「设置」」是死引用）

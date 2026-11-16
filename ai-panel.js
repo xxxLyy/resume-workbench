@@ -81,7 +81,7 @@
     + '<div id="ai-drawer"' + (embedded ? ' style="display:none"' : '') + '><header><span>' + __icon('bot') + ' AI 助手</span><span id="ai-close" role="button" tabindex="0" aria-label="关闭">' + __icon('x') + '</span></header>'
     + '<div id="ai-tabs"><button data-tab="chat" class="on">' + __icon('message-square') + ' 对话</button><button data-tab="review">' + __icon('stethoscope') + ' 体检</button></div>'
     + '<div id="ai-pane-chat" class="ai-pane on"><div id="ai-log" aria-live="polite"></div><div id="ai-input"><input id="ai-msg" placeholder="例如：把项目3精简一点" aria-label="对话输入"><button id="ai-send">发送</button></div></div>'
-    + '<div id="ai-pane-review" class="ai-pane"><div class="ai-actions"><button id="ai-review-full">全面体检</button><button id="ai-review-quant">仅量化增强</button></div><div id="ai-review-out" aria-live="polite"></div></div></div>'
+    + '<div id="ai-pane-review" class="ai-pane"><div class="ai-actions"><input id="ai-review-target" placeholder="目标方向（可选，如：后端开发）" maxlength="60" aria-label="目标方向"><button id="ai-review-full">全面体检</button><button id="ai-review-quant">仅量化增强</button></div><div id="ai-review-out" aria-live="polite"></div></div></div>'
     + '<button id="ai-sel-btn">' + __icon('sparkles') + ' AI 改写</button>'
     + '<div id="ai-pop" role="dialog" aria-modal="true" aria-label="选区改写"><textarea id="ai-inst" placeholder="改写指令，例如：精简到两行、突出量化成果" aria-label="改写指令"></textarea>'
     + '<div class="row"><button id="ai-gen">生成预览</button></div><div class="preview" id="ai-preview"></div>'
@@ -130,7 +130,7 @@
   // 空态引导（不持久、不进对话历史）；S4a-T7：岗位匹配已退役，引导不再提及
   addHtml(embedded
     ? __icon('hand') + ' 使用引导：\n· 选中正文文字 → 浮动工具条选改写方向\n· 「' + __icon('stethoscope') + ' 体检」出多维诊断报告\n所有建议都可逐条 应用 / ' + __icon('map-pin') + ' 定位 / 跳过 / 撤销'
-    : __icon('hand') + ' 使用引导：\n· 选中正文一句话 → 点「' + __icon('sparkles') + ' AI 改写」逐句精简\n· 「' + __icon('stethoscope') + ' 体检」出五维诊断报告\n所有建议都可逐条 应用 / ' + __icon('map-pin') + ' 定位 / 跳过 / 撤销');
+    : __icon('hand') + ' 使用引导：\n· 选中正文一句话 → 点「' + __icon('sparkles') + ' AI 改写」逐句精简\n· 「' + __icon('stethoscope') + ' 体检」出七维诊断报告\n所有建议都可逐条 应用 / ' + __icon('map-pin') + ' 定位 / 跳过 / 撤销');
 
   // 共享应用通道：在文档里找 before 文本并替换（支持跨加粗等 DOM 节点、定位第 N 个重复位置）
   // opts: { occurrence?: number, context?: string }
@@ -317,7 +317,8 @@
   });
 
   // ===== 报告渲染（体检/JD 共用契约：{report:{score,summary,items,changes}} 或 {reply}）=====
-  function renderReport(out, data) {
+  function renderReport(out, data, opts) {
+    opts = opts || {};
     out.innerHTML = '';
     if (!data || !data.report) {
       var m0 = document.createElement('div');
@@ -327,6 +328,13 @@
       return;
     }
     var r = data.report;
+    if (opts.header) {
+      var hd = document.createElement('div');
+      hd.className = 'msg';
+      hd.style.cssText = 'font-size:11px;color:var(--ed-mut)';
+      hd.textContent = opts.header;
+      out.appendChild(hd);
+    }
     if (typeof r.score === 'number') {
       var s = document.createElement('div');
       s.className = 'ai-score';
@@ -334,6 +342,12 @@
       b.textContent = r.score;
       s.appendChild(b);
       s.appendChild(document.createTextNode('分'));
+      if (typeof opts.prevScore === 'number') {
+        var dl = document.createElement('div');
+        dl.style.cssText = 'font-size:11px;color:var(--ed-mut);margin-top:4px';
+        dl.textContent = '上次 ' + opts.prevScore + ' 分 → 这次 ' + r.score + ' 分';
+        s.appendChild(dl);
+      }
       if (r.scoreBasis) {
         var basis = document.createElement('div');
         basis.style.cssText = 'font-size:11px;color:var(--ed-mut);margin-top:4px';
@@ -368,8 +382,8 @@
     out.textContent = '体检中（整篇分析约几十秒）…';
     try {
       var mt = await flushFirst();
-      var data = await postJson('/ai/review', { id: DOC_ID, mode: mode, baseMtime: mt });
-      renderReport(out, data);
+      var data = await postJson('/ai/review', { id: DOC_ID, mode: mode, baseMtime: mt, target: ($('ai-review-target') || {}).value || '' });
+      renderReport(out, data, { prevScore: typeof data.prevScore === 'number' ? data.prevScore : null });
     } catch (e) {
       if (e && e.stale) __status(out, 'warn', '文档有未同步修改，已自动保存，请重试');
       else __status(out, 'warn', e.message || e);
@@ -378,6 +392,30 @@
   }
   $('ai-review-full').onclick = function () { runReview('full'); };
   $('ai-review-quant').onclick = function () { runReview('quant'); };
+
+  // 上次体检回显（2026-11-16）：打开面板即恢复最近报告；reviewHist 同 mode 倒数第二条作「上次分数」
+  (function () {
+    var REVIEW_MODE_LABEL = { full: '全面体检', quant: '仅量化增强' };
+    var reviewHeader = function (last) {
+      var t = new Date(last.at || '');
+      var when = isNaN(t) ? '' : (t.getMonth() + 1) + ' 月 ' + t.getDate() + ' 日 ' + String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0');
+      return '上次体检：' + when + ' · ' + (REVIEW_MODE_LABEL[last.mode] || last.mode || '') + (last.target ? ' · 方向：' + last.target : '');
+    };
+    var req = new XMLHttpRequest();
+    req.open('GET', '/ai/review?id=' + encodeURIComponent(DOC_ID));
+    req.onload = function () {
+      try {
+        var d = JSON.parse(req.responseText);
+        if (!d || !d.ok || !d.last) return;
+        if (d.last.target && $('ai-review-target')) $('ai-review-target').value = d.last.target;
+        renderReport($('ai-review-out'), { report: d.last }, {
+          header: reviewHeader(d.last),
+          prevScore: typeof d.prevScore === 'number' ? d.prevScore : null
+        });
+      } catch (e) {}
+    };
+    req.send();
+  })();
 
   // ===== 选区改写 =====
   // 预设指令（嵌入模式四按钮工具条；沿用 /ai/rewrite 审阅流，不静默覆盖正文）

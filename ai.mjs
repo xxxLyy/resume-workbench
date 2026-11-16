@@ -41,11 +41,14 @@ export function parseReport(raw) {
 }
 
 // S2：简历体检 prompt（full=七维全面 / quant=只聚焦量化成果，便宜版）
-export function buildReview(docText, mode) {
+// target（可选，≤60 字）：指定目标方向时 ATS 维度按该方向关键词评估，并追加【方向】贴合度条目；空值时 prompt 与旧版逐字节一致。
+export function buildReview(docText, mode, target = '') {
+  const t = String(target || '').trim().slice(0, 60);
+  const tgt = t ? ` 用户给出了目标方向【${t}】：【ATS】维度按该方向常见关键词评估相关性，items 末尾追加一条「【方向】x/10：与该方向的贴合度一句话」；仍不得编造经历。` : '';
   const sys = mode === 'quant'
-    ? '你是简历量化专家。只聚焦"量化成果"体检：找出缺少数字/比例/规模的表达并给量化改写建议（用【建议补充：xx】占位，不编造事实）。只输出 JSON（不要任何其它文字）：{"score":0-100,"summary":"一句话总评","scoreBasis":"评分口径一句话（不得暗示录用概率）","items":["【量化】问题：一句话"],"changes":[{"before":"文档中现有原文片段（必须逐字，不超过80字）","after":"改后的文字","note":"这条改的什么"}]} changes 最多 5 条。'
-    : '你是简历体检专家。七个维度逐项评分：【结构】【量化】【动词】【冗余】【ATS】【重复】【一致性】（重复=同义表达重复出现，一致性=日期/术语前后一致）。只输出 JSON（不要任何其它文字）：{"score":0-100,"summary":"一句话总评","scoreBasis":"评分口径一句话（不得暗示录用概率）","items":["【维度】x/10：一句话诊断"],"changes":[{"before":"文档中现有原文片段（必须逐字，不超过80字）","after":"改后的文字","note":"这条改的什么"}]} changes 最多 5 条，只给真正需要改的。';
-  return { sys, user: `【当前简历全文】\n${docText}` };
+    ? '你是简历量化专家。只聚焦"量化成果"体检：找出缺少数字/比例/规模的表达并给量化改写建议（用【建议补充：xx】占位，不编造事实）。只输出 JSON（不要任何其它文字）：{"score":0-100,"summary":"一句话总评","scoreBasis":"评分口径一句话（不得暗示录用概率）","items":["【量化】问题：一句话"],"changes":[{"before":"文档中现有原文片段（必须逐字，不超过80字）","after":"改后的文字","note":"这条改的什么"}]} changes 最多 8 条。'
+    : '你是简历体检专家。七个维度逐项评分：【结构】【量化】【动词】【冗余】【ATS】【重复】【一致性】（重复=同义表达重复出现，一致性=日期/术语前后一致）。只输出 JSON（不要任何其它文字）：{"score":0-100,"summary":"一句话总评","scoreBasis":"评分口径一句话（不得暗示录用概率）","items":["【维度】x/10：一句话诊断"],"changes":[{"before":"文档中现有原文片段（必须逐字，不超过80字）","after":"改后的文字","note":"这条改的什么"}]} changes 最多 12 条，只给真正需要改的。';
+  return { sys: sys + tgt, user: (t ? `【目标方向】${t}\n\n` : '') + `【当前简历全文】\n${docText}` };
 }
 
 // S2：JD 匹配度分析 prompt（W2：四段式 + 区分两类缺口）
