@@ -452,7 +452,7 @@
   (function () {
     if (new URLSearchParams(location.search).get('review') !== '1') return;
     var u = new URL(location.href); u.searchParams.delete('review');
-    history.replaceState(null, '', u.pathname + u.search + u.hash);
+    window.history.replaceState(null, '', u.pathname + u.search + u.hash);   // 本文件有局部 history=[]（对话历史），须显式走 window
     if (window.__edSelectTab) window.__edSelectTab('ai');
     var rt = document.querySelector('#ai-tabs button[data-tab="review"]');
     if (rt) rt.click();
