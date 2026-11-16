@@ -5497,7 +5497,7 @@ async function handler(req, res) {
         return { before: pick(evs.find((e) => e.jd === jd0 && (e.promotedTo === id || (e.source && e.source.docId === m.parent)))),
                  after: pick(evs.find((e) => e.jd === jd0 && e.source && e.source.docId === id)) };
       })();
-      return sendJson(200, { ok: true, job, rev: Number(m.rev) || 0, zones: m.zones || null, zoneOrder: m.zoneOrder || null, zoneRounds: m.zoneRounds || null, genTtlMs: GEN_TTL_MS, doc: { id, parent: m.parent || '', company: m.company || '', role: m.role || '', jd: m.jd || '', jdSource: m.jdSource || '', mtime: docMtime, evalCmp } });
+      return sendJson(200, { ok: true, job, rev: Number(m.rev) || 0, zones: m.zones || null, zoneOrder: m.zoneOrder || null, zoneRounds: m.zoneRounds || null, zoneAnalyses: m.zoneAnalyses || null, genTtlMs: GEN_TTL_MS, doc: { id, parent: m.parent || '', company: m.company || '', role: m.role || '', jd: m.jd || '', jdSource: m.jdSource || '', mtime: docMtime, evalCmp } });
     }
     if (req.method === 'POST' && url.pathname === '/job/changes') {
       const body = JSON.parse(await readBody(req));
@@ -8018,7 +8018,10 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
       const parsed = parseZoneAnalysis(raw);
       if (parsed) {
-        updateMeta(root, id, (m) => { const b = { ...(m || {}) }; b.zoneRounds = { ...(b.zoneRounds || {}) }; b.zoneRounds[body.zone] = (b.zoneRounds[body.zone] || 0) + 1; return b; });
+        // 意见随轮次一并落盘（2026-11-16）：点行不再自动分析，用户显式触发一次即留存、重开可见
+        const model = (() => { try { const c = loadProfiles(root); return (c && c.profiles && c.profiles[c.active]) ? c.profiles[c.active].model : null; } catch { return null; } })();
+        const extraStr = typeof body.extra === 'string' && body.extra.trim() ? body.extra.trim().replace(/\s+/g, ' ').slice(0, 200) : '';
+        updateMeta(root, id, (m) => { const b = { ...(m || {}) }; b.zoneRounds = { ...(b.zoneRounds || {}) }; b.zoneRounds[body.zone] = (b.zoneRounds[body.zone] || 0) + 1; b.zoneAnalyses = { ...(b.zoneAnalyses || {}) }; b.zoneAnalyses[body.zone] = { at: new Date().toISOString(), extra: extraStr, model, ...parsed }; return b; });
       }
       return sendJson(200, parsed ? { ok: true, ...parsed } : { ok: false, error: '分析失败，稍后再试' });
     }

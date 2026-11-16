@@ -93,7 +93,7 @@
     m.textContent = text;
   }
 
-  var state = { zones: {}, zoneOrder: null, zoneRounds: {}, colorOn: false, aiZone: null, aiDegraded: false, aiDegradedMsg: null, lastAnalysis: null };
+  var state = { zones: {}, zoneOrder: null, zoneRounds: {}, zoneAnalyses: {}, colorOn: false, aiZone: null, aiDegraded: false, aiDegradedMsg: null, lastAnalysis: null };
   // ===== ZONE-05：请求身份（epoch）=====
   // 只有「区域键」当守卫不够：A→B→A 时旧 A 的响应会因区域键相同而写进新界面。
   // epoch 随每次新请求/切换递增；旧响应一律不得渲染、不得改 busy。
@@ -136,6 +136,7 @@
       state.zones = d.zones || {};
       state.zoneOrder = d.zoneOrder;
       state.zoneRounds = d.zoneRounds || {};          // T5 前服务端无此字段，兜底空
+      state.zoneAnalyses = d.zoneAnalyses || {};      // 已落盘的区域意见（2026-11-16）：点行回显不花 token
       render();
       paint();
     }).catch(function () {
@@ -200,9 +201,10 @@
     state.aiZone = zoneKey;
     state.aiDegraded = false;
     state.aiDegradedMsg = null;   // BL-P3-07：新区域新一轮，旧降级原因一并清掉
-    state.lastAnalysis = null;
+    // 点击不再自动分析（2026-11-16）：已落盘意见直接回显；未分析过的由按钮显式触发（省 token）
+    var saved = state.zoneAnalyses[zoneKey];
+    state.lastAnalysis = saved ? { zone: zoneKey, data: saved } : null;
     renderAi();
-    analyze(zoneKey, '');
   }
   function aiBox() { return document.getElementById('zp-ai'); }
   function setBusy(busy) {
@@ -247,17 +249,28 @@
     var head = document.createElement('div');
     head.textContent = 'AI 意见 · ' + name + (state.zoneRounds[zoneKey] ? '（第 ' + (state.zoneRounds[zoneKey] + 1) + ' 轮）' : '');
     box.appendChild(head);
+    var savedA = state.zoneAnalyses[zoneKey];
+    if (savedA && savedA.at) {                    // 上次分析时间（+模型名）：落盘意见的来源可追溯
+      var t = new Date(savedA.at);
+      if (!isNaN(t)) {
+        var hd = document.createElement('div');
+        hd.className = 'msg';
+        hd.style.cssText = 'font-size:11px;color:var(--ed-mut)';
+        hd.textContent = '上次分析：' + (t.getMonth() + 1) + ' 月 ' + t.getDate() + ' 日 ' + String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0') + (savedA.model ? ' · ' + savedA.model : '');
+        box.appendChild(hd);
+      }
+    }
     var out = document.createElement('div');
     out.id = 'zp-ai-out';
     out.setAttribute('aria-live', 'polite');   // A8：AI 分析结果读屏可感知
-    out.textContent = '分析中…';
+    out.textContent = savedA ? '' : '还没有分析过这个区域。';
     box.appendChild(out);
     var acts = document.createElement('div');
     acts.className = 'zp-chips';
     var reBtn = document.createElement('button');
     reBtn.type = 'button';
     reBtn.id = 'zp-analyze';
-    reBtn.textContent = '重新分析';
+    reBtn.textContent = savedA ? '重新分析' : '分析这个区域';
     reBtn.addEventListener('click', function () { analyze(zoneKey, ''); });
     acts.appendChild(reBtn);
     box.appendChild(acts);
@@ -339,6 +352,7 @@
       if (d._status === 409) { if (out) out.textContent = d.error || '文档已变化，请先同步内容'; return; }
       if (!d.ok) { if (out) out.textContent = d.error || '分析失败，稍后再试'; return; }
       state.lastAnalysis = { zone: zoneKey, data: d };
+      state.zoneAnalyses[zoneKey] = { at: new Date().toISOString(), ...d };   // 与落盘同形：头行/重开即时生效不等 reload
       load();                          // 轮次自增后刷新行内计数（load 重绘保留 AI 区）
       showAnalysis(d);
     }).catch(function (e) {

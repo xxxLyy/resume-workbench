@@ -83,7 +83,8 @@ try {
   await page.waitForSelector('.sheet [data-zid="' + P1 + '"]', { timeout: 15000 });
   await page.evaluate(() => { if (window.__edSelectTab) window.__edSelectTab('zone'); });
   await page.waitForSelector('.zp-row[data-zone="project"]', { state: 'attached', timeout: 15000 });
-  await page.evaluate(() => { var r = document.querySelector('.zp-row[data-zone="project"]'); if (r) r.click(); });   // 触发分析 → 409 降级
+  await page.evaluate(() => { var r = document.querySelector('.zp-row[data-zone="project"]'); if (r) r.click(); });   // 开 AI 卡
+  await page.evaluate(() => { var b = document.getElementById('zp-analyze'); if (b) b.click(); });                  // 显式分析 → 409 降级（点行不再自动调用）
 
   // 降级落地：提示出现且两按钮被禁用（禁用本身是正确行为）
   try { await page.waitForSelector('#zp-ai .zp-degr', { state: 'attached', timeout: 20000 }); }

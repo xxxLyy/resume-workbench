@@ -90,6 +90,16 @@ try {
     if (!r.json || r.json.code !== 'STALE_DOCUMENT') fail('陈旧 baseMtime 应返回 STALE_DOCUMENT，实际 ' + r.text.slice(0, 200));
   }
 
+  // ===== 2026-11-16：分析意见落盘 zoneAnalyses；解析失败零写入 =====
+  {
+    const r = await post('/ai/zone-analyze?id=' + DOC, { zone: 'work', baseMtime: mtime });
+    if (r.status !== 200 || !r.json || !r.json.ok) fail('zone-analyze 失败：' + r.status + ' ' + r.text.slice(0, 200));
+    const gr = await fetch(base + '/job/changes?id=' + DOC);
+    const zas = ((await gr.json().catch(() => null)) || {}).zoneAnalyses || {};
+    if (!zas.work || typeof zas.work.at !== 'string' || !zas.work.at) fail('/job/changes 未回读 zoneAnalyses.work：' + JSON.stringify(zas).slice(0, 200));
+    if (zas.work.extra !== '') fail('无追问时 extra 应为空串：' + JSON.stringify(zas.work.extra));
+  }
+
   // ===== ZONE-03：zone-rewrite 返回 zone-v1 形状（基线与操作身份由服务端生成）=====
   {
     const r = await post('/ai/zone-rewrite?id=' + DOC, { zone: 'work', instruction: '精简', baseMtime: mtime });
