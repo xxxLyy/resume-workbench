@@ -1011,7 +1011,7 @@ function batchBudgetError(opsB, batch, parasStart) {
 }
 
 // 五阶段管线本体。入参与旧 changes 分支一致（id/taskId/scope/租约），返回 finishGenTask 的对外结果。
-async function runChangesPipeline(id, taskId, scope, held) {
+async function runChangesPipeline(id, taskId, scope, held, { profile, alt } = {}) {
   const stages = [];   // 明细只增不改；flush 落快照（条目随后原地补 ms，不影响已落盘内容）
   const flush = (patch) => patchGenTask(id, 'changes', taskId, { ...patch, stages: stages.map((s) => ({ ...s })) });
   try {
@@ -1025,7 +1025,7 @@ async function runChangesPipeline(id, taskId, scope, held) {
     stages.push(stAnalyze); flush({});
     const pa = buildAnalyzePrompt({ jd: m0.jd || '', company: m0.company || '', role: m0.role || '' });
     const metaA = {};
-    const rawA = await chat(root, pa.sys, pa.user, { lease: held, meta: metaA });
+    const rawA = await chat(root, pa.sys, pa.user, { lease: held, meta: metaA, profile });
     stAnalyze.ms = Date.now() - stAnalyze.startedAt;
     flush({ stage: 'parsing', usage: metaA.usage ?? null });   // 模型已返回：本地解析校验（S4b-B 粗粒度检查点）
     const reqs = parseAnalyzeReqs(rawA);
@@ -1072,7 +1072,7 @@ async function runChangesPipeline(id, taskId, scope, held) {
       const metaB = {};
       let rawB;
       try {
-        rawB = await chat(root, pb.sys, pb.user, { lease: held, meta: metaB });
+        rawB = await chat(root, pb.sys, pb.user, { lease: held, meta: metaB, profile });
       } catch (e) {
         batchState.failed.push({ batch: bi, error: '模型调用失败：' + (e.message || e) });   // 单批失败不污染其他批
         stRewrite.ms = Date.now() - stRewrite.startedAt;
@@ -1110,6 +1110,19 @@ async function runChangesPipeline(id, taskId, scope, held) {
     // resultOps 随任务落账（P3 批次重试的合并基线：重试成功 = 原成功批 resultOps + 重试批 ops 再走一次收口）
     stages.push({ stage: 'assemble', startedAt: Date.now() });
     flush({ resultOps: ops });
+    if (alt) {
+      // 多模型对比（2026-11-16）：alt 备选稿不入待审队列——整份 ops 存 job.altChanges（name|model 唯一、cap 4），
+      // 用户在对比区「采用这套」才走 /job/alt-adopt → applyChangesResult 落账。
+      const pmAlt = profileMeta(profile);
+      const altKey = (pmAlt.name || '') + '|' + (pmAlt.model || '');
+      const entry = { key: altKey, name: pmAlt.name, model: pmAlt.model, at: new Date().toISOString(),
+        ops, scope, baseHash: contentHash(html), count: (ops.changes || []).length, summary: ops.summary,
+        failedBatches: batchState.failed.length };
+      return finishGenTask(id, 'changes', taskId, (cur) => {
+        cur.job.altChanges = [entry, ...((cur.job.altChanges || []).filter((a) => a && a.key !== altKey))].slice(0, 4);
+        return { ok: true, extra: { alt: true, count: entry.count } };
+      });
+    }
     return finishGenTask(id, 'changes', taskId, (cur) => ({
       ok: true,
       extra: applyChangesResult(cur, ops, { scope, html, paras: parasStart, mats: confirmedMats, brief: m0.job.brief || null })
@@ -1224,7 +1237,7 @@ function mergeJobFeedback(id, fb) {
   });
 }
 
-async function runGenTask(id, kind, taskId, scope = 'all', { lease } = {}) {
+async function runGenTask(id, kind, taskId, scope = 'all', { lease, profile, alt } = {}) {
   // 后台任务自己占一个 AI 槽（RES-04）：HTTP 响应早已结束，真实占用才开始。
   // 释放 = 这次后台工作真正结束（最外层 finally）；逻辑取消/超时/HTTP 断连都不等于释放。
   // 与同步入口共用同一个 aiPool → 全进程 AI 实际并发 ≤2（RES-02）。
@@ -1232,12 +1245,12 @@ async function runGenTask(id, kind, taskId, scope = 'all', { lease } = {}) {
   // 槽位已到手 → calling（S4b-B：模型调用阶段的起点；透传 lease 时 queued 窗口极短，同 tick 内到达）
   patchGenTask(id, kind, taskId, { stage: 'calling' });
   try {
-    return await runGenTaskInner(id, kind, taskId, scope, lease || ownLease);
+    return await runGenTaskInner(id, kind, taskId, scope, lease || ownLease, { profile, alt });
   } finally {
     if (ownLease) { try { ownLease.release(); } catch {} }
   }
 }
-async function runGenTaskInner(id, kind, taskId, scope, held) {
+async function runGenTaskInner(id, kind, taskId, scope, held, { profile, alt } = {}) {
   if (kind === 'interview') {
     try {
       const m0 = loadMeta()[id];
@@ -1317,12 +1330,12 @@ async function runGenTaskInner(id, kind, taskId, scope, held) {
     }
   }
   // changes 通道（S4b-A）：五阶段管线（analyze→locate→rewrite→validate→assemble），合同见 runChangesPipeline 头注
-  return runChangesPipeline(id, taskId, scope, held);
+  return runChangesPipeline(id, taskId, scope, held, { profile, alt });
 }
 
 // 原子启动（设计 §6 v1.4：updateMetaAll 全表事务锁内扫描）：全库同类 running ≤1、两类合计 ≤2，超限 409；
 // 过期残留不计入（读取时清）——启动时拒过期残留为三点校验之一。taskId 在事务内生成写入，无检查与写入分离窗口。
-function startGenTask(id, kind, scope = 'all') {
+function startGenTask(id, kind, scope = 'all', { profile, alt } = {}) {
   let baseHash = null, html0 = null;
   try { html0 = fs.readFileSync(docPath(id), 'utf8'); baseHash = contentHash(html0); } catch {}   // 仅任务记录用（设计 §4.1）
   // 零段落正文拒绝启动：zid 由编辑器生成、/save 才落盘——盘上无 data-zid 时证据与建议拿不到引用
@@ -1348,9 +1361,9 @@ function startGenTask(id, kind, scope = 'all') {
     if (sameKindOther) { reject = { status: 409, error: '另一文档的任务进行中，请稍后再试' }; return null; }
     if (total >= 2) { reject = { status: 409, error: '并发任务已达上限（全库同类 1 + 跨类合计 ' + (GEN_KINDS.length - 1) + '），请稍后再试' }; return null; }
     taskId = newGenTaskId();
-    const model = (() => { try { const c = loadProfiles(root); return (c && c.profiles && c.profiles[c.active]) ? c.profiles[c.active].model : null; } catch { return null; } })();
-    // stage:'queued' = 已注册、等并发槽位（S4b-B）；model 记录启动时的 active profile 模型名
-    const job = { ...m.job, genTasks: { ...(m.job.genTasks || {}), [kind]: { taskId, status: 'running', startedAt: now, baseHash, error: null, scope, stage: 'queued', model, usage: null } } };
+    const model = profileMeta(profile).model;   // 记录本任务实际使用的档案模型（缺省=active）；alt=对比备选稿标记
+    // stage:'queued' = 已注册、等并发槽位（S4b-B）
+    const job = { ...m.job, genTasks: { ...(m.job.genTasks || {}), [kind]: { taskId, status: 'running', startedAt: now, baseHash, error: null, scope, stage: 'queued', model, usage: null, ...(alt ? { alt: true } : {}) } } };
     return { ...all, [id]: { ...m, job } };
   });
   return { taskId, reject };
@@ -5777,6 +5790,13 @@ async function handler(req, res) {
       // 链式启动：then=changes 仅在 kind=evidence 且无 scope 时有效——证据完成后同一 AI 槽接棒生成建议
       const then = url.searchParams.get('then');
       if (then && (then !== 'changes' || kind !== 'evidence' || scopeRaw)) return sendJson(400, { ok: false, error: 'then 仅支持 kind=evidence&then=changes' });
+      // 多模型（2026-11-16）：profile 仅 kind=changes 有效（对比生成）；与 then 链互斥（链固定走 active）
+      const profRaw = url.searchParams.get('profile');
+      if (profRaw !== null && (kind !== 'changes' || then)) return sendJson(400, { ok: false, error: 'profile 仅支持 kind=changes 且不可与 then 同用' });
+      const alt = url.searchParams.get('alt') === '1';
+      if (alt && (kind !== 'changes' || scope !== 'all' || then)) return sendJson(400, { ok: false, error: 'alt 仅支持 kind=changes 且 scope=all' });
+      const prof = pickProfile(profRaw);
+      if (prof === null) return sendJson(400, { ok: false, error: '模型配置不存在或不完整' });
       let genBody = {};
       try { genBody = JSON.parse(await readBody(req) || '{}'); } catch (e) { return sendJson(400, { ok: false, error: 'body 必须是合法 JSON' }); }
       if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型：草稿仍可手动编辑，配置后可生成建议' });
@@ -5789,7 +5809,7 @@ async function handler(req, res) {
       // 借槽之后登记任务若抛错，槽位必须归还（不能既没任务又占着容量）
       let taskId = null, reject = null;
       try {
-        const st = startGenTask(id, kind, scope);
+        const st = startGenTask(id, kind, scope, { profile: prof, alt });
         taskId = st.taskId; reject = st.reject;
       } catch (e) {
         try { lease.release(); } catch {}
@@ -5800,7 +5820,7 @@ async function handler(req, res) {
       mergeJobFeedback(id, genBody.feedback);
       // 槽位透传（RES-02）：后台任务不再二次获取；释放 = 这次后台工作真正结束（最外层 finally）
       const run = async () => {
-        const out = await runGenTask(id, kind, taskId, scope, { lease }).catch((e) => { try { finishGenTask(id, kind, taskId, null, '任务失败：' + ((e && e.message) || e)); } catch {} return null; });
+        const out = await runGenTask(id, kind, taskId, scope, { lease, profile: prof, alt }).catch((e) => { try { finishGenTask(id, kind, taskId, null, '任务失败：' + ((e && e.message) || e)); } catch {} return null; });
         // ponytail：证据失败也接着生成建议（changes 管线不读证据表）；取消/超时（dropped）才停。
         // 另一文档 changes 在跑 → startGenTask 拒绝，链静默停在证据，用户手动点「生成建议」。
         if (then !== 'changes' || !out || out.dropped) return;
@@ -5869,6 +5889,7 @@ async function handler(req, res) {
           const gt = m.job.genTasks && m.job.genTasks.changes;
           if (!gt || gt.taskId !== reqTaskId) { reject = { status: 409, error: 'taskId 不匹配当前任务（可能已被新任务取代），请刷新后重试' }; return null; }
           if (gt.status !== 'done' && gt.status !== 'error') { reject = { status: 409, error: '任务不在可重试状态（running/cancelled 不可重试）' }; return null; }
+          if (gt.alt) { reject = { status: 409, error: '对比生成的备选稿不支持批次重试，请改用「采用这套」或重新生成' }; return null; }   // alt 备选稿不入审阅队列，重试无意义（2026-11-16）
           const b = gt.batches;
           if (!b || !Array.isArray(b.failed) || !b.failed.some((f) => f && f.batch === batch)) { reject = { status: 409, error: '批次 ' + batch + ' 不在失败清单，无需重试' }; return null; }
           const plan = Array.isArray(gt.batchPlan) ? gt.batchPlan : [];
@@ -5920,6 +5941,8 @@ async function handler(req, res) {
       if (!hasLLM(root)) return sendJson(409, { ok: false, error: '未配置大模型：草稿仍可手动编辑，配置后可生成建议' });
       const genBody = JSON.parse(await readBody(req) || '{}');   // 兼容既有调用形状：空对象体；坏 JSON 400 路径保持
       if (!fs.existsSync(docPath(id))) return sendJson(404, { ok: false, error: 'doc not found' });
+      const genProf = pickProfile(genBody.profile);
+      if (genProf === null) return sendJson(400, { ok: false, error: '模型配置不存在或不完整' });
       // 资源准入前置（与 gen-start 同口径，2026-10-28 补丁轮）：容量拒绝必须在任何业务写入之前
       //   —— 此前 feedback 先落盘再判并发，被拒时 feedback 已经写进去了。
       let lease;
@@ -5932,13 +5955,13 @@ async function handler(req, res) {
         // 借槽之后登记任务若抛错，槽位必须归还
         let reject = null;
         try {
-          const st = startGenTask(id, 'changes');
+          const st = startGenTask(id, 'changes', 'all', { profile: genProf });
           taskId = st.taskId; reject = st.reject;
         } catch (e) { throw e; }
         if (reject) return sendJson(reject.status, { ok: false, error: reject.error });
         let r;
         try {
-          r = await runGenTask(id, 'changes', taskId, 'all', { lease });
+          r = await runGenTask(id, 'changes', taskId, 'all', { lease, profile: genProf });
         } catch (e) {
           // 拿不到 AI 槽（等满 5s）等异常：任务态必须收敛，不能留下永远 running 的假任务
           try { finishGenTask(id, 'changes', taskId, null, '任务失败：' + ((e && e.message) || e)); } catch {}
@@ -5955,6 +5978,37 @@ async function handler(req, res) {
       } finally {
         try { lease.release(); } catch {}
       }
+    }
+    // 多模型对比采用（2026-11-16）：把 job.altChanges 里的某套备选稿走 applyChangesResult 落入待审队列
+    // （旧 pending→superseded、锚点按当前正文重评——与一次全新生成同语义）；采用/丢弃后清空 altChanges。
+    // {discard:true} 仅清空。changes 任务在跑 → 409（采用会与在途生成互相覆盖）。
+    if (req.method === 'POST' && url.pathname === '/job/alt-adopt') {
+      if (!fs.existsSync(docPath(id))) return sendJson(404, { ok: false, error: 'doc not found' });
+      const body = JSON.parse(await readBody(req) || '{}');
+      const now = Date.now();
+      const gtNow = ((loadMeta()[id] || {}).job || {}).genTasks || {};
+      if (GEN_KINDS.some((k) => gtNow[k] && gtNow[k].status === 'running' && !genExpired(gtNow[k], now))) {
+        return sendJson(409, { ok: false, error: '生成任务进行中，请稍后再试' });
+      }
+      const htmlNow = fs.readFileSync(docPath(id), 'utf8');
+      let out = { ok: false, error: '采用失败' }, status = 200;
+      updateMeta(root, id, (cur) => {
+        cur = cur || {};
+        if (!cur.job) { status = 404; out = { ok: false, error: '该文档不是岗位草稿' }; return cur; }
+        if (body.discard === true) {
+          cur.job = { ...cur.job, altChanges: [] };
+          out = { ok: true, discarded: true };
+          return cur;
+        }
+        const entry = (Array.isArray(cur.job.altChanges) ? cur.job.altChanges : []).find((a) => a && a.key === String(body.key || ''));
+        if (!entry) { status = 404; out = { ok: false, error: '备选稿不存在' }; return cur; }
+        const confirmedMats = loadMats().filter((x) => x.factStatus === 'confirmed' && (cur.job.materials || []).includes(x.id));
+        const extra = applyChangesResult(cur, entry.ops, { scope: entry.scope, html: htmlNow, paras: parasOf(htmlNow), mats: confirmedMats, brief: cur.job.brief || null });
+        cur.job = { ...cur.job, altChanges: [] };
+        out = { ok: true, ...extra };
+        return cur;
+      });
+      return sendJson(status, out);
     }
     // ===== 保存（正文与 PDF 分离；revision 冲突检测）=====
     if (req.method === 'POST' && url.pathname === '/save') {

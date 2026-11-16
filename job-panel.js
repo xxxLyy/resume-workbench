@@ -99,6 +99,7 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
   pane.appendChild(root);
 
   var job = null, doc = null, busy = false;
+  var jchgMp = { selected: function () { return [undefined]; }, labelOf: function () { return ''; } };   // 模型多选（2026-11-16）：≥2 就绪才渲染
   var docRev = 0;   // S4a-T8：GET /job/changes 暴露的 meta.rev——JSON 保存协议 baseRev 基线
   // S4a-T6 三段骨架状态：当前段（evidence|changes|export）+ reviewPos 筛选位（T9 落 UI）+ 任务轮询链
   var curSec = null, posFilter = 'all', pollTimer = null;
@@ -1164,6 +1165,39 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
 
   // 任一生成任务在跑就续排轮询。遍历而非硬编码 kind 名——新增生成类型漏改任一处都会导致
   // 「页面状态长期陈旧」（2026-10-18 OCR 发现 evidence/changes/interview 三处需同步）。
+  // 多模型对比（2026-11-16）：顺序 gen-start kind=changes&alt=1&profile=i，跑完一个再下一个；
+  // 每档写入 job.altChanges（服务端 name|model 去重 cap4），全部完成后 refresh 出对比区。
+  function runAltCompare(sels, gen) {
+    busy = true; gen.disabled = true;
+    var fb = pendingFeedback();
+    var i = 0;
+    var step = function () {
+      if (i >= sels.length) {
+        busy = false;
+        note('对比生成完成，在下方「多模型对比」区逐套查看并采用一套', 'ok');
+        refresh();
+        return;
+      }
+      var pi = sels[i]; i++;
+      note('对比生成 ' + i + '/' + sels.length + '：' + (jchgMp.labelOf(pi) || ('模型 ' + pi)) + '…');
+      zidsReady().then(function () {
+        api('/job/gen-start?id=' + DOC_ID + '&kind=changes&alt=1&profile=' + pi, fb.length ? { feedback: fb } : {})
+          .then(function (d) {
+            if (!d.ok) { note((d.error || '启动失败') + '（' + (jchgMp.labelOf(pi) || pi) + '）', 'warn'); step(); return; }
+            waitAltDone(d.taskId, step);
+          })
+          .catch(function (e) { note(e.message + '（' + (jchgMp.labelOf(pi) || pi) + '）', 'warn'); step(); });
+      });
+    };
+    step();
+  }
+  function waitAltDone(taskId, next) {
+    api('/job/changes?id=' + DOC_ID).then(function (d) {
+      var gt = (((d || {}).job || {}).genTasks || {}).changes || {};
+      if (gt.taskId === taskId && gt.status === 'running') { setTimeout(function () { waitAltDone(taskId, next); }, 1500); return; }
+      next();
+    }).catch(function () { setTimeout(next, 1500); });
+  }
   function anyRunning(gt) {
     gt = gt || {};
     for (var k in gt) { if (gt[k] && gt[k].status === 'running') return true; }
@@ -1954,14 +1988,17 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
     gen.disabled = busy;
     gen.title = '重新生成会产生新的候选版本，不覆盖你的手工修改';
     gen.addEventListener('click', function () {
-      if (busy) return; busy = true; gen.disabled = true;
+      if (busy) return;
+      var sels = jchgMp.selected();
+      if (sels.length > 1) { runAltCompare(sels, gen); return; }   // 多模型（2026-11-16）：备选稿顺序生成
+      busy = true; gen.disabled = true;
       note('生成中（约几十秒）…');
       // A4：本机 prefs（s4a-feedback-prefs，记住偏好时写入但一直没发）随生成请求并入 feedback 数组
       // —— 服务端既有合并逻辑进 job.feedback 环形（≤20）并经 buildJobPrompt【过往反馈】块进下次 prompt。
       // 与服务端环形已有条目去重：重复提交只会稀释环形，不产生新信息；本地坏 JSON 视作无 prefs。
       var fb = pendingFeedback();
       zidsReady().then(function () {
-        api('/job/generate?id=' + DOC_ID, fb.length ? { feedback: fb } : {}).then(function (d) {
+        api('/job/generate?id=' + DOC_ID, Object.assign(fb.length ? { feedback: fb } : {}, { profile: sels[0] })).then(function (d) {
           busy = false;
           if (!d.ok) { note(d.error || '生成失败', 'warn'); gen.disabled = false; return; }
           job = d.job; note('已生成 ' + d.generated + ' 条建议（旧候选标记为 superseded）', 'ok'); render();
@@ -1969,6 +2006,14 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       });
     });
     head.appendChild(gen);
+    // 多模型（2026-11-16）：picker ≥2 就绪才出现；多选 → 按钮变「用 N 个模型分别生成（对比）」
+    var mpHost = document.createElement('span');
+    head.appendChild(mpHost);
+    if (window.__modelPicker) window.__modelPicker.mount(mpHost).then(function (m) {
+      jchgMp = m;
+      var n = m.selected().length;
+      if (n > 1) gen.textContent = '用 ' + n + ' 个模型分别生成（对比）';
+    });
     var exp = document.createElement('a');
     exp.href = '/export?id=' + DOC_ID;
     exp.textContent = '导出';
@@ -2001,8 +2046,63 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       root.appendChild(prog);
       root.appendChild(changesProgressLine(gtCh));
     } else {
-      var retryRow = renderBatchRetryRow(gtCh);
+      var retryRow = gtCh.alt ? null : renderBatchRetryRow(gtCh);   // alt 备选稿不支持批次重试（服务端 409 同口径）
       if (retryRow) root.appendChild(retryRow);
+    }
+
+    // 多模型对比（2026-11-16）：备选稿区——「采用这套」才入待审队列（/job/alt-adopt），「全部丢弃」清空
+    var alts = (job.altChanges || []).filter(function (a) { return a && a.ops; });
+    if (alts.length) {
+      var altSec = document.createElement('div');
+      altSec.className = 'jp-alt';
+      var altTitle = document.createElement('div');
+      altTitle.style.cssText = 'font-weight:600;margin:8px 0 4px';
+      altTitle.textContent = '多模型对比（' + alts.length + ' 套）';
+      altSec.appendChild(altTitle);
+      alts.forEach(function (a) {
+        var card = document.createElement('div');
+        card.style.cssText = 'border:1px solid var(--ed-line,#ddd);border-radius:8px;padding:8px 10px;margin-bottom:8px';
+        var hh = document.createElement('div');
+        hh.style.cssText = 'font-weight:600;font-size:13px';
+        hh.textContent = (a.name || '?') + '·' + (a.model || '?') + ' · ' + (a.count || 0) + ' 条建议' + (a.failedBatches ? '，' + a.failedBatches + ' 批失败' : '');
+        card.appendChild(hh);
+        if (a.summary) {
+          var sm = document.createElement('div');
+          sm.style.cssText = 'font-size:12px;color:var(--ed-mut,#666);margin:4px 0';
+          sm.textContent = a.summary;
+          card.appendChild(sm);
+        }
+        ((a.ops && a.ops.changes) || []).slice(0, 5).forEach(function (ch) {
+          var li = document.createElement('div');
+          li.style.cssText = 'font-size:12px;margin:2px 0';
+          li.textContent = String(ch.before || ch.anchor || '').slice(0, 60) + ' → ' + String(ch.after || ch.text || '').slice(0, 60);
+          card.appendChild(li);
+        });
+        var ab = document.createElement('button');
+        ab.type = 'button';
+        ab.textContent = '采用这套';
+        ab.addEventListener('click', function () {
+          ab.disabled = true;
+          api('/job/alt-adopt?id=' + DOC_ID, { key: a.key }).then(function (d) {
+            if (!d.ok) { note(d.error || '采用失败', 'warn'); ab.disabled = false; return; }
+            note('已采用「' + (a.name || '') + '·' + (a.model || '') + '」的建议', 'ok');
+            refresh();
+          }).catch(function (e) { note(e.message, 'warn'); ab.disabled = false; });
+        });
+        card.appendChild(ab);
+        altSec.appendChild(card);
+      });
+      var drop = document.createElement('button');
+      drop.type = 'button';
+      drop.className = 'secondary';
+      drop.textContent = '全部丢弃';
+      drop.addEventListener('click', function () {
+        drop.disabled = true;
+        api('/job/alt-adopt?id=' + DOC_ID, { discard: true }).then(function () { refresh(); })
+          .catch(function (e) { note(e.message, 'warn'); drop.disabled = false; });
+      });
+      altSec.appendChild(drop);
+      root.appendChild(altSec);
     }
 
     var changes = job.changes || [];
