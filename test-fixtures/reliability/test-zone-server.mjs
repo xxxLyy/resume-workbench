@@ -95,9 +95,11 @@ try {
     const r = await post('/ai/zone-analyze?id=' + DOC, { zone: 'work', baseMtime: mtime });
     if (r.status !== 200 || !r.json || !r.json.ok) fail('zone-analyze 失败：' + r.status + ' ' + r.text.slice(0, 200));
     const gr = await fetch(base + '/job/changes?id=' + DOC);
-    const zas = ((await gr.json().catch(() => null)) || {}).zoneAnalyses || {};
-    if (!zas.work || typeof zas.work.at !== 'string' || !zas.work.at) fail('/job/changes 未回读 zoneAnalyses.work：' + JSON.stringify(zas).slice(0, 200));
-    if (zas.work.extra !== '') fail('无追问时 extra 应为空串：' + JSON.stringify(zas.work.extra));
+    const zas = (((await gr.json().catch(() => null)) || {}).zoneAnalyses || {}).work || [];
+    const z0 = zas[0] || {};
+    if (!Array.isArray(zas) || typeof z0.at !== 'string' || !z0.at) fail('/job/changes 未回读 zoneAnalyses.work[0]：' + JSON.stringify(zas).slice(0, 200));
+    if (z0.extra !== '') fail('无追问时 extra 应为空串：' + JSON.stringify(z0.extra));
+    if (!z0.name || !z0.model) fail('意见槽应带 name+model（按模型分槽）：' + JSON.stringify(z0).slice(0, 200));
   }
 
   // ===== ZONE-03：zone-rewrite 返回 zone-v1 形状（基线与操作身份由服务端生成）=====

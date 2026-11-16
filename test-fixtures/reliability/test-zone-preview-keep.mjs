@@ -46,6 +46,7 @@ fs.writeFileSync(path.join(root, 'docs-meta.json'), JSON.stringify({
 
 // 假 LLM：改写器对 prompt 里的每个 free 段返回一条候选（数字全保留，避免事实护栏判 conflict）；
 // 分析器返回固定意见（成功路径 → 服务端轮次自增 + 客户端 load() → render() 重绘 = 缺陷触发点）
+let analyzeHits = 0;
 const llm = http.createServer(async (req, res) => {
   let body = '';
   for await (const c of req) body += c;
@@ -58,6 +59,7 @@ const llm = http.createServer(async (req, res) => {
       if (msgs.indexOf('(' + P2 + ')') >= 0) cands.push({ zid: P2, candidate: '项目二：负责限流组件与缓存预热，支撑双十一峰值流量' });
       content = JSON.stringify({ rewrites: cands });
     } else if (msgs.indexOf('区域分析顾问') >= 0) {
+      analyzeHits++;
       content = JSON.stringify({ echoes: [], reminder: '提醒', suggestion: '建议', chips: [] });
     }
   } catch {}
@@ -121,6 +123,12 @@ try {
   await page.evaluate(() => { var r = document.querySelector('.zp-row[data-zone="project"]'); if (r) r.click(); });   // 开 project 区 AI 卡
   await page.waitForSelector('#zp-rewrite', { state: 'attached', timeout: 15000 });
 
+  // 2026-11-16：点行不自动分析——零模型调用 + 空态文案 + 按钮文案「分析这个区域」
+  assert.equal(analyzeHits, 0, '点行不应调用模型，实际 analyzeHits=' + analyzeHits);
+  const idle = await page.evaluate(() => ({ out: (document.getElementById('zp-ai-out') || {}).textContent || '', btn: (document.getElementById('zp-analyze') || {}).textContent || '' }));
+  assert.ok(idle.out.indexOf('还没有分析过这个区域') >= 0, '未分析区空态文案缺失：' + idle.out);
+  assert.ok(idle.btn.indexOf('分析这个区域') >= 0, '未分析区按钮文案应为「分析这个区域」：' + idle.btn);
+
   // 生成 2 条候选（点行后的自动 analyze 期间按钮 disabled，等它收尾再交互，时序确定）
   await page.waitForFunction(() => {
     var b = document.getElementById('zp-rewrite');
@@ -139,11 +147,12 @@ try {
   assert.ok(before.accept && before.accept.indexOf('2 段') >= 0, '夹具前置失败：应有「接受（2 段）」，实际：' + JSON.stringify(before).slice(0, 200));
   assert.ok(before.text.indexOf('负责消息队列服务') >= 0, '夹具前置失败：候选卡缺失，实际：' + before.text.slice(0, 200));
 
-  // 缺陷触发点：点「重新分析」→ analyze 成功 → load() → render() 整覆重绘
+  // 缺陷触发点：点「分析这个区域」→ analyze 成功 → load() → render() 整覆重绘
   await page.evaluate(() => { var b = document.getElementById('zp-analyze'); if (b) b.click(); });
   // 完成信号：服务端轮次自增 + load() 重绘后，AI 卡头出现「（第 2 轮）」（首轮无后缀）
   try { await page.waitForFunction(() => (((document.getElementById('zp-ai') || {}).firstChild || {}).textContent || '').indexOf('第 2 轮') >= 0, null, { timeout: 20000 }); }
   catch (e) { fail('重新分析未完成（AI 卡头未进第 2 轮）：' + (await aiHead(page)) + ' 服务日志=' + serverLog.slice(-300)); }
+  assert.equal(analyzeHits, 1, '显式分析应恰调一次模型，实际 analyzeHits=' + analyzeHits);
   await page.waitForTimeout(400);   // 排空 load() 重绘与 showAnalysis 收尾
 
   // 断言：候选卡片与「接受（2 段）」按钮必须在重绘后原样保留
@@ -159,7 +168,18 @@ try {
   assert.ok(after2.accept !== null && after2.accept.indexOf('2 段') >= 0, 'ed-zone-refresh 刷新后接受按钮丢失，实际：' + JSON.stringify(after2.text).slice(0, 200));
   assert.ok(after2.text.indexOf('负责限流组件') >= 0, 'ed-zone-refresh 刷新后候选卡内容丢失，实际：' + after2.text.slice(0, 200));
 
-  console.log('PASS 区域候选保留：重新分析与 ed-zone-refresh 重绘后，「接受（2 段）」与候选卡片原样保留');
+  // 2026-11-16：重开后点行回显已落盘意见（「上次分析」头 + 内容），不再调用模型
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.evaluate(() => { if (window.__edSelectTab) window.__edSelectTab('zone'); });
+  await page.waitForSelector('.zp-row[data-zone="project"]', { state: 'attached', timeout: 15000 });
+  await page.evaluate(() => { var r = document.querySelector('.zp-row[data-zone="project"]'); if (r) r.click(); });
+  try { await page.waitForFunction(() => ((document.getElementById('zp-ai') || {}).textContent || '').indexOf('上次分析') >= 0, null, { timeout: 15000 }); }
+  catch (e) { fail('重开后未回显落盘意见（缺「上次分析」头）：' + ((await page.evaluate(() => (document.getElementById('zp-ai') || {}).textContent)) || '').slice(0, 200)); }
+  assert.equal(analyzeHits, 1, '回显落盘意见不应再调模型，实际 analyzeHits=' + analyzeHits);
+  const reBtn = await page.evaluate(() => (document.getElementById('zp-analyze') || {}).textContent || '');
+  assert.ok(reBtn.indexOf('重新分析') >= 0, '已分析区按钮文案应为「重新分析」：' + reBtn);
+
+  console.log('PASS 区域候选保留：重新分析与 ed-zone-refresh 重绘后，「接受（2 段）」与候选卡片原样保留；点行零调用/显式一次/重开回显「上次分析」');
   process.exitCode = 0;
 } finally {
   try { if (browser) await browser.close(); } catch {}

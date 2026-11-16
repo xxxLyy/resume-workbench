@@ -8018,10 +8018,22 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
       const parsed = parseZoneAnalysis(raw);
       if (parsed) {
-        // 意见随轮次一并落盘（2026-11-16）：点行不再自动分析，用户显式触发一次即留存、重开可见
-        const model = (() => { try { const c = loadProfiles(root); return (c && c.profiles && c.profiles[c.active]) ? c.profiles[c.active].model : null; } catch { return null; } })();
+        // 意见按模型分槽落盘（2026-11-16）：zoneAnalyses[zone] 为数组、新者在前、name|model 唯一去重、cap 4；
+        // 点行不再自动分析，用户显式触发一次即留存、重开可见（多模型对比特性前置结构）
+        const prof = (() => { try { const c = loadProfiles(root); return (c && c.profiles && c.profiles[c.active]) || {}; } catch { return {}; } })();
         const extraStr = typeof body.extra === 'string' && body.extra.trim() ? body.extra.trim().replace(/\s+/g, ' ').slice(0, 200) : '';
-        updateMeta(root, id, (m) => { const b = { ...(m || {}) }; b.zoneRounds = { ...(b.zoneRounds || {}) }; b.zoneRounds[body.zone] = (b.zoneRounds[body.zone] || 0) + 1; b.zoneAnalyses = { ...(b.zoneAnalyses || {}) }; b.zoneAnalyses[body.zone] = { at: new Date().toISOString(), extra: extraStr, model, ...parsed }; return b; });
+        updateMeta(root, id, (m) => {
+          const b = { ...(m || {}) };
+          b.zoneRounds = { ...(b.zoneRounds || {}) };
+          b.zoneRounds[body.zone] = (b.zoneRounds[body.zone] || 0) + 1;
+          const key = (prof.name || '') + '|' + (prof.model || '');
+          const old = Array.isArray(b.zoneAnalyses && b.zoneAnalyses[body.zone]) ? b.zoneAnalyses[body.zone] : [];
+          const arr = [{ name: prof.name || null, model: prof.model || null, at: new Date().toISOString(), extra: extraStr, ...parsed }]
+            .concat(old.filter((a) => ((a.name || '') + '|' + (a.model || '')) !== key)).slice(0, 4);
+          b.zoneAnalyses = { ...(b.zoneAnalyses || {}) };
+          b.zoneAnalyses[body.zone] = arr;
+          return b;
+        });
       }
       return sendJson(200, parsed ? { ok: true, ...parsed } : { ok: false, error: '分析失败，稍后再试' });
     }

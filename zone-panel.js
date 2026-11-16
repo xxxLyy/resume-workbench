@@ -201,8 +201,8 @@
     state.aiZone = zoneKey;
     state.aiDegraded = false;
     state.aiDegradedMsg = null;   // BL-P3-07：新区域新一轮，旧降级原因一并清掉
-    // 点击不再自动分析（2026-11-16）：已落盘意见直接回显；未分析过的由按钮显式触发（省 token）
-    var saved = state.zoneAnalyses[zoneKey];
+    // 点击不再自动分析（2026-11-16）：已落盘意见直接回显（数组首元=最近一次）；未分析过的由按钮显式触发（省 token）
+    var saved = (state.zoneAnalyses[zoneKey] || [])[0] || null;
     state.lastAnalysis = saved ? { zone: zoneKey, data: saved } : null;
     renderAi();
   }
@@ -249,14 +249,15 @@
     var head = document.createElement('div');
     head.textContent = 'AI 意见 · ' + name + (state.zoneRounds[zoneKey] ? '（第 ' + (state.zoneRounds[zoneKey] + 1) + ' 轮）' : '');
     box.appendChild(head);
-    var savedA = state.zoneAnalyses[zoneKey];
-    if (savedA && savedA.at) {                    // 上次分析时间（+模型名）：落盘意见的来源可追溯
+    var savedA = (state.zoneAnalyses[zoneKey] || [])[0] || null;   // 数组首元=最近一次的模型意见
+    if (savedA && savedA.at) {                    // 上次分析时间（+档案·模型）：落盘意见的来源可追溯
       var t = new Date(savedA.at);
       if (!isNaN(t)) {
         var hd = document.createElement('div');
         hd.className = 'msg';
         hd.style.cssText = 'font-size:11px;color:var(--ed-mut)';
-        hd.textContent = '上次分析：' + (t.getMonth() + 1) + ' 月 ' + t.getDate() + ' 日 ' + String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0') + (savedA.model ? ' · ' + savedA.model : '');
+        var src = [savedA.name, savedA.model].filter(Boolean).join('·');
+        hd.textContent = '上次分析：' + (t.getMonth() + 1) + ' 月 ' + t.getDate() + ' 日 ' + String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0') + (src ? ' · ' + src : '');
         box.appendChild(hd);
       }
     }
@@ -352,7 +353,7 @@
       if (d._status === 409) { if (out) out.textContent = d.error || '文档已变化，请先同步内容'; return; }
       if (!d.ok) { if (out) out.textContent = d.error || '分析失败，稍后再试'; return; }
       state.lastAnalysis = { zone: zoneKey, data: d };
-      state.zoneAnalyses[zoneKey] = { at: new Date().toISOString(), ...d };   // 与落盘同形：头行/重开即时生效不等 reload
+      state.zoneAnalyses[zoneKey] = [{ at: new Date().toISOString(), ...d }].concat(state.zoneAnalyses[zoneKey] || []).slice(0, 4);   // 本地同形 unshift（去重由随后的 load() 读服务端真值完成）
       load();                          // 轮次自增后刷新行内计数（load 重绘保留 AI 区）
       showAnalysis(d);
     }).catch(function (e) {
