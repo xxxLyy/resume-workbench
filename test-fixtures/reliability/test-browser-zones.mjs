@@ -133,6 +133,7 @@ try {
     zoneAnalyzeHits = 0;
     await setFlush('fail');
     await clickZone('work');
+    await page.evaluate(() => { var b = document.getElementById('zp-analyze'); if (b) b.click(); });   // 点行不再自动分析（2026-11-16）：显式触发同样被保存失败挡下
     await page.waitForTimeout(1500);
     if (zoneAnalyzeHits !== 0) fail('保存失败后仍发出了 /ai/zone-analyze 请求（命中 ' + zoneAnalyzeHits + ' 次）');
     await setFlush('ok');
@@ -147,11 +148,15 @@ try {
       if (first) { first = false; await new Promise((r) => setTimeout(r, 2500)); }
       await route.continue();
     });
+    const clickAnalyze = () => page.evaluate(() => { var b = document.getElementById('zp-analyze'); if (b) b.click(); });
     await clickZone('work');          // 请求 1（在途，延迟）
+    await clickAnalyze();
     await page.waitForTimeout(200);
     await clickZone('project');       // 请求 2
+    await clickAnalyze();
     await page.waitForTimeout(200);
     await clickZone('work');          // 请求 3
+    await clickAnalyze();
     await page.waitForTimeout(4500);  // 等三个都回来
     await page.unroute('**/ai/zone-analyze*');
     console.log('  [dbg] zoneAnalyzeHits=' + zoneAnalyzeHits + ' zones=' + JSON.stringify(analyzeZones));

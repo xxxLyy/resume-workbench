@@ -3289,6 +3289,8 @@ try {
     await page.click('#ed-rtabs button[data-pane="zone"]');
     await page.waitForTimeout(300);
     await page.click('.zp-row[data-zone="work"]');
+    await page.waitForSelector('#zp-analyze', { timeout: 10000 });
+    await page.click('#zp-analyze');                      // 点行不再自动分析（2026-11-16）→ 显式触发 → 409 降级
     await page.waitForTimeout(600);                       // analyze fetch（409）落地 → 降级态渲染
     const degr = await page.evaluate(() => document.querySelector('#ed-pane-zone').textContent);
     if (/未配置大模型/.test(degr)) ok('S3A2 无模型降级说明'); else bad('S3A2 降级说明缺失', degr.slice(0, 60));
