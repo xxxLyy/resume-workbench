@@ -5616,6 +5616,11 @@ const hits = srv.match(/location\.href = '\/edit\?id='[^;]*'&gen=1'/g) || [];
 assert.equal(hits.length, 4, `gen=1 跳转应为 4 处，实际 ${hits.length}`);
 assert.ok(srv.includes('then 仅支持 kind=evidence'), 'gen-start 缺 then=changes 校验');
 assert.ok(srv.includes('正文段落还没有编号'), 'startGenTask 缺零段落守卫文案');
+// 2026-11-16：首页一键体检 + 七维文案 + 对话页 4 提示词
+assert.ok(srv.includes('&review=1'), '首页缺 review=1 体检入口');
+const ap = fs.readFileSync('ai-panel.js', 'utf8');
+assert.ok(ap.includes('七维诊断报告') && !ap.includes('五维诊断报告'), 'ai-panel 体检文案应为七维');
+for (const t of ['技能差距', '一分钟自我介绍', '优势与短板', '职业目标']) assert.ok(ap.includes(t), 'ai-panel 缺提示词模板「' + t + '」');
 const jp = fs.readFileSync('job-panel.js', 'utf8');
 assert.ok(jp.includes("get('gen') === '1'"), 'job-panel 缺 gen=1 参数读取');
 assert.ok(jp.includes('history.replaceState'), 'job-panel 缺 replaceState 摘参（刷新会二次触发）');

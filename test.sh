@@ -2571,6 +2571,13 @@ else
   fail "JD 收件箱回归未通过 (exit $?)"
 fi
 
+# ===== 16q-4. 体检持久化：POST /ai/review 落 lastReview/reviewHist(环形≤10) + GET 回读 prevScore + target 透传 + reply 不落盘（独立隔离根 + 本地 stub LLM，非浏览器段；2026-11-16）=====
+if node test-fixtures/reliability/test-review-persist.mjs; then
+  echo '✅ 体检持久化回归（POST 落盘+prevScore 链 / GET 回读 / 环形≤10 / target 透传 / reply 不落盘 / 400/404）'
+else
+  fail "体检持久化回归未通过 (exit $?)"
+fi
+
 # ===== 16r. F3 AI 面试准备建议持久化：/ai/prep 成功落 app.preps（最新在前上限 20）+ /app 服务端渲染最近一次与历史生成 + 失败零写入（独立隔离根 + 本地 stub LLM，非浏览器段）=====
 if node test-fixtures/reliability/test-ai-prep-persist.mjs; then
   echo '✅ 面试准备建议持久化回归（双版本可见且最新在前 / 21 次截 20 + 历史转义 / 409 零写入 / 非法 id 400）'
