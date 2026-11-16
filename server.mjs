@@ -2182,7 +2182,7 @@ function iconBlock(nonce) {
   return `\n${ICON_MARK}<script nonce="${nonce}">${STATUS_SCRIPT}</script><script nonce="${nonce}">${ICON_SCRIPT}</script><!--/ICON-INJECT-->\n`;
 }
 function aiBlock(id) {
-  return `\n${AI_MARK}<script src="/ai-panel.js" data-doc="${id}" defer></script><!--/AI-INJECT-->\n`;
+  return `\n${AI_MARK}<script src="/model-picker.js" defer></script><script src="/ai-panel.js" data-doc="${id}" defer></script><!--/AI-INJECT-->\n`;
 }
 function shellBlock(id, mtimeMs, nonce) {
   const mats = loadMats().map((m) => ({ id: m.id, title: m.title, tags: m.tags || [],
@@ -2663,6 +2663,20 @@ const docOptions = (infos, sel = '') => infos.map((d) => `<option value="${escAt
 // 值列 overflow-wrap:anywhere：来源 URL/长标题是无空格整串，窄屏下不换行会把表格顶出视口（T5 点验实测 523px）。
 const kvRow = (k, v) => `<tr><td style="padding:4px 16px 4px 0;color:var(--mut);vertical-align:top;white-space:nowrap">${k}</td><td style="overflow-wrap:anywhere">${v}</td></tr>`;
 const cnDay = (s) => { const t = new Date(String(s || '')); return isNaN(t) ? '' : `${t.getMonth() + 1} 月 ${t.getDate()} 日`; };
+
+// 模型多选（2026-11-16）：profile 参数 = 就绪档案索引；空值 → active；非法/不完整 → null（调用方回 400）
+const pickProfile = (v) => {
+  if (v === undefined || v === null || v === '') return undefined;
+  const i = Number(v);
+  const p = Number.isInteger(i) && i >= 0 ? (loadProfiles(root).profiles || [])[i] : null;
+  return (p && p.apiKey && p.baseURL && p.model) ? i : null;
+};
+// profileMeta(i)：档案 i（undefined → active）的 {name,model}，落盘标记用
+const profileMeta = (i) => {
+  const { active, profiles } = loadProfiles(root);
+  const p = (profiles || [])[i === undefined ? active : i] || {};
+  return { name: p.name || null, model: p.model || null };
+};
 const warnCard = (inner) => `<div class="card" style="border-color:var(--warn);margin-bottom:var(--space-3)"><b style="color:var(--warn)">${inner}</b></div>`;
 
 function bringFormHtml({ jd, company, role, srcUrl, cta = '带去定制' }) {
@@ -2793,6 +2807,7 @@ function inboxPage() {
   return page('待筛选', `${portNotice()}
     <div class="page-head"><h1>待筛选</h1></div>${appTabs('inbox')}
     ${items.length ? `${controls}<div class="card">${[...scored, ...rest].map((it, i) => row(it, i)).join('')}</div>` : empty}
+    <script src="/model-picker.js" defer></script>
     <script nonce="__CSP_NONCE__">(function(){
       var list = document.querySelectorAll('input[name="ib"]');
       var all = document.getElementById('ibAll');
@@ -2932,6 +2947,7 @@ function jobNewPage(prefill = null) {
       </form>
       <div id="evalResult"></div>
 `}
+    <script src="/model-picker.js" defer></script>
     <script nonce="__CSP_NONCE__">
       // 要求卡接线（自首页迁入，逻辑零变化）：chips 切换 / 幅度与页数段选 / 预设（localStorage，不进 meta）
       (function () {
@@ -4651,6 +4667,9 @@ async function handler(req, res) {
     }
     if (req.method === 'GET' && url.pathname === '/zone-panel.js') {
       return send(200, fs.readFileSync(path.join(APP_ROOT, 'zone-panel.js'), 'utf8'), 'application/javascript; charset=utf-8');
+    }
+    if (req.method === 'GET' && url.pathname === '/model-picker.js') {
+      return send(200, fs.readFileSync(path.join(APP_ROOT, 'model-picker.js'), 'utf8'), 'application/javascript; charset=utf-8');
     }
     // ===== 首页 =====
     if (req.method === 'GET' && url.pathname === '/') return send(200, listPage(url.searchParams.get('archived') === '1'));
@@ -7949,6 +7968,11 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       await renderCurrent(id, {});
       return redirect(`/edit?id=${id}`);
       });
+    }
+    // 档案清单（2026-11-16 多模型对比）：只回 name/model/ready，绝不出 apiKey/baseURL
+    if (req.method === 'GET' && url.pathname === '/ai/profiles') {
+      const { active, profiles } = loadProfiles(root);
+      return sendJson(200, { ok: true, active, list: (profiles || []).map((p, i) => ({ i, name: p.name || '', model: p.model || '', ready: !!(p && p.apiKey && p.baseURL && p.model) })) });
     }
     // 体检报告回读：面板打开时恢复上次报告与上次分数（2026-11-16；同一 pathname 复用已冻结路由，GET 读路径）
     if (req.method === 'GET' && url.pathname === '/ai/review') {

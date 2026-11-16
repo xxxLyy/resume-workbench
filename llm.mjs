@@ -88,8 +88,9 @@ export async function listModels(baseURL, apiKey) {
 }
 
 // chatMsgs — 多消息形态；chat 是它的两消息特例
-export async function chatMsgs(root, messages, { lease, meta } = {}) {
-  const c = loadConfig(root);
+export async function chatMsgs(root, messages, { lease, meta, profile } = {}) {
+  // profile（可选）：按索引指定档案（多模型对比）；null/undefined → 生效档（active），行为不变
+  const c = profile == null ? loadConfig(root) : ((loadProfiles(root).profiles || [])[profile] || null);
   if (!c) throw new Error('LLM 未配置');
   // baseURL 来自本地 config（设置页可改）→ 同样过 assertSafeBaseURL：否则把 Bearer 发到
   // 云元数据端点（169.254.169.254）这类地址。listModels 已经这么做了（口径一致）。
@@ -137,6 +138,6 @@ export async function chatMsgs(root, messages, { lease, meta } = {}) {
   }
 }
 
-export async function chat(root, system, user, { lease, meta } = {}) {
-  return chatMsgs(root, [{ role: 'system', content: system }, { role: 'user', content: user }], { lease, meta });
+export async function chat(root, system, user, { lease, meta, profile } = {}) {
+  return chatMsgs(root, [{ role: 'system', content: system }, { role: 'user', content: user }], { lease, meta, profile });
 }
