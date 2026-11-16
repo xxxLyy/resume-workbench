@@ -49,8 +49,8 @@
     + '#ai-log{flex:1;overflow:auto;padding:10px 12px}'
     + '#ai-drawer .msg,#ed-right .msg{margin:8px 0;padding:8px 10px;border-radius:10px;border:1px solid var(--ed-line);background:var(--ed-panel);box-shadow:0 1px 2px rgba(60,45,25,.04);white-space:pre-wrap}'
     + '#ai-drawer .msg.user,#ed-right .msg.user{background:var(--ed-accent-soft)}'
-    + '#ai-input{display:flex;gap:6px;padding:10px;border-top:1px solid var(--ed-line);background:var(--ed-panel)}'
-    + '#ai-input input{flex:1;padding:6px 8px;border:1px solid var(--ed-line);border-radius:8px;background:var(--ed-panel)}'
+    + '#ai-input{display:flex;align-items:flex-end;gap:6px;padding:10px;border-top:1px solid var(--ed-line);background:var(--ed-panel)}'
+    + '#ai-input textarea{flex:1;padding:6px 8px;border:1px solid var(--ed-line);border-radius:8px;background:var(--ed-panel);font:inherit;resize:none;max-height:160px}'
     + '#ai-input button,#ai-pop button{border:none;border-radius:8px;background:var(--ed-accent);color:var(--ed-accent-ink);padding:6px 12px;font-weight:600;cursor:pointer;min-height:30px}'
     + '#ai-input button:disabled{opacity:.55;cursor:not-allowed}'
     + '.ai-change{border:1px solid var(--ed-line);border-radius:10px;box-shadow:0 1px 2px rgba(60,45,25,.04);background:var(--ed-panel);padding:8px;margin:8px 0}'
@@ -80,7 +80,7 @@
   root.innerHTML = (embedded ? '' : '<button id="ai-toggle" title="AI 助手" aria-label="AI 助手">' + __icon('bot') + '</button>')
     + '<div id="ai-drawer"' + (embedded ? ' style="display:none"' : '') + '><header><span>' + __icon('bot') + ' AI 助手</span><span id="ai-close" role="button" tabindex="0" aria-label="关闭">' + __icon('x') + '</span></header>'
     + '<div id="ai-tabs"><button data-tab="chat" class="on">' + __icon('message-square') + ' 对话</button><button data-tab="review">' + __icon('stethoscope') + ' 体检</button></div>'
-    + '<div id="ai-pane-chat" class="ai-pane on"><div id="ai-log" aria-live="polite"></div><div id="ai-chips" aria-label="常用提示词" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0"></div><div id="ai-input"><input id="ai-msg" placeholder="例如：把项目3精简一点" aria-label="对话输入"><button id="ai-send">发送</button></div></div>'
+    + '<div id="ai-pane-chat" class="ai-pane on"><div id="ai-log" aria-live="polite"></div><div id="ai-chips" aria-label="常用提示词" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0"></div><div id="ai-input"><textarea id="ai-msg" rows="1" placeholder="例如：把项目3精简一点（Shift+Enter 换行）" aria-label="对话输入"></textarea><button id="ai-send">发送</button></div></div>'
     + '<div id="ai-pane-review" class="ai-pane"><div class="ai-actions"><input id="ai-review-target" placeholder="目标方向（可选，如：后端开发）" maxlength="60" aria-label="目标方向"><button id="ai-review-full">全面体检</button><button id="ai-review-quant">仅量化增强</button></div><div id="ai-review-out" aria-live="polite"></div></div></div>'
     + '<button id="ai-sel-btn">' + __icon('sparkles') + ' AI 改写</button>'
     + '<div id="ai-pop" role="dialog" aria-modal="true" aria-label="选区改写"><textarea id="ai-inst" placeholder="改写指令，例如：精简到两行、突出量化成果" aria-label="改写指令"></textarea>'
@@ -216,7 +216,7 @@
     try {
       var mt = await flushFirst();
       var data = await postJson('/ai/chat', { id: DOC_ID, message: msg, history: history, baseMtime: mt });
-      input.value = '';        // 成功后才清空：失败时用户输入保留（AUD-15）
+      input.value = ''; input.style.height = '';        // 成功后才清空：失败时用户输入保留（AUD-15）
       history.push({ role: 'user', content: msg }, { role: 'assistant', content: JSON.stringify(data) });
       if (data.reply) { addMsg(data.reply, false); return; }
       if (!data.changes || !data.changes.length) { addMsg('（AI 没有给出修改）', false); return; }
@@ -228,7 +228,10 @@
     finally { sending = false; $('ai-send').disabled = false; }
   }
   $('ai-send').onclick = sendChat;
-  $('ai-msg').addEventListener('keydown', function (e) { if (e.key === 'Enter') sendChat(); });
+  // 多行输入：Enter 发送、Shift+Enter 换行；输入法组字中的 Enter 是选词，不发送
+  $('ai-msg').addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendChat(); } });
+  var fitMsg = function () { var el = $('ai-msg'); el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; };
+  $('ai-msg').addEventListener('input', fitMsg);
 
   // 求职提示词模板（2026-11-16）：填入输入框不发送，并选中首个 [目标岗位] 占位便于直接替换；
   // 覆盖信/面试练习不收录——已有「申请材料」与「投递详情·面试练习」两条正式能力。
@@ -253,6 +256,7 @@
       b.onclick = function () {
         var input = $('ai-msg');
         input.value = c.text;
+        fitMsg();
         input.focus();
         var i = c.text.indexOf('[目标岗位]');
         if (i >= 0 && input.setSelectionRange) input.setSelectionRange(i, i + '[目标岗位]'.length);
