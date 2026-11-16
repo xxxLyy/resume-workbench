@@ -2061,14 +2061,14 @@ var __status = window.__status || function (el, kind, text) { if (el) el.textCon
       altSec.appendChild(altTitle);
       alts.forEach(function (a) {
         var card = document.createElement('div');
-        card.style.cssText = 'border:1px solid var(--ed-line,#ddd);border-radius:8px;padding:8px 10px;margin-bottom:8px';
+        card.style.cssText = 'border:1px solid var(--ed-line);border-radius:8px;padding:8px 10px;margin-bottom:8px';
         var hh = document.createElement('div');
         hh.style.cssText = 'font-weight:600;font-size:13px';
         hh.textContent = (a.name || '?') + '·' + (a.model || '?') + ' · ' + (a.count || 0) + ' 条建议' + (a.failedBatches ? '，' + a.failedBatches + ' 批失败' : '');
         card.appendChild(hh);
         if (a.summary) {
           var sm = document.createElement('div');
-          sm.style.cssText = 'font-size:12px;color:var(--ed-mut,#666);margin:4px 0';
+          sm.style.cssText = 'font-size:12px;color:var(--ed-mut);margin:4px 0';
           sm.textContent = a.summary;
           card.appendChild(sm);
         }

@@ -149,5 +149,32 @@ try {
     assert.ok(!((jg.genTasks || {}).evidence || {}).taskId, '守卫拒绝不应留下 running 任务');
   }
 
-  console.log('✅ gen 自动链：evidence→changes 同槽串行（证据与建议均落账 / 桩峰值≤1 / 取消链停 / then 组合 400 / feedback 并入 / 旧契约不变）');
+  // (h) 多模型备选稿（2026-11-16）：alt=1 → altChanges 落账、changes 不动；adopt → 入待审并清空；alt 任务不可重试；参数组合 400
+  {
+    r = await post('/job/gen-start?id=doc4&kind=changes&alt=1');
+    assert.equal(r.ok, true, 'alt gen-start 应 ok');
+    const gtc = await waitTask('doc4', 'changes', 'done');
+    assert.equal(gtc.alt, true, 'alt 任务记录应带 alt 标记');
+    let j4 = await jobOf('doc4');
+    const alts = j4.altChanges || [];
+    assert.equal(alts.length, 1, 'alt 跑完应落 1 套备选稿');
+    assert.equal(alts[0].key, 'stub|stub-model-x', '备选稿 key 应=「档案名|模型」：' + alts[0].key);
+    assert.ok(alts[0].count >= 1 && alts[0].ops, '备选稿应带 count 与 ops');
+    assert.equal((j4.changes || []).length, 0, 'alt 生成不得写 changes 待审队列');
+    assert.equal(await postCode('/job/gen-retry?id=doc4&kind=changes&taskId=' + gtc.taskId + '&batch=0'), 409, 'alt 任务批次重试应 409');
+    const ad = await post('/job/alt-adopt?id=doc4', { key: alts[0].key });
+    assert.equal(ad.ok, true, 'alt-adopt 应 ok：' + JSON.stringify(ad).slice(0, 160));
+    j4 = await jobOf('doc4');
+    assert.ok((j4.changes || []).some((c) => c.status === 'pending'), '采用后应有 pending 候选');
+    assert.equal((j4.altChanges || []).length, 0, '采用后 altChanges 应清空');
+    assert.equal((await post('/job/alt-adopt?id=doc4', { key: alts[0].key })).ok, false, '重复采用应失败（备选稿已清空）');
+    assert.equal((await post('/job/alt-adopt?id=doc4', { discard: true })).ok, true, 'discard 应 ok');
+    assert.equal(await postCode('/job/gen-start?id=doc4&kind=evidence&then=changes&profile=0'), 400, 'profile+then 应 400');
+    assert.equal(await postCode('/job/gen-start?id=doc4&kind=evidence&profile=0'), 400, 'evidence 带 profile 应 400');
+    assert.equal(await postCode('/job/gen-start?id=doc4&kind=evidence&alt=1'), 400, 'evidence 带 alt 应 400');
+    assert.equal(await postCode('/job/gen-start?id=doc4&kind=changes&profile=9'), 400, '越界 profile 应 400');
+    assert.equal(await postCode('/job/gen-start?id=doc4&kind=changes&alt=1&scope=zone:work'), 400, 'alt 带 scope 应 400');
+  }
+
+  console.log('✅ gen 自动链：evidence→changes 同槽串行（证据与建议均落账 / 桩峰值≤1 / 取消链停 / then 组合 400 / feedback 并入 / 旧契约不变）+ alt 备选稿/采用/重试拒/参数 400');
 } finally { cleanup(); }

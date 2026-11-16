@@ -430,7 +430,7 @@
       renderReport(view, { report: r });
       if (runKey(r) === adoptedKey) {
         var mk = document.createElement('div');
-        mk.style.cssText = 'font-size:11px;color:var(--ed-ok,#2F6B4F);margin-top:6px';
+        mk.style.cssText = 'font-size:11px;color:var(--ed-ok);margin-top:6px';
         mk.textContent = '已采用';
         view.appendChild(mk);
       } else {

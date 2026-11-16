@@ -2705,10 +2705,11 @@ const pickProfile = (v) => {
   const p = Number.isInteger(i) && i >= 0 ? (loadProfiles(root).profiles || [])[i] : null;
   return (p && p.apiKey && p.baseURL && p.model) ? i : null;
 };
-// profileMeta(i)：档案 i（undefined → active）的 {name,model}，落盘标记用
+// profileMeta(i)：档案 i（null/undefined → active）的 {name,model}，落盘标记用
+// （== null 同时接住 null：profiles 数组经 JSON 落盘时 undefined 会变 null）
 const profileMeta = (i) => {
   const { active, profiles } = loadProfiles(root);
-  const p = (profiles || [])[i === undefined ? active : i] || {};
+  const p = (profiles || [])[i == null ? active : i] || {};
   return { name: p.name || null, model: p.model || null };
 };
 const warnCard = (inner) => `<div class="card" style="border-color:var(--warn);margin-bottom:var(--space-3)"><b style="color:var(--warn)">${inner}</b></div>`;
@@ -2855,11 +2856,12 @@ function inboxPage() {
   return page('待筛选', `${portNotice()}
     <div class="page-head"><h1>待筛选</h1></div>${appTabs('inbox')}
     ${items.length ? `${controls}<div class="card">${[...scored, ...rest].map((it, i) => row(it, i)).join('')}</div>` : empty}
-    <script src="/model-picker.js" defer></script>
     <script nonce="__CSP_NONCE__">(function(){
       var list = document.querySelectorAll('input[name="ib"]');
       var all = document.getElementById('ibAll');
-      if (window.__modelPicker) window.__modelPicker.mount(document.getElementById('ibMp')).then(function (m) { window.__ibMp = m; });
+      var mps = document.createElement('script'); mps.src = '/model-picker.js';   // 动态加载（CSP 'self' 放行）：src 脚本塞不进 nonce 占位符替换
+      mps.onload = function () { if (window.__modelPicker) window.__modelPicker.mount(document.getElementById('ibMp')).then(function (m) { window.__ibMp = m; }); };
+      document.head.appendChild(mps);
       var btn = document.getElementById('ibEval');
       var cnt = document.getElementById('ibCount');
       var msg = document.getElementById('ibMsg');
@@ -3005,7 +3007,6 @@ function jobNewPage(prefill = null) {
       </form>
       <div id="evalResult"></div>
 `}
-    <script src="/model-picker.js" defer></script>
     <script nonce="__CSP_NONCE__">
       // 要求卡接线（自首页迁入，逻辑零变化）：chips 切换 / 幅度与页数段选 / 预设（localStorage，不进 meta）
       (function () {
@@ -3150,7 +3151,9 @@ function jobNewPage(prefill = null) {
         // 多模型（2026-11-16）：picker 就绪才出现；多选→顺序评估、每档一张卡（各自「转草稿」=采用该份）
         var mpBox = document.createElement('div');
         if (btn.parentNode) btn.parentNode.insertBefore(mpBox, btn.nextSibling);
-        if (window.__modelPicker) window.__modelPicker.mount(mpBox).then(function (m) { window.__jnMp = m; });
+        var mps2 = document.createElement('script'); mps2.src = '/model-picker.js';   // 动态加载（同 /inbox）：src 脚本塞不进 nonce 占位符替换
+        mps2.onload = function () { if (window.__modelPicker) window.__modelPicker.mount(mpBox).then(function (m) { window.__jnMp = m; }); };
+        document.head.appendChild(mps2);
         btn.addEventListener('click', function (e) { e.preventDefault(); run(); });
         // 事件委托：卡片会被重新渲染，监听器不能绑在会被替换的节点上
         box.addEventListener('click', async function (e) {
@@ -5199,8 +5202,8 @@ async function handler(req, res) {
       if (!VALID_ID.test(from)) return sendJson(400, { ok: false, error: 'invalid from' });
       if (!fs.existsSync(docPath(from))) return sendJson(404, { ok: false, error: '母版文档不存在' });
       const ids = new Set((Array.isArray(body.ids) ? body.ids : []).map(String));
-      // 多模型（2026-11-16）：可选 profiles 数组（逐档 pickProfile 校验）；缺省=[active]
-      let profiles = [undefined];
+      // 多模型（2026-11-16）：可选 profiles 数组（逐档 pickProfile 校验）；缺省（undefined）→ 清旧档位、worker 只跑 active
+      let profiles = undefined;
       if (body.profiles !== undefined) {
         if (!Array.isArray(body.profiles) || !body.profiles.length) return sendJson(400, { ok: false, error: 'profiles 必须为非空数组' });
         profiles = body.profiles.map((v) => pickProfile(v));

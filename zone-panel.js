@@ -95,7 +95,6 @@
 
   var state = { zones: {}, zoneOrder: null, zoneRounds: {}, zoneAnalyses: {}, colorOn: false, aiZone: null, aiDegraded: false, aiDegradedMsg: null, lastAnalysis: null };
   var zpMp = { selected: function () { return [undefined]; }, labelOf: function () { return ''; } };   // 模型多选（2026-11-16）：≥2 就绪才渲染
-  if (window.__modelPicker) window.__modelPicker.mount((function () { var d = document.createElement('div'); d.id = 'zp-mp'; root.insertBefore(d, root.firstChild); return d; })()).then(function (m) { zpMp = m; });
   // ===== ZONE-05：请求身份（epoch）=====
   // 只有「区域键」当守卫不够：A→B→A 时旧 A 的响应会因区域键相同而写进新界面。
   // epoch 随每次新请求/切换递增；旧响应一律不得渲染、不得改 busy。
@@ -125,6 +124,7 @@
   var previewSnapshot = null;   // ZONE-06：生成时各目标节点的 innerHTML（判定期间是否被改过）
   var adoptedZoneReceipts = {}; // ZONE-06：已采用的回执（同一 requestId 只消费一次）
   var root = document.createElement('div');
+  if (window.__modelPicker) window.__modelPicker.mount((function () { var d = document.createElement('div'); d.id = 'zp-mp'; root.insertBefore(d, root.firstChild); return d; })()).then(function (m) { zpMp = m; });
   root.id = 'zp-root';
   root.className = 'zp';
   pane.appendChild(root);

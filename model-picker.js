@@ -25,7 +25,7 @@
     box.className = 'mp-row';
     box.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;margin:6px 0';
     var lab = document.createElement('span');
-    lab.style.cssText = 'color:var(--ed-mut,var(--mut,#666))';
+    lab.style.cssText = 'color:var(--ed-mut,var(--mut))';
     lab.textContent = '对比模型：';
     box.appendChild(lab);
     var cbs = [];
@@ -43,7 +43,7 @@
       cbs.push({ cb: cb, i: p.i });
     });
     var hint = document.createElement('span');
-    hint.style.cssText = 'color:var(--ed-mut,var(--mut,#666));font-size:11px';
+    hint.style.cssText = 'color:var(--ed-mut,var(--mut));font-size:11px';
     hint.textContent = '多选一个模型，多一次调用';
     box.appendChild(hint);
     function persist() {

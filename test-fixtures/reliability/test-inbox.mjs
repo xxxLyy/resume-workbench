@@ -79,7 +79,10 @@ const stub = http.createServer((q, s) => {
 await new Promise((r) => stub.listen(0, '127.0.0.1', r));
 const stubPort = stub.address().port;
 fs.writeFileSync(path.join(root, 'config.json'), JSON.stringify({
-  active: 0, profiles: [{ name: 'stub', baseURL: `http://127.0.0.1:${stubPort}/v1`, apiKey: 'stub-key-not-real', model: 'stub-model-x' }]
+  active: 0, profiles: [
+    { name: 'stub', baseURL: `http://127.0.0.1:${stubPort}/v1`, apiKey: 'stub-key-not-real', model: 'stub-model-x' },
+    { name: 'stub2', baseURL: `http://127.0.0.1:${stubPort}/v1`, apiKey: 'stub-key-not-real', model: 'stub-model-y' }
+  ]
 }));
 
 const port = await new Promise((res) => {
@@ -274,6 +277,27 @@ try {
   const evs = await postJson('/inbox/eval', { ids: [ids[0], 'ib-not-exist'], from: DOC });
   assert.ok(evs.body && evs.body.queued === 1, 'scored 可重评 + 不存在 id 跳过 → queued=1，实际：' + JSON.stringify(evs.body));
   assert.ok(await waitItem(ids[0], 'scored'), '重评后应回到 scored');
+
+  // 多模型（2026-11-16）：profiles:[0,1] → evals[] 双档（串行、同一 AI 槽）、采用位=首个成功、/inbox/adopt 切换
+  {
+    const evr2 = await postJson('/inbox/eval', { ids: [ids[1]], from: DOC, profiles: [0, 1] });
+    assert.ok(evr2.body && evr2.body.queued === 1, '双档评估应入队 1 条：' + JSON.stringify(evr2.body));
+    assert.ok(await waitItem(ids[1], 'scored'), '双档评估后应 scored');
+    const it2 = loadInboxFile().find((x) => x.id === ids[1]);
+    assert.equal((it2.evals || []).length, 2, '条目应有 2 档评估结果：' + JSON.stringify(it2.evals));
+    assert.equal(it2.evals[0].model, 'stub-model-x', '档 1 应为 active 模型');
+    assert.equal(it2.evals[1].model, 'stub-model-y', '档 2 应为第二档案模型');
+    assert.equal(it2.evalId, it2.evals[0].evalId, '采用位应=首个成功档');
+    const stAll2 = await getJson('/inbox/status');
+    assert.equal(((stAll2.body.items.find((x) => x.id === ids[1]) || {}).evals || []).length, 2, 'status 接口应带 evals');
+    const ad = await postJson('/inbox/adopt', { id: ids[1], evalId: it2.evals[1].evalId });
+    assert.ok(ad.body && ad.body.ok, '/inbox/adopt 应 ok：' + JSON.stringify(ad.body));
+    const it2b = loadInboxFile().find((x) => x.id === ids[1]);
+    assert.equal(it2b.evalId, it2.evals[1].evalId, 'adopt 后采用位应切到第二档');
+    const adBad = await postJson('/inbox/adopt', { id: ids[1], evalId: 'ghost-eval' });
+    assert.equal(adBad.status, 404, '不存在的 evalId 应 404');
+    assert.equal(llmPeak, 1, '双档评估并发峰值仍应=1：' + llmPeak);
+  }
 
   // 重启恢复：running → queued → 启动后自动跑完
   server.kill('SIGKILL');
