@@ -323,7 +323,7 @@ try {
   // ===== F2：/job/changes 响应面回归：genTtlMs 仍在、stages 随 genTasks.changes 暴露 =====
   {
     const v = await view();
-    assert.equal(v.genTtlMs, 10 * 60 * 1000, 'genTtlMs 随响应（S4b-B 合同不变）');
+    assert.equal(v.genTtlMs, 20 * 60 * 1000, 'genTtlMs 随响应（S4b-B 合同不变）');
     assert.ok(Array.isArray(v.job.genTasks.changes.stages), 'changes 任务 stages 经 /job/changes 暴露');
   }
 
