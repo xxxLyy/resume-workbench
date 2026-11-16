@@ -23,11 +23,11 @@ import { randomBytes } from 'node:crypto';
 import { chat } from './llm.mjs';
 import { completeGenResult } from './gen-result.mjs';
 
-export const PRACTICE_KIND = 'practiceFeedback';
+const PRACTICE_KIND = 'practiceFeedback';
 // 历史上限：随投递截 20（计划 §5「复用 F3 模式」= /ai/prep 的 app.preps 同款：最新在前，slice(0,20)）。
 export const PRACTICE_CAP = 20;
 // 单题作答上限：一道面试题的口头回答转写，4000 字足够；与 JD 上限同理防账本被单请求撑爆。
-export const ANSWER_MAX_CHARS = 4000;
+const ANSWER_MAX_CHARS = 4000;
 // 任务级总时限：与既有 genTasks / followup 同口径（10 分钟）。
 export const PRACTICE_TTL_MS = 10 * 60 * 1000;
 // 无模型时的降级口径（接口共用同一句，避免两处措辞漂移）。
@@ -133,9 +133,9 @@ export function practiceSessionView(session, now = Date.now()) {
 }
 
 // ===== 并发闸辅助：同一条投递同时只允许 1 个 running（过期残留不占额度，startGenTask 同款）=====
-export const feedbackTaskExpired = (t, now) =>
+const feedbackTaskExpired = (t, now) =>
   !!(t && t.status === 'running' && typeof t.startedAt === 'number' && t.startedAt + PRACTICE_TTL_MS < now);
-export function findRunningFeedback(app, now = Date.now()) {
+function findRunningFeedback(app, now = Date.now()) {
   for (const s of practiceSessions(app)) {
     const fb = s.feedback && typeof s.feedback === 'object' && !Array.isArray(s.feedback) ? s.feedback : {};
     for (const [qid, box] of Object.entries(fb)) {
@@ -210,7 +210,7 @@ export function startPracticeFeedbackTask(ledger, id, pid, qid, { model } = {}) 
 
 // 任务记录定位器（completeGenResult 用）：任务挂在本投递的会话 practice[i].feedback[qid].task 上。
 // 会话被挤出历史（截 20）→ get 返回 null → completeGenResult 判 dropped（迟到零落账）。
-export function sessionFeedbackLocator(pid, qid) {
+function sessionFeedbackLocator(pid, qid) {
   return {
     get(app) {
       const s = findSession(app, pid);
@@ -324,7 +324,7 @@ export const POINT_STATE_LABEL = {   // 导出：练习 UI（b4c2）渲染要点
   legacy: '旧数据（未带来源快照，仅作参考）',
   invalid: '来源状态未知（仅作参考）',
 };
-export function buildFeedbackPrompt({ company = '', role = '', question, answer = '' }) {
+function buildFeedbackPrompt({ company = '', role = '', question, answer = '' }) {
   const q = question && typeof question === 'object' ? question : {};
   const points = Array.isArray(q.points) ? q.points : [];
   const lines = [];
@@ -352,7 +352,7 @@ export function buildFeedbackPrompt({ company = '', role = '', question, answer 
 
 // ===== 反馈解析（形状错即拒：四个字段齐、类型对才收；条目截断是展示级收敛不是放行）=====
 const stripFence = (raw) => String(raw).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
-export function parseFeedback(raw) {
+function parseFeedback(raw) {
   let d;
   try { d = JSON.parse(stripFence(raw)); } catch { return { ok: false, error: '模型输出无法解析为练习反馈（不是合法 JSON），未写入任何结果' }; }
   if (!d || typeof d !== 'object' || Array.isArray(d)) {

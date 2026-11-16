@@ -33,8 +33,8 @@ import { sectionsOf, docToText } from './extract.mjs';
 import { sha1 } from './freeze.mjs';
 
 export const APPLY_PROFILES_FILE = 'apply-profiles.json';
-export const APPLY_PROFILES_LOCK = '.apply-profiles.lock';
-export const PROFILES_VERSION = 1;
+const APPLY_PROFILES_LOCK = '.apply-profiles.lock';
+const PROFILES_VERSION = 1;
 
 // —— 字段三态（存储态）——
 export const MODE_FOLLOW = 'follow';       // 跟随来源
@@ -47,14 +47,14 @@ export const STATE_FOLLOW = 'follow';       // 跟随来源且来源未变
 export const STATE_DRIFT = 'drift';         // 跟随来源但来源已变（未确认）
 export const STATE_OVERRIDE = 'override';   // 手动覆写
 export const STATE_MANUAL = 'manual';       // 独立维护
-export const STATE_AI = 'ai';               // AI 文案（已确认入库）
-export const STATE_AI_LOCKED = 'ai_locked'; // AI 文案被手动改写 → 锁定（再生不覆盖）
-export const STATE_AI_EMPTY = 'ai_empty';   // AI 文案尚未生成
+const STATE_AI = 'ai';               // AI 文案（已确认入库）
+const STATE_AI_LOCKED = 'ai_locked'; // AI 文案被手动改写 → 锁定（再生不覆盖）
+const STATE_AI_EMPTY = 'ai_empty';   // AI 文案尚未生成
 
 // —— 来源类型 ——
 export const SOURCE_RESUME = 'resume';     // 母版/岗位简历（docs/<docId>.html 派生纯文本）
 export const SOURCE_COMMON = 'common';     // 通用信息表同名字段
-export const SOURCE_NONE = 'none';         // 无来源（独立字段）
+const SOURCE_NONE = 'none';         // 无来源（独立字段）
 
 // 字段目录：derived=true = 可从简历派生（跟随来源/手动覆写）；derived=false = 独立维护（不从简历派生）。
 // ai=true = AI 文案字段（批 3 卡片 b3c3 · 新增字段类型）：既不从简历派生、也不是独立手填 ——
@@ -76,7 +76,7 @@ export const FIELD_CATALOG = [
   { key: 'followUp', label: '跟进语', derived: false, ai: true },
 ];
 export const DERIVED_KEYS = FIELD_CATALOG.filter((f) => f.derived).map((f) => f.key);
-export const AI_COPY_FIELDS = FIELD_CATALOG.filter((f) => f.ai);
+const AI_COPY_FIELDS = FIELD_CATALOG.filter((f) => f.ai);
 export const AI_COPY_KEYS = AI_COPY_FIELDS.map((f) => f.key);
 
 // 文档 id 闸门（与 server.mjs 的 VALID_ID 同口径）：账本里的 docId 是外部可编辑内容，
@@ -90,13 +90,13 @@ export function emptyProfiles() {
   return { version: PROFILES_VERSION, updatedAt: '', common: { sourceDocId: '', fields: {} }, packages: {}, copyTasks: {}, copyDrafts: {}, shares: {} };
 }
 
-export function applyProfilesPath(root) {
+function applyProfilesPath(root) {
   return path.join(root, APPLY_PROFILES_FILE);
 }
 
 // 形状校验：根值必须是普通对象；common/packages 及各自 fields 若是数组/非对象 → 形状错（= 损坏）。
 // 只校验「有则须对」：缺字段由 migrateProfiles 补齐（旧版本账本不算损坏）。
-export function validateProfiles(d) {
+function validateProfiles(d) {
   if (!d || typeof d !== 'object' || Array.isArray(d)) return false;
   const plainObj = (x) => !!x && typeof x === 'object' && !Array.isArray(x);
   if (d.common !== undefined) {
@@ -120,7 +120,7 @@ export function validateProfiles(d) {
 
 // 结构迁移（读时补齐，不写盘；写盘时在锁内再做一次 → 迁移与写入同一事务，不另开写路径）
 // 纯函数：不改传入对象（浅拷贝出新的 common/packages/fields，避免把调用方的数据改脏）。
-export function migrateProfiles(d) {
+function migrateProfiles(d) {
   const src = (d && typeof d === 'object' && !Array.isArray(d)) ? d : {};
   const rawCommon = (src.common && typeof src.common === 'object' && !Array.isArray(src.common)) ? src.common : {};
   const rawPackages = (src.packages && typeof src.packages === 'object' && !Array.isArray(src.packages)) ? src.packages : {};
@@ -283,14 +283,14 @@ function makeCtx(root) {
 }
 
 // ===== 字段解析（三态 + 漂移）=====
-export function catalogOf(key) {
+function catalogOf(key) {
   const item = FIELD_CATALOG.find((f) => f.key === key);
   if (!item) throw err('APPLY_UNKNOWN_FIELD', '未知字段：' + String(key));
   return item;
 }
 
 // 解析单个字段条目：mode 决定值来源；follow 时值 = 来源当前派生文本，drift = 来源已变但未确认。
-export function resolveField(entry, item, sourceText) {
+function resolveField(entry, item, sourceText) {
   const base = { key: item.key, label: item.label, derived: !!item.derived, ai: !!item.ai };
   // AI 文案字段（b3c3）：值只来自「生成→预览→确认」的入库动作或手动覆写；无来源可跟、无漂移。
   if (item.ai) {
@@ -568,7 +568,7 @@ export function bindCommonMaster(root, docId) {
 }
 
 // 公司包 id：同公司同岗位 → 同 id（稳定、可重复调用）。
-export function packageId(company, role) {
+function packageId(company, role) {
   return 'pkg-' + sha1(String(company || '') + '|' + String(role || '')).slice(0, 12);
 }
 

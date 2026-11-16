@@ -640,7 +640,7 @@ for _i in $(seq 1 100); do
   sleep 0.1
 done
 [ -n "$T4TG" ] || fail 'S4a-T5 转交修 a 夹具未进入 running'
-node -e 'const fs=require("fs");const f=process.argv[1],doc=process.argv[2];const m=JSON.parse(fs.readFileSync(f,"utf8"));const t=m[doc].job.genTasks.changes;m[doc].job.genTasks.changes={...t,startedAt:Date.now()-11*60*1000};fs.writeFileSync(f,JSON.stringify(m));' "$RESUME_ROOT/docs-meta.json" "$JOBLOC"
+node -e 'const fs=require("fs");const f=process.argv[1],doc=process.argv[2];const m=JSON.parse(fs.readFileSync(f,"utf8"));const t=m[doc].job.genTasks.changes;m[doc].job.genTasks.changes={...t,startedAt:Date.now()-21*60*1000};fs.writeFileSync(f,JSON.stringify(m));' "$RESUME_ROOT/docs-meta.json" "$JOBLOC"
 wait $GC
 rm -f "$TEST_DIR/llm-slow"
 [ "$(cat "$TEST_DIR/t5-gen409.code")" = "409" ] || fail "S4a-T5 转交修 a 应 409 得 $(cat "$TEST_DIR/t5-gen409.code")"
@@ -1145,12 +1145,12 @@ wait_gt() { # $1=doc $2=kind $3=期望status $4=超时秒（默认 15）
 t4_count() { # 直接读 meta（无 GET 副作用）：T4DOC 的 changes 条数
   node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[process.argv[2]];console.log(m&&m.job&&Array.isArray(m.job.changes)?m.job.changes.length:-1)' "$RESUME_ROOT/docs-meta.json" "$T4DOC"
 }
-t4_age_task() { # $1=kind $2=taskId → 把该任务改写为「running 且 startedAt=11 分钟前」（过期残留夹具）
+t4_age_task() { # $1=kind $2=taskId → 把该任务改写为「running 且 startedAt=21 分钟前」（过期残留夹具；须 > GEN_TTL_MS 20 分钟）
   node -e 'const fs=require("fs");const f=process.argv[1],doc=process.argv[2],kind=process.argv[3],tid=process.argv[4];
   const m=JSON.parse(fs.readFileSync(f,"utf8"));
   const j=m[doc].job; j.genTasks=j.genTasks||{};
   const t=j.genTasks[kind]||{};
-  j.genTasks[kind]={taskId:tid,status:"running",startedAt:Date.now()-11*60*1000,baseHash:(t.baseHash==null?null:t.baseHash),error:null,scope:(t.scope==null?null:t.scope)};
+  j.genTasks[kind]={taskId:tid,status:"running",startedAt:Date.now()-21*60*1000,baseHash:(t.baseHash==null?null:t.baseHash),error:null,scope:(t.scope==null?null:t.scope)};
   fs.writeFileSync(f,JSON.stringify(m));' "$RESUME_ROOT/docs-meta.json" "$T4DOC" "$1" "$2"
 }
 t4_config_timeout() { # $1=毫秒（空串=移除，恢复默认 120s）

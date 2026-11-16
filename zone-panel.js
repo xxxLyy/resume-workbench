@@ -499,7 +499,6 @@
   //   ⑤ 一次实际应用 = 一次撤销（压栈一次，工具条与 Toast 共用同一个 opId）
   function accept() {
     var todo = preview.filter(function (it) { return sheet.querySelector('[data-zid="' + it.zid + '"]'); });
-    var stale = preview.length - todo.length;
     if (!todo.length) {
       var p = document.getElementById('zp-preview');
       if (p) p.textContent = '段落已变化，请重新生成';

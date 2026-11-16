@@ -13,7 +13,7 @@ import { sha1 } from './freeze.mjs';
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const THEMES_DIR = path.join(APP_ROOT, 'themes');
 const THEME_FILE_RE = /^resume-([^/]+)\.css$/;
-export const THEME_MARKER = '<!--THEME-CSS-->';
+const THEME_MARKER = '<!--THEME-CSS-->';
 
 // 可用主题 = themes/resume-*.css 的文件名（去掉 resume- 前缀与 .css 后缀）
 export function listThemes() {

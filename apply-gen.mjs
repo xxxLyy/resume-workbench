@@ -23,11 +23,11 @@ import { chat } from './llm.mjs';
 import { completeGenResult } from './gen-result.mjs';
 import { updateApplyProfiles, loadApplyProfiles, copyTaskKey, copySource, scopeMeta, writeAiField, AI_COPY_KEYS } from './apply-profile.mjs';
 
-export const COPY_KIND = 'copy';
+const COPY_KIND = 'copy';
 // 任务级总时限：与 server.mjs 的 GEN_TTL_MS 同口径（10 分钟）——超时后任务标失败、结果不落账。
 export const COPY_TTL_MS = 10 * 60 * 1000;
 // 文案长度上限（超出截断并标注，不静默丢内容）。
-export const COPY_MAX_CHARS = 4000;
+const COPY_MAX_CHARS = 4000;
 // 无模型时的降级口径（接口与页面共用同一句，避免两处措辞漂移）。
 export const NO_MODEL_HINT = '未配置大模型：AI 文案字段不能生成，可在设置页配置模型后重试，或直接手动填写本字段';
 
@@ -136,7 +136,7 @@ export function startCopyTask(root, scope, key, opts = {}) {
 }
 
 // 任务记录打补丁（守卫同款：taskId 匹配且仍 running 才写；迟到写入零落账）。
-export function patchCopyTask(root, taskKey, taskId, patch) {
+function patchCopyTask(root, taskKey, taskId, patch) {
   updateApplyProfiles(root, (data) => {
     const t = (data.copyTasks || {})[taskKey];
     if (!t || t.taskId !== taskId || t.status !== 'running') return null;

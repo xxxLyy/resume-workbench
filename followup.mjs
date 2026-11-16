@@ -29,11 +29,11 @@ import { completeGenResult } from './gen-result.mjs';
 import { buildCopyPrompt, parseCopyText } from './apply-gen.mjs';
 import { deriveDocFields } from './apply-profile.mjs';
 
-export const FOLLOW_UP_KIND = 'followUp';
+const FOLLOW_UP_KIND = 'followUp';
 // 阈值：默认 7 天（满 N 天才提示）；可配范围 1–90 天。
-export const FOLLOW_UP_DAYS_DEFAULT = 7;
-export const FOLLOW_UP_DAYS_MIN = 1;
-export const FOLLOW_UP_DAYS_MAX = 90;
+const FOLLOW_UP_DAYS_DEFAULT = 7;
+const FOLLOW_UP_DAYS_MIN = 1;
+const FOLLOW_UP_DAYS_MAX = 90;
 // 任务级总时限：与既有 genTasks / copy 任务同口径（10 分钟）——超时后任务标失败、结果不落账。
 export const FOLLOW_UP_TTL_MS = 10 * 60 * 1000;
 // 无模型时的降级口径（接口与页面共用同一句，避免两处措辞漂移）。
@@ -101,7 +101,7 @@ export function followUpState(app, { nowMs = Date.now(), thresholdDays = FOLLOW_
 // ===== 任务/草稿在投递记录上的存取（纯函数，不碰盘）=====
 // 落点：投递记录本机账本 applications.json 的 app.followUp = { task, draft }（与既有 app.preps 同一落点，
 // 不新增文件、不进备份之外的地方）。
-export const followUpBox = (app) =>
+const followUpBox = (app) =>
   (app && app.followUp && typeof app.followUp === 'object' && !Array.isArray(app.followUp)) ? app.followUp : null;
 export const followUpTask = (app) => {
   const b = followUpBox(app);
@@ -113,12 +113,12 @@ export const followUpDraft = (app) => {
 };
 
 // 任务记录定位器（completeGenResult 用）：任务挂在投递记录上，不挂岗位草稿 meta。
-export const FOLLOW_UP_LOCATOR = {
+const FOLLOW_UP_LOCATOR = {
   get(app, key) { return followUpTask(app); },
   set(app, key, rec) { app.followUp = { ...(followUpBox(app) || {}), task: rec }; },
 };
 
-export const followUpTaskExpired = (t, now) =>
+const followUpTaskExpired = (t, now) =>
   !!(t && t.status === 'running' && typeof t.startedAt === 'number' && t.startedAt + FOLLOW_UP_TTL_MS < now);
 
 // ===== 账本适配器（server.mjs 是 applications.json 的唯一写者）=====
