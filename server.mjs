@@ -395,17 +395,38 @@ async function inboxDrain() {
       catch (e) { if (e instanceof ResourceBusy) { await new Promise((r) => setTimeout(r, 3000)); continue; } throw e; }
       try {
         inboxPatch(next.id, { status: 'running', error: null });
-        const r = await evalJdCore(root, { from: next.from, jd: next.jd, company: next.company, role: next.role, lease });
+        // 多模型（2026-11-16）：按 next.profiles 逐档串行（同一借来的 lease，峰值仍 1 槽）；
+        // evals[] 存每档结果；evalId/score/verdict = 首个成功档（采用位）；全部失败才 error。
+        // 重跑口径：evals 里已有「同 name|model 成功档」跳过（retry 只补失败档）。
+        const profiles = Array.isArray(next.profiles) && next.profiles.length ? next.profiles : [undefined];
+        const prior = Array.isArray(next.evals) ? next.evals : [];
+        const keyOf = (a) => (a && a.name || '') + '|' + (a && a.model || '');
+        const evals = [...prior];
+        for (const pi of profiles) {
+          const pm = profileMeta(pi);
+          if (evals.some((e) => !e.error && keyOf(e) === keyOf(pm))) continue;   // 已有成功档 → 跳过
+          const r = await evalJdCore(root, { from: next.from, jd: next.jd, company: next.company, role: next.role, lease, profile: pi });
+          const entry = { name: pm.name, model: pm.model };
+          if (r.ok) Object.assign(entry, { evalId: r.rec.id, score: r.rec.score, verdict: r.rec.verdict });
+          else Object.assign(entry, { error: r.error });
+          // 同档旧失败条目原位替换；否则尾部追加
+          const oi = evals.findIndex((e) => e.error && keyOf(e) === keyOf(entry));
+          if (oi >= 0) evals[oi] = entry; else evals.push(entry);
+        }
+        const first = evals.find((e) => !e.error) || null;
+        const lastErr = evals.filter((e) => e.error).map((e) => e.error).join('；');
         // 回写前重读（复核修复）：评估期间用户可能已改状态（如「不考虑」）——
         // 成功只补记 evalId/score/verdict，不把 status 拉回 scored；仍 running 才走正常终态写入。
         const cur = loadInbox().find((x) => x && x.id === next.id);
         if (!cur) { /* 条目在评估期间被物理移除（不应发生，dismiss 只改状态）——跳过回写 */ }
         else if (cur.status === 'running') {
-          inboxPatch(next.id, r.ok
-            ? { status: 'scored', evalId: r.rec.id, score: r.rec.score, verdict: r.rec.verdict, error: null }
-            : { status: 'error', error: r.error });
-        } else if (r.ok) {
-          inboxPatch(next.id, { evalId: r.rec.id, score: r.rec.score, verdict: r.rec.verdict });
+          inboxPatch(next.id, first
+            ? { status: 'scored', evals, evalId: first.evalId, score: first.score, verdict: first.verdict, error: lastErr || null }
+            : { status: 'error', evals, error: lastErr || '评估失败' });
+        } else if (first) {
+          inboxPatch(next.id, { evals, evalId: first.evalId, score: first.score, verdict: first.verdict });
+        } else {
+          inboxPatch(next.id, { evals });
         }
       } catch (e) {
         const cur = loadInbox().find((x) => x && x.id === next.id);
@@ -587,7 +608,7 @@ async function createJobDraft(root, o) {
 
 // ===== 岗位评估核心（2026-11-13 spec §2.6 抽出）：/eval/create 与收件箱串行 worker 共用 =====
 // 返回 {ok:true, rec} 或 {ok:false, status, error, ...extra}；HTTP 形态由调用方各自组装。
-async function evalJdCore(root, { from, jd, company, role, lease }) {
+async function evalJdCore(root, { from, jd, company, role, lease, profile }) {
   if (!hasLLM(root)) return { ok: false, status: 409, error: '未配置大模型：请先完成模型配置', settingsPath: '/settings' };   // R2②：settingsPath 供消费方按 :2210 先例渲染真实入口链接（「侧栏「设置」」是死引用）
   from = String(from || '');
   if (!VALID_ID.test(from)) return { ok: false, status: 400, error: 'invalid from' };
@@ -603,17 +624,17 @@ async function evalJdCore(root, { from, jd, company, role, lease }) {
   const docText = docToText(html, { includeHidden: false });
   const p = buildEvalPrompt({ docText, jd, company, role });
   let raw;
-  try { raw = await chat(root, p.sys, p.user, { lease }); }
+  try { raw = await chat(root, p.sys, p.user, { lease, profile }); }
   catch (e) { return { ok: false, status: 502, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }; }
   const parsed = parseEvalReport(raw, { docText });
   // 解析失败一律不落库：半条/错分记录会进指纹护栏（第五路）反过来污染后续所有岗位提醒
   if (!parsed.ok) return { ok: false, status: 502, error: '模型报告无法解析：' + parsed.reason };
   const { fingerprintText } = await import('./vendors/jd-fingerprint/fingerprint-core.mjs');
-  const cfg = loadProfiles(root);
+  const pm = profileMeta(profile);
   const rec = {
     id: 'ev-' + timestamp(), jd, jdFp: fingerprintText(jd),
     company, role, score: parsed.report.score, verdict: parsed.report.verdict,
-    blocks: parsed.report, model: (cfg.profiles[cfg.active] || {}).model || '',
+    blocks: parsed.report, model: pm.model || '', profileName: pm.name || '',
     source: evalSource(docText, from),   // 来源字段由程序赋值：bodyHash 绑定实际送审正文
     createdAt: new Date().toISOString(), promotedTo: null
   };
@@ -2361,7 +2382,7 @@ function evalHistoryRows(records, docExists) {
       ? `<button type="button" data-eval-hist="promote" data-eval-id="${escAttr(rid)}" data-eval-from="${escAttr(srcDoc)}">转入适配</button>`
       : `<button type="button" disabled style="visibility:hidden">转入适配</button>`;
     return `<div id="${escAttr(rid)}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap">
-      <span>${badge('ai', ((rec && rec.score) == null ? '—' : String(rec.score)) + ' / 5')}${badge(cls, EVAL_VERDICT_TEXT[v] || '未定')}<span style="color:var(--mut);font-size:12px">${escHtml(String((rec && rec.company) || '') + '·' + String((rec && rec.role) || ''))} · ${escHtml(evalTimeText(rec && rec.createdAt))}</span>${status}</span>
+      <span>${badge('ai', ((rec && rec.score) == null ? '—' : String(rec.score)) + ' / 5')}${badge(cls, EVAL_VERDICT_TEXT[v] || '未定')}<span style="color:var(--mut);font-size:12px">${escHtml(String((rec && rec.company) || '') + '·' + String((rec && rec.role) || ''))} · ${escHtml(evalTimeText(rec && rec.createdAt))}${rec && rec.profileName ? ' · ' + escHtml(String(rec.profileName) + '·' + String(rec.model || '')) : ''}</span>${status}</span>
       <span style="display:flex;gap:6px;align-items:center"><button type="button" class="secondary" data-eval-hist="report" data-eval-id="${escAttr(rid)}">查看报告</button>${promoteBtn}</span>
     </div>
     <div id="evalSlot-${escAttr(rid)}" data-eval-slot="1"></div>`;
@@ -2768,7 +2789,20 @@ function inboxPage() {
     if (it.status === 'scored') {
       const cls = it.verdict === 'apply' ? 'ok' : 'warn';
       const txt = `${it.score == null ? '—' : it.score} 分`;
-      return it.evalId ? `<a href="/evals#${escAttr(it.evalId)}">${badge(cls, txt)}</a>` : badge(cls, txt);
+      const main = it.evalId ? `<a href="/evals#${escAttr(it.evalId)}">${badge(cls, txt)}</a>` : badge(cls, txt);
+      // 多模型（2026-11-16）：>1 档结果出 per-model chips——采用档加粗链 /evals#evalId，其余小字「采用」
+      const evs = Array.isArray(it.evals) ? it.evals : [];
+      if (evs.length > 1) {
+        const chips = evs.map((e) => {
+          const lab = escAttr(`${e.name || '?'}·${e.model || '?'}`);
+          if (e.error) return `<span style="font-size:11px;color:var(--mut)">${lab} 失败</span>`;
+          const sc = `<span style="${e.evalId === it.evalId ? 'font-weight:600' : ''}">${lab} ${e.score == null ? '—' : e.score} 分</span>`;
+          const link = `<a href="/evals#${escAttr(e.evalId)}">${sc}</a>`;
+          return e.evalId === it.evalId ? link : `${link} <a href="#" data-adopt="${escAttr(it.id)}|${escAttr(e.evalId)}" style="font-size:11px">采用</a>`;
+        }).join(' ');
+        return `${main}<div style="display:flex;gap:8px;flex-wrap:wrap;font-size:12px;margin-top:4px">${chips}</div>`;
+      }
+      return main;
     }
     if (it.status === 'error') return badge('err', '失败：' + escHtml(String(it.error || '').slice(0, 40)));
     if (it.status === 'drafted') return VALID_ID.test(it.draftId || '') ? `<a href="/edit?id=${escAttr(it.draftId)}">${badge('ok', '已建稿')}</a>` : badge('ok', '已建稿');
@@ -2796,6 +2830,7 @@ function inboxPage() {
         <label style="font-size:13px"><input type="checkbox" id="ibAll" aria-label="全选"> 全选</label>
         <label style="font-size:13px">用哪份简历评估 <select id="ibFrom">${docOptions(infos)}</select></label>
         <button type="button" id="ibEval" disabled>批量评估所选</button>
+        <span id="ibMp"></span>
         <span id="ibCount" style="font-size:13px;color:var(--mut)">已选 0 条</span>
         <span id="ibMsg" role="status" class="ap-note"></span></div>`
     : `<p style="font-size:13px;color:var(--mut);margin-bottom:var(--space-2)">还没有简历文档，先去<a href="/">建一份</a>再来批量评估。</p>`;
@@ -2811,6 +2846,7 @@ function inboxPage() {
     <script nonce="__CSP_NONCE__">(function(){
       var list = document.querySelectorAll('input[name="ib"]');
       var all = document.getElementById('ibAll');
+      if (window.__modelPicker) window.__modelPicker.mount(document.getElementById('ibMp')).then(function (m) { window.__ibMp = m; });
       var btn = document.getElementById('ibEval');
       var cnt = document.getElementById('ibCount');
       var msg = document.getElementById('ibMsg');
@@ -2829,10 +2865,19 @@ function inboxPage() {
       if (btn) btn.addEventListener('click', function () {
         var ids = []; list.forEach(function (c) { if (c.checked) ids.push(c.value); });
         btn.disabled = true;
-        __wv('/inbox/eval', { ids: ids, from: document.getElementById('ibFrom').value }, msg)
+        __wv('/inbox/eval', { ids: ids, from: document.getElementById('ibFrom').value, profiles: window.__ibMp ? window.__ibMp.selected() : undefined }, msg)
           .then(function () { location.reload(); }).catch(function () { btn.disabled = false; });
       });
       document.addEventListener('click', function (e) {
+        // 多模型采用链接（无 data-ib-act）：必须在 ib-act 判定前拦截
+        var ad = e.target.closest('[data-adopt]');
+        if (ad) {
+          e.preventDefault();
+          var s = ad.getAttribute('data-adopt'), ix = s.indexOf('|');
+          fetch('/inbox/adopt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: s.slice(0, ix), evalId: s.slice(ix + 1) }) })
+            .then(function (r) { return r.json(); }).then(function (d) { if (d && d.ok) location.reload(); else alert((d && d.error) || '采用失败'); });
+          return;
+        }
         var t = e.target.closest('[data-ib-act]');
         if (!t) return;
         t.disabled = true;
@@ -3070,19 +3115,29 @@ function jobNewPage(prefill = null) {
           var jd = document.getElementById('jobJd').value.trim();
           if (!jd) { __status(msg, 'err', '评估需要岗位描述文本'); return; }   // /eval/create 只收 JD 文本（不抓链接）——只贴链接本地即拦（I-3）
           busy = true;
-          btn.textContent = '评估中，通常需要 1–5 分钟…';
+          var sels = window.__jnMp ? window.__jnMp.selected() : [undefined];
+          btn.textContent = sels.length > 1 ? '对比评估中（' + sels.length + ' 个模型顺序跑）…' : '评估中，通常需要 1–5 分钟…';
           msg.textContent = '';
           box.innerHTML = '';
           try {
-            var r = await fetch('/eval/create', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ from: from, company: document.getElementById('jobCompany').value.trim(), role: document.getElementById('jobRole').value.trim(), jd: jd }) });
-            var d = await r.json().catch(function () { return null; });
-            if (!r.ok || !d || !d.ok || !d.eval) { __status(msg, 'err', (d && d.error) || ('HTTP ' + r.status)); if (d && d.settingsPath) msg.appendChild(Object.assign(document.createElement('a'), { href: d.settingsPath, textContent: ' 去设置 →' })); return; }   // R2②：settingsPath → 可点击入口（同 :2210 先例）
-            ctx = { id: d.eval.id, from: from };
-            box.innerHTML = evalCardHtml(d.eval);
+            var company = document.getElementById('jobCompany').value.trim(), role = document.getElementById('jobRole').value.trim();
+            for (var si = 0; si < sels.length; si++) {
+              var r = await fetch('/eval/create', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ from: from, company: company, role: role, jd: jd, profile: sels[si] }) });
+              var d = await r.json().catch(function () { return null; });
+              if (!r.ok || !d || !d.ok || !d.eval) { __status(msg, 'err', (d && d.error) || ('HTTP ' + r.status)); if (d && d.settingsPath) msg.appendChild(Object.assign(document.createElement('a'), { href: d.settingsPath, textContent: ' 去设置 →' })); return; }   // R2②：settingsPath → 可点击入口（同 :2210 先例）
+              ctx = { id: d.eval.id, from: from };
+              var card = document.createElement('div');
+              card.innerHTML = (sels.length > 1 ? '<div style="font-size:12px;color:var(--mut);margin-top:8px">' + String([d.eval.profileName, d.eval.model].filter(Boolean).join('·') || '模型 ' + sels[si]).replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</div>' : '') + evalCardHtml(d.eval);
+              box.appendChild(card);
+            }
           } catch (err) { __status(msg, 'err', err.message); }
           finally { busy = false; btn.textContent = '先评估匹配度'; }
         };
+        // 多模型（2026-11-16）：picker 就绪才出现；多选→顺序评估、每档一张卡（各自「转草稿」=采用该份）
+        var mpBox = document.createElement('div');
+        if (btn.parentNode) btn.parentNode.insertBefore(mpBox, btn.nextSibling);
+        if (window.__modelPicker) window.__modelPicker.mount(mpBox).then(function (m) { window.__jnMp = m; });
         btn.addEventListener('click', function (e) { e.preventDefault(); run(); });
         // 事件委托：卡片会被重新渲染，监听器不能绑在会被替换的节点上
         box.addEventListener('click', async function (e) {
@@ -5108,7 +5163,9 @@ async function handler(req, res) {
     // 失败一律 502 回到调用方，不写半条记录。
     if (req.method === 'POST' && url.pathname === '/eval/create') {
       const body = await readBodyAuto(req);
-      const r = await evalJdCore(root, { from: body.from, jd: body.jd, company: body.company, role: body.role, lease: leaseOf(req) });
+      const prof = pickProfile(body.profile);
+      if (prof === null) return sendJson(400, { ok: false, error: '模型配置不存在或不完整' });
+      const r = await evalJdCore(root, { from: body.from, jd: body.jd, company: body.company, role: body.role, lease: leaseOf(req), profile: prof });
       if (!r.ok) return sendJson(r.status, { ok: false, error: r.error, ...(r.settingsPath ? { settingsPath: r.settingsPath } : {}) });
       // 读时视图：旧记录的 sourced 降级为 missing、历史分数不重算（SRC-04/SRC-06）
       return sendJson(200, { ok: true, eval: evalRecordView(r.rec) });
@@ -5129,12 +5186,19 @@ async function handler(req, res) {
       if (!VALID_ID.test(from)) return sendJson(400, { ok: false, error: 'invalid from' });
       if (!fs.existsSync(docPath(from))) return sendJson(404, { ok: false, error: '母版文档不存在' });
       const ids = new Set((Array.isArray(body.ids) ? body.ids : []).map(String));
+      // 多模型（2026-11-16）：可选 profiles 数组（逐档 pickProfile 校验）；缺省=[active]
+      let profiles = [undefined];
+      if (body.profiles !== undefined) {
+        if (!Array.isArray(body.profiles) || !body.profiles.length) return sendJson(400, { ok: false, error: 'profiles 必须为非空数组' });
+        profiles = body.profiles.map((v) => pickProfile(v));
+        if (profiles.some((v) => v === null)) return sendJson(400, { ok: false, error: '模型配置不存在或不完整' });
+      }
       const list = loadInbox();
       const now = new Date().toISOString();
       let queued = 0;
       for (const it of list) {
         if (it && ids.has(it.id) && (it.status === 'new' || it.status === 'error' || it.status === 'scored')) {
-          it.status = 'queued'; it.from = from; it.error = null; it.updatedAt = now; queued++;
+          it.status = 'queued'; it.from = from; it.error = null; it.profiles = profiles; it.updatedAt = now; queued++;
         }
       }
       if (queued) saveInbox(list);
@@ -5145,7 +5209,7 @@ async function handler(req, res) {
       return send(200, inboxPage());
     }
     if (req.method === 'GET' && url.pathname === '/inbox/status') {
-      return sendJson(200, { ok: true, items: loadInbox().filter((x) => x && x.status !== 'dismissed').map(({ id, status, score, verdict, error, draftId }) => ({ id, status, score, verdict, error, draftId })) });
+      return sendJson(200, { ok: true, items: loadInbox().filter((x) => x && x.status !== 'dismissed').map(({ id, status, score, verdict, error, draftId, evals }) => ({ id, status, score, verdict, error, draftId, evals })) });
     }
     // 建草稿（spec §2.7）：有 evalId 且评估未 promote → 走 promoteEval（brief 预填 angle/gaps）；
     // 否则 createJobDraft（jdSource「收件箱」）。409+existing = 同岗位已建过 → 同样记 drafted 并指回 existing。
@@ -5161,6 +5225,17 @@ async function handler(req, res) {
       if (!draftId) return sendJson(r.status, r.body);
       inboxPatch(it.id, { status: 'drafted', draftId });
       return sendJson(200, { ok: true, id: draftId });
+    }
+    // 多模型对比采用（2026-11-16）：把 item.evals 里某档结果提为采用位（evalId/score/verdict）；
+    // 只允许采用有分数的成功档。
+    if (req.method === 'POST' && url.pathname === '/inbox/adopt') {
+      const body = await readBodyAuto(req);
+      const it = loadInbox().find((x) => x && x.id === String(body.id || ''));
+      if (!it) return sendJson(404, { ok: false, error: '收件箱条目不存在' });
+      const e = (Array.isArray(it.evals) ? it.evals : []).find((x) => x && x.evalId === String(body.evalId || '') && x.score != null);
+      if (!e) return sendJson(404, { ok: false, error: '该评估结果不存在或无分数' });
+      inboxPatch(it.id, { evalId: e.evalId, score: e.score, verdict: e.verdict });
+      return sendJson(200, { ok: true });
     }
     // 不考虑：置 dismissed（记录保留，仍参与去重判重——不考虑过的岗别再收一遍）
     if (req.method === 'POST' && url.pathname === '/inbox/dismiss') {
