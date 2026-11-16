@@ -2485,6 +2485,19 @@ else
   fi
 fi
 
+# ===== 16k-9. 区域定位不推外壳：点下方区域行后 body/视口 scrollTop=0、顶栏 top=0、目标在画布内可见（overflow:clip 回归，浏览器段）=====
+if node test-fixtures/reliability/test-zone-scroll-shell.mjs; then
+  echo '✅ 区域定位不推外壳回归（非画布祖先 scrollTop=0 / 顶栏 top=0 / 目标画布内可见）'
+else
+  RC=$?
+  if [ "$RC" -eq 2 ] && [ "${RESUME_TEST_STRICT:-0}" != 1 ]; then
+    BROWSER_CHECK_SKIPPED=1
+    echo '⚠️ 定位不推外壳回归未执行：Chromium 不可用'
+  else
+    fail "定位不推外壳回归未通过 (exit $RC)"
+  fi
+fi
+
 # ===== 16l. S4b-B 诚实最小进度 UI（running 行/时长 ticker/用量/取消计费文案）=====
 if node test-fixtures/reliability/test-gen-progress-ui.mjs; then
   echo '✅ 生成进度 UI 回归（阶段/时长/模型 + 用量两态 + 取消计费文案 + 零百分比）'

@@ -39,7 +39,7 @@
   css.textContent = '@media screen{'
     // B1 双区规则已定案（DESIGN.md §2，2026-11-02 用户拍板）：编辑器 --ed-accent 为暖橙；应用页 --accent 为近黑（server.mjs A-VARS），两区不互通；字面值钉 test-structure.sh B1 断言。
     +  'body.ed-on{--ed-bg:#F0EBE2;--ed-panel:#FFFCF5;--ed-ink:#26221C;--ed-mut:#6E675C;--ed-line:#DED3C0;--ed-accent:#C2410C;--ed-accent-ink:#FFF7ED;--ed-accent-soft:#FBE9D8;--ed-ok:#2F6B4F;--ed-ok-soft:#E4EFE6;--ed-warn:#A25711;--ed-warn-soft:#FBEEDC;--ed-err:#A32B2B;--ed-err-soft:#F7E4E1;--ed-accent-strong:#9A3412;--ed-serif:"Songti SC","Noto Serif CJK SC","Source Han Serif SC",Georgia,serif;--ed-sans:"PingFang SC",-apple-system,sans-serif;--ed-radius:8px;'
-    + 'display:grid;height:100vh;overflow:hidden;background:var(--ed-bg);'
+    + 'display:grid;height:100vh;overflow:clip;background:var(--ed-bg);'
     + 'grid-template-columns:var(--ed-left-w,208px) minmax(0,1fr) var(--ed-right-w,320px);grid-template-rows:auto auto minmax(0,1fr) auto;'
     + 'transition:grid-template-columns .2s}'
     // 全局横向滚动防护：外壳页 html 层同步锁死（sheet 固定 794px，窄屏溢出由 zoom 适配而非滚动）
