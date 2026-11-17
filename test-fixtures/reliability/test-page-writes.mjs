@@ -222,7 +222,8 @@ try {
         { name: '投递状态：改为已投递',
           run: (p) => p.evaluate(() => {
             var s = document.querySelector('.app-card select[aria-label="状态"]'); if (!s) return false;
-            s.value = '已投递'; s.dispatchEvent(new Event('change', { bubbles: true })); return true;
+            // 六态模型：option value 是枚举（applied=已投递），不再是中文标签
+            s.value = 'applied'; s.dispatchEvent(new Event('change', { bubbles: true })); return true;
           }),
           // 旧值保留 = 服务端那条投递的状态没被改掉（磁盘为准）
           probe: async () => {

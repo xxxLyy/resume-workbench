@@ -167,11 +167,12 @@ try {
   if (!hit.body || !Array.isArray(hit.body.ids) || !hit.body.ids.includes('m1')) fail('/mat/confirm 载荷不符：' + JSON.stringify(hit));
 
   // —— 投递看板（卡片）：◀（click）/ 状态下拉（change）/ 快速编辑开合（click）——
+  // 六态模型（UPCV §1）：夹具 status '面试中' 读侧归一为 interviewing，◀ 的目标态是 replied
   await gotoSafe(base + '/applications');
   await page.waitForSelector('.app-card[data-app="11075"]');
-  await page.click('.app-card[data-app="11075"] [data-action="appPatch"][data-status="笔试"]');
+  await page.click('.app-card[data-app="11075"] [data-action="appPatch"][data-status="replied"]');
   hit = await waitPost('/app/update');
-  if (!hit.body || hit.body.id !== '11075' || hit.body.status !== '笔试') fail('/app/update（◀）载荷不符：' + JSON.stringify(hit));
+  if (!hit.body || hit.body.id !== '11075' || hit.body.status !== 'replied') fail('/app/update（◀）载荷不符：' + JSON.stringify(hit));
   await gotoSafe(base + '/applications');
   await page.selectOption('.app-card[data-app="11075"] select[data-action="appStatus"]', 'offer');
   hit = await waitPost('/app/update');

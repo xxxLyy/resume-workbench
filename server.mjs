@@ -119,10 +119,24 @@ const LOCKED_PREVIEW_CSP = [
 const WRITE_ON_GET = new Set(['/pdf', '/export', '/job/changes', '/snapshot/pdf']);   // /job/changes GET 读取时清过期 running 任务（S4a-T4）；/snapshot/pdf 渲染并写 pdfs/history/（2026-10-22 审查 [低]）
 // 编辑器瞬态 body class：旧文档的内联清理选择器不认 ed-focus，必须由服务端兜底（设计 §6.2）
 const EDITOR_ONLY_BODY_CLASS = new Set(['ed-on', 'ed-preview', 'ed-focus']);
-const APP_STATUSES = ['已投递', '笔试', '面试中', 'offer', '已拒', '搁置'];
-const APP_TERMINAL = ['offer', '已拒', '搁置'];
-// 显示层映射（2026-11-04 视觉收尾轮，DESIGN.md §10）：存量数据与 /app/update 接口值仍为 'offer'，仅界面文案中文化
-const statusLabel = (s) => (s === 'offer' ? '录用' : s);
+// ===== 投递状态机（UPCV「我的职位」六态，upcv-features-implementation.md §1）=====
+// to_apply(待投递) → preparing(准备中) → applied(已投递) → replied(有回复) → interviewing(面试中) → offer(Offer)；
+// closed(已关闭) 在链外：被拒/搁置类终态，看板单列在末位、不参与「推进到下一态」。
+const APP_STATUSES = ['to_apply', 'preparing', 'applied', 'replied', 'interviewing', 'offer'];
+const APP_STATUS_ALL = [...APP_STATUSES, 'closed'];   // 下拉/校验全集 = 链上六态 + closed
+const APP_TERMINAL = ['offer', 'closed'];             // 终态：不再推进；「仍等回应」判定也据此排除（首页日程/跟进提示同口径）
+// 老枚举 → 六态（保守映射表，写死在此；读时归一用）：
+//   已投递→applied；笔试→replied（笔试邀请=对方已回应，未进面试环节）；面试中→interviewing；
+//   offer→offer；已拒/搁置→closed（同为脱轨终态）；空值/未知→applied（/app/add 历史默认即已投递，宁保守不猜）。
+// （两表均 null-prototype：status 是外部输入，'__proto__' 这类键不得查出原型链上的脏值）
+const APP_STATUS_LEGACY = Object.assign(Object.create(null), { '已投递': 'applied', '笔试': 'replied', '面试中': 'interviewing', 'offer': 'offer', '已拒': 'closed', '搁置': 'closed' });
+const appStatus = (s) => (APP_STATUS_ALL.includes(s) ? s : (APP_STATUS_LEGACY[s] || 'applied'));
+// 显示层：枚举 → 中文标签；未知值原样透出（不假装认识）
+const APP_STATUS_LABEL = Object.assign(Object.create(null), { to_apply: '待投递', preparing: '准备中', applied: '已投递', replied: '有回复', interviewing: '面试中', offer: 'Offer', closed: '已关闭' });
+const statusLabel = (s) => APP_STATUS_LABEL[s] || String(s == null ? '' : s);
+// dueDate 校验（/app/add、/app/update 共用）：YYYY-MM-DD 或空串；真实日期才收（2026-02-30 这类拒）
+const APP_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const appDateOk = (s) => { if (!APP_DATE_RE.test(s)) return false; const d = new Date(s + 'T00:00:00Z'); return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s; };
 // 界面时间一律人话格式（DESIGN.md §10）：ISO 串（含 datetime-local 的 T 分隔）不出现在页面上；非法值如实原样返回
 const fmtWhen = (raw) => {
   if (!raw) return '';
@@ -195,7 +209,9 @@ function writeJson(name, data) {
 const loadMeta = () => readJson('meta', {});
 // 读时迁移视图（S3-T7）：旧形状（confirmed 布尔/缺 facts）在读取时补齐，不写盘；saveMats 往返自然渐进迁移
 const loadMats = () => migrateMats(readJson('mats', []));
-const loadApps = () => { const a = readJson('apps', []); return Array.isArray(a) ? a : []; };
+// 读时归一（沿用本仓「兼容读不写回」惯例，同 loadMats 的 migrateMats）：存量老枚举 status 在内存中
+// 即映射为六态，不主动 rewrite applications.json；此后任一正常 saveApps 自然把该记录落成新枚举（写侧只写新枚举）。
+const loadApps = () => { const a = readJson('apps', []); return Array.isArray(a) ? a.map((x) => (x && typeof x === 'object') ? { ...x, status: appStatus(x.status) } : x) : []; };
 const loadEvals = () => { const a = readJson('evals', []); return Array.isArray(a) ? a : []; };
 const saveMats = (mats) => writeJson('mats', mats);
 const saveApps = (apps) => writeJson('apps', apps);
@@ -332,7 +348,8 @@ async function computeFpGuard(jd, jdLink, company, metaAll) {
     }
     for (const a of loadApps()) {
       if (!a || (!a.jd && !a.link)) continue;
-      records.push({ jd: a.jd || '', company: a.company, dateStr: a.appliedAt || a.createdAt || '', kind: 'app', label: `${a.company || ''}·${a.role || ''}`, link: a.link || '', status: a.status });
+      // status 传显示标签（fpTodo 文案「已投递·<status>」直接拼人话；枚举值进文案会变成「已投递·applied」）
+      records.push({ jd: a.jd || '', company: a.company, dateStr: a.appliedAt || a.createdAt || '', kind: 'app', label: `${a.company || ''}·${a.role || ''}`, link: a.link || '', status: statusLabel(a.status) });
     }
     // 第五路：岗位评估记录（/eval/create 落库）。评估过但没投的岗位同样要提醒，
     // 否则用户会对同一个 JD 反复评估、反复适配。score/verdict 供 fpTodo 渲染「评估过 X 分」。
@@ -1948,7 +1965,7 @@ html{scroll-padding-top:64px}
 .topnav .links a.on{background:var(--accent-soft);color:var(--accent)}
 .topnav .links a:hover{background:var(--card-2);color:var(--ink)}
 .topnav .navfoot{padding:12px;font-size:12px;color:var(--mut);border-top:1px solid var(--line)}
-@media (max-width:860px){.topnav{position:static;width:auto;flex-direction:row;align-items:center;justify-content:space-between;border-right:none;border-bottom:1px solid var(--line);padding:10px 16px;margin-bottom:16px}.topnav .brand{padding:0}.topnav .links{flex-direction:row;gap:4px}.topnav .links a{padding:7px 10px}.topnav .navfoot{display:none}body{padding:0 16px 40px}}
+@media (max-width:860px){.topnav{position:static;width:auto;flex-direction:row;align-items:center;justify-content:space-between;border-right:none;border-bottom:1px solid var(--line);padding:10px 16px;margin-bottom:16px}.topnav .brand{padding:0}.topnav .links{flex-direction:row;flex-wrap:wrap;gap:4px}.topnav .links a{padding:7px 10px}.topnav .navfoot{display:none}body{padding:0 16px 40px}}
 /* 投递系页签条（渐进呈现 T2）：看板/网申包/复盘 三页共用，挂在页题下方。 */
 .apptabs{display:flex;gap:var(--space-1);margin:0 0 var(--space-3);border-bottom:1px solid var(--line)}
 /* margin-bottom:-1px 是边框补偿字面值（页签底边框与条底边框重合压线），非间距，不走 token。 */
@@ -2097,6 +2114,9 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .kb-col{flex:1 1 0;min-width:180px}
 .kb-col.empty{flex:0 0 92px;min-width:92px}
 .kb-col .group-head{margin-top:0}
+/* 列头计数胶囊（v3 设计稿方向：浅色胶囊，不抢 accent）：与 .badge 同圆角体系但定宽居中 */
+.kb-count{display:inline-flex;align-items:center;justify-content:center;min-width:22px;padding:2px 8px;border-radius:999px;background:var(--card-2);color:var(--mut);font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
+.kb-col.closed .group-head{color:var(--mut)}
 .tablewrap{overflow-x:auto}
 @media (max-width:600px){.kb{flex-direction:column;overflow-x:visible}.kb>div{min-width:0!important;width:100%}}
 @media(prefers-reduced-motion:reduce){button{transition:none!important}button:hover,button:active{transform:none!important}}
@@ -6333,6 +6353,9 @@ async function handler(req, res) {
         return send(400, 'company 和 role 必填', 'text/plain');
       if (!body.docId || !VALID_ID.test(body.docId)) return send(400, 'invalid docId', 'text/plain');
       if (!fs.existsSync(docPath(body.docId))) return send(404, 'doc not found', 'text/plain');
+      // 六态枚举（UPCV §1）：只收新枚举，老枚举值先经读侧归一才会出现——客户端不会也不该回传
+      if (body.status !== undefined && !APP_STATUS_ALL.includes(body.status)) return send(400, '非法 status（允许值：' + APP_STATUS_ALL.join(' / ') + '）', 'text/plain');
+      if (body.dueDate !== undefined && body.dueDate !== '' && !appDateOk(String(body.dueDate))) return send(400, 'dueDate 格式非法（应为 YYYY-MM-DD 或留空）', 'text/plain');
       const exportId = (typeof body.exportId === 'string' && body.exportId.trim()) ? body.exportId.trim() : '';
       const now = timestamp();
       let snapTs, frozenFile;
@@ -6366,7 +6389,7 @@ async function handler(req, res) {
         appliedAt: typeof body.appliedAt === 'string' ? body.appliedAt : '',
         nextStep: typeof body.nextStep === 'string' ? body.nextStep.trim() : '',
         dueDate: typeof body.dueDate === 'string' ? body.dueDate : '',
-        snapTs, exportId: exportId || null, contentHash: hash, status: '已投递', createdAt: now, updatedAt: now,
+        snapTs, exportId: exportId || null, contentHash: hash, status: APP_STATUS_ALL.includes(body.status) ? body.status : 'applied', createdAt: now, updatedAt: now,
         archive: archiveOk && fs.existsSync(out)
           ? { status: 'ok', generatedAt: now, hash }
           : { status: 'failed', hash, error: '渲染失败，未生成存档 PDF' }
@@ -6377,7 +6400,8 @@ async function handler(req, res) {
     if (req.method === 'POST' && url.pathname === '/app/update') {
       const body = JSON.parse(await readBody(req));
       if (!body.id || !/^[0-9-]+$/.test(body.id)) return send(400, 'invalid id', 'text/plain');
-      if (body.status !== undefined && !APP_STATUSES.includes(body.status)) return send(400, '非法 status', 'text/plain');
+      if (body.status !== undefined && !APP_STATUS_ALL.includes(body.status)) return send(400, '非法 status（允许值：' + APP_STATUS_ALL.join(' / ') + '）', 'text/plain');
+      if (body.dueDate !== undefined && body.dueDate !== '' && !appDateOk(String(body.dueDate))) return send(400, 'dueDate 格式非法（应为 YYYY-MM-DD 或留空）', 'text/plain');
       if (typeof body.jd === 'string' && body.jd.length > JD_MAX_CHARS) body.jd = body.jd.slice(0, JD_MAX_CHARS);   // 与 /app/add 同上限（2026-10-22 审查 [中]）
       if (body.docId !== undefined && (!VALID_ID.test(body.docId) || !fs.existsSync(docPath(body.docId)))) return send(400, 'invalid docId', 'text/plain');
       const apps = loadApps();
@@ -7117,10 +7141,23 @@ async function handler(req, res) {
       const apps = loadApps();
       const docIds = docIdsOnDisk();
       const nowMs = Date.now();
+      // 到期提醒三档（表格/看板/详情共用同一口径）：今日到期=warn 醒目徽章；已逾期=err；48h 内=临近截止图标徽章。
+      // 终态（offer/closed）不出徽标：流程已收口，截止日只剩信息价值没有催促价值。
+      const p2d = (n) => String(n).padStart(2, '0');
+      const now0 = new Date(nowMs);
+      const todayStr = now0.getFullYear() + '-' + p2d(now0.getMonth() + 1) + '-' + p2d(now0.getDate());
+      const dueBadges = (a) => {
+        const d = String(a.dueDate || '').slice(0, 10);
+        if (!d || APP_TERMINAL.includes(a.status)) return '';
+        if (d === todayStr) return badge('warn', '今日到期');
+        if (d < todayStr) return badge('err', '已逾期');
+        return (new Date(d + 'T00:00:00Z').getTime() - nowMs) < 48 * 3600 * 1000
+          ? '<span class="badge warn" role="img" aria-label="临近截止" title="临近截止">' + icon('circle-alert', 11) + '</span>' : '';
+      };
       if (url.searchParams.get('view') === 'table') {
         const channels = [...new Set(apps.map((a) => a.channel).filter(Boolean))];
         const row = (a) => {
-          const due = a.dueDate && (new Date(a.dueDate).getTime() - nowMs) < 48 * 3600 * 1000 && new Date(a.dueDate).getTime() >= nowMs - 24 * 3600 * 1000 ? '<span class="badge warn" role="img" aria-label="临近截止" title="临近截止">' + icon('circle-alert', 11) + '</span>' : '';
+          const due = dueBadges(a);
           const archiveBadge = a.archive && a.archive.status === 'failed' ? badge('err', '存档缺失') : '';
           // data-ch 是属性上下文：channel 由 /app/add、/app/update 原样落库（用户可控）→ 必须 escAttr
           return `<tr data-ch="${escAttr(a.channel || '')}"><td><b>${escHtml(a.company)}</b></td><td>${escHtml(a.role)}</td><td>${escHtml(a.channel || '')}</td><td>${escHtml(statusLabel(a.status))}</td><td>${escHtml(fmtWhen(a.appliedAt))}</td><td>${escHtml(a.nextStep || '')}</td><td>${escHtml(fmtWhen(a.dueDate))}${due}</td><td>${archiveBadge}<a href="/app?id=${escAttr(a.id)}">详情</a></td></tr>`;
@@ -7205,8 +7242,9 @@ async function handler(req, res) {
           </div>`;
       };
       const appCard = (a) => {
+        // idx 在六态链上定位：closed 得 -1 —— 不渲染 ◀（无链上前态）也不渲染推进（终态），改走状态下拉
         const idx = APP_STATUSES.indexOf(a.status);
-        const due = a.dueDate && (new Date(a.dueDate).getTime() - nowMs) < 48 * 3600 * 1000 && new Date(a.dueDate).getTime() >= nowMs - 24 * 3600 * 1000 ? '<span class="badge warn" role="img" aria-label="临近截止" title="临近截止">' + icon('circle-alert', 11) + '</span>' : '';
+        const due = dueBadges(a);
         const arch = a.archive && a.archive.status === 'failed' ? '<span class="badge err" title="存档 PDF 生成失败">' + icon('circle-x', 11) + '存档缺失</span>' : '';
         return `<div class="app-card card" data-status="${escAttr(a.status)}" data-app="${escAttr(a.id)}" style="margin:8px 0;padding:8px 10px;background:var(--panel);border:1px solid var(--line)">
           <div class="card-title" style="color:var(--ink)">${escHtml(a.company)}${due}</div>
@@ -7216,27 +7254,32 @@ async function handler(req, res) {
           ${a.note ? `<div style="font-size:12px;color:var(--mut)">${escHtml(a.note)}</div>` : ''}
           ${fuBlock(a)}
           <div style="margin-top:4px;font-size:12px">
-            ${idx > 0 ? `<button class="secondary" style="padding:2px 8px" data-action="appPatch" data-app="${escAttr(a.id)}" data-status="${escAttr(APP_STATUSES[idx - 1])}">◀</button>` : ''}
-            ${idx < APP_STATUSES.length - 1 && !APP_TERMINAL.includes(a.status) ? `<button class="secondary" style="padding:2px 8px" data-action="appPatch" data-app="${escAttr(a.id)}" data-status="${escAttr(APP_STATUSES[idx + 1])}">▶</button>` : ''}
-            <select style="font-size:12px;padding:2px" aria-label="状态" data-action="appStatus" data-app="${escAttr(a.id)}"><option value="">⇅</option>${APP_STATUSES.map((s) => `<option value="${s}"${s === a.status ? ' selected' : ''}>${escHtml(statusLabel(s))}</option>`).join('')}</select>
+            ${idx > 0 ? `<button class="secondary" style="padding:2px 8px" title="回退到上一态「${escAttr(statusLabel(APP_STATUSES[idx - 1]))}」" data-action="appPatch" data-app="${escAttr(a.id)}" data-status="${escAttr(APP_STATUSES[idx - 1])}">◀</button>` : ''}
+            ${idx >= 0 && idx < APP_STATUSES.length - 1 && !APP_TERMINAL.includes(a.status) ? `<button class="secondary" style="padding:2px 8px" title="推进到下一态「${escAttr(statusLabel(APP_STATUSES[idx + 1]))}」" data-action="appPatch" data-app="${escAttr(a.id)}" data-status="${escAttr(APP_STATUSES[idx + 1])}">▶ 推进</button>` : ''}
+            <select style="font-size:12px;padding:2px" aria-label="状态" data-action="appStatus" data-app="${escAttr(a.id)}"><option value="">⇅</option>${APP_STATUS_ALL.map((s) => `<option value="${s}"${s === a.status ? ' selected' : ''}>${escHtml(statusLabel(s))}</option>`).join('')}</select>
             <a href="/app?id=${escAttr(a.id)}">详情</a>
             <button class="secondary" style="padding:2px 8px" aria-label="快速编辑" data-action="appEdit" data-app="${escAttr(a.id)}">${icon('pencil', 13)}</button>
             <button class="danger" style="padding:2px 8px;min-height:28px" aria-label="删除投递" data-action="appDel" data-app="${escAttr(a.id)}">${icon('trash-2', 13)}</button>
           </div>
-          <!--R3①：行内快速编辑（原为 4 连 prompt 链）——展开即改、取消即收；仍走 /app/update 的 {company,role,note,jd} 契约-->
+          <!--R3①：行内快速编辑（原为 4 连 prompt 链）——展开即改、取消即收；仍走 /app/update，载荷 {company,role,note,jd,dueDate}-->
           <div class="app-edit" id="editbox-${escAttr(a.id)}" hidden style="margin-top:8px;border-top:1px dashed var(--line);padding-top:8px">
             <label style="display:block;font-size:12px;color:var(--mut)"><span>公司</span><input data-edit="company" style="width:100%;margin-top:3px" value="${escAttr(a.company)}"></label>
             <label style="display:block;font-size:12px;color:var(--mut);margin-top:6px"><span>岗位</span><input data-edit="role" style="width:100%;margin-top:3px" value="${escAttr(a.role)}"></label>
+            <label style="display:block;font-size:12px;color:var(--mut);margin-top:6px"><span>截止（可空）</span><input data-edit="dueDate" type="date" style="width:100%;margin-top:3px" value="${escAttr(a.dueDate || '')}"></label>
             <label style="display:block;font-size:12px;color:var(--mut);margin-top:6px"><span>备注（可空）</span><textarea data-edit="note" rows="2" style="width:100%;margin-top:3px">${escHtml(a.note || '')}</textarea></label>
             <label style="display:block;font-size:12px;color:var(--mut);margin-top:6px"><span>JD（可空）</span><textarea data-edit="jd" rows="3" style="width:100%;margin-top:3px">${escHtml(a.jd || '')}</textarea></label>
             <div style="margin-top:6px"><button type="button" data-action="appEditSave" data-app="${escAttr(a.id)}">保存</button> <button type="button" class="secondary" data-action="appEditToggle" data-app="${escAttr(a.id)}" data-show="false">取消</button></div>
           </div>
         </div>`;
       };
+      // 列 = 六态链顺序（UPCV §1「我的职位」六列）；closed 在链外——不占第七列，
+      // 折叠收进独立「已关闭」区（记录仍可见可查，但不混进推进式看板语义）。列头计数用浅色胶囊（v3 方向，.kb-count）。
       const cols = APP_STATUSES.map((st) => {
         const items = apps.filter((a) => a.status === st);
-        return `<div class="kb-col${items.length ? '' : ' empty'}"><div class="group-head">${escHtml(statusLabel(st))} <span style="color:var(--mut);font-weight:600;font-variant-numeric:tabular-nums">${items.length}</span></div>${items.map(appCard).join('') || '<div style="color:var(--mut);font-size:12px;padding:4px 8px">（空）</div>'}</div>`;
+        return `<div class="kb-col${items.length ? '' : ' empty'}" data-col="${escAttr(st)}"><div class="group-head">${escHtml(statusLabel(st))} <span class="kb-count">${items.length}</span></div>${items.map(appCard).join('') || '<div style="color:var(--mut);font-size:12px;padding:4px 8px">（空）</div>'}</div>`;
       }).join('');
+      const closedApps = apps.filter((a) => a.status === 'closed');
+      const closedSec = `<details class="card" id="kbClosed" style="margin-top:10px"${closedApps.length ? '' : ' hidden'}><summary style="cursor:pointer;font-weight:700">已关闭 <span class="kb-count">${closedApps.length}</span></summary>${closedApps.map(appCard).join('')}</details>`;
       return send(200, page('投递', `<div class="page-head"><h1>投递</h1><a href="/applications?view=table" style="font-size:13px;font-weight:400">⇄ 表格视图</a></div>${appTabs('apps')}
     ${corruptBanner()}
     <details class="card" id="appAddBox"><summary style="cursor:pointer;font-weight:700">＋ 新增投递（记录已发生的投递，不自动发送）</summary>
@@ -7253,6 +7296,7 @@ async function handler(req, res) {
       <label><span>岗位</span><input id="role" required></label>
       <label><span>简历</span><select id="docId">${docIds.map((d) => `<option value="${d}">${escHtml(d)}</option>`).join('')}</select></label>
       <label><span>渠道</span><input id="channel"></label>
+      <label><span>状态</span><select id="status">${APP_STATUS_ALL.map((s) => `<option value="${s}"${s === 'applied' ? ' selected' : ''}>${escHtml(statusLabel(s))}</option>`).join('')}</select></label>
       <label><span>投递日期</span><input id="appliedAt" type="date"></label>
       <label><span>截止</span><input id="dueDate" type="date"></label>
       <label><span>岗位链接</span><input id="link"></label>
@@ -7262,7 +7306,8 @@ async function handler(req, res) {
       <div class="wide"><button>添加</button> <span id="appmsg"></span></div>
     </form></details>
     <div class="kb">${cols}</div>
-    <script nonce="__CSP_NONCE__">var APP_STATUSES = ${JSON.stringify(APP_STATUSES)}; var APPS = ${JSON.stringify(apps).replace(/</g, '\\u003c')};</script>
+    ${closedSec}
+    <script nonce="__CSP_NONCE__">var APP_STATUSES = ${JSON.stringify(APP_STATUS_ALL)}; var APPS = ${JSON.stringify(apps).replace(/</g, '\\u003c')};</script>
     <script nonce="__CSP_NONCE__">
       function appPatch(id, patch) {
         __wv('/app/update', Object.assign({ id: id }, patch)).then(function () { location.reload(); }).catch(function () {});
@@ -7282,7 +7327,7 @@ async function handler(req, res) {
         var box = document.getElementById('editbox-' + id);
         if (!box) return;
         var get = function (k) { var el = box.querySelector('[data-edit="' + k + '"]'); return el ? el.value : ''; };
-        appPatch(id, { company: get('company').trim(), role: get('role').trim(), note: get('note'), jd: get('jd') });
+        appPatch(id, { company: get('company').trim(), role: get('role').trim(), note: get('note'), jd: get('jd'), dueDate: get('dueDate') });
       }
       function appDel(id) {
         if (!confirm('删除这条投递？')) return;
@@ -7415,7 +7460,7 @@ async function handler(req, res) {
           var d = await __wv('/app/add', { company: document.getElementById('company').value.trim(), role: document.getElementById('role').value.trim(), docId: document.getElementById('docId').value,
             jd: document.getElementById('jd').value, note: document.getElementById('note').value,
             channel: document.getElementById('channel').value.trim(), link: document.getElementById('link').value.trim(),
-            appliedAt: document.getElementById('appliedAt').value, nextStep: document.getElementById('nextStep').value.trim(), dueDate: document.getElementById('dueDate').value },
+            appliedAt: document.getElementById('appliedAt').value, nextStep: document.getElementById('nextStep').value.trim(), dueDate: document.getElementById('dueDate').value, status: document.getElementById('status').value },
             document.getElementById('appmsg'));
           if (d && d.warning) alert(d.warning);
           location.reload();
@@ -7445,7 +7490,16 @@ async function handler(req, res) {
       // 只呈现 text 为字符串的条目，模型输出与历史数据均不可信，渲染一律 escHtml。
       const preps = Array.isArray(app.preps) ? app.preps.filter((p) => p && typeof p.text === 'string') : [];
       const now = Date.now();
-      const dueBadge = app.dueDate && (new Date(app.dueDate).getTime() - now) < 48 * 3600 * 1000 ? badge('warn', '到期') : '';
+      // 到期徽标与看板同一三档口径：今日到期=warn / 已逾期=err / 48h 内=到期；终态（offer/closed）不出徽标
+      const dueBadge = (() => {
+        const d = String(app.dueDate || '').slice(0, 10);
+        if (!d || APP_TERMINAL.includes(app.status)) return '';
+        const n0 = new Date(now);
+        const today = n0.getFullYear() + '-' + String(n0.getMonth() + 1).padStart(2, '0') + '-' + String(n0.getDate()).padStart(2, '0');
+        if (d === today) return badge('warn', '今日到期');
+        if (d < today) return badge('err', '已逾期');
+        return (new Date(d + 'T00:00:00Z').getTime() - now) < 48 * 3600 * 1000 ? badge('warn', '到期') : '';
+      })();
       const archiveMissing = !app.archive || app.archive.status !== 'ok';
       const archiveLine = archiveMissing
         ? `${badge('err', '存档 PDF 缺失')} <button class="secondary" style="padding:2px 8px;font-size:12px" data-action="regenArchive">从快照重新生成</button><span id="regenMsg" style="font-size:12px"></span>`
@@ -7696,13 +7750,13 @@ async function handler(req, res) {
     <div class="card">
       <b style="font-size:16px">${escHtml(app.company)}</b> ${escHtml(app.role)} ${dueBadge}
       <div style="font-size:13px;color:var(--mut);margin-top:6px">
-        状态：<span class="badge">${escHtml(statusLabel(app.status))}</span>
+        状态：<select style="font-size:12px;padding:2px;vertical-align:baseline" aria-label="状态" data-action="appDetailStatus">${APP_STATUS_ALL.map((s) => `<option value="${s}"${s === app.status ? ' selected' : ''}>${escHtml(statusLabel(s))}</option>`).join('')}</select>
         ${app.channel ? `渠道：<span class="badge">${escHtml(app.channel)}</span>` : ''}
         ${(() => { const u = safeUrl(app.link); return u ? `<a href="${escAttr(u)}" target="_blank" rel="noopener">岗位链接</a>` : (app.link ? '<span class="mut">岗位链接协议不安全，未渲染</span>' : ''); })()}
         简历：<a href="/edit?id=${escAttr(app.docId)}">${escHtml(app.docId)}</a>
         ${app.appliedAt ? `投递日期：${escHtml(fmtWhen(app.appliedAt))}` : ''}
         ${app.nextStep ? `下一步：${escHtml(app.nextStep)}` : ''}
-        ${app.dueDate ? `截止：${escHtml(fmtWhen(app.dueDate))}` : ''}
+        截止：<input type="date" style="font-size:12px" aria-label="截止日期" data-action="appDetailDue" value="${escAttr(app.dueDate || '')}">${app.dueDate ? `（${escHtml(fmtWhen(app.dueDate))}）` : ''}
         ${app.snapTs ? `当时快照：<a href="/snapshot/view?id=${escAttr(app.docId)}&ts=${escAttr(app.snapTs)}">${escHtml(app.snapTs)}</a>` : ''}
         ${archiveLine}
       </div>
@@ -7770,6 +7824,9 @@ async function handler(req, res) {
       // ===== 内联 handler 委托化注册（b5c1）=====
       var __acts = window.__acts || (window.__acts = { click: {}, change: {}, input: {}, submit: {}, keydown: {} });
       __acts.click.regenArchive = function (el) { return regenArchive(); };
+      // 状态下拉（六态 + closed）与截止日编辑：change 即存（走 /app/update 既有端点），成功后整页 reload 回显
+      __acts.change.appDetailStatus = function (el) { if (el.value) __wv('/app/update', { id: APPID, status: el.value }).then(function () { location.reload(); }).catch(function () {}); };
+      __acts.change.appDetailDue = function (el) { __wv('/app/update', { id: APPID, dueDate: el.value }).then(function () { location.reload(); }).catch(function () {}); };
       // ivAdd 无定义（既有死按钮：点击 ReferenceError、界面无变化）——委托化保持原样，
       // 只把调用点从内联属性搬进注册表；后续卡若补 ivAdd 实现，此处接线即刻生效。
       __acts.click.ivAdd = function (el) { return ivAdd(); };
@@ -8397,14 +8454,18 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const evals = loadEvals().map(evalRecordView);
       // 早退口径（F1）：投递与评估**均为空**才早退——有评估无投递时闭环卡仍要渲染，不得被空投递吞掉。
       if (!apps.length && !evals.length) return send(200, page('复盘', `<h1>复盘统计</h1>${appTabs('stats')}<div class="card" style="text-align:center;padding:40px;color:var(--mut)">暂无投递记录<br><br><a href="/applications">先去「投递」页添加记录</a></div>`, 'apps'));
+      // 分布口径：链上六态逐列 + closed 单列一行（已关闭也计入分布，藏在 closed 会漏记被拒/搁置存量）。
+      // apps 已经 loadApps 读时归一，老枚举在此不会漏成「未填」。
       const funnel = APP_STATUSES.map((s) => [s, apps.filter((a) => a.status === s).length]);
+      funnel.push(['closed', apps.filter((a) => a.status === 'closed').length]);
       const byCh = {}; apps.forEach((a) => { byCh[a.channel || '未填'] = (byCh[a.channel || '未填'] || 0) + 1; });
       const byDoc = {}; apps.forEach((a) => { byDoc[a.docId] = (byDoc[a.docId] || 0) + 1; });
       const byTag = {}; const meta = loadMeta(); apps.forEach((a) => { const t = (meta[a.docId] || {}).tag || '未标记'; byTag[t] = (byTag[t] || 0) + 1; });
       // R2⑨：按简历版本的键从裸 id 映射为「标题（id）」（docInfo 现成标题，与首页母版下拉 :2061 同格式）；
       // 已删文档 docInfo 为 null → 回退裸 id。title 已在 docInfo 内转义，此处不再包 escHtml（防双转义）。
       const byDocLabel = (k) => { const di = docInfo(k, meta[k]); return di ? `${di.title}（${escAttr(k)}）` : escHtml(k); };
-      const interviewed = apps.filter((a) => ['面试中', 'offer'].includes(a.status) || (Array.isArray(a.interviews) && a.interviews.length)).length;
+      // 「有面试安排或已进入面试」口径：状态进到 interviewing/offer，或记录里已有面试轮次（与老枚举「面试中/offer」同语义）
+      const interviewed = apps.filter((a) => ['interviewing', 'offer'].includes(a.status) || (Array.isArray(a.interviews) && a.interviews.length)).length;
       const n = apps.length;
       // 分布条（2026-11-04 视觉收尾，DESIGN.md §10）：单系数据不上 accent——非零行用中性 mut，accent 只留给行动；计数右对齐定宽 + tabular-nums
       const funnelBar = funnel.map(([s, c]) => `<div style="display:flex;align-items:center;margin:var(--space-2) 0"><span style="width:70px;font-size:12px">${escHtml(statusLabel(s))}</span><div style="flex:1;background:var(--bg);border-radius:var(--radius);height:20px"><div style="background:var(--mut);height:100%;border-radius:var(--radius);width:${n ? (c / n * 100) : 0}%"></div></div><span style="width:30px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums">${c}</span></div>`).join('');
@@ -8424,7 +8485,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         const sameName = !pid && refs.length > 0;
         const refBits = refs.map((a) => {
           const ivs = Array.isArray(a.interviews) ? a.interviews.length : 0;
-          return escHtml(String((a && a.status) || '未填状态'))
+          return escHtml(statusLabel((a && a.status) || '') || '未填状态')
             + ((a && a.appliedAt) ? '（投于 ' + escHtml(fmtWhen(String(a.appliedAt))) + '）' : '')
             + (ivs ? ' · 面试 ' + ivs + ' 轮' : '');
         }).join('；');

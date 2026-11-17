@@ -3,8 +3,8 @@
 //   A. 投递看板（/applications 看板视图）：所有可见 input/select/textarea 有可访问名
 //      （aria-label / aria-labelledby / label 包裹，简化的可访问名计算）——含「新增投递」表单与行内编辑表单。
 //   B. 投递卡脚本不含 prompt( 调用（✎ 快速编辑 = 行内小表单，展开即改、取消即收）；全程零 prompt 对话框。
-//   C. 行内编辑走既有 /app/update 契约：{company, role, note, jd} 提交，其余字段（docId/channel/appliedAt/status）原样保留。
-//   D. 新增投递表单走既有 /app/add 契约：字段形状与落库不变（status 默认已投递、archive 照旧生成）。
+//   C. 行内编辑走既有 /app/update 契约：{company, role, note, jd, dueDate} 提交，其余字段（docId/channel/appliedAt/status）原样保留。
+//   D. 新增投递表单走既有 /app/add 契约：字段形状与落库不变（status 默认 applied=已投递、archive 照旧生成）。
 //   E. 设置页：h1 为「设置」；无配置时 #settingsGuide 说明卡在场（点「添加配置」后隐藏），
 //      有配置（种子 config.json）时不渲染；全部控件有可访问名（含 inp() label 包裹与备份文件选择）。
 // 阴性对照：临时解除 inp() 的 label 包裹 → E 转红（单独跑）。
@@ -144,7 +144,8 @@ try {
   assert.equal(edited.channel, '内推', '表单外字段（channel）不得被编辑表单抹掉');
   assert.equal(edited.appliedAt, '2026-01-02', '表单外字段（appliedAt）不得被编辑表单抹掉');
   assert.equal(edited.docId, 'doc1', '表单外字段（docId）不得被编辑表单抹掉');
-  assert.equal(edited.status, '已投递', '状态不得被编辑表单改动');
+  // 六态模型（UPCV §1）：存量 '已投递' 读侧归一为 applied；本次保存把它落成新枚举（写侧只写新枚举，语义不变）
+  assert.equal(edited.status, 'applied', '状态不得被编辑表单改动（老枚举经归一写回为 applied）');
 
   // ===== C-取消：取消即收（不发请求）=====
   await page.click('button[aria-label="快速编辑"]');
@@ -174,7 +175,7 @@ try {
   assert.equal(added.note, '看板备注', '备注应按原契约落库');
   assert.equal(added.nextStep, '准备面试', '下一步应按原契约落库');
   assert.equal(added.docId, 'doc1', '简历应按原契约落库');
-  assert.equal(added.status, '已投递', '新投递默认状态应为已投递（形状零变化）');
+  assert.equal(added.status, 'applied', '新投递默认状态应为 applied=已投递（六态模型，写侧只写新枚举）');
   assert.equal(added.appliedAt, '', '未填的投递日期应为空串（形状零变化）');
 
   // ===== E：设置页（rootMain 无 config.json → 空态说明卡在场）=====

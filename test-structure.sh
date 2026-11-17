@@ -5591,6 +5591,45 @@ assert(srv.includes('guide.hidden = state.profiles.length > 0'), 'render() 应�
 console.log('✅ R3 投递看板与设置页表单/可访问性源级钉值');
 EOF
 
+# ===== UPCV「我的职位」六态模型（upcv-features-implementation.md §1）：源级钉值 =====
+node --input-type=module << 'EOF'
+import { readFileSync } from 'node:fs';
+const assert = (c, m) => { if (!c) { console.error('❌ UPCV-6ST ' + m); process.exit(1); } };
+const srv = readFileSync('./server.mjs', 'utf8');
+// ① 六态链 + closed 链外终态：枚举字面值钉死（顺序即状态机顺序）
+assert(srv.includes("const APP_STATUSES = ['to_apply', 'preparing', 'applied', 'replied', 'interviewing', 'offer'];"),
+  'APP_STATUSES 应为六态链（to_apply→preparing→applied→replied→interviewing→offer）');
+assert(srv.includes("const APP_STATUS_ALL = [...APP_STATUSES, 'closed'];"), 'APP_STATUS_ALL 应为六态 + closed');
+assert(srv.includes("const APP_TERMINAL = ['offer', 'closed'];"), 'APP_TERMINAL 应为 offer + closed');
+// ② 老枚举映射表（写死在 server.mjs；读时归一、不写回存量文件）
+for (const pair of ["'已投递': 'applied'", "'笔试': 'replied'", "'面试中': 'interviewing'", "'offer': 'offer'", "'已拒': 'closed'", "'搁置': 'closed'"]) {
+  assert(srv.includes(pair), '老枚举映射表缺 ' + pair);
+}
+assert(/loadApps\s*=\s*\(\)\s*=>\s*\{[\s\S]*?appStatus\(x\.status\)/.test(srv), 'loadApps 应读时归一（appStatus 映射老枚举）');
+// ③ 写侧只收新枚举：/app/update 走 APP_STATUS_ALL 校验 + 中文原因；dueDate 走 YYYY-MM-DD 校验
+assert(/body\.status !== undefined && !APP_STATUS_ALL\.includes\(body\.status\)\) return send\(400, '非法 status（允许值：/.test(srv),
+  '/app/update 应按 APP_STATUS_ALL 校验并回中文原因');
+assert(/APP_STATUS_ALL\.includes\(body\.status\) \? body\.status : 'applied'/.test(srv), '/app/add 写默认值应为 applied（写侧只写新枚举）');
+assert(srv.includes('dueDate 格式非法（应为 YYYY-MM-DD 或留空）'), 'dueDate 校验中文原因缺失');
+// ④ 看板：链上六列（APP_STATUSES）+ closed 折叠区 + 浅色胶囊计数 + 「今日到期」徽标 + 「▶ 推进」快捷按钮（复用 appPatch 委托，不新造动作）
+assert(/const cols = APP_STATUSES\.map/.test(srv), '看板列应按 APP_STATUSES 渲染（六态链）');
+assert(/closedApps\.map\(appCard\)/.test(srv) && srv.includes('id="kbClosed"'), 'closed 应折叠收进独立「已关闭」区（不进六列）');
+assert(srv.includes('class="kb-count"') && srv.includes('.kb-count{'), '列头计数应为 .kb-count 浅色胶囊');
+assert(srv.includes("'今日到期'"), '「今日到期」徽标缺失');
+assert(/▶ 推进<\/button>/.test(srv) && /data-action="appPatch" data-app="/.test(srv), '卡片应有「▶ 推进」按钮且复用 appPatch 委托');
+assert(srv.includes('data-edit="dueDate"'), '行内快速编辑应含 dueDate 字段');
+// ⑤ 详情页：六态下拉 + dueDate 可编辑（change 委托到 /app/update）
+assert(srv.includes('data-action="appDetailStatus"') && srv.includes('data-action="appDetailDue"'),
+  '详情页应有六态下拉与 dueDate 编辑（appDetailStatus/appDetailDue）');
+// ⑥ /stats：分布按新枚举聚合（APP_STATUSES 链 + closed 追加行），interviewed 口径同步新枚举
+assert(srv.includes("funnel.push(['closed'"), '/stats 分布应含 closed 行');
+assert(srv.includes("['interviewing', 'offer'].includes(a.status)"), '/stats interviewed 口径应同步新枚举');
+// ⑦ followup 同口径：「仍等回应」只认 applied（模块常量在此登记复核）
+const fu = readFileSync('./followup.mjs', 'utf8');
+assert(fu.includes("const WAITING_STATUS = 'applied';"), 'followup.mjs WAITING_STATUS 应为 applied（已投递态）');
+console.log('✅ UPCV-6ST 六态模型源级钉值（枚举/映射表/读时归一/写侧校验/七列看板/胶囊计数/今日到期/推进按钮/详情页可编辑/统计口径/followup 同口径）');
+EOF
+
 # ===== 收件箱 T6 · portNotice 端口漂移提示（源级钉值；2026-11-13 spec §2.9）=====
 node --input-type=module << 'EOF'
 import { strict as assert } from 'node:assert';

@@ -16,8 +16,8 @@
 // 诚实边界：
 //   · **草稿不发送**：本模块没有任何「发送」能力（无外发、无跨站注入、无代填）——生成结果只落本机
 //     投递记录，用户自己复制自己发（批 3 §4 硬约束：不做跨站注入/自动发送）。
-//   · 「无回应」只认「仍在等回应」：状态 = 已投递 且 没有任何面试记录。进了笔试/面试说明对方已回应；
-//     offer/已拒/搁置是终态或用户主动搁下 —— 都不再提示跟进。
+//   · 「无回应」只认「仍在等回应」：状态 = applied（已投递）且 没有任何面试记录。进了 replied/interviewing
+//     说明对方已回应；to_apply/preparing 还没投出去；offer/closed 是终态或用户主动搁下 —— 都不再提示跟进。
 //   · 阈值 N 默认 7 天，/settings 可配（config.json 的 followUpDays）。
 //   · 取材只来自该投递记录关联的简历（派生要点），不在本地编造事实。
 //   · 无模型 / 无简历 → 明确拒绝（不留注定失败的任务，也不留 running 假任务）。
@@ -67,8 +67,9 @@ export function followUpDays(root) {
 }
 
 // ===== 「无回应满 N 天」判定（纯函数、零 I/O）=====
-// 「已投递」= server.mjs 的 APP_STATUSES[0]（同一口径常量，字面量在此登记一次）。
-const WAITING_STATUS = '已投递';
+// 「applied」= 六态模型里的已投递态（server.mjs APP_STATUSES[2]；老枚举「已投递」读侧归一成它，
+// 同一口径常量，字面量在此登记一次）。
+const WAITING_STATUS = 'applied';
 
 // 日历日 → UTC 日序号：投递日期（appliedAt，YYYY-MM-DD）缺省回落创建日（createdAt 的日期部分）。
 // 两个日历日之差 = 已经过的完整天数（不受时区/夏令时影响）。
