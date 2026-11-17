@@ -1,0 +1,22 @@
+{
+  "project": {
+    "id": "1085607708107003537",
+    "title": "简历工作台",
+    "view": "https://stitch.withgoogle.com → 项目「简历工作台」"
+  },
+  "designSystems": [
+    {"asset": "assets/8d0b3b224aa948e2b3c55c9960751ac2", "name": "冷静工具台", "src": ".stitch/DESIGN.md"},
+    {"asset": "assets/f777043f5e6046b69340929eaafc20d9", "name": "UP简历风（亮蓝#1E4AFF/12px圆角/左侧栏）", "src": ".stitch/DESIGN-upcv.md"}
+  ],
+  "designDirs": {
+    "v1-calm-tools": "老方向 5 屏（首页/定制/收件箱/编辑器/评估）",
+    "v2-upcv-style": "UP 风 14 屏：8 页各 1-2 版（home/editor/inbox/kanban/detail/evals/jobnew/settings）",
+    "v3-upcv-modules": "UPCV 新模块 9 屏：我的职位看板x2/AI简历助手x2/Agent会话/模拟面试x2/模板库x2（来源：upcv-features-implementation.md + upcv-jobs-reverse-handoff.md）"
+  },
+  "downloadMethod": "X-Goog-Api-Key 头（取自 ~/.claude.json stitch MCP 配置）直接调 :download 端点；PNG 是 base64 dataString，HTML 的 dataString 是原文",
+  "pending": {
+    "rrEditor": "Reactive Resume 风格编辑器单独屏未确认落库（v2 已有岗位定制审阅编辑器可暂代）",
+    "review": "用户审阅三版目录后定方向 → edit_screens 微调或落地改代码",
+    "cleanup": "Stitch 项目里约 49 屏含重试重复版；MCP 无删单屏接口，网页端按 .stitch/designs 目录名单对照删"
+  }
+}

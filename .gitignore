@@ -28,3 +28,6 @@ audio/
 .superpowers/
 .claude/
 .playwright-mcp/
+
+# Stitch 设计稿产物（生成 HTML/PNG，含模拟敏感串；DESIGN*.md 与 metadata.json 仍跟踪）
+.stitch/designs/

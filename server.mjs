@@ -1917,12 +1917,12 @@ function page(title, inner, active = '', wide = false) {
 /* 浅色克制设计系统（2026-10-21 UI 重设计，设计文档 dev-docs/2026-10-21-ui-redesign-design.md）：
    主行动用近黑不用蓝；彩色只承载状态；零阴影靠 1px 边框 + 背景差表达层级。
    旧名（--bg/--panel/--ink/...）保留为别名，既有 CSS 几百处零改动即生效。 */
-/* B1 双区规则已定案（DESIGN.md §2，2026-11-02 用户拍板）：应用页主行动 --accent 为近黑；编辑器 --ed-accent 为暖橙（editor-shell.js），两区不互通；字面值已钉 test-structure.sh B1 断言。 */
-/*A-VARS*/:root{--background:#ffffff;--foreground:#0a0a0a;--muted:#737373;--card:#ffffff;--card-2:#fafafa;--border:#e5e5e5;--accent:#18181b;--accent-fg:#ffffff;--success:#15803D;--success-bg:#f0fdf4;--warning:#A25711;--warning-bg:#fffbeb;--danger:#B91C1C;--danger-bg:#fef2f2;--radius:4px;--radius-lg:6px;--shadow:none;--font:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;--font-mono:ui-monospace,Menlo,monospace;--bg:var(--background);--panel:var(--card);--ink:var(--foreground);--fg:var(--foreground);--mut:var(--muted);--line:var(--border);--accent-ink:var(--accent-fg);--accent-soft:var(--card-2);--ok:var(--success);--ok-soft:var(--success-bg);--warn:var(--warning);--warn-soft:var(--warning-bg);--err:var(--danger);--err-soft:var(--danger-bg);--ai:var(--foreground);--ai-soft:var(--card-2);--serif:var(--font);--sans:var(--font);--space-hair:2px;--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-6:24px}
+/* B1 双区规则已定案（DESIGN.md §2，2026-11-02 用户拍板）：应用页主行动 --accent 为亮蓝（UP 方向 #0033d2，2026-11-17 用户拍板 v3 设计稿）；编辑器 --ed-accent 为暖橙（editor-shell.js），两区不互通；字面值已钉 test-structure.sh B1 断言。 */
+/*A-VARS*/:root{--background:#F5F6F8;--foreground:#1F2329;--muted:#6B7280;--card:#ffffff;--card-2:#F0F2F5;--border:#E5E7EB;--accent:#0033d2;--accent-fg:#ffffff;--success:#16A34A;--success-bg:#E7F6EC;--warning:#D97706;--warning-bg:#FEF3E2;--danger:#DC2626;--danger-bg:#FDECEC;--radius:8px;--radius-lg:12px;--shadow:none;--font:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;--font-mono:ui-monospace,Menlo,monospace;--bg:var(--background);--panel:var(--card);--ink:var(--foreground);--fg:var(--foreground);--mut:var(--muted);--line:var(--border);--accent-ink:var(--accent-fg);--accent-soft:#E8EEFF;--ok:var(--success);--ok-soft:var(--success-bg);--warn:var(--warning);--warn-soft:var(--warning-bg);--err:var(--danger);--err-soft:var(--danger-bg);--ai:var(--accent);--ai-soft:var(--accent-soft);--serif:var(--font);--sans:var(--font);--space-hair:2px;--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-6:24px}
 *{box-sizing:border-box}
 /* 批次B：body 不再限宽（max-width:1100px 会把「侧栏+内容」压扁）——
    页面总宽改由 .home / .topnav 自身定宽居中（各 1400px），body 只留左右 20px 内边距。 */
-body{font-family:var(--sans);line-height:1.6;margin:0;padding:0 20px 40px;font-size:14px;background:var(--bg);color:var(--ink)}
+body{font-family:var(--sans);line-height:1.6;margin:0;padding:0 24px 40px 264px;font-size:14px;background:var(--bg);color:var(--ink)}
 body.wide{max-width:min(1440px,100%)}
 a{color:var(--accent);text-decoration:none;font-weight:600}
 /* S4B-2：键盘 Tab 焦点不被 sticky 顶栏遮挡（WCAG 2.4.11 Focus Not Obscured, AA 级）。
@@ -1934,13 +1934,16 @@ html{scroll-padding-top:64px}
    取值 = top 偏移 12px + 两行实测高 106px + 12px 余量 = 130px。 */
 @media (max-width:640px){html{scroll-padding-top:130px}}
 /* 批次B：body 不再限宽，页面总宽由 .topnav / .home 各自定宽居中（1400px），两者左右对齐。 */
-.topnav{display:flex;justify-content:space-between;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-lg);box-shadow:var(--shadow);padding:10px 18px;margin:16px auto 20px;max-width:1400px;position:sticky;top:12px;z-index:50;flex-wrap:wrap;gap:8px}
-.topnav .brand{display:inline-flex;align-items:center;gap:6px;font-family:var(--serif);letter-spacing:.4px;font-weight:800;font-size:16px;color:var(--ink)}
+.topnav{position:fixed;top:0;left:0;bottom:0;width:240px;display:flex;flex-direction:column;justify-content:space-between;background:var(--card);border-right:1px solid var(--line);padding:20px 12px;z-index:50}
+.topnav .brand{display:inline-flex;align-items:center;gap:8px;font-family:var(--serif);letter-spacing:.4px;font-weight:800;font-size:16px;color:var(--ink);padding:4px 10px 20px}
 .topnav .brand svg{width:17px;height:17px;flex:none}
-.topnav .links a{display:inline-flex;align-items:center;gap:5px;margin-left:16px;color:var(--mut);font-weight:600;padding-bottom:2px;border-bottom:2px solid transparent}
-.topnav .links a svg{width:15px;height:15px;flex:none}
-.topnav .links a.on{color:var(--accent);border-bottom-color:var(--accent)}
-.topnav .links a:hover{color:var(--ink)}
+.topnav .links{display:flex;flex-direction:column;gap:2px}
+.topnav .links a{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;color:var(--mut);font-weight:600;font-size:14px;border-bottom:none}
+.topnav .links a svg{width:16px;height:16px;flex:none}
+.topnav .links a.on{background:var(--accent-soft);color:var(--accent)}
+.topnav .links a:hover{background:var(--card-2);color:var(--ink)}
+.topnav .navfoot{padding:12px;font-size:12px;color:var(--mut);border-top:1px solid var(--line)}
+@media (max-width:860px){.topnav{position:static;width:auto;flex-direction:row;align-items:center;justify-content:space-between;border-right:none;border-bottom:1px solid var(--line);padding:10px 16px;margin-bottom:16px}.topnav .brand{padding:0}.topnav .links{flex-direction:row;gap:4px}.topnav .links a{padding:7px 10px}.topnav .navfoot{display:none}body{padding:0 16px 40px}}
 /* 投递系页签条（渐进呈现 T2）：看板/网申包/复盘 三页共用，挂在页题下方。 */
 .apptabs{display:flex;gap:var(--space-1);margin:0 0 var(--space-3);border-bottom:1px solid var(--line)}
 /* margin-bottom:-1px 是边框补偿字面值（页签底边框与条底边框重合压线），非间距，不走 token。 */
@@ -2132,7 +2135,7 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .foot-links a,.foot-links summary{color:var(--mut);font-size:13px}
 </style></head><body${wide ? ' class="wide"' : ''}>
 <script nonce="__CSP_NONCE__">${STATUS_SCRIPT}${ACT_DISPATCH_JS}</script>
-<nav class="topnav"><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><span class="links">${nav('docs', '/', '简历', 'file-text')}${nav('apps', '/applications', '投递', 'columns-3')}${nav('settings', '/settings', '设置', 'settings')}</span></nav>
+<nav class="topnav"><div><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><div class="links">${nav('docs', '/', '简历', 'file-text')}${nav('apps', '/applications', '投递', 'columns-3')}${nav('settings', '/settings', '设置', 'settings')}</div></div><div class="navfoot">本地优先 · 数据在 ~/resume</div></nav>
 <div class="home"><div class="mainarea">${inner}</div></div>
 <footer>简历工作台 · 本地优先 · 数据在 ${path.basename(root) === 'resume' ? '~/resume' : 'RESUME_ROOT'}</footer>
 ${WRITE_HELPER_JS}</body></html>`;
