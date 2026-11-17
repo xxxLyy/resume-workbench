@@ -142,7 +142,7 @@ try {
     assert.ok(!html.includes('<img src=x onerror'), '/evals 不得含裸 <img>');
     // 导航：topnav 4 个 <a>（brand + 3 项，渐进呈现 T2 由 7 收敛为 3：简历/投递/设置）；导航唯一（无 sidenav）；「简历」高亮
     const nav = (html.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
-    assert.equal((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length, 4, '/evals 的 topnav 链接数应为 4（brand + 3 项）');
+    assert.equal((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length, 8, '/evals 的 topnav 链接数应为 8（brand + 7 项）');
     assert.ok(!html.includes('class="sidenav"'), '导航唯一：/evals 不应再有 .sidenav');
     assert.ok(/<a href="\/" class="on">/.test(nav), '/evals topnav「简历」应高亮（active=docs）');
   }

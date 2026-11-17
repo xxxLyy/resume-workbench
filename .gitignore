@@ -5,6 +5,8 @@ materials.json
 evaluations.json
 .import-token
 inbox.json
+interviews.json
+agent-sessions.json
 docs-meta.json
 apply-profiles.json
 docs/

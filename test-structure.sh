@@ -2217,7 +2217,11 @@ const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/prep','/
   '/app/update','/applications',   // 批4 b4c1：练习会话六路由（登记非放宽）
   '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf','/import/page','/inbox','/inbox/adopt','/inbox/dismiss','/inbox/draft','/inbox/eval','/inbox/status',
   '/job-panel.js','/job/alt-adopt','/job/brief','/job/changes','/job/create','/job/feedback-del','/job/generate','/job/gen-cancel','/job/gen-retry','/job/gen-start','/job/new','/layout-info','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',
-  '/materials','/model-picker.js','/new','/onboarding','/onboarding/guided','/onboarding/star-suggest','/onboarding/step','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings','/eval/create','/eval/promote','/evals',
+  '/materials','/model-picker.js','/new',
+  '/agent','/agent-panel.js','/agent/chat','/agent/context-preview','/agent/sessions',
+  '/ai-helper','/ai-helper-panel.js','/ai-helper/check','/ai-helper/docs','/ai-helper/improve-all','/ai-helper/polish','/ai-helper/rewrite',
+  '/interview','/interview-panel.js','/interview/answer','/interview/config','/interview/hint','/interview/next','/interview/report','/interview/session','/interview/sessions','/interview/sessions/delete',
+  '/templates','/templates/use','/onboarding','/onboarding/guided','/onboarding/star-suggest','/onboarding/step','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings','/eval/create','/eval/promote','/evals',
   '/share/copy','/share/pdf',
   '/snapshot/baseline','/snapshot/note','/snapshot/pdf','/snapshot/view','/snapshots','/stats','/tag',
   '/theme-preview','/theme/apply',
@@ -4354,9 +4358,9 @@ try {
   assert(evh.includes('data-eval-hist="report"') && evh.includes('data-eval-hist="promote"'),
     '/evals 应保留「查看报告」/「转入适配」按钮');
   assert(evh.includes('EVAL_RECORDS'), '/evals 应保留评估记录内联载荷（客户端渲染报告）');
-  // 导航：topnav 4 个链接（渐进呈现 T2 由 7 收敛为 brand + 3 项：简历/投递/设置，一次性同提交迁移）；导航唯一（sidenav 已移除，不回归）
+  // 导航：topnav 8 个链接（brand + 7 项：简历/投递/AI助手/求职助手/模拟面试/模板库/设置）；导航唯一（sidenav 已移除，不回归）
   const nav = (evh.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
-  assert((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length === 4, '/evals 的 topnav 链接数应为 4（brand + 3 项）');
+  assert((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length === 8, '/evals 的 topnav 链接数应为 8（brand + 7 项：简历/投递/AI助手/求职助手/模拟面试/模板库/设置）');
   assert(!evh.includes('class="sidenav"'), '导航唯一：/evals 不应再有 .sidenav（用户裁决 2026-11-03）');
   assert(/<a href="\/" class="on">/.test(nav), '/evals topnav「简历」应高亮（active=docs）');
   // 渐进呈现 T2：投递系页签条——/applications 页应渲染 .apptabs，含「网申包」「复盘」互链（入口移位，非功能删除）
@@ -4604,11 +4608,11 @@ assert(hits.length === 0, '导航条仍含 emoji: ' + hits.join(' '));
 // 渲染结果必须含内联 SVG
 assert(/<svg/.test(navHtml), '导航应含内联 SVG');
 
-// brand + 3 个导航项（渐进呈现 T2 由 6 项收敛为 3 项：简历/投递/设置）：每项都必须「图标 + 文字」同现（WCAG nav-label-icon）
+// brand + 7 个导航项（2026-11-17 v3 模块化：简历/投递/AI助手/求职助手/模拟面试/模板库/设置）：每项都必须「图标 + 文字」同现（WCAG nav-label-icon）
 const links = (navHtml.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []);
-assert(links.length === 4, '导航应有 4 个链接（brand + 3 项），实际 ' + links.length);
+assert(links.length === 8, '导航应有 8 个链接（brand + 7 项），实际 ' + links.length);
 assert(links[0].includes(icon('file-text', 17)) && links[0].includes('简历工作台'), 'brand 应为图标 + 文字');
-const NAV = [['file-text','简历'],['columns-3','投递'],['settings','设置']];
+const NAV = [['file-text','简历'],['columns-3','投递'],['bot','AI 助手'],['message-square','求职助手'],['stethoscope','模拟面试'],['palette','模板库'],['settings','设置']];
 NAV.forEach(([ic, label], idx) => {
   const a = links[idx + 1] || '';
   assert(a.includes('>' + label + '<'), '导航项应有文字: ' + label);
@@ -4628,9 +4632,9 @@ const srv = readFileSync('./server.mjs', 'utf8');
 assert(!/class="sidenav"/.test(srv), '导航唯一：不应再有 .sidenav（topnav 是唯一页头，用户裁决 2026-11-03）');
 assert(/<nav class="topnav">/.test(srv), '应有唯一页头 .topnav');
 assert(/class="mainarea"/.test(srv), '应有内容区 .mainarea');
-// topnav 含三个导航入口（渐进呈现 T2 由六项收敛为三项：简历/投递/设置）
+// topnav 含核心导航入口（简历/投递/设置在列；另含 AI助手/求职助手/模拟面试/模板库）
 const navblk = (srv.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
-for (const t of ['简历', '投递', '设置']) {
+for (const t of ['简历', '投递', 'AI 助手', '求职助手', '模拟面试', '模板库', '设置']) {
   assert(navblk.includes(t), 'topnav 应含入口: ' + t);
 }
 // 渐进呈现 T2 负向断言（入口移位非功能删除）：素材库/复盘/网申包 不再占 topnav 位——
@@ -5518,7 +5522,7 @@ assert(/staleDocs\.slice\(0, 3\)/.test(srv) && /fuDueApps\.slice\(0, 3\)/.test(s
 // ② 六处「请到侧栏「设置」」死引用清零：sendJson 带 settingsPath 字段，text/plain 直接给出 /settings 路径
 assert(!srv.includes('请到侧栏'), 'server.mjs 不得再有「请到侧栏」死文案（编辑器内无侧栏可点）');
 assert(srv.includes("settingsPath: '/settings'"), '/eval/create 409 JSON 应带 settingsPath 字段（消费方按 :2210 先例渲染链接）');
-assert((srv.match(/打开 \/settings 完成模型配置/g) || []).length === 4, '四处 text/plain 409 应直接给出 /settings 路径');
+assert((srv.match(/打开 \/settings 完成模型配置/g) || []).length === 8, '八处 text/plain 409 应直接给出 /settings 路径（含 ai-helper 四端点）');
 // ③ .ob-add/.ob-ai/.ob-del 浅底虚线化（background:var(--card)）且 .ob-add 非全宽
 for (const cls of ['ob-add', 'ob-ai', 'ob-del']) {
   const rule = srv.match(new RegExp('\\.' + cls + '\\{[^}]*\\}'));

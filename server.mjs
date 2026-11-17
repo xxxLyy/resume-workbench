@@ -17,6 +17,10 @@ import { docToLines, docToText, contentHash, sectionsOf, bodyOf, decodeEntities 
 import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, digestOf, buildZoneAnalyzePrompt, parseZoneAnalysis, buildZoneRewritePrompt, parseZoneRewrites, FACT_KEYS, MAT_STATES, migrateMats, parasOf, zidsOf, zoneEditUnits } from './zone.mjs';
 import { applyZoneOps } from './zone-ops.mjs';   // 区域安全子集（ZONE-04）：磁盘正文 + 提交原文 + 归属 + 锁 + 事实护栏 五项齐备才应用
 import { rotateLogIfNeeded } from './logrotate.mjs';
+import { renderTemplatesPage } from './templates-page.mjs';
+import { smartCheck, improveAll, customRewrite, improveWriting } from './ai-helper.mjs';   // AI 简历助手四件套（规范 ai-helper.routes.md）
+import { init as agentInit, listSessions as agentListSessions, createSession as agentCreateSession, getSession as agentGetSession, renameSession as agentRenameSession, deleteSession as agentDeleteSession, chat as agentChat, previewContext as agentPreviewContext, AGENT_NO_LLM } from './agent.mjs';   // Agent 求职助手（规范 agent.routes.md）
+import { getConfig as getInterviewConfig, listSessions as ivListSessions, getSession as ivGetSession, createSession as ivCreateSession, deleteSession as ivDeleteSession, nextQuestion as ivNextQuestion, submitAnswer as ivSubmitAnswer, skipQuestion as ivSkipQuestion, genHint as ivGenHint, genReport as ivGenReport, NO_MODEL_HINT as IV_NO_MODEL_HINT } from './interview.mjs';   // 模拟面试文字版（规范 interview.routes.md）
 import { freezeHtml, normalizeToCurrent, splitDoc, staleInfo } from './freeze.mjs';
 import { beginTx, commitTx, dropSupersededTx, recoverPending, withDocLock, updateMeta, updateMetaAll, rootLock, atomicWrite, LockHeld } from './tx.mjs';
 import { safeUrl } from './safe-url.mjs';   // URL 协议白名单（S4B-9；escAttr 不校验协议）
@@ -44,6 +48,7 @@ import { ICONS } from './vendors/icons.mjs';  // Lucide 图标数据（纯数据
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const root = process.env.RESUME_ROOT || APP_ROOT;   // 数据根（docs/snapshots/pdfs/JSON/backups 全在此）
+agentInit(root);   // Agent 数据根注入：agent.mjs 读写 root 下的 JSON/文档
 // 自绘线稿插画：读入内联，避免新增静态资源路由（路由集合冻结）
 const svgAsset = (name) => {
   try { return fs.readFileSync(path.join(APP_ROOT, 'assets', name), 'utf8').replace(/^<\?xml[^>]*\?>\s*/, ''); }
@@ -726,7 +731,7 @@ function gatePool(method, pathname) {
   }
   // /eval/create、/restructure 也直连 LLM → 一并进闸门（实测 4 并发全放行、0×429）
   // /onboarding/star-suggest（S5F）：向导 STAR AI 整理同样直连 chat → 同闸门
-  if (method === 'POST' && (/^\/ai\//.test(pathname) || pathname === '/eval/create' || pathname === '/restructure' || pathname === '/onboarding/star-suggest')
+  if (method === 'POST' && (/^\/ai\//.test(pathname) || /^\/ai-helper\//.test(pathname) || pathname === '/agent/chat' || pathname === '/eval/create' || pathname === '/restructure' || pathname === '/onboarding/star-suggest')
     && !AI_EXEMPT.has(pathname)) {
     return { pool: aiPool, label: 'AI' };
   }
@@ -1917,7 +1922,7 @@ function page(title, inner, active = '', wide = false) {
 /* 浅色克制设计系统（2026-10-21 UI 重设计，设计文档 dev-docs/2026-10-21-ui-redesign-design.md）：
    主行动用近黑不用蓝；彩色只承载状态；零阴影靠 1px 边框 + 背景差表达层级。
    旧名（--bg/--panel/--ink/...）保留为别名，既有 CSS 几百处零改动即生效。 */
-/* B1 双区规则已定案（DESIGN.md §2，2026-11-02 用户拍板）：应用页主行动 --accent 为亮蓝（UP 方向 #0033d2，2026-11-17 用户拍板 v3 设计稿）；编辑器 --ed-accent 为暖橙（editor-shell.js），两区不互通；字面值已钉 test-structure.sh B1 断言。 */
+/* B1 双区规则已定案（DESIGN.md §2，2026-11-02 用户拍板）：应用页主行动 --accent 为亮蓝（UP 方向，2026-11-17 用户拍板 v3 设计稿；值见 A-VARS 行）；编辑器 --ed-accent 为暖橙（editor-shell.js），两区不互通；字面值已钉 test-structure.sh B1 断言。 */
 /*A-VARS*/:root{--background:#F5F6F8;--foreground:#1F2329;--muted:#6B7280;--card:#ffffff;--card-2:#F0F2F5;--border:#E5E7EB;--accent:#0033d2;--accent-fg:#ffffff;--success:#16A34A;--success-bg:#E7F6EC;--warning:#D97706;--warning-bg:#FEF3E2;--danger:#DC2626;--danger-bg:#FDECEC;--radius:8px;--radius-lg:12px;--shadow:none;--font:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;--font-mono:ui-monospace,Menlo,monospace;--bg:var(--background);--panel:var(--card);--ink:var(--foreground);--fg:var(--foreground);--mut:var(--muted);--line:var(--border);--accent-ink:var(--accent-fg);--accent-soft:#E8EEFF;--ok:var(--success);--ok-soft:var(--success-bg);--warn:var(--warning);--warn-soft:var(--warning-bg);--err:var(--danger);--err-soft:var(--danger-bg);--ai:var(--accent);--ai-soft:var(--accent-soft);--serif:var(--font);--sans:var(--font);--space-hair:2px;--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-6:24px}
 *{box-sizing:border-box}
 /* 批次B：body 不再限宽（max-width:1100px 会把「侧栏+内容」压扁）——
@@ -2135,7 +2140,7 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .foot-links a,.foot-links summary{color:var(--mut);font-size:13px}
 </style></head><body${wide ? ' class="wide"' : ''}>
 <script nonce="__CSP_NONCE__">${STATUS_SCRIPT}${ACT_DISPATCH_JS}</script>
-<nav class="topnav"><div><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><div class="links">${nav('docs', '/', '简历', 'file-text')}${nav('apps', '/applications', '投递', 'columns-3')}${nav('settings', '/settings', '设置', 'settings')}</div></div><div class="navfoot">本地优先 · 数据在 ~/resume</div></nav>
+<nav class="topnav"><div><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><div class="links">${nav('docs', '/', '简历', 'file-text')}${nav('apps', '/applications', '投递', 'columns-3')}${nav('ai-helper', '/ai-helper', 'AI 助手', 'bot')}${nav('agent', '/agent', '求职助手', 'message-square')}${nav('interview', '/interview', '模拟面试', 'stethoscope')}${nav('templates', '/templates', '模板库', 'palette')}${nav('settings', '/settings', '设置', 'settings')}</div></div><div class="navfoot">本地优先 · 数据在 ~/resume</div></nav>
 <div class="home"><div class="mainarea">${inner}</div></div>
 <footer>简历工作台 · 本地优先 · 数据在 ${path.basename(root) === 'resume' ? '~/resume' : 'RESUME_ROOT'}</footer>
 ${WRITE_HELPER_JS}</body></html>`;
@@ -2148,6 +2153,12 @@ const appTabs = (on) => `<nav class="apptabs" aria-label="投递">${
   [['inbox', '/inbox', '待筛选'], ['apps', '/applications', '看板'], ['apply', '/apply-profile', '网申包'], ['stats', '/stats', '复盘']]
     .map(([k, href, label]) => `<a href="${href}"${on === k ? ' class="on" aria-current="page"' : ''}>${label}</a>`).join('')
 }</nav>`;
+
+// Agent 页骨架：左会话列表 + 中对话流 + 底输入框由 agent-panel.js 在 #agent-app 内构建（不拼 ICON_SCRIPT 也能跑，面板自带降级）
+const agentPageInner = () => `
+    <div class="page-head"><h1>求职助手</h1></div>
+    <div id="agent-app"></div>
+    <script src="/agent-panel.js" defer></script>`;
 
 // 徽章：底色 + 语义色 + 小图标 + 文字。类名沿用既有的 .badge ok/.warn/.err/.ai（既有 43 处在用），
 // 只新增 .mute —— 不另起 badge--ok 体系。ic 省略时按 cls 取默认图标；cls 为空（纯标签徽章）默认无图标。
@@ -4765,6 +4776,15 @@ async function handler(req, res) {
     if (req.method === 'GET' && url.pathname === '/model-picker.js') {
       return send(200, fs.readFileSync(path.join(APP_ROOT, 'model-picker.js'), 'utf8'), 'application/javascript; charset=utf-8');
     }
+    if (req.method === 'GET' && url.pathname === '/ai-helper-panel.js') {
+      return send(200, fs.readFileSync(path.join(APP_ROOT, 'ai-helper-panel.js'), 'utf8'), 'application/javascript; charset=utf-8');
+    }
+    if (req.method === 'GET' && url.pathname === '/agent-panel.js') {
+      return send(200, fs.readFileSync(path.join(APP_ROOT, 'agent-panel.js'), 'utf8'), 'application/javascript; charset=utf-8');
+    }
+    if (req.method === 'GET' && url.pathname === '/interview-panel.js') {
+      return send(200, fs.readFileSync(path.join(APP_ROOT, 'interview-panel.js'), 'utf8'), 'application/javascript; charset=utf-8');
+    }
     // ===== 首页 =====
     if (req.method === 'GET' && url.pathname === '/') return send(200, listPage(url.searchParams.get('archived') === '1'));
     // 正文提取 API（统一出口的只读视图，便于验证与调试）
@@ -6906,6 +6926,50 @@ async function handler(req, res) {
       // 装配走单一实现 themePreviewHtml()（DESIGN.md §10.1）：与向导 0.8 卡片内嵌的 srcdoc 逐字节相等
       const phtml = themePreviewHtml(fs.readFileSync(docPath(qid), 'utf8'), th);
       return send(200, phtml, 'text/html; charset=utf-8', { 'Content-Security-Policy': LOCKED_PREVIEW_CSP });
+    }
+    // ===== 模板库（只读页）：主题卡 srcdoc 缩略图 +「使用此模板」表单（模块 templates-page.mjs）=====
+    // 预览装配走单一实现 themePreviewHtml()（DESIGN.md §10.1）：卡内 srcdoc 与 GET /theme-preview 响应体逐字节相等。
+    if (req.method === 'GET' && url.pathname === '/templates') {
+      const qid = url.searchParams.get('id') || '';
+      if (qid && !VALID_ID.test(qid)) return send(400, 'invalid id', 'text/plain');
+      if (qid && !fs.existsSync(docPath(qid))) return send(404, 'doc not found', 'text/plain');
+      const src = qid ? fs.readFileSync(docPath(qid), 'utf8') : obBlankDocHtml('doc');
+      const previews = {};
+      for (const th of listThemes()) previews[th] = themePreviewHtml(src, th);
+      const cur = qid ? String((loadMeta()[qid] || {}).theme || '') : '';
+      return send(200, page('模板库', renderTemplatesPage({
+        previews, docId: qid, currentTheme: cur,
+        applied: url.searchParams.get('applied') || ''
+      }), 'templates'));
+    }
+    // 「使用此模板」：有 id = 既有文档换模板（同 /theme/apply 的 updateMeta 单写口）；无 id = 以所选主题新建文档（复刻 POST /new 路径，装配与登记用同一 th）
+    if (req.method === 'POST' && url.pathname === '/templates/use') {
+      const body = await readBodyAuto(req);
+      const th = String((body && body.theme) || '');
+      if (!listThemes().includes(th)) return sendJson(400, { ok: false, error: `未知主题: ${th || '(空)'}` });
+      const docId = String((body && body.id) || '');
+      if (docId) {
+        if (!VALID_ID.test(docId)) return sendJson(400, { ok: false, error: 'invalid id' });
+        if (!fs.existsSync(docPath(docId))) return sendJson(404, { ok: false, error: 'doc not found' });
+        updateMeta(root, docId, (m) => ({ ...(m || {}), theme: th }));
+        return redirect('/templates?id=' + encodeURIComponent(docId) + '&applied=' + encodeURIComponent(th));
+      }
+      const tpl = assembleTemplate(th);
+      let i = 0, newId;
+      do { newId = i === 0 ? 'doc' : 'doc-' + i; i++; } while (fs.existsSync(docPath(newId)));
+      const html = tpl
+        .replaceAll('{{NAME}}', () => '未命名')
+        .replaceAll('{{CONTACT}}', () => '')
+        .replaceAll('{{INTENT}}', () => '')
+        .replaceAll('{{SUMMARY}}', () => '点击开始编辑…')
+        .replaceAll('{{SKILLS}}', () => '<p>技能…</p>')
+        .replaceAll('{{WORK}}', () => '')
+        .replaceAll('{{PROJECTS}}', () => '')
+        .replaceAll('{{EDU}}', () => '')
+        .replaceAll('{{DOC_ID}}', () => newId);
+      fs.writeFileSync(docPath(newId), html);
+      updateMeta(root, newId, (m) => ({ ...(m || {}), ...themeRegistration(th), kind: 'master', flow: 'draft', archivedAt: null }));
+      return redirect(`/edit?id=${newId}`);
     }
     // ===== S6-A2：主题选择（确认交互由前端承载）：唯一写 = docs-meta.theme（updateMeta）=====
     // 「以新主题重装配」不经本端点重写正文文件：S6-A1 的服务/渲染/快照装配都以 meta.theme 为数据源，
@@ -9183,6 +9247,195 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       };
       __acts.click.rerender = function (el) { return rerender(); };
     </script>`, 'docs'));
+    }
+    // ===== AI 简历助手（UPCV 四件套本地版；编排 ai-helper.mjs，规范 ai-helper.routes.md）=====
+    if (req.method === 'GET' && url.pathname === '/ai-helper') {
+      const inner = `<div class="page-head"><h1>AI 简历助手</h1></div>
+<div id="ah-app"><p style="color:var(--mut)">界面加载中…</p></div>
+<script nonce="__CSP_NONCE__">${ICON_SCRIPT}</script>
+<script src="/ai-helper-panel.js" defer></script>`;
+      return send(200, page('AI 简历助手', inner, 'ai-helper'));
+    }
+    // 简历下拉清单：标题取 <h1> 正则；JSON 输出不 escHtml（前端 textContent 渲染）
+    if (req.method === 'GET' && url.pathname === '/ai-helper/docs') {
+      const meta = loadMeta();
+      const docs = docIdsOnDisk()
+        .filter((did) => !((meta[did] || {}).archivedAt))
+        .map((did) => {
+          let title = did;
+          try { title = (fs.readFileSync(docPath(did), 'utf8').match(/<h1[^>]*>([^<]+)<\/h1>/) || [])[1] || did; } catch {}
+          return { id: did, title };
+        });
+      return sendJson(200, { ok: true, docs });
+    }
+    if (req.method === 'POST' && url.pathname === '/ai-helper/check') {
+      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');
+      const body = JSON.parse(await readBody(req));
+      const text = String(body.text || '');
+      if (!text.trim()) return sendJson(400, { ok: false, error: 'text 必填' });
+      const prof = pickProfile(body.profile);
+      if (prof === null) return sendJson(400, { ok: false, error: '模型配置不存在或不完整' });
+      let out;
+      try { out = await smartCheck(text, { root, lease: leaseOf(req), profile: prof }); }
+      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
+      return sendJson(200, { ok: true, ...out });
+    }
+    if (req.method === 'POST' && url.pathname === '/ai-helper/improve-all') {
+      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');
+      const body = JSON.parse(await readBody(req));
+      const text = String(body.text || '');
+      if (!text.trim()) return sendJson(400, { ok: false, error: 'text 必填' });
+      if (body.issues !== undefined && !Array.isArray(body.issues)) return sendJson(400, { ok: false, error: 'issues 必须是数组' });
+      const prof = pickProfile(body.profile);
+      if (prof === null) return sendJson(400, { ok: false, error: '模型配置不存在或不完整' });
+      let out;
+      try { out = await improveAll(text, body.issues || [], { root, lease: leaseOf(req), profile: prof }); }
+      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
+      return sendJson(200, { ok: true, ...out });
+    }
+    if (req.method === 'POST' && url.pathname === '/ai-helper/rewrite') {
+      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');
+      const body = JSON.parse(await readBody(req));
+      const text = String(body.text || '');
+      const userRequirement = String(body.userRequirement || '').trim();
+      if (!text.trim()) return sendJson(400, { ok: false, error: 'text 必填' });
+      if (!userRequirement) return sendJson(400, { ok: false, error: 'userRequirement 必填' });
+      const prof = pickProfile(body.profile);
+      if (prof === null) return sendJson(400, { ok: false, error: '模型配置不存在或不完整' });
+      let out;
+      try { out = await customRewrite(text, userRequirement, { root, lease: leaseOf(req), profile: prof }); }
+      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
+      return sendJson(200, { ok: true, ...out });
+    }
+    if (req.method === 'POST' && url.pathname === '/ai-helper/polish') {
+      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');
+      const body = JSON.parse(await readBody(req));
+      const text = String(body.text || '');
+      if (!text.trim()) return sendJson(400, { ok: false, error: 'text 必填' });
+      const prof = pickProfile(body.profile);
+      if (prof === null) return sendJson(400, { ok: false, error: '模型配置不存在或不完整' });
+      let out;
+      try { out = await improveWriting(text, { root, lease: leaseOf(req), profile: prof }); }
+      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
+      return sendJson(200, { ok: true, ...out });
+    }
+    // ===== Agent 求职助手（编排 agent.mjs，规范 agent.routes.md）=====
+    if (req.method === 'GET' && url.pathname === '/agent') {
+      return send(200, page('求职助手', agentPageInner(), 'agent'));
+    }
+    if (req.method === 'GET' && url.pathname === '/agent/sessions') {
+      return sendJson(200, { ok: true, sessions: agentListSessions() });
+    }
+    if (req.method === 'POST' && url.pathname === '/agent/sessions') {
+      const body = await readBodyAuto(req);
+      return sendJson(200, { ok: true, session: agentCreateSession({ title: body.title }) });
+    }
+    const agSessM = url.pathname.match(/^\/agent\/sessions\/([a-z0-9-]{1,90})$/);
+    if (agSessM) {
+      const sid = agSessM[1];
+      if (req.method === 'GET') {
+        const s = agentGetSession(sid);
+        return s ? sendJson(200, { ok: true, session: s }) : sendJson(404, { ok: false, error: '会话不存在' });
+      }
+      if (req.method === 'PATCH') {
+        const body = await readBodyAuto(req);
+        const s = agentRenameSession(sid, body.title);
+        return s ? sendJson(200, { ok: true, session: s }) : sendJson(404, { ok: false, error: '会话不存在或标题为空' });
+      }
+      if (req.method === 'DELETE') {
+        return agentDeleteSession(sid) ? sendJson(200, { ok: true }) : sendJson(404, { ok: false, error: '会话不存在' });
+      }
+    }
+    if (req.method === 'POST' && url.pathname === '/agent/chat') {
+      if (!hasLLM(root)) return send(409, AGENT_NO_LLM, 'text/plain');
+      const body = JSON.parse(await readBody(req));
+      if (!body.id || !body.message || typeof body.message !== 'string') return send(400, 'id 和 message 必填', 'text/plain');
+      try {
+        const r = await agentChat(String(body.id), body.message.slice(0, 8000), { lease: leaseOf(req) });
+        return sendJson(200, { ok: true, ...r });
+      } catch (e) {
+        if (e && e.code === 'NO_SESSION') return sendJson(404, { ok: false, error: '会话不存在' });
+        if (e && e.code === 'EMPTY') return sendJson(400, { ok: false, error: e.message });
+        if (e && e.httpCode) return sendJson(e.httpCode, { ok: false, error: e.message });
+        return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) });
+      }
+    }
+    if (req.method === 'GET' && url.pathname === '/agent/context-preview') {
+      return sendJson(200, { ok: true, ...agentPreviewContext(String(url.searchParams.get('text') || '')) });
+    }
+    // ===== 模拟面试（文字版，UPCV §6 形状复刻；规范 interview.routes.md）=====
+    if (req.method === 'GET' && url.pathname === '/interview') {
+      const meta = loadMeta();
+      const boot = {
+        hasLLM: hasLLM(root),
+        config: getInterviewConfig(),
+        jobs: loadApps().map((a) => ({ id: a.id, company: a.company || '', role: a.role || '',
+          label: ((a.company || '') + '·' + (a.role || '')).replace(/^·|·$/g, '') || a.id })),
+        resumes: docIdsOnDisk().map((did) => ({ id: did, title: (docInfo(did, meta[did]) || {}).title || did }))
+          .filter((r) => !((meta[r.id] || {}).archivedAt)),
+        sessions: ivListSessions(),
+      };
+      const inner = `<div class="page-head"><h1>模拟面试</h1><span class="page-meta">文字版 · 本地会话</span></div>
+        <div id="ivApp"><div class="card" style="color:var(--mut)">加载中…</div></div>
+        <script nonce="__CSP_NONCE__">window.__INTERVIEW__=${jsonScript(boot)};</script>
+        <script src="/interview-panel.js"></script>`;
+      return send(200, page('模拟面试', inner, 'interview'));
+    }
+    if (req.method === 'GET' && url.pathname === '/interview/config') {
+      return sendJson(200, { ok: true, ...getInterviewConfig() });
+    }
+    if (req.method === 'GET' && url.pathname === '/interview/sessions') {
+      return sendJson(200, { ok: true, sessions: ivListSessions() });
+    }
+    if (req.method === 'GET' && url.pathname === '/interview/session') {
+      const s = ivGetSession(String(url.searchParams.get('id') || ''));
+      if (!s) return sendJson(404, { ok: false, error: '面试会话不存在' });
+      return sendJson(200, { ok: true, session: s });
+    }
+    if (req.method === 'POST' && url.pathname === '/interview/sessions') {
+      const body = await readBodyAuto(req);
+      const r = ivCreateSession({ voice: body.voice, type: body.type, jobRef: body.jobRef, resumeId: body.resumeId });
+      if (!r.ok) return sendJson(r.status || 400, { ok: false, error: r.error });
+      return sendJson(200, { ok: true, session: r.session });
+    }
+    if (req.method === 'POST' && url.pathname === '/interview/sessions/delete') {
+      const body = await readBodyAuto(req);
+      const r = ivDeleteSession(String(body.id || ''));
+      if (!r.ok) return sendJson(r.status || 400, { ok: false, error: r.error });
+      return sendJson(200, { ok: true });
+    }
+    // 出题/提示/报告：借 AI 槽 → 透传 lease → finally 释放（practice 反馈路由同款；不重复进 gatePool）
+    const ivCall = async (fn) => {
+      if (!hasLLM(root)) return sendJson(409, { ok: false, error: IV_NO_MODEL_HINT });
+      let lease;
+      try { lease = aiPool.borrow(); }
+      catch (e) { return sendJson((e && e.httpCode) || 429, { ok: false, error: (e && e.message) || 'AI 排队已满，请稍候' }); }
+      try {
+        const r = await fn(lease);
+        if (!r.ok) return sendJson(r.status || 400, { ok: false, error: r.error });
+        return sendJson(200, r);
+      } finally { try { lease.release(); } catch {} }
+    };
+    if (req.method === 'POST' && url.pathname === '/interview/next') {
+      const body = await readBodyAuto(req);
+      const s = ivGetSession(String(body.id || ''));
+      if (!s) return sendJson(404, { ok: false, error: '面试会话不存在' });
+      return ivCall((lease) => ivNextQuestion(s, { lease }));
+    }
+    if (req.method === 'POST' && url.pathname === '/interview/answer') {
+      const body = await readBodyAuto(req);
+      const r = body.skip === true ? ivSkipQuestion(String(body.id || '')) : ivSubmitAnswer(String(body.id || ''), body.answer);
+      if (!r.ok) return sendJson(r.status || 400, { ok: false, error: r.error });
+      return sendJson(200, r);
+    }
+    if (req.method === 'POST' && url.pathname === '/interview/hint') {
+      const body = await readBodyAuto(req);
+      if (!Number.isInteger(body.index) || body.index < 0) return sendJson(400, { ok: false, error: 'index 必须是非负整数' });
+      return ivCall((lease) => ivGenHint(String(body.id || ''), body.index, { lease }));
+    }
+    if (req.method === 'POST' && url.pathname === '/interview/report') {
+      const body = await readBodyAuto(req);
+      return ivCall((lease) => ivGenReport(String(body.id || ''), { lease }));
     }
     send(404, 'not found', 'text/plain');
   } catch (e) {
