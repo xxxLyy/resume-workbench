@@ -479,6 +479,7 @@
             scrollEnd();
           } else if (ev.type === 'error') {
             errText = ev.errorText || '模型调用失败';
+            if (face) AoraFace.set(face, 'error');
           }
         }
         if (ended) break;
