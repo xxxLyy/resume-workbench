@@ -4815,6 +4815,13 @@ async function handler(req, res) {
     if (req.method === 'GET' && url.pathname === '/agent-panel.js') {
       return send(200, fs.readFileSync(path.join(APP_ROOT, 'agent-panel.js'), 'utf8'), 'application/javascript; charset=utf-8');
     }
+    // aora 角色引擎 vendored 运行件 + 状态助手（登记非放宽）
+    if (req.method === 'GET' && url.pathname === '/aora-bot.js') {
+      return send(200, fs.readFileSync(path.join(APP_ROOT, 'vendors', 'aora-bot.js'), 'utf8'), 'application/javascript; charset=utf-8');
+    }
+    if (req.method === 'GET' && url.pathname === '/aora-face.js') {
+      return send(200, fs.readFileSync(path.join(APP_ROOT, 'aora-face.js'), 'utf8'), 'application/javascript; charset=utf-8');
+    }
     if (req.method === 'GET' && url.pathname === '/interview-panel.js') {
       return send(200, fs.readFileSync(path.join(APP_ROOT, 'interview-panel.js'), 'utf8'), 'application/javascript; charset=utf-8');
     }

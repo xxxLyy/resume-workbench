@@ -2638,3 +2638,10 @@ else
     fail "编辑器顶栏控件同档回归未通过 (exit $RC，strict=${RESUME_TEST_STRICT:-0})"
   fi
 fi
+
+# ===== aora-bot 接入：双路由 / 装饰模块 / 映射表 / 页面接线 =====
+if node test-aora.mjs; then
+  echo '✅ aora-bot 接入回归'
+else
+  fail "aora-bot 接入回归未通过 (exit $?)"
+fi
