@@ -9582,8 +9582,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         <div id="ivApp"><div class="card" style="color:var(--mut)">加载中…</div></div>
         <script nonce="__CSP_NONCE__">window.__INTERVIEW__=${jsonScript(boot)};</script>
         <script type="module" src="/aora-bot.js"></script>
-        <script src="/aora-face.js"></script>
-        <script src="/interview-panel.js"></script>`;
+        <script src="/aora-face.js" defer></script>
+        <script src="/interview-panel.js" defer></script>`;
       return send(200, page('模拟面试', inner, 'interview'));
     }
     if (req.method === 'GET' && url.pathname === '/interview/config') {
