@@ -58,7 +58,9 @@
     + '#agent-app #ag-msg{flex:1;resize:none;border:1px solid var(--line);border-radius:var(--radius);padding:8px 10px;font:inherit;font-size:13px;background:var(--panel);color:var(--ink);max-height:160px}'
     + '#agent-app #ag-send:disabled{opacity:.55;cursor:not-allowed}'
     + '#agent-app .ag-status{margin:0 0 var(--space-3);font-size:12px}'
-    + '@media (max-width:860px){#agent-app .ag-wrap{grid-template-columns:1fr;height:auto}#agent-app .ag-side{max-height:180px}#agent-app .ag-main{min-height:60vh}}';
+    + '@media (max-width:860px){#agent-app .ag-wrap{grid-template-columns:1fr;height:auto}#agent-app .ag-side{max-height:180px}#agent-app .ag-main{min-height:60vh}}'
+    + '#agent-app .ag-hello{display:flex;gap:14px;align-items:flex-start}'
+    + '#agent-app .ag-hello .ag-hb{flex:1;min-width:0}';
 
   // ===== DOM =====
   mount.innerHTML =
@@ -73,6 +75,7 @@
   var log = $('ag-log'), sessBox = $('ag-sessions'), input = $('ag-msg'), sendBtn = $('ag-send');
   var current = null;   // 当前会话 id（null = 未选/未建，发送时自动建）
   var sending = false;
+  var face = null;      // AoraFace 化身句柄；null = 未挂载（AoraFace 未加载时所有调用静默跳过）
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -305,6 +308,7 @@
     addAiMsg({ role: 'assistant', text: (resp && resp.reply) || '', quickReplies: resp && resp.quickReplies, toolCards: resp && resp.toolCards });
   }
   function renderHistory(s) {
+    if (face) AoraFace.compact(face);   // face 元素在 hello 里：先挪去 .ag-main 角位再清，否则被销毁
     log.innerHTML = '';
     var msgs = (s && s.messages) || [];
     if (!msgs.length) { renderWelcome(); return; }
@@ -318,8 +322,9 @@
     var greet = h < 12 ? '早上好' : h < 18 ? '下午好' : '晚上好';
     var d = document.createElement('div');
     d.className = 'ag-hello';
-    d.innerHTML = '<div class="h">' + greet + '。今天想先推进哪一步？</div>'
-      + '<div class="s">我可以帮你评估收件箱岗位、改简历、盯投递进度。引用具体对象用 [context:job:岗位id] 或 [context:doc:简历id]。</div>';
+    d.innerHTML = '<div class="ag-hb"><div class="h">' + greet + '。今天想先推进哪一步？</div>'
+      + '<div class="s">我可以帮你评估收件箱岗位、改简历、盯投递进度。引用具体对象用 [context:job:岗位id] 或 [context:doc:简历id]。</div></div>';
+    var hb = d.querySelector('.ag-hb');
     var chips = document.createElement('div');
     chips.className = 'ag-chipset';
     [
@@ -332,7 +337,13 @@
       b.onclick = function () { input.value = c.m; send(); };
       chips.appendChild(b);
     });
-    d.appendChild(chips);
+    hb.appendChild(chips);
+    var slot = document.createElement('div');
+    d.insertBefore(slot, d.firstChild);
+    if (window.AoraFace) {
+      if (!face) face = AoraFace.mount(slot, { page: 'agent', size: 96, cornerOf: '.ag-main' });
+      else { AoraFace.show(face, slot, 96); AoraFace.set(face, 'init'); }   // 重挂回 hello 时表情回初始态
+    }
     log.appendChild(d); scrollEnd();
   }
 
@@ -343,7 +354,7 @@
     try { d = await api('GET', '/agent/sessions'); }
     catch (e) { sessBox.innerHTML = '<div class="ag-empty-side">会话列表加载失败</div>'; return; }
     var list = (d && d.sessions) || [];
-    if (!list.length) { sessBox.innerHTML = '<div class="ag-empty-side">还没有会话，点上方「＋ 新会话」开始</div>'; return; }
+    if (!list.length) { sessBox.innerHTML = '<div class="ag-empty-side"><aora-bot character="dot" state="sleeping" size="36"></aora-bot><div style="margin-top:6px">还没有会话，点上方「＋ 新会话」开始</div></div>'; return; }
     list.forEach(function (s) {
       var row = document.createElement('div');
       row.className = 'ag-sess' + (s.id === (selectId || current) ? ' on' : '');
@@ -368,7 +379,7 @@
         ev.stopPropagation();
         if (!window.confirm('删除这个会话？消息记录一并删除，不可恢复。')) return;
         api('DELETE', '/agent/sessions/' + encodeURIComponent(s.id))
-          .then(function () { if (current === s.id) { current = null; log.innerHTML = ''; renderWelcome(); } loadSessions(); })
+          .then(function () { if (current === s.id) { current = null; if (face) AoraFace.compact(face); log.innerHTML = ''; renderWelcome(); } loadSessions(); })
           .catch(function (e) { addStatus(e.message || e, 'warn'); });
       };
       ops.appendChild(rn); ops.appendChild(del);
@@ -413,8 +424,10 @@
       if (!r.ok || (data && data.ok === false)) {
         var e = new Error((data && (data.error || data.msg)) || txt || ('HTTP ' + r.status));
         e.rejected = true;
+        if (face) AoraFace.set(face, 'error');
         throw e;
       }
+      if (face) AoraFace.set(face, 'done');
       addAi(data);
       return;
     }
@@ -437,6 +450,10 @@
           if (payload.charAt(0) === ' ') payload = payload.slice(1);
           if (payload === '[DONE]') { ended = true; break; }
           var ev; try { ev = JSON.parse(payload); } catch (e2) { continue; }
+          if (face && ev && ev.type) {
+            if (ev.type === 'text-delta') AoraFace.set(face, 'stream');
+            else if (ev.type.indexOf('tool') === 0) AoraFace.set(face, 'tool');
+          }
           if (ev.type === 'text-delta' && typeof ev.delta === 'string' && ev.delta) {
             if (first) { first = false; onFirst(); }
             if (!d) {
@@ -458,6 +475,7 @@
             if (first) { first = false; onFirst(); }
             if (!d) { d = document.createElement('div'); d.className = 'ag-m ai'; log.appendChild(d); }
             renderAiInto(d, ev.message);   // finish 的完整 UIMessage 为准（对账增量文本）
+            if (face) AoraFace.set(face, 'done');
             scrollEnd();
           } else if (ev.type === 'error') {
             errText = ev.errorText || '模型调用失败';
@@ -478,6 +496,7 @@
     sending = true;
     sendBtn.disabled = true;
     // 清欢迎卡：首条消息发出后对话流接管
+    if (face) { AoraFace.compact(face); AoraFace.set(face, 'send'); }
     var hello = log.querySelector('.ag-hello');
     if (hello) hello.remove();
     addUser(msg);
@@ -499,6 +518,7 @@
       input.value = ''; input.style.height = '';   // 成功后才清空：失败时用户输入保留（同 ai-panel AUD-15）
       loadSessions(sid);   // 首条消息可能触发了自动命名，刷新列表
     } catch (e) {
+      if (face) AoraFace.set(face, 'error');
       addStatus(e.message || e, 'warn');
     } finally {
       stopWait();
@@ -519,7 +539,7 @@
   $('ag-new').onclick = function () {
     if (sending) return;
     api('POST', '/agent/sessions', {})
-      .then(function (d) { current = d.session.id; log.innerHTML = ''; renderWelcome(); loadSessions(current); input.focus(); })
+      .then(function (d) { current = d.session.id; if (face) AoraFace.compact(face); log.innerHTML = ''; renderWelcome(); loadSessions(current); input.focus(); })
       .catch(function (e) { addStatus(e.message || e, 'warn'); });
   };
   renderWelcome();

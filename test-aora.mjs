@@ -72,5 +72,10 @@ const ahp = await get('/ai-helper');
 assert.ok(ahp.body.includes('/aora-bot.js') && ahp.body.includes('/aora-face.js'), 'ai-helper 页脚本注入');
 assert.ok(ahp.body.includes('type="module" src="/aora-bot.js"'), 'ai-helper 页 /aora-bot.js 应以 module 加载');
 console.log('✅ D 页面接线');
+// E. 面板接线源级断言
+const ag = fs.readFileSync(path.join(APP_ROOT, 'agent-panel.js'), 'utf8');
+for (const needle of ["AoraFace.mount(slot, { page: 'agent'", "AoraFace.set(face, 'send')", "AoraFace.set(face, 'stream')", "AoraFace.set(face, 'done')", "AoraFace.set(face, 'error')", 'AoraFace.compact(face)'])
+  assert.ok(ag.includes(needle), 'agent-panel 缺: ' + needle);
+console.log('✅ E agent-panel 接线');
 console.log('✅ test-aora 全部通过');
 server.kill(); process.exit(0);

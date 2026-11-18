@@ -17,16 +17,18 @@
     st.textContent = '.aora-host{position:relative}.aora-corner{position:absolute;top:10px;right:14px;z-index:6}.aora-slot{display:flex;align-items:center}';
     document.head.appendChild(st);
   }
-  function mapOf(face) { return MAP[face.page] || MAP.agent; }
+  function mapOf(face) { return Object.hasOwn(MAP, face.page) ? MAP[face.page] : MAP.agent; }
   function set(face, verb) {
-    var st = mapOf(face)[verb];
+    var m = mapOf(face);
+    var st = Object.hasOwn(m, verb) ? m[verb] : undefined;   // 原型链防护：set(face,'toString') 不得命中 Object.prototype
     if (!st) return;
     face.verb = verb;
     if (face._t) { clearTimeout(face._t); face._t = 0; }
     face.el.setAttribute('state', st);
-    if (TRANSIENT[st]) face._t = setTimeout(function () { face.el.setAttribute('state', mapOf(face).idle || 'idle'); face._t = 0; }, TRANSIENT_MS);
+    if (Object.hasOwn(TRANSIENT, st)) face._t = setTimeout(function () { face.el.setAttribute('state', mapOf(face).idle || 'idle'); face._t = 0; }, TRANSIENT_MS);
   }
   function mount(host, opts) {
+    if (!host || !host.appendChild) return null;   // 与 compact/show 的守卫对称
     opts = opts || {};
     ensureCss();
     var slot = document.createElement('div');
