@@ -2191,6 +2191,8 @@ const appTabs = (on) => `<nav class="apptabs" aria-label="投递">${
 const agentPageInner = () => `
     <div class="page-head"><h1>求职助手</h1></div>
     <div id="agent-app"></div>
+    <script src="/aora-bot.js" defer></script>
+    <script src="/aora-face.js" defer></script>
     <script src="/agent-panel.js" defer></script>`;
 
 // 徽章：底色 + 语义色 + 小图标 + 文字。类名沿用既有的 .badge ok/.warn/.err/.ai（既有 43 处在用），
@@ -7209,7 +7211,7 @@ async function handler(req, res) {
       </div>
       <div class="tablewrap"><table id="appTable" style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr><th tabindex="0" data-action="sortCol" data-idx="0">公司</th><th tabindex="0" data-action="sortCol" data-idx="1">岗位</th><th tabindex="0" data-action="sortCol" data-idx="2">渠道</th><th tabindex="0" data-action="sortCol" data-idx="3">状态</th><th tabindex="0" data-action="sortCol" data-idx="4">投递日期</th><th tabindex="0" data-action="sortCol" data-idx="5">下一步</th><th tabindex="0" data-action="sortCol" data-idx="6">截止时间</th><th>操作</th></tr></thead>
-        <tbody>${apps.map(row).join('') || '<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:20px">暂无投递</td></tr>'}</tbody>
+        <tbody>${apps.map(row).join('') || '<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:20px">' + aoraEmpty('暂无投递') + '</td></tr>'}</tbody>
       </table></div>
       <style>#appTable th{cursor:pointer;text-align:left;padding:8px;border-bottom:2px solid var(--line)}#appTable th:hover{background:var(--bg)}#appTable td{padding:8px;border-bottom:1px solid var(--line)}#appTable th.asc::after{content:' ↑'}#appTable th.desc::after{content:' ↓'}</style>
       <script nonce="__CSP_NONCE__">
@@ -7314,7 +7316,7 @@ async function handler(req, res) {
       // 折叠收进独立「已关闭」区（记录仍可见可查，但不混进推进式看板语义）。列头计数用浅色胶囊（v3 方向，.kb-count）。
       const cols = APP_STATUSES.map((st) => {
         const items = apps.filter((a) => a.status === st);
-        return `<div class="kb-col${items.length ? '' : ' empty'}" data-col="${escAttr(st)}"><div class="group-head">${escHtml(statusLabel(st))} <span class="kb-count">${items.length}</span></div>${items.map(appCard).join('') || '<div style="color:var(--mut);font-size:12px;padding:4px 8px">（空）</div>'}</div>`;
+        return `<div class="kb-col${items.length ? '' : ' empty'}" data-col="${escAttr(st)}"><div class="group-head">${escHtml(statusLabel(st))} <span class="kb-count">${items.length}</span></div>${items.map(appCard).join('') || aoraEmpty('（空）')}</div>`;
       }).join('');
       const closedApps = apps.filter((a) => a.status === 'closed');
       const closedSec = `<details class="card" id="kbClosed" style="margin-top:10px"${closedApps.length ? '' : ' hidden'}><summary style="cursor:pointer;font-weight:700">已关闭 <span class="kb-count">${closedApps.length}</span></summary>${closedApps.map(appCard).join('')}</details>`;
@@ -7969,6 +7971,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         <input id="fuDays" type="number" min="1" max="90" step="1" value="${escAttr(String(fuDays))}" style="width:100%;margin-top:var(--space-1)">
       </label>
     </div>
+    ${aoraFoot()}
     <p><button type="button" id="addBtn">${icon('plus', 13)} 添加配置</button> <button type="button" id="saveBtn">保存</button> <a href="/">返回首页</a> <span id="msg"></span></p>
     <div class="card" style="margin-top:var(--space-3)">
       <b class="card-title">${icon('save', 13)} 备份与恢复</b>
@@ -8491,7 +8494,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const apps = loadApps();
       const evals = loadEvals().map(evalRecordView);
       // 早退口径（F1）：投递与评估**均为空**才早退——有评估无投递时闭环卡仍要渲染，不得被空投递吞掉。
-      if (!apps.length && !evals.length) return send(200, page('复盘', `<h1>复盘统计</h1>${appTabs('stats')}<div class="card" style="text-align:center;padding:40px;color:var(--mut)">暂无投递记录<br><br><a href="/applications">先去「投递」页添加记录</a></div>`, 'apps'));
+      if (!apps.length && !evals.length) return send(200, page('复盘', `<h1>复盘统计</h1>${appTabs('stats')}<div class="card" style="text-align:center;padding:40px;color:var(--mut)">${aoraSvg('happy')}<br>暂无投递记录<br><br><a href="/applications">先去「投递」页添加记录</a></div>`, 'apps'));
       // 分布口径：链上六态逐列 + closed 单列一行（已关闭也计入分布，藏在 closed 会漏记被拒/搁置存量）。
       // apps 已经 loadApps 读时归一，老枚举在此不会漏成「未填」。
       const funnel = APP_STATUSES.map((s) => [s, apps.filter((a) => a.status === s).length]);
@@ -8529,7 +8532,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         }).join('；');
         const refsHtml = refs.length
           ? `<div style="font-size:12px;color:var(--mut);margin-top:var(--space-hair)">投递 ${refs.length} 条：${refBits}</div>`
-          : '<div style="font-size:12px;color:var(--mut);margin-top:var(--space-hair)">暂无投递记录</div>';
+          : '<div style="font-size:12px;color:var(--mut);margin-top:var(--space-hair)">' + aoraEmpty('暂无投递记录') + '</div>';
         const destHtml = !pid ? '<span style="font-size:12px;color:var(--mut)">未转适配</span>'
           : onDisk(pid) ? `<a href="/edit?id=${escAttr(pid)}">已转适配 →</a>`
           : '<span style="font-size:12px;color:var(--mut)">原文档已删除</span>';
@@ -8560,7 +8563,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         ? prRows.map(({ a, s }) => { const sum = sessionSummary(s);
             return `<div style="margin-top:var(--space-2)"><a href="/app?id=${escAttr(a.id)}#pr-${escAttr(sum.pid)}">${escHtml([a.company, a.role].filter(Boolean).join('·') || '未填公司岗位')}</a><div style="font-size:12px;color:var(--mut);font-variant-numeric:tabular-nums">${sum.questionCount} 题 · 答 ${sum.answeredCount} · 反馈 ${sum.feedbackCount} · ${escHtml(fmtWhen(s.createdAt))}</div></div>`;
           }).join('')
-        : `<p style="font-size:13px;color:var(--mut);margin:var(--space-2) 0 0">还没有练习记录：入口在每条投递详情的「面试练习」区（<a href="/applications">投递</a>）</p>`}</div>`;
+        : '<div style="margin:var(--space-2) 0">' + aoraSvg('sleeping') + '</div><p style="font-size:13px;color:var(--mut);margin:0">还没有练习记录：入口在每条投递详情的「面试练习」区（<a href="/applications">投递</a>）</p>'}</div>`;
       // 侧卡（1/3 列）：状态分布 + 面试参与合并为一张卡的两段（批 1 §0.2 复盘层级重排）；面试练习段为批 4 增段
       const sideCard = `<div class="card stats-side"><b class="card-title">状态分布</b>${funnelBar}
       <div class="stats-sec"><b class="card-title">面试参与</b><p style="font-size:13px;margin:var(--space-2) 0 0">${interviewed}/${n} 有面试安排或已进入面试（${n ? Math.round(interviewed / n * 100) : 0}%）；预约不等于完成。</p></div>${practiceSec}</div>`;
@@ -9352,6 +9355,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const inner = `<div class="page-head"><h1>AI 简历助手</h1></div>
 <div id="ah-app"><p style="color:var(--mut)">界面加载中…</p></div>
 <script nonce="__CSP_NONCE__">${ICON_SCRIPT}</script>
+<script src="/aora-bot.js" defer></script>
+<script src="/aora-face.js" defer></script>
 <script src="/ai-helper-panel.js" defer></script>`;
       return send(200, page('AI 简历助手', inner, 'ai-helper'));
     }
@@ -9576,6 +9581,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const inner = `<div class="page-head"><h1>模拟面试</h1><span class="page-meta">文字版 · 本地会话</span></div>
         <div id="ivApp"><div class="card" style="color:var(--mut)">加载中…</div></div>
         <script nonce="__CSP_NONCE__">window.__INTERVIEW__=${jsonScript(boot)};</script>
+        <script src="/aora-bot.js"></script>
+        <script src="/aora-face.js"></script>
         <script src="/interview-panel.js"></script>`;
       return send(200, page('模拟面试', inner, 'interview'));
     }

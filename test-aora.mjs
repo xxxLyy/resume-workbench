@@ -55,6 +55,19 @@ assert.ok(vals.length >= 15, '映射表应覆盖三页动词');
 for (const v of vals) assert.ok(CHARACTER_STATES.includes(v), '非法状态名: ' + v);
 for (const p of ['agent', 'interview', 'ai-helper']) assert.ok(mapBlock.includes("'" + p + "'"), '缺页: ' + p);
 console.log('✅ C 映射表合法');
-// （后续任务在此追加 D/E 段）
+// D. 页面接线断言
+const apps = await get('/applications');
+assert.ok(apps.body.includes('aora-empty') || apps.body.includes('<svg'), '投递页空态应带 aora 装饰');
+const st = await get('/stats');
+assert.ok(st.status === 200 && st.body.includes('<svg'), '复盘页应带 aora 装饰');
+const setp = await get('/settings');
+assert.ok(setp.body.includes('Powered by') && setp.body.includes('aora-bot'), '设置页署名卡');
+const agp = await get('/agent');
+assert.ok(agp.body.includes('/aora-bot.js') && agp.body.includes('/aora-face.js'), 'agent 页脚本注入');
+const ivp = await get('/interview');
+assert.ok(ivp.body.includes('/aora-bot.js') && ivp.body.includes('/aora-face.js'), 'interview 页脚本注入');
+const ahp = await get('/ai-helper');
+assert.ok(ahp.body.includes('/aora-bot.js') && ahp.body.includes('/aora-face.js'), 'ai-helper 页脚本注入');
+console.log('✅ D 页面接线');
 console.log('✅ test-aora 全部通过');
 server.kill(); process.exit(0);
