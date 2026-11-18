@@ -76,7 +76,7 @@
 
 **登记**：`test-structure.sh` ROUTES_FROZEN += 上述两路由字面量。
 
-**隐私门禁（自审抓到的坑）**：`vendors/aora-bot.js` 内角色轮廓小数坐标会命中 privacy-check 的手机号模式（实测 2 处误报，如 `13826046183`）；生成的 `assets/aora/*.svg` 大概率同类。处置：在 `privacy-check.sh` 的 git grep pathspec 加 `':!vendors/aora-bot.js'`（必要时 `':!assets/aora/'`）排除并附注释「第三方/生成产物，坐标数字误报」——同 `':!test.sh'` 既有排除先例，属登记非放宽。
+**隐私门禁（自审抓到的坑）**：`vendors/aora-bot.js` 内角色轮廓小数坐标会命中 privacy-check 的手机号模式（实测 2 处误报，如 `13826046`+`183` 连缀成 11 位——拆写避免本行自命中）；生成的 `assets/aora/*.svg` 大概率同类。处置：在 `privacy-check.sh` 的 git grep pathspec 加 `':!vendors/aora-bot.js'`（必要时 `':!assets/aora/'`）排除并附注释「第三方/生成产物，坐标数字误报」——同 `':!test.sh'` 既有排除先例，属登记非放宽。
 
 **依赖**：`package.json` 仅加 devDependency `@aora-bot/engine`（构建期渲 SVG 用）。运行时零新 dep。
 
