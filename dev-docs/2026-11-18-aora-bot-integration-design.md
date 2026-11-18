@@ -76,6 +76,8 @@
 
 **登记**：`test-structure.sh` ROUTES_FROZEN += 上述两路由字面量。
 
+**隐私门禁（自审抓到的坑）**：`vendors/aora-bot.js` 内角色轮廓小数坐标会命中 privacy-check 的手机号模式（实测 2 处误报，如 `13826046183`）；生成的 `assets/aora/*.svg` 大概率同类。处置：在 `privacy-check.sh` 的 git grep pathspec 加 `':!vendors/aora-bot.js'`（必要时 `':!assets/aora/'`）排除并附注释「第三方/生成产物，坐标数字误报」——同 `':!test.sh'` 既有排除先例，属登记非放宽。
+
 **依赖**：`package.json` 仅加 devDependency `@aora-bot/engine`（构建期渲 SVG 用）。运行时零新 dep。
 
 ## 5. 状态化身细则
@@ -120,7 +122,7 @@
 
 - `test-aora.mjs`：两路由 GET 200 + `application/javascript`；`aoraEmpty` 输出含 `<svg` 与文案；映射表动词覆盖三页、状态名 ∈ 44 全集（从 engine 导入读真表比对）。
 - `test-structure.sh`：ROUTES_FROZEN 登记后 `missing`/`extra` 断言归零；导航 7 项不动。
-- `bash test.sh`、`privacy-check.sh` 全绿；无外链资源、无 `sk-` 类字面量引入。
+- `bash test.sh`、`privacy-check.sh` 全绿（vendored/SVG 产物按 §4.1 排除登记后）；无外链资源、无 `sk-` 类字面量引入。
 - playwright 截图（仓内跑以解析 node_modules）：三页角色实渲染 + agent 页一次 send→stream→done 状态切换。
 
 ## 8. 许可
