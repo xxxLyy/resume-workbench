@@ -7,6 +7,16 @@
   var boot = window.__INTERVIEW__ || {};
   var mount = document.getElementById('ivApp');
   if (!mount) return;
+  // AoraFace 化身：挂 .page-head（在 #ivApp 之外，不被 render 重建擦除）；AoraFace 未加载时全部静默跳过
+  var face = null;
+  var headEl = document.querySelector('.page-head');
+  if (window.AoraFace && headEl) {
+    var fslot = document.createElement('span');
+    fslot.style.cssText = 'display:inline-flex;margin-left:auto';
+    headEl.appendChild(fslot);
+    face = AoraFace.mount(fslot, { page: 'interview', size: 96, cornerOf: '.page-head' });
+  }
+  var fset = function (v) { if (face) { if (v === 'send') AoraFace.compact(face); AoraFace.set(face, v); } };
   var CAP = (boot.config && boot.config.questionCap) || 14;
   var TYPES = (boot.config && boot.config.interviewTypes) || ['comprehensive', 'professional', 'hr'];
   var TYPE_LABELS = { comprehensive: '综合面试', professional: '专业面试', hr: 'HR 面试' };
@@ -364,6 +374,9 @@
     }
     runCard.appendChild(elRunMsg);
     renderReportCard();
+    // DOM 稳定尾行纠偏：待答题→wait-user，活会话→idle；cur.finished 不动——留给 done 触发的 celebrate 自己 3s 回落
+    if (cur && cur.pending) fset('wait-user');
+    else if (cur && !cur.finished) fset('idle');
   }
   function renderHint() {
     elHintBox.textContent = '';
@@ -379,31 +392,35 @@
   }
   function doNext() {
     if (!cur || busy.next) return;
+    fset('send');
     busy.next = true;
     elWaitQ.textContent = '';
     var tick = startTicker(function (mm) { elWaitQ.textContent = '出题中 · 已等待 ' + mm; });
     __wv('/interview/next', { id: cur.id }, elRunMsg)
       .then(function (d) {
+        fset('done');
         if (d.done) { cur.finished = true; cur.pending = null; }
         else { cur.pending = { index: d.index, question: d.question }; if (!cur.questions) cur.questions = []; cur.questions.push({ index: d.index, text: d.question, status: 'pending' }); }
         curAnswerDraft = '';
         renderRun(); refreshSessions();
       })
-      .catch(function () {})
+      .catch(function () { fset('error'); })
       .finally(function () { clearInterval(tick); busy.next = false; if (elWaitQ) elWaitQ.textContent = ''; });
   }
   function doAnswer(skip) {
     if (!cur || !cur.pending || busy.answer) return;
     var text = skip ? '' : String(elAnswer.value || '').trim();
     if (!skip && !text) { __status(elRunMsg, 'err', '请先输入回答，或点「跳过此题」'); return; }
+    fset('send');
     busy.answer = true; btnSubmit.disabled = true; btnSkip.disabled = true;
     __wv('/interview/answer', skip ? { id: cur.id, skip: true } : { id: cur.id, answer: text }, elRunMsg)
-      .then(function () { cur.pending = null; curAnswerDraft = ''; doNext(); })
-      .catch(function () {})
+      .then(function () { fset('done'); cur.pending = null; curAnswerDraft = ''; doNext(); })
+      .catch(function () { fset('error'); })
       .finally(function () { busy.answer = false; renderRun(); });
   }
   function doHint() {
     if (!cur || !cur.pending || busy.hint) return;
+    fset('send');
     busy.hint = true; btnHint.disabled = true;
     // 流式渲染：delta 文本逐帧落进 iv-stream；done 帧（或非流式 JSON 回退）落定后渲染要点列表。
     var box = h('div', 'iv-hint');
@@ -415,15 +432,17 @@
     var tick = startTicker(function (mm) { waitEl.textContent = '生成中 · 已等待 ' + mm; });
     var acc = '';
     ssePost('/interview/hint', { id: cur.id, index: cur.pending.index, stream: true }, function (t) {
+      fset('stream');
       acc += t; streamEl.textContent = acc;
     })
       .then(function (d) {
         if (!d || d.ok === false) throw new Error((d && d.error) || '生成失败');
+        fset('done');
         if (!cur.hints) cur.hints = {};
         cur.hints[String(d.index)] = { points: d.points };
         renderHint();
       })
-      .catch(function (e) { __status(elRunMsg, 'err', e.message); renderHint(); })
+      .catch(function (e) { fset('error'); __status(elRunMsg, 'err', e.message); renderHint(); })
       .finally(function () { clearInterval(tick); busy.hint = false; if (btnHint) btnHint.disabled = !hasLLM || !cur || !cur.pending; });
   }
 
@@ -466,6 +485,7 @@
   }
   function doReport() {
     if (!cur || busy.report) return;
+    fset('send');
     busy.report = true; btnReport.disabled = true;
     // 流式渲染：模型原文逐帧进 iv-stream（报告输出是 JSON，增量原文是诚实进度）；
     // done 帧收到 {ok:true,report}（或非流式 JSON 回退）才解析三列结构展示。
@@ -475,13 +495,15 @@
     var tick = startTicker(function (mm) { waitTxt.textContent = '模型调用中 · 已等待 ' + mm; });
     var acc = '';
     ssePost('/interview/report', { id: cur.id, stream: true }, function (t) {
+      fset('stream');
       acc += t; streamEl.textContent = acc;
     })
       .then(function (d) {
         if (!d || d.ok === false || !d.report) throw new Error((d && d.error) || '生成失败');
+        fset('done');
         cur.report = d.report; renderReportCard(); refreshSessions();
       })
-      .catch(function (e) { __status(elRepMsg, 'err', e.message); })
+      .catch(function (e) { fset('error'); __status(elRepMsg, 'err', e.message); })
       .finally(function () { clearInterval(tick); busy.report = false; elRepWait.textContent = ''; if (btnReport) btnReport.disabled = !hasLLM || (cur.answeredCount || 0) < 1; });
   }
 

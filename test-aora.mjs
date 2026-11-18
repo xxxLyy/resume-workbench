@@ -77,5 +77,10 @@ const ag = fs.readFileSync(path.join(APP_ROOT, 'agent-panel.js'), 'utf8');
 for (const needle of ["AoraFace.mount(slot, { page: 'agent'", "AoraFace.set(face, 'send')", "AoraFace.set(face, 'stream')", "AoraFace.set(face, 'done')", "AoraFace.set(face, 'error')", 'AoraFace.compact(face)'])
   assert.ok(ag.includes(needle), 'agent-panel 缺: ' + needle);
 console.log('✅ E agent-panel 接线');
+// F. interview 面板接线源级断言
+const iv = fs.readFileSync(path.join(APP_ROOT, 'interview-panel.js'), 'utf8');
+for (const needle of ["page: 'interview'", "fset('send')", "fset('stream')", "fset('done')", "fset('error')", "wait-user"])
+  assert.ok(iv.includes(needle), 'interview-panel 缺: ' + needle);
+console.log('✅ F interview-panel 接线');
 console.log('✅ test-aora 全部通过');
 server.kill(); process.exit(0);
