@@ -82,7 +82,7 @@ git grep 行 pathspec 追加两个排除（与 `':!test.sh'` 同例）：
 
 ```bash
 # 在该行既有 ':!config.example.json' 后追加：
-':!vendors/aora-bot.js' ':!assets/aora/'
+':!vendors/aora-bot.js' ':!assets/aora/*.svg'
 # 行上注释补一句：vendored 引擎与生成 SVG 的坐标小数会误命中手机号模式（第三方/生成产物，登记非放宽）
 ```
 
@@ -426,7 +426,7 @@ ai-helper inner（:9344，`ai-helper-panel.js` script 行前加同样两行 defe
 
 四处（行号为近似锚点，以代码为准）：
 
-1. `:7201` 暂无投递行 → `<td colspan="8" style="color:var(--mut);text-align:center;padding:20px">${aoraEmpty('暂无投递')}</td>`
+1. `:7201` 暂无投递行——**原文是单引号字符串，`${}` 不插值**，必须改拼接：`'<tr><td colspan="8" style="color:var(--mut);text-align:center;padding:20px">' + aoraEmpty('暂无投递') + '</td></tr>'`（同条 `:7306`/`:8521` 都在模板串或表达式位，直接用 `aoraEmpty('...')` 无此坑）
 2. `:7306` 看板空列 → 原 `'<div style="color:var(--mut);font-size:12px;padding:4px 8px">（空）</div>'` 换 `aoraEmpty('（空）')`
 3. `:8521` refsHtml 空 → `'<div style="font-size:12px;color:var(--mut);margin-top:var(--space-hair)">暂无投递记录</div>'` 换 `aoraEmpty('暂无投递记录')`
 4. 富内容两处用 aoraSvg 前置（不改文案/链接结构）：
