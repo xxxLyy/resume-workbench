@@ -376,7 +376,7 @@
     renderReportCard();
     // DOM 稳定尾行纠偏：待答题→wait-user，活会话→idle；cur.finished 不动——留给 done 触发的 celebrate 自己 3s 回落
     if (cur && cur.pending) fset('wait-user');
-    else if (cur && !cur.finished) fset('idle');
+    else if (cur && !cur.finished && !(busy.next || busy.answer || busy.hint || busy.report)) fset('idle');
   }
   function renderHint() {
     elHintBox.textContent = '';
