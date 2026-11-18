@@ -5,9 +5,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
-const cache = {};
+// 空原型缓存 + hasOwn 判定：挡 __proto__/constructor 原型链命中（照 scripts/extract-icons.mjs 先例）
+const cache = Object.create(null);
 export function aoraSvg(name) {
-  if (!(name in cache)) {
+  // 白名单 slug：挡路径穿越（name 直接拼进文件路径）
+  if (!/^[a-z0-9-]+$/.test(name)) return '';
+  if (!Object.hasOwn(cache, name)) {
     try {
       cache[name] = fs.readFileSync(path.join(APP_ROOT, 'assets', 'aora', name + '.svg'), 'utf8').replace(/^<\?xml[^>]*\?>\s*/, '');
     } catch { cache[name] = ''; }

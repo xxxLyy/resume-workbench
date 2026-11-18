@@ -2639,7 +2639,7 @@ else
   fi
 fi
 
-# ===== aora-bot 接入：双路由 / 装饰模块 / 映射表 / 页面接线 =====
+# ===== 16w. aora-bot 接入：双路由 / 装饰模块 / 映射表 / 页面接线 =====
 if node test-aora.mjs; then
   echo '✅ aora-bot 接入回归'
 else

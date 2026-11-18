@@ -13,6 +13,9 @@ if (!m) throw new Error('cast id "dot" 不存在');
 for (const state of ['happy', 'confused', 'sleeping']) {
   const svg = renderStaticSvg({ shape: m.shape, color: m.color, face: m.face, nose: m.nose, state, sizePx: 48 });
   if (!svg.includes('<svg')) throw new Error(state + ' 渲染结果不是 SVG');
-  fs.writeFileSync(path.join(outDir, state + '.svg'), svg);
+  // 原子写：tmp + rename，写途中被打断不留半截 svg（照 scripts/extract-icons.mjs 先例）
+  const tmpFile = path.join(outDir, state + '.svg.tmp');
+  fs.writeFileSync(tmpFile, svg);
+  fs.renameSync(tmpFile, path.join(outDir, state + '.svg'));
   console.log('assets/aora/' + state + '.svg', svg.length, 'bytes');
 }

@@ -8,7 +8,6 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 
 const APP_ROOT = new URL('./', import.meta.url).pathname.replace(/\/$/, '');
-const fail = (m) => { console.error('❌ ' + m); process.exit(1); };
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-aora-'));
 for (const d of ['docs', 'snapshots', 'pdfs', 'logs', 'backups', 'photos']) fs.mkdirSync(path.join(root, d), { recursive: true });
 // 空数据文件预 seed：各页读取路径按既有缺省口径落 [] / {}，避免读空文件炸
@@ -18,11 +17,15 @@ const port = await new Promise((res) => { const s = net.createServer(); s.listen
 const server = spawn(process.execPath, [path.join(APP_ROOT, 'server.mjs')], {
   cwd: APP_ROOT, env: { ...process.env, RESUME_ROOT: root, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe']
 });
+// exit 钩子在 spawn 后、启动等待前挂：15s 超时 rej 也杀 server 并清隔离根（对齐 test-apps-settings-forms.mjs 先例）
+process.on('exit', () => {
+  try { server.kill(); } catch {}
+  try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
+});
 await new Promise((res, rej) => { const t = setTimeout(() => rej(new Error('server 启动超时')), 15000); server.stdout.on('data', (b) => { if (String(b).includes('简历平台')) { clearTimeout(t); res(); } }); });
 const get = (p) => fetch(`http://127.0.0.1:${port}${p}`).then((r) => r.text().then((body) => ({ status: r.status, ct: r.headers.get('content-type') || '', body })));
-process.on('exit', () => { try { server.kill(); } catch {} });
 
-// A. /aora-bot.js 路由 200 + content-type + 体积（/aora-face.js 断言在 Task 3 随文件落地追加）
+// A. /aora-bot.js 路由 200 + content-type + 体积
 const a = await get('/aora-bot.js');
 assert.equal(a.status, 200, '/aora-bot.js 应 200');
 assert.match(a.ct, /application\/javascript/, '/aora-bot.js content-type');
@@ -37,6 +40,21 @@ assert.ok(aoraEmpty('<x>').includes('&lt;x&gt;'), 'aoraEmpty 应 esc 文案');
 assert.ok(aoraFoot().includes('Powered by'), 'aoraFoot 署名');
 assert.ok(aoraFoot().includes('github.com/sam70361/aora-bot'), 'aoraFoot 链接');
 console.log('✅ B aora.mjs 模块');
-// （后续任务在此追加 C/D/E 段）
+
+// A2. /aora-face.js 断言归位（文件本任务落地）
+const f = await get('/aora-face.js');
+assert.equal(f.status, 200, '/aora-face.js 应 200');
+assert.match(f.body, /AoraFace/, 'aora-face.js 应导出 AoraFace');
+
+// C. 映射表状态名 ∈ engine 44 全集；动词值域无未知态
+const { CHARACTER_STATES } = await import('@aora-bot/engine/static');
+const src = fs.readFileSync(path.join(APP_ROOT, 'aora-face.js'), 'utf8');
+const mapBlock = src.slice(src.indexOf('var MAP = {'), src.indexOf('};', src.indexOf('var MAP = {')));
+const vals = [...mapBlock.matchAll(/:\s*'([a-z-]+)'/g)].map((m) => m[1]);
+assert.ok(vals.length >= 15, '映射表应覆盖三页动词');
+for (const v of vals) assert.ok(CHARACTER_STATES.includes(v), '非法状态名: ' + v);
+for (const p of ['agent', 'interview', 'ai-helper']) assert.ok(mapBlock.includes("'" + p + "'"), '缺页: ' + p);
+console.log('✅ C 映射表合法');
+// （后续任务在此追加 D/E 段）
 console.log('✅ test-aora 全部通过');
 server.kill(); process.exit(0);

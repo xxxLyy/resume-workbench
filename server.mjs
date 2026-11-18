@@ -4817,10 +4817,13 @@ async function handler(req, res) {
       return send(200, fs.readFileSync(path.join(APP_ROOT, 'agent-panel.js'), 'utf8'), 'application/javascript; charset=utf-8');
     }
     // aora 角色引擎 vendored 运行件 + 状态助手（登记非放宽）
+    // existsSync 守卫：文件缺失→404 而非 ENOENT 500 泄绝对路径（照 /api/extract 先例）
     if (req.method === 'GET' && url.pathname === '/aora-bot.js') {
+      if (!fs.existsSync(path.join(APP_ROOT, 'vendors', 'aora-bot.js'))) return send(404, 'not found');
       return send(200, fs.readFileSync(path.join(APP_ROOT, 'vendors', 'aora-bot.js'), 'utf8'), 'application/javascript; charset=utf-8');
     }
     if (req.method === 'GET' && url.pathname === '/aora-face.js') {
+      if (!fs.existsSync(path.join(APP_ROOT, 'aora-face.js'))) return send(404, 'not found');
       return send(200, fs.readFileSync(path.join(APP_ROOT, 'aora-face.js'), 'utf8'), 'application/javascript; charset=utf-8');
     }
     if (req.method === 'GET' && url.pathname === '/interview-panel.js') {
