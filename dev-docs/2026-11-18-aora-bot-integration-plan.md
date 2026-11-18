@@ -104,7 +104,9 @@ const APP_ROOT = new URL('./', import.meta.url).pathname.replace(/\/$/, '');
 const fail = (m) => { console.error('❌ ' + m); process.exit(1); };
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-aora-'));
 for (const d of ['docs', 'snapshots', 'pdfs', 'logs', 'backups', 'photos']) fs.mkdirSync(path.join(root, d), { recursive: true });
-fs.writeFileSync(path.join(root, 'docs-meta.json'), '{}');
+// 空数据文件预 seed：各页读取路径按既有缺省口径落 [] / {}，避免读空文件炸
+for (const [f, v] of [['docs-meta.json', '{}'], ['applications.json', '[]'], ['interviews.json', '[]'], ['materials.json', '{}'], ['agent-sessions.json', '[]']])
+  fs.writeFileSync(path.join(root, f), v);
 const port = await new Promise((res) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); }); });
 const server = spawn(process.execPath, [path.join(APP_ROOT, 'server.mjs')], {
   cwd: APP_ROOT, env: { ...process.env, RESUME_ROOT: root, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe']
@@ -113,40 +115,48 @@ await new Promise((res, rej) => { const t = setTimeout(() => rej(new Error('serv
 const get = (p) => fetch(`http://127.0.0.1:${port}${p}`).then((r) => r.text().then((body) => ({ status: r.status, ct: r.headers.get('content-type') || '', body })));
 process.on('exit', () => { try { server.kill(); } catch {} });
 
-// A. 两路由 200 + content-type + 体积
+// A. /aora-bot.js 路由 200 + content-type + 体积（/aora-face.js 断言在 Task 3 随文件落地追加）
 const a = await get('/aora-bot.js');
 assert.equal(a.status, 200, '/aora-bot.js 应 200');
 assert.match(a.ct, /application\/javascript/, '/aora-bot.js content-type');
 assert.ok(a.body.length > 300000, 'vendored 文件体积应 >300KB');
-const f = await get('/aora-face.js');
-assert.equal(f.status, 200, '/aora-face.js 应 200');
-assert.match(f.body, /AoraFace/, 'aora-face.js 应导出 AoraFace');
-console.log('✅ A 路由与内容类型');
+console.log('✅ A /aora-bot.js 路由');
 // （后续任务在此追加 B/C/D/E 段）
 console.log('✅ test-aora 全部通过');
 server.kill(); process.exit(0);
 ```
 
-- [ ] **Step 6: 跑测试验证红→绿**
+- [ ] **Step 6: 跑测试验证绿**
 
 ```bash
-cd ~/resume && node test-aora.mjs   # 期望：/aora-face.js 404（文件还没建）→ FAIL 属正常预告
+cd ~/resume && node test-aora.mjs   # 期望：A 段绿（/aora-face.js 断言属 Task 3，不在此文件）
 ```
 
-`/aora-face.js` 在 Task 3 才建。本步验收口径改：先临时把 B 段对 `/aora-face.js` 的断言注释，或接受该断言红、其余绿（实施者在 Task 3 解开）。**选择：断言分两段，Task 1 只跑 A 段前半**——把 `/aora-face.js` 断言移到 Task 3 追加。即本任务 test 只断言 `/aora-bot.js`。
+- [ ] **Step 7: test.sh 登记新测试文件（惯例：测试文件逐一登记）**
 
-- [ ] **Step 7: 结构测试 + 隐私门禁全绿**
+`test.sh` 末尾测试块序列尾部追加（test-aora 无浏览器依赖，走简式块）：
+
+```bash
+# ===== aora-bot 接入：双路由 / 装饰模块 / 映射表 / 页面接线 =====
+if node test-aora.mjs; then
+  echo '✅ aora-bot 接入回归'
+else
+  fail "aora-bot 接入回归未通过 (exit $?)"
+fi
+```
+
+- [ ] **Step 8: 结构测试 + 隐私门禁全绿**
 
 ```bash
 bash test-structure.sh && bash privacy-check.sh
 # 期望：路由集合 missing/extra 归零；隐私 ✅
 ```
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add vendors/aora-bot.js server.mjs test-structure.sh privacy-check.sh test-aora.mjs
-git commit -m "feat(aora): vendored element 运行件 + 双路由 + 三处登记"
+git add vendors/aora-bot.js server.mjs test-structure.sh privacy-check.sh test-aora.mjs test.sh
+git commit -m "feat(aora): vendored element 运行件 + 双路由 + 三处登记 + test.sh 登记"
 ```
 
 ---
@@ -266,8 +276,8 @@ import 段追加：`import { aoraSvg, aoraEmpty, aoraFoot } from './aora.mjs';  
 文件尾部 `console.log('✅ test-aora 全部通过')` 之前插入：
 
 ```js
-// B. aora.mjs 输出形状（直 import，不走 HTTP）
-const { aoraSvg, aoraEmpty, aoraFoot } = await import(path.join(APP_ROOT, 'aora.mjs'));
+// B. aora.mjs 输出形状（相对 import 同目录模块，不走 HTTP）
+const { aoraSvg, aoraEmpty, aoraFoot } = await import('./aora.mjs');
 assert.ok(aoraSvg('happy').includes('<svg'), 'happy.svg 应已生成可读');
 assert.ok(aoraEmpty('暂无投递').includes('aora-empty'), 'aoraEmpty 容器');
 assert.ok(aoraEmpty('暂无投递').includes('暂无投递'), 'aoraEmpty 文案');
@@ -340,13 +350,13 @@ git commit -m "feat(aora): engine devDep + SVG codegen + aora.mjs 装饰渲染 +
     el.setAttribute('size', String(opts.size || 96));
     slot.appendChild(el);
     host.appendChild(slot);
-    var cornerOf = typeof opts.cornerOf === 'string' ? document.querySelector(opts.cornerOf) : opts.cornerOf;
-    var face = { el: el, slot: slot, page: opts.page || 'agent', verb: '', _t: 0, cornerOf: cornerOf || host };
+    var face = { el: el, slot: slot, page: opts.page || 'agent', verb: '', _t: 0, cornerOf: opts.cornerOf || host };
     set(face, 'init');
     return face;
   }
   function compact(face) {
-    var host = face.cornerOf;
+    // cornerOf 惰性解析：mount 时 .ag-main/.page-head 可能未建，compact 才需要它
+    var host = typeof face.cornerOf === 'string' ? document.querySelector(face.cornerOf) : face.cornerOf;
     if (!host || !host.appendChild) return;
     host.classList.add('aora-host');
     var corner = host.querySelector('.aora-corner');
@@ -421,7 +431,7 @@ ai-helper inner（:9344，`ai-helper-panel.js` script 行前加同样两行 defe
 3. `:8521` refsHtml 空 → `'<div style="font-size:12px;color:var(--mut);margin-top:var(--space-hair)">暂无投递记录</div>'` 换 `aoraEmpty('暂无投递记录')`
 4. 富内容两处用 aoraSvg 前置（不改文案/链接结构）：
    - `:8483` 复盘空卡 → `<div class="card" style="text-align:center;padding:40px;color:var(--mut)">${aoraSvg('happy')}<br>暂无投递记录<br><br><a href="/applications">先去「投递」页添加记录</a></div>`
-   - `:8552` 练习空 → `<p ...>` 前插 `<div style="margin:var(--space-2) 0">${aoraSvg('sleeping')}</div>`（同卡内）
+   - `:8552` 练习空（ternary 假分支内）→ 原 `'<p style="font-size:13px;color:var(--mut);margin:var(--space-2) 0 0">还没有练习记录：…</p>'` 换 `'<div style="margin:var(--space-2) 0">' + aoraSvg('sleeping') + '</div><p style="font-size:13px;color:var(--mut);margin:0">还没有练习记录：入口在每条投递详情的「面试练习」区（<a href="/applications">投递</a>）</p>'`（保文案与链接，SVG 前置）
 
 - [ ] **Step 3: /settings 署名卡**
 
@@ -490,7 +500,7 @@ renderWelcome() 改造（h/s 包进 .ag-hb，前插 aora 槽位）：
     d.insertBefore(slot, d.firstChild);
     if (window.AoraFace) {
       if (!face) face = AoraFace.mount(slot, { page: 'agent', size: 96, cornerOf: '.ag-main' });
-      else AoraFace.show(face, slot, 96);
+      else { AoraFace.show(face, slot, 96); AoraFace.set(face, 'init'); }   // 重挂回 hello 时表情回初始态
     }
 ```
 
@@ -575,10 +585,12 @@ git commit -m "feat(aora): agent 页状态化身——hello 96px→角落 28px +
 - 每个生成路径入口（doNext/genHintStream/genReportStream/submitAnswer 的 ssePost/fetch 前）加 `fset('send');`
 - `pumpSSE(stream, onDelta)` 各调用点的 `onDelta` 回调首行加 `fset('stream');`
 - 各 promise 成功 then（done 载荷处）加 `fset('done');`，catch 加 `fset('error');`
-- render() 尾部（DOM 稳定后）加：
+- render() 尾部（DOM 稳定后）加。**不得无条件 fset('idle')**——会掐掉刚触发的 3s 瞬时态（celebrate/alerting）；只在有待答或活会话时纠偏：
 
 ```js
-    fset(cur && cur.pending ? 'wait-user' : 'idle');
+    if (cur && cur.pending) fset('wait-user');
+    else if (cur && !cur.finished) fset('idle');
+    // cur.finished：留给 done 触发的 celebrate 自己 3s 回落
 ```
 
 - [ ] **Step 3: test-aora.mjs 追加 F 段**
