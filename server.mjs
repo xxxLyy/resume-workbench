@@ -1965,6 +1965,15 @@ html{scroll-padding-top:64px}
 .topnav .links a.on{background:var(--accent-soft);color:var(--accent)}
 .topnav .links a:hover{background:var(--card-2);color:var(--ink)}
 .topnav .navfoot{padding:12px;font-size:12px;color:var(--mut);border-top:1px solid var(--line)}
+.topnav{transition:transform .18s ease}
+.topnav .navtoggle{position:absolute;top:16px;right:10px;background:none;border:none;color:var(--mut);cursor:pointer;padding:4px;border-radius:6px;display:flex;align-items:center}
+.topnav .navtoggle:hover{background:var(--card-2);color:var(--ink)}
+.navtoggle-reopen{display:none;position:fixed;top:14px;left:10px;z-index:60;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px;color:var(--mut);cursor:pointer;align-items:center}
+.navtoggle-reopen:hover{color:var(--ink);border-color:var(--mut)}
+html.nav-collapsed .topnav{transform:translateX(-100%)}
+html.nav-collapsed .navtoggle-reopen{display:flex}
+html.nav-collapsed body{padding-left:20px}
+@media (max-width:860px){.topnav .navtoggle,.navtoggle-reopen{display:none!important}}
 @media (max-width:860px){.topnav{position:static;width:auto;flex-direction:row;align-items:center;justify-content:space-between;border-right:none;border-bottom:1px solid var(--line);padding:10px 16px;margin-bottom:16px}.topnav .brand{padding:0}.topnav .links{flex-direction:row;flex-wrap:wrap;gap:4px}.topnav .links a{padding:7px 10px}.topnav .navfoot{display:none}body{padding:0 16px 40px}}
 /* 投递系页签条（渐进呈现 T2）：看板/网申包/复盘 三页共用，挂在页题下方。 */
 .apptabs{display:flex;gap:var(--space-1);margin:0 0 var(--space-3);border-bottom:1px solid var(--line)}
@@ -2160,7 +2169,7 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .foot-links a,.foot-links summary{color:var(--mut);font-size:13px}
 </style></head><body${wide ? ' class="wide"' : ''}>
 <script nonce="__CSP_NONCE__">${STATUS_SCRIPT}${ACT_DISPATCH_JS}</script>
-<nav class="topnav"><div><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><div class="links">${nav('docs', '/', '简历', 'file-text')}${nav('apps', '/applications', '投递', 'columns-3')}${nav('ai-helper', '/ai-helper', 'AI 助手', 'bot')}${nav('agent', '/agent', '求职助手', 'message-square')}${nav('interview', '/interview', '模拟面试', 'stethoscope')}${nav('templates', '/templates', '模板库', 'palette')}${nav('settings', '/settings', '设置', 'settings')}</div></div><div class="navfoot">本地优先 · 数据在 ~/resume</div></nav>
+<nav class="topnav"><div><button type="button" class="navtoggle" data-navtoggle title="收起侧栏">${icon('panel-left', 15)}</button><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><div class="links">${nav('docs', '/', '简历', 'file-text')}${nav('apps', '/applications', '投递', 'columns-3')}${nav('ai-helper', '/ai-helper', 'AI 助手', 'bot')}${nav('agent', '/agent', '求职助手', 'message-square')}${nav('interview', '/interview', '模拟面试', 'stethoscope')}${nav('templates', '/templates', '模板库', 'palette')}${nav('settings', '/settings', '设置', 'settings')}</div></div><div class="navfoot">本地优先 · 数据在 ~/resume</div></nav><button type="button" class="navtoggle navtoggle-reopen" data-navtoggle title="展开侧栏">${icon('panel-left', 15)}</button>
 <div class="home"><div class="mainarea">${inner}</div></div>
 <footer>简历工作台 · 本地优先 · 数据在 ${path.basename(root) === 'resume' ? '~/resume' : 'RESUME_ROOT'}</footer>
 ${WRITE_HELPER_JS}</body></html>`;
@@ -2191,7 +2200,8 @@ const STATUS_ICONS = Object.assign(Object.create(null), { ok: icon('circle-check
 const STATUS_SCRIPT = `window.__STATUS_ICONS__=${JSON.stringify(STATUS_ICONS).replace(/</g, '\\u003c')};`
   + `window.__status=function(el,kind,text){if(!el)return;var s=String(text==null?'':text)`
   + `.replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});`
-  + `el.innerHTML=(window.__STATUS_ICONS__[kind]||'')+s;};`;
+  + `el.innerHTML=(window.__STATUS_ICONS__[kind]||'')+s;};`
+  + `(function(){var K='navCollapsed';try{if(localStorage.getItem(K)==='1')document.documentElement.classList.add('nav-collapsed');}catch(e){}`  + `document.addEventListener('click',function(ev){var b=ev.target.closest&&ev.target.closest('[data-navtoggle]');if(!b)return;`  + `var on=document.documentElement.classList.toggle('nav-collapsed');try{localStorage.setItem(K,on?'1':'0');}catch(e){}});})();`;
 
 // 客户端图标（批次D）：编辑器页的 4 个面板脚本是 classic script，拿不到服务端 icon()。
 // 服务端把 SVG 渲染好随页面下发 —— 唯一来源仍是 vendors/icons.mjs，客户端只按名字取，不自己拼 SVG。
