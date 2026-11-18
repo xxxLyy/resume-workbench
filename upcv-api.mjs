@@ -1,5 +1,6 @@
-// upcv-api.mjs — UPCV 契约投影层（规范 upcv-api.routes.md；上位契约 upcv-features-implementation.md §1/§3）
-// 端点：GET/POST /api/resume、GET/PUT/DELETE /api/resume/:id、GET /api/application-records。
+// upcv-api.mjs — UPCV 契约投影层（规范 upcv-api.routes.md；上位契约 upcv-features-implementation.md §1/§3/§4）
+// 端点：GET/POST /api/resume、GET/PUT/DELETE /api/resume/:id、POST /api/resume/parse、
+//       GET /api/application-records、GET /api/showcases。
 // 纪律：
 //   - HTML 是唯一真源：不写 sidecar（<id>.rr.json 不落盘）；GET 每次读盘现算投影（docToResumeData），
 //     PUT 走 rr-import 转 HTML 后按 /save 同款原语落盘（normalizeZids + normalizeToCurrent + atomicWrite
@@ -17,7 +18,10 @@ import { validateResumeData } from './rr-schema.mjs';
 import { normalizeZids, zoneSync } from './zone.mjs';
 import { normalizeToCurrent } from './freeze.mjs';
 import { atomicWrite, updateMeta, updateMetaAll, withDocLock, LockHeld } from './tx.mjs';
-import { themeRegistration } from './template.mjs';
+import { listThemes, themeRegistration } from './template.mjs';
+import { THEMES } from './templates-page.mjs';
+import { docToText } from './extract.mjs';
+import { SECTION_TITLES } from './apply-profile.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 // 与 server.mjs/ai-helper.mjs 同口径：RESUME_ROOT 优先，缺省=脚本目录；ctx.root 可显式覆盖（测试隔离）。
@@ -238,11 +242,134 @@ export function applicationRecords({ root = defaultRoot(), query } = {}) {
   return ok(data);
 }
 
+// ===== POST /api/resume/parse —— 契约解析端点（本期不接 multipart 文件上传）=====
+// UPCV 侧是文件上传（AI_PARSE_RESUME）；本层契约先接 {html} / {text} 文本体（同给时 html 优先）。
+// 纯读不写盘：html → docToResumeData 直接投影（整页文档或片段皆可，bodyOf 缺省整体当 body）；
+// text → textToDoc 拼最小 doc 再走同一管线（deriveResumeFields + sectionsOf）。
+// 输入侧问题一律 400 中文原因；产出过 validateResumeData 自检——自检失败属本层缺陷 → 500。
+export function parseResume({ body } = {}) {
+  const src = parseInputOf(body);
+  if (!docToText(src).trim()) throw err(400, '输入内容为空或不含可解析文本');
+  const data = docToResumeData(src, { docId: '', theme: '', typo: '' });
+  const v = validateResumeData(data);
+  if (!v.ok) throw new Error(`resumeData 自检失败：${v.errors[0]}`);   // 非输入错 → 走 500 包壳
+  return ok(data);
+}
+
+// html 优先于 text；字段给了但类型非字符串 → 400 指明字段；两者都缺/都空 → 400。
+function parseInputOf(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw err(400, '请求体应为对象 {html|text}');
+  if (body.html !== undefined) {
+    if (typeof body.html !== 'string') throw err(400, 'html 应为字符串');
+    if (body.html.trim()) return body.html;
+  }
+  if (body.text !== undefined) {
+    if (typeof body.text !== 'string') throw err(400, 'text 应为字符串');
+    const doc = textToDoc(body.text);
+    if (doc) return doc;
+  }
+  throw err(400, '请求体需要 html 或 text 非空字符串字段');
+}
+
+// 文本行进 HTML 上下文的最小转义（与 templates-page.mjs 同口径；本层不产属性位）
+const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// 标题行判别：去首尾装饰符（【】()[]#*·•▍=~_| 与结尾冒号）后比对。titleText 保留原大小写进
+// .section-title（导出段名=原文）；titleKey 小写化进 PARSE_TITLE_SET 做等值判定。
+const titleText = (l) => String(l)
+  .replace(/^[\s【\[（(#*·•▍=~|_-]+/, '')
+  .replace(/[\s】\]）)：:·•▍=~|_-]+$/g, '')
+  .trim();
+const titleKey = (l) => titleText(l).toLowerCase();
+
+// 标题别名全集（镜像 rr-export.mjs TITLE_ALIASES：SECTION_TITLES 中文表 + 常见英文别名，小写）。
+// rr-export 未导出该表，此处按同尺另建一份——新增别名需两处同步（漂移风险见 routes.md §4）。
+const PARSE_TITLE_SET = new Set([
+  ...SECTION_TITLES.selfIntro, 'summary', 'objective', 'profile', 'professional summary', 'about me',
+  ...SECTION_TITLES.work, 'experience', 'work experience', 'employment', 'work history', 'career',
+  ...SECTION_TITLES.projects, 'projects', 'personal projects', 'selected projects',
+  ...SECTION_TITLES.skills, 'skills', 'technical skills', 'core skills', 'competencies',
+  ...SECTION_TITLES.education, 'education', 'academic', 'academic background',
+].map((s) => String(s).toLowerCase()));
+
+// text → 最小 doc HTML：docToResumeData 只认整页骨架（<h1>/.contact/.section+.section-title），
+// 这里做轻量结构推断，不猜字段语义（与 rr-export「非标结构降级」同一纪律）：
+//   · 标题行 = 去装饰后与 PARSE_TITLE_SET 等值的行；行内带正文（如「工作经历：2019-…」）不算标题。
+//   · 首个标题行之前 = 头部块：首行 → <h1>（姓名），余行 → .contact 逐行 <br>（电话/邮箱/求职意向
+//     由 deriveResumeFields + parseBasics 同源抽取；无法归类的碎片 → basics.customFields，保值不丢）。
+//   · 每个标题行开一个 <section class="section">，正文行一律 <p>。无 .entry-head → rr-export
+//     走降级 item（summary=原样 HTML）。
+//   · 全文无标题行 → 整份按头部块处理（h1 + contact → customFields）。
+function textToDoc(text) {
+  const lines = String(text ?? '').replace(/\r\n?/g, '\n').split('\n')
+    .map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return null;
+  const firstTitle = lines.findIndex((l) => PARSE_TITLE_SET.has(titleKey(l)));
+  const headEnd = firstTitle < 0 ? lines.length : firstTitle;
+  const parts = [];
+  if (headEnd > 0) {
+    parts.push(`<h1>${escHtml(lines[0])}</h1>`);
+    const contact = lines.slice(1, headEnd).map(escHtml).join('<br>');
+    if (contact) parts.push(`<div class="contact">${contact}</div>`);
+  }
+  let cur = '';
+  for (let i = headEnd; i < lines.length; i++) {
+    const l = lines[i];
+    if (PARSE_TITLE_SET.has(titleKey(l))) {
+      if (cur) parts.push(cur + '</section>');
+      cur = `<section class="section"><div class="section-title">${escHtml(titleText(l))}</div>`;
+    } else {
+      cur += `<p>${escHtml(l)}</p>`;   // i>headEnd 时 cur 一定已开 section（首行即标题行）
+    }
+  }
+  if (cur) parts.push(cur + '</section>');
+  return parts.join('\n');
+}
+
+// ===== GET /api/showcases —— 模板橱窗投影（本仓主题 → UPCV showcase 形状）=====
+// 源清单 = templates-page.mjs THEMES（与「模板库」页同一份）× listThemes() 可用性过滤；
+// 本仓无下载/曝光埋点，口径差异逐条注释。?limit= 截断（1..50，缺省全量）。
+export function showcases({ query } = {}) {
+  const avail = new Set(listThemes());
+  const items = THEMES.filter((t) => avail.has(t.id)).map((t, i) => ({
+    id: i + 1,                          // UPCV id 为数字；本仓用橱窗位次顺序号（无持久 id 源）
+    slug: t.id,
+    type: 'RESUME',
+    title: t.name,
+    description: `${t.scene}（${t.industry} · ${t.density}）`,
+    category: 'RESUME',
+    preview: { themeId: THEME_TO_RR[t.id] || 'rhyhorn', accentHex: THEME_ACCENT[t.id] || '#000000' },
+    isFeatured: t.id === 'classic',     // 旗舰位给「经典单栏」一张（UPCV 侧该字段是运营标）
+    downloadCount: 0,                   // 本仓无下载埋点 → 恒 0；语义=「未计量」而非「零下载」
+    updatedAt: themeUpdatedAt(t.id),
+  }));
+  const limit = Math.max(1, Math.min(50, parseInt((query || {}).limit, 10) || items.length));
+  return ok(items.slice(0, limit));
+}
+
+// 本仓 theme → RR v4 模板名（preview.themeId；UPCV 编辑器认宝可梦名，18 名见 rr-schema RR_TEMPLATES）。
+// 取舍按「栏数优先、密度/气质其次」（RR 官方栏位/描述：docs.rxresu.me/resume-templates）：
+//   classic  经典单栏、通用稳妥 → rhyhorn   RR 默认模板；单栏 ATS-safe，「默认即通用」定位最贴
+//   compact  紧凑单栏、高密度   → kakuna    官方定调 "compact design for information-dense"；单栏
+//   dual     跨列页眉+双栏     → glalie    双栏 8 模板中唯一居中大标题+左侧栏（ditto/azurill 等页眉非居中）
+//   magazine 衬线刊头、展示向   → lapras    "elegant layout with refined typography"；单栏展示向
+const THEME_TO_RR = { classic: 'rhyhorn', compact: 'kakuna', dual: 'glalie', magazine: 'lapras' };
+// accentHex = 主题 css 真实强调色：dual/magazine 取小节标题主色；classic/compact 黑白灰版式 → 墨色
+const THEME_ACCENT = { classic: '#000000', compact: '#1c1917', dual: '#7c2d12', magazine: '#9a3412' };
+
+// updatedAt 唯一时间源 = themes/resume-<id>.css 的 mtime（缺文件理论不可达，已按 listThemes 过滤）
+function themeUpdatedAt(id) {
+  try { return fs.statSync(path.join(APP_ROOT, 'themes', `resume-${id}.css`)).mtime.toISOString(); }
+  catch { return ''; }
+}
+
 // ===== 路由匹配（server.mjs 注册块用；见 upcv-api.routes.md §2）=====
 // 命中 → {op,id?}；未命中 → null（server 继续既有路由）。
 export function matchUpcv(method, pathname) {
   if (method === 'GET' && pathname === '/api/resume') return { op: 'resume.list' };
   if (method === 'POST' && pathname === '/api/resume') return { op: 'resume.create' };
+  // 固定路径先于 :id 通配：/api/resume/parse 不许被 ([^/]+) 吞成 id='parse'（m 块现不收 POST，先行防御）
+  if (method === 'POST' && pathname === '/api/resume/parse') return { op: 'resume.parse' };
   const m = /^\/api\/resume\/([^/]+)$/.exec(pathname);
   if (m) {
     const id = decodeURIComponent(m[1]);
@@ -251,6 +378,7 @@ export function matchUpcv(method, pathname) {
     if (method === 'DELETE') return { op: 'resume.delete', id };
   }
   if (method === 'GET' && pathname === '/api/application-records') return { op: 'records.list' };
+  if (method === 'GET' && pathname === '/api/showcases') return { op: 'showcases.list' };
   return null;
 }
 
@@ -271,6 +399,8 @@ export function dispatchUpcv(ctx) {
       case 'resume.create': r = postResume({ root: ctx.root, resumeData: ctx.body }); break;
       case 'resume.delete': r = deleteResume({ root: ctx.root, id: hit.id }); break;
       case 'records.list': r = applicationRecords({ root: ctx.root, query: q }); break;
+      case 'resume.parse': r = parseResume({ body: ctx.body }); break;
+      case 'showcases.list': r = showcases({ query: q }); break;
       default: return null;
     }
     return { status: 200, body: r };

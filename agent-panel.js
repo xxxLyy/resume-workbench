@@ -44,6 +44,12 @@
     + '#agent-app .ag-tc{margin:var(--space-2) 0 0;padding:var(--space-2) var(--space-3);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:var(--radius);background:var(--card-2);font-size:12px;white-space:normal}'
     + '#agent-app .ag-tc .tt{font-weight:700;font-size:13px}'
     + '#agent-app .ag-tc .row{color:var(--mut);margin-top:2px}'
+    + '#agent-app .ag-tc .ag-ts{display:inline-block;margin-left:6px;padding:0 7px;border-radius:999px;font-size:11px;font-weight:400;border:1px solid var(--line);color:var(--mut);vertical-align:1px}'
+    + '#agent-app .ag-tc .ag-ts svg{vertical-align:-2px;margin-right:2px}'
+    + '#agent-app .ag-tc .ag-ts.ok{color:var(--ok);border-color:var(--ok);background:var(--ok-soft)}'
+    + '#agent-app .ag-tc .ag-ts.warn{color:var(--warn);border-color:var(--warn);background:var(--warn-soft)}'
+    + '#agent-app .ag-tc .ag-ts.err{color:var(--err);border-color:var(--err);background:var(--err-soft)}'
+    + '#agent-app .ag-tc .ag-tin{font-family:var(--font-mono);font-size:11px}'
     + '#agent-app .ag-tc a{color:var(--accent);font-weight:600}'
     + '#agent-app .ag-qr{display:flex;gap:6px;flex-wrap:wrap;margin-top:var(--space-2)}'
     + '#agent-app .ag-qr button{border:1px solid var(--line);border-radius:999px;background:var(--panel);color:var(--ink);font-size:12px;min-height:26px;padding:3px 11px;cursor:pointer}'
@@ -143,6 +149,73 @@
     }
     return '<div class="ag-tc"><div class="tt">' + esc(tc.type || 'card') + '</div><div class="row">' + esc(JSON.stringify(p).slice(0, 200)) + '</div></div>';
   }
+  // ===== 真实工具执行卡（tool-<name> part：调用名 + state 徽章 + input 摘要 + output 摘要）=====
+  // 与 cardHtml 分工：cardHtml 画「上下文引用」展示卡（job-detail/resume-card）；
+  // toolPartHtml 画 server 侧真实执行的调用卡——多轮工具环里按 parts 时间序与过渡文本混排。
+  var TOOL_SRC_LABEL = { inbox: '收件箱', app: '投递记录', eval: '评估' };
+  var APP_STATUS_LB = { to_apply: '待投递', preparing: '准备中', applied: '已投递', replied: '有回复', interviewing: '面试中', offer: 'Offer', closed: '已关闭' };
+  var REAL_TOOLS = ['get_job_detail', 'query_job_progress', 'list_resumes', 'get_resume_summary'];
+  function toolStateBadge(st, output) {
+    if (output && output.ok === false) return '<span class="ag-ts err">' + __icon('circle-alert') + '失败</span>';
+    if (st === 'output-available') return '<span class="ag-ts ok">' + __icon('circle-check') + '已返回</span>';
+    if (st === 'call' || st === 'input-available' || st === 'input-streaming') return '<span class="ag-ts warn">' + __icon('clock') + '调用中</span>';
+    return '<span class="ag-ts err">' + __icon('circle-alert') + '失败</span>';
+  }
+  function kvSummary(input) {
+    if (!input || typeof input !== 'object') return '';
+    return Object.keys(input).map(function (k) {
+      var v = input[k];
+      return k + '=' + (v && typeof v === 'object' ? JSON.stringify(v) : String(v));
+    }).join(' ').slice(0, 140);
+  }
+  // 各工具 output → 纯文本摘要行（最多 3 行；进 HTML 前逐行 esc）
+  function toolOutputLines(name, o) {
+    if (!o || typeof o !== 'object') return [];
+    if (o.ok === false) return ['失败：' + String(o.error || '未知错误')];
+    if (name === 'get_job_detail') {
+      return [
+        [TOOL_SRC_LABEL[o.source] || o.source || '', o.title || o.id || ''].filter(Boolean).join(' '),
+        [o.company, o.role, o.salary].filter(Boolean).join(' · '),
+        [(o.statusLabel || o.status) ? '状态 ' + (o.statusLabel || o.status) : '', o.score != null ? '评分 ' + o.score : '', o.dueDate ? '截止 ' + o.dueDate : ''].filter(Boolean).join('　')
+      ].filter(function (l) { return l; });
+    }
+    if (name === 'query_job_progress') {
+      var bs = o.byStatus || {};
+      var cnt = Object.keys(bs).filter(function (k) { return bs[k] > 0; }).map(function (k) { return (APP_STATUS_LB[k] || k) + '×' + bs[k]; }).join('、');
+      var L = ['共 ' + (o.total || 0) + ' 条投递' + (cnt ? '：' + cnt : '')];
+      if (o.dueSoon && o.dueSoon.length) {
+        L.push('近 ' + (o.dueSoonDays || 7) + ' 日到期 ' + o.dueSoon.length + ' 条：' + o.dueSoon.slice(0, 3).map(function (a) { return (a.company || a.id) + ' ' + a.dueDate; }).join('；') + (o.dueSoon.length > 3 ? ' 等' : ''));
+      }
+      if (o.items) L.push('过滤「' + (o.statusLabel || o.status) + '」' + o.items.length + ' 条');
+      return L;
+    }
+    if (name === 'list_resumes') {
+      var items = o.items || [];
+      return ['共 ' + (o.total != null ? o.total : items.length) + ' 份' + (items.length ? '：' + items.slice(0, 5).map(function (d) { return d.title || d.id; }).join('、') + (items.length > 5 ? ' 等' : '') : '')];
+    }
+    if (name === 'get_resume_summary') {
+      var secs = (o.sections || []).map(function (s) { return s.title; }).filter(Boolean);
+      var hds = o.headings || [];
+      var titles = secs.length ? secs : hds;
+      return ['「' + (o.title || o.id) + '」' + (o.sectionCount || hds.length || 0) + ' 个章节' + (titles.length ? '：' + titles.slice(0, 6).join('、') + (titles.length > 6 ? ' 等' : '') : '')];
+    }
+    return [JSON.stringify(o).slice(0, 160)];
+  }
+  function toolPartHtml(p) {
+    var name = String(p.type || '').slice(5);
+    var inp = kvSummary(p.input);
+    return '<div class="ag-tc"><div class="tt">' + esc(name) + toolStateBadge(p.state, p.output) + '</div>'
+      + (inp ? '<div class="row ag-tin">' + esc(inp) + '</div>' : '')
+      + toolOutputLines(name, p.output).slice(0, 3).map(function (l) { return '<div class="row">' + esc(l) + '</div>'; }).join('')
+      + '</div>';
+  }
+  // 实况帧渲染：toolCallId 复用同一 wrapper（call → output-available 就地更新，多轮步序不乱）
+  function upsertToolCard(bubble, part, liveMap) {
+    var id = part.toolCallId || ('auto-' + Object.keys(liveMap).length);
+    var w = liveMap[id];
+    if (!w) { w = document.createElement('div'); liveMap[id] = w; bubble.appendChild(w); }
+    w.innerHTML = toolPartHtml(part);
+  }
   // ===== UIMessage 渲染：parts 归一（新形状）+ 老 {text,quickReplies,toolCards} 字段兜底 =====
   function partsOf(m) { return (m && Array.isArray(m.parts)) ? m.parts : []; }
   function msgText(m) {
@@ -162,34 +235,64 @@
     var p = partsOf(m).filter(function (x) { return x && x.type === 'tool-ui-quickReplies'; })[0];
     return (p && p.output && Array.isArray(p.output.options)) ? p.output.options : [];
   }
-  // 助手气泡整体渲染：正文走 textContent（模型输出永不进 innerHTML）；
-  // 卡走 cardHtml（内部全 esc）；quickReplies 按钮 DOM 构建。
+  // 展示卡/执行卡统一入口：真实工具输出（非流式回退通道里也是 {type,payload} 形状）走执行卡，其余走 cardHtml
+  function appendCardEl(d, tc) {
+    var w = document.createElement('div');
+    w.innerHTML = REAL_TOOLS.indexOf(tc.type) >= 0
+      ? toolPartHtml({ type: 'tool-' + tc.type, state: 'output-available', input: {}, output: tc.payload })
+      : cardHtml(tc);
+    while (w.firstChild) d.appendChild(w.firstChild);
+  }
+  function appendQr(d, opts) {
+    if (!opts || !opts.length) return;
+    var qr = document.createElement('div');
+    qr.className = 'ag-qr';
+    opts.forEach(function (q) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = q.label;
+      if (q.description) b.title = q.description;
+      // 回填即发送：quickReplies.message 是完整下一步指令（协议字段，非占位符）
+      b.onclick = function () { input.value = q.message; send(); };
+      qr.appendChild(b);
+    });
+    d.appendChild(qr);
+  }
+  // 助手气泡整体渲染：有 parts 按时间序逐 part 渲染（多轮工具环里执行卡与过渡文本混排）；
+  // 正文走 textContent（模型输出永不进 innerHTML）；卡走 cardHtml/toolPartHtml（内部全 esc）；
+  // 无 parts 的老字段消息走兜底通道。
   function renderAiInto(d, m) {
     d.innerHTML = '';
-    var textEl = document.createElement('div');
-    textEl.textContent = msgText(m);
-    d.appendChild(textEl);
-    msgCards(m).forEach(function (tc) {
-      var w = document.createElement('div');
-      w.innerHTML = cardHtml(tc);
-      while (w.firstChild) d.appendChild(w.firstChild);
-    });
-    var opts = msgReplies(m);
-    if (opts.length) {
-      var qr = document.createElement('div');
-      qr.className = 'ag-qr';
-      opts.forEach(function (q) {
-        var b = document.createElement('button');
-        b.type = 'button';
-        b.textContent = q.label;
-        if (q.description) b.title = q.description;
-        // 回填即发送：quickReplies.message 是完整下一步指令（协议字段，非占位符）
-        b.onclick = function () { input.value = q.message; send(); };
-        qr.appendChild(b);
+    var parts = partsOf(m);
+    if (parts.length) {
+      var textEl = null;
+      parts.forEach(function (p) {
+        if (!p || typeof p.type !== 'string') return;
+        if (p.type === 'text') {
+          if (typeof p.text !== 'string' || !p.text) return;
+          var te = document.createElement('div');
+          te.textContent = p.text;
+          d.appendChild(te);
+          if (!textEl) textEl = te;
+        } else if (p.type === 'tool-ui-quickReplies') {
+          appendQr(d, (p.output && p.output.options) || []);
+        } else if (p.type === 'tool-job-detail' || p.type === 'tool-resume-card') {
+          appendCardEl(d, { type: p.type.slice(5), payload: p.output });   // 上下文/引用展示卡
+        } else if (p.type.indexOf('tool-') === 0) {
+          var w = document.createElement('div');
+          w.innerHTML = toolPartHtml(p);   // 真实工具执行卡（call / output-available / 错误态都画）
+          while (w.firstChild) d.appendChild(w.firstChild);
+        }
+        // step-start / 未知 part：不渲染（时间序占位）
       });
-      d.appendChild(qr);
+      return textEl;
     }
-    return textEl;
+    var te2 = document.createElement('div');
+    te2.textContent = msgText(m);
+    d.appendChild(te2);
+    msgCards(m).forEach(function (tc) { appendCardEl(d, tc); });
+    appendQr(d, msgReplies(m));
+    return te2;
   }
   function addAiMsg(m) {
     var d = document.createElement('div');
@@ -315,7 +418,8 @@
       addAi(data);
       return;
     }
-    var d = null, textEl = null, shown = '', ended = false, errText = '', first = true;
+    var d = null, textEl = null, shown = '', blockText = '', ended = false, errText = '', first = true;
+    var toolEls = {};   // toolCallId → 实况工具卡 wrapper（call → output-available 就地更新）
     var reader = r.body.getReader();
     var dec = new TextDecoder();
     var buf = '';
@@ -337,11 +441,17 @@
             if (first) { first = false; onFirst(); }
             if (!d) {
               d = document.createElement('div'); d.className = 'ag-m ai';
-              textEl = document.createElement('div'); d.appendChild(textEl);
               log.appendChild(d);
             }
-            shown += ev.delta;
-            textEl.textContent = shown;   // 增量全走 textContent：模型输出永不进 innerHTML
+            if (!textEl) { textEl = document.createElement('div'); d.appendChild(textEl); blockText = ''; }
+            shown += ev.delta; blockText += ev.delta;
+            textEl.textContent = blockText;   // 增量全走 textContent：模型输出永不进 innerHTML
+            scrollEnd();
+          } else if (ev.type === 'tool-part' && ev.part && typeof ev.part === 'object') {
+            if (first) { first = false; onFirst(); }
+            if (!d) { d = document.createElement('div'); d.className = 'ag-m ai'; log.appendChild(d); }
+            upsertToolCard(d, ev.part, toolEls);
+            textEl = null;   // 下一帧 text-delta 另起文本块：过渡句与最终答复不混在同一段
             scrollEnd();
           } else if (ev.type === 'finish' && ev.message) {
             ended = true;

@@ -188,9 +188,11 @@ const agentPageInner = () => `
 - `SessionMeta` = `{id, title, createdAt, updatedAt, messageCount, lastText}`
 - `Session` = `{id, title, createdAt, updatedAt, messages:[UIMessage]}`（§5 形状；旧 `{role,text}` 消息读出时自动归一）
 - `quickReplies` = `[{label, message, description?}]`（2–3 条；模型没给够时服务端兜底补齐 2 条）
-- `toolCards` = `[{type:'job-detail'|'resume-card', payload}]`（非流式响应字段；流式在 parts 里作 `tool-job-detail`/`tool-resume-card`）：
-  - job-detail payload：`{ref:'job', id, source:'inbox'|'app'|'eval', title, company, role, salary, url, status, score?, verdict?, dueDate?, nextStep?}`
-  - resume-card payload：`{ref:'doc', id, title, kind:'master'|'job', company, role, tag, archived}`
+- `toolCards` = `[{type, payload}]`（非流式响应字段，由 assistant parts 归一得出）：
+  - 引用展示卡 `type:'job-detail'|'resume-card'`（流式在 parts 里作 `tool-job-detail`/`tool-resume-card`）：
+    - job-detail payload：`{ref:'job', id, source:'inbox'|'app'|'eval', title, company, role, salary, url, status, score?, verdict?, dueDate?, nextStep?}`
+    - resume-card payload：`{ref:'doc', id, title, kind:'master'|'job', company, role, tag, archived}`
+  - 真实工具执行结果 `type:'get_job_detail'|'query_job_progress'|'list_resumes'|'get_resume_summary'`，payload = 工具 output（§5.7 工具表）
 - 上下文注入：消息内 `[context:doc:<id>]` / `[context:job:<id>]`（可带 `:<title>` 尾段），最多解析 4 个；解析结果拼进 system【事实】区，user 文本剥前缀。
 - 错误：全部中文原因。`409` 纯文本=未配置大模型；`404/400` JSON `{ok:false,error}`；`502` `{ok:false,error:'模型调用失败：…'}`；`500 CORRUPT`=agent-sessions.json 损坏停写。
 
@@ -205,7 +207,7 @@ const agentPageInner = () => `
 ## 4. 待接点（明确不在本次范围）
 
 1. ~~**流式**~~：✅ 已接（§5）。`POST /agent/chat` 带 `stream:1`/`Accept:text/event-stream` 回 SSE；agent.mjs `chatStream()` 产出 UIMessage 事件流；面板增量渲染。
-2. **真实工具调用循环**：toolCards 目前由「上下文引用 + 模型 toolRefs」派生（渲染层协议），尚无 server 侧 tool 执行（job-detail/job-progress-query/resume-list 对应能力都已存在：inbox/apps/docs-meta 数据层）。
+2. ~~**真实工具调用循环**~~：✅ 已接（§5.7）。`chatStream` 多轮工具环：模型 `{toolCalls}` 契约 → server 执行 `get_job_detail`/`query_job_progress`/`list_resumes`/`get_resume_summary`（全只读）→ 结果回灌下一轮 system【工具结果】区，轮数封顶 3。上下文引用派生的展示卡（job-detail/resume-card）保留原口径。
 3. **topnav 第四入口**：要导航高亮「助手」需在 `nav()` 调用处加一项并同步 test-structure.sh 断言。
 4. **.gitignore**：`agent-sessions.json` 未登记（数据文件，建议与 inbox.json 同列加入）。
 5. **投递登记写入**：策略是「用户明确发起才记录」，当前 agent 不代写 applications.json；要接 `/app/add` 式写入时再定「用户确认 → 服务端代建」流程。
@@ -227,9 +229,12 @@ const agentPageInner = () => `
 
 ### 5.2 事件序列（UIMessageChunk）
 
-正常序列：
+正常序列（工具环 §5.7：0..n 组 tool-part 帧可穿插在 text-delta 之前/之间）：
 
 ```
+data: {"type":"tool-part","part":{"type":"tool-get_job_detail","toolCallId":"tc-…","state":"call","input":{"ref":"app","id":"…"}}}
+data: {"type":"tool-part","part":{"type":"tool-get_job_detail","toolCallId":"tc-…","state":"output-available","input":{…},"output":{…}}}
+…（每个工具调用一对 call → output-available 帧；多轮工具环按时间序重复）
 data: {"type":"text-delta","delta":"你好"}
 data: {"type":"text-delta","delta":"，先看"}
 …（0..n 个 text-delta，delta 已是纯文本：服务端从模型 JSON 输出里增量解出 reply 值）
@@ -239,7 +244,8 @@ data: [DONE]
 
 | type | 载荷 | 消费方动作 |
 |---|---|---|
-| `text-delta` | `{delta:string}` | 追加到当前助手气泡正文（textContent，禁 innerHTML） |
+| `tool-part` | `{part:{type:'tool-<name>', toolCallId, state:'call'|'output-available', input, output?}}` | 实况渲染工具卡：按 toolCallId 定位复用同一卡片就地更新（call→output 不换位置） |
+| `text-delta` | `{delta:string}` | 追加到当前文本块（textContent，禁 innerHTML）；tool-part 之后到达的 delta 另起新文本块 |
 | `finish` | `{message:UIMessage}` | 以完整 message 对账重渲（正文+工具卡+quickReplies），收尾 |
 | `error` | `{errorText:string}` | 中文状态条；已到达的部分文本保留 |
 
@@ -249,17 +255,23 @@ data: [DONE]
 {"id":"m-…","role":"assistant",
  "parts":[
    {"type":"step-start"},
+   {"type":"text","text":"可选过渡句：我先查一下…"},
+   {"type":"tool-get_job_detail","toolCallId":"tc-…","input":{"ref":"app","id":"…"},"state":"output-available","output":{…工具 output…}},
+   {"type":"tool-query_job_progress","toolCallId":"tc-…","input":{},"state":"output-available","output":{…工具 output…}},
    {"type":"text","text":"正文"},
    {"type":"tool-job-detail","input":{"id":"…"},"state":"output-available","output":{…job-detail payload…}},
    {"type":"tool-resume-card","input":{"id":"…"},"state":"output-available","output":{…resume-card payload…}},
    {"type":"tool-ui-quickReplies","input":{},"state":"output-available","output":{"options":[{label,message,description?}]}}
  ],
- "metadata":{"createdAt":"<iso>","tokenCount":123}}
+ "metadata":{"createdAt":"<iso>","tokenCount":123,"rounds":2}}
 ```
 
+- parts **按时间序**记录：`step-start` 开场 → 各轮工具 part（过渡 `text` 若模型同帧给了 `reply` 排在该轮工具卡之前）→ 最终 `text` → 引用展示卡 → `tool-ui-quickReplies`。
+- 持久化的工具 part 只落 `state:'output-available'` 终态；`'call'` 是 SSE 实况帧的过程态，不落档。
 - 用户条：`{id,role:'user',parts:[{type:'text',text}],metadata:{createdAt,refs?}}`（`refs` = 解析到的 `[context:…]` 引用）。
-- `metadata.tokenCount` = `usage.total`；厂商未回 usage 记 `null`（诚实口径，不编 0）。
-- 断连截断的助手条：`metadata.aborted:true` + 已显示的部分正文（不假装完整）。
+- `metadata.tokenCount` = 多轮 `usage.total` 合计；厂商未回 usage 记 `null`（诚实口径，不编 0）。
+- `metadata.rounds` = 工具环实际模型轮数；单轮回复不记该字段。
+- 断连截断的助手条：`metadata.aborted:true` + 已收工具 parts 与已显示的部分正文（不假装完整）。
 - 兼容：旧 `{role,text,quickReplies?,toolCards?,refs?,at}` 消息读出时自动归一为 UIMessage（`msgToUI`），磁盘文件不改写。
 - parts → 老字段对账：`tool-<x>` part ↔ `{type:'<x>',payload:output}`；`tool-ui-quickReplies` part ↔ `quickReplies`。
 
@@ -267,19 +279,63 @@ data: [DONE]
 
 1. 先校验会话/消息（`NO_SESSION`/`EMPTY`/`CORRUPT` 仍抛错——路由在写 SSE 头前拉首帧，校验错误回 HTTP 状态码）。
 2. 用户条先落盘（UIMessage），再开流：模型失败/断连也会话里留住提问。
-3. 流式逐 chunk 经 `replyExtractor` 增量解出 reply 纯文本 → `text-delta`；非 JSON 输出按纯文本透传。
-4. 流毕 `parseAgentReply(全文)` 终值对账 → toolCards/quickReplies 兜底 → 组 assistant UIMessage 落盘 → `finish`。
-5. 提前终止（路由 `it.return()`）：`for await` 把 return 透传 `streamChatMsgs` → llm finally unclaim 租约 → AI 槽释放；`ex.shown()` 非空则按 `aborted` 落盘。
+3. **工具环**（≤3 轮，§5.7）：每轮 `streamChatMsgs` 拉一轮输出 → `parseAgentTurn` 判定 `toolCalls`/`reply`。
+   - `toolCalls`：逐调用发 `tool-part` 实况帧（call → output-available）→ 执行结果回灌下一轮 system【工具结果】区。
+   - `reply`：增量 `text-delta` 已在流中下发 → 组 assistant UIMessage 落盘 → `finish`。
+4. 流毕 `parseAgentTurn(全文)` 终值对账 → 上下文/引用卡 + quickReplies 兜底 → `finish`。
+5. 提前终止（路由 `it.return()`）：`for await` 把 return 透传 `streamChatMsgs` → llm finally unclaim 租约 → AI 槽释放；已收工具 parts + `ex.shown()` 非空则按 `aborted` 落盘。
 
 ### 5.5 面板行为（agent-panel.js）
 
 - `sendStream()`：`fetch` + `Accept:text/event-stream` + body `stream:1`；content-type 非 SSE 走整段回退。
-- 首个 delta 到达即停等待秒表；增量只写 `textEl.textContent`；`finish` 用 `renderAiInto` 对账全量重渲。
+- 首个 delta/tool-part 到达即停等待秒表；增量只写 `textEl.textContent`（tool-part 后新 delta 另起文本块）；`tool-part` 帧按 `toolCallId` 就地更新执行卡；`finish` 用 `renderAiInto` 对账全量重渲。
+- `renderAiInto` 按 parts 时间序逐 part 渲染：`text` → 文本块；`tool-job-detail`/`tool-resume-card` → 引用展示卡；其余 `tool-*` → 执行卡（调用名 + state 徽章 + input/output 摘要）；`tool-ui-quickReplies` → 选项；`step-start`/未知 part 不渲染。
 - `error` 帧 / 无 finish 断连 → 中文状态条（「连接已断开：回复可能不完整」等）。
-- 历史渲染 `msgText/msgCards/msgReplies` 按 parts 归一，兼吃老字段。
+- 历史渲染 `msgText/msgCards/msgReplies` 按 parts 归一，兼吃老字段（老 `{type:'get_job_detail'…}` 卡同样走执行卡渲染）。
 
 ### 5.6 server.mjs 需要的改动（可粘贴，2 处）
 
 1. **§1.1 import 行**：`agent.mjs` 导入补 `chatStream as agentChatStream`（见 §1.1 已更新行）。
 2. **§1.5 路由块**：整段替换为 §1.5 的新代码（非流式分支原样保留 + SSE 分支）。
-   无其他改动：`gatePool` 已覆盖 `POST /agent/chat`（AI 槽闸门照走）；`readBody`/`sendJson`/`leaseOf` 复用现有。
+   无其他改动：`gatePool` 已覆盖 `POST /agent/chat`（AI 槽闸门照走）；`readBody`/`sendJson`/`leaseOf` 复用现有；`tool-part` 帧由通用 `data: <json>` 透传，路由零改动。
+
+### 5.7 工具执行环（server 侧真实执行，对照 UPCV §5 工具集）
+
+**模型契约**（写死在 `AGENT_SYSTEM`）：模型每轮只输出一个 JSON 对象，二选一——
+
+| 输出 | 语义 |
+|---|---|
+| `{"toolCalls":[{"name":"工具名","args":{…}}]}` | 工具路径：本轮不作答；可带 `"reply":"我先查一下…"` 过渡句（照常流式下发并入档） |
+| `{"reply":"…","quickReplies":[…],"toolRefs":[…]}` | 回复路径：收尾落盘 |
+
+同一 JSON 里 `reply` 与非空 `toolCalls` 同现 → **toolCalls 优先**（reply 只作过渡句入档）。
+
+**轮次**：单条用户消息最多 `TOOL_ROUND_MAX=3` 轮模型交互（防死循环）。
+
+1. 第 1–2 轮拿到 `toolCalls` → 执行 → 结果以 `- name(args) → output` 行追加进下一轮 system 的【工具结果】区。
+2. 第 3 轮 system 追加「最后一次作答机会」提示；模型仍只给 `toolCalls` → 调用**照常执行入档**（不浪费已查数据），再补一句系统兜底 `text`（诚实标注，不冒充模型输出）。
+3. 任一轮给 `reply` → 立即收尾。单轮至多执行 `TOOL_CALL_CAP=4` 条调用，超出的丢弃并在【工具结果】区注明。
+
+**工具表**（全部只读、零落盘；`args` 白名单校验——未知字段/非法值 → `{ok:false,code:'BAD_ARGS'}`）：
+
+| name | args | 数据源 | output（ok:true 时） |
+|---|---|---|---|
+| `get_job_detail` | `ref:'inbox'\|'app'\|'eval'`（必填）、`id`（必填） | inbox.json / applications.json / evaluations.json | `{ref, source, id, title, company, role, salary, url, status, statusEnum?, statusLabel?, score?, verdict?, appliedAt?, dueDate?, nextStep?, docId?, jdExcerpt?}` |
+| `query_job_progress` | `status?`（六态枚举或中文标签） | applications.json | `{total, byStatus{六态+closed 计数}, byStatusLabel, dueSoonDays:7, dueSoon:[{…brief, overdue}]（dueDate≤今天+7d 含逾期、升序、≤20 条）, status?, statusLabel?, items?[≤30 条 brief]}` |
+| `list_resumes` | `archived?`：`true`/`false`/`"all"`，缺省只列在用 | docs/ 目录（VALID_ID 同口径）× docs-meta.json | `{total, archived, items:[{id,title,theme,kind,company,role,tag,archived,updatedAt}]（mtime 降序 ≤50）}` |
+| `get_resume_summary` | `docId`（必填） | docs/<id>.html | `{id,title,kind,theme,company,role,tag,archived,sectionCount,sections:[{title,hidden}]（extract.mjs sectionsOf 口径）,headings?（无 section 时退 h2/h3）,lineCount,preview[≤8 行]}` |
+
+**错误对象**（概念 400/404 不进 HTTP 层——调用发生在流内，原样回灌模型如实转告）：
+
+| code | 触发 |
+|---|---|
+| `BAD_ARGS` | args 非对象 / 未知字段 / 缺必填 / 枚举值非法 / 未知工具名 |
+| `NOT_FOUND` | 指定来源/文档里无该 id |
+| `TIMEOUT` | 单调用执行 >30s |
+| `ERROR` | 执行抛异常（message 截断 120 字） |
+
+**超时口径**：单工具调用 30s（`Promise.race` 兜底；现工具全是同步读盘，远快于上限——race 主要为契约与未来异步工具预留）。模型请求超时走 profile `timeoutMs`（llm.mjs 原口径，默认 120s），不在本层另设。
+
+**租约/断连**：同一 `lease` 逐轮 `claim → unclaim`（resource-slots 合同只拒并发占用，顺序复用合法）；路由断连 `it.return()` 经 for-await 透传 `streamChatMsgs` → finally unclaim 放槽，口径与单轮流式一致。
+
+**UIMessage 落档**：`metadata.rounds` 记实际轮数（>1 才有）；`tokenCount` 为多轮 `usage.total` 合计。
