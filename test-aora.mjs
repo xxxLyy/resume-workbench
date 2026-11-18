@@ -31,15 +31,6 @@ assert.equal(a.status, 200, '/aora-bot.js 应 200');
 assert.match(a.ct, /application\/javascript/, '/aora-bot.js content-type');
 assert.ok(a.body.length > 300000, 'vendored 文件体积应 >300KB');
 console.log('✅ A /aora-bot.js 路由');
-// B. aora.mjs 输出形状（相对 import 同目录模块，不走 HTTP）
-const { aoraSvg, aoraEmpty, aoraFoot } = await import('./aora.mjs');
-assert.ok(aoraSvg('happy').includes('<svg'), 'happy.svg 应已生成可读');
-assert.ok(aoraEmpty('暂无投递').includes('aora-empty'), 'aoraEmpty 容器');
-assert.ok(aoraEmpty('暂无投递').includes('暂无投递'), 'aoraEmpty 文案');
-assert.ok(aoraEmpty('<x>').includes('&lt;x&gt;'), 'aoraEmpty 应 esc 文案');
-assert.ok(aoraFoot().includes('Powered by'), 'aoraFoot 署名');
-assert.ok(aoraFoot().includes('github.com/sam70361/aora-bot'), 'aoraFoot 链接');
-console.log('✅ B aora.mjs 模块');
 
 // A2. /aora-face.js 断言归位（文件本任务落地）
 const f = await get('/aora-face.js');
@@ -56,10 +47,6 @@ for (const v of vals) assert.ok(CHARACTER_STATES.includes(v), '非法状态名: 
 for (const p of ['agent', 'interview', 'ai-helper']) assert.ok(mapBlock.includes("'" + p + "'"), '缺页: ' + p);
 console.log('✅ C 映射表合法');
 // D. 页面接线断言
-const apps = await get('/applications');
-assert.ok(apps.body.includes('aora-empty'), '投递页空态应带 aora 装饰');
-const st = await get('/stats');
-assert.ok(st.body.includes('data-aora-face'), '复盘页应带 aora 装饰');
 const setp = await get('/settings');
 assert.ok(setp.body.includes('Powered by') && setp.body.includes('aora-bot'), '设置页署名卡');
 const agp = await get('/agent');

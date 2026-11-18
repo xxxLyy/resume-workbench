@@ -354,7 +354,7 @@
     try { d = await api('GET', '/agent/sessions'); }
     catch (e) { sessBox.innerHTML = '<div class="ag-empty-side">会话列表加载失败</div>'; return; }
     var list = (d && d.sessions) || [];
-    if (!list.length) { sessBox.innerHTML = '<div class="ag-empty-side"><aora-bot character="dot" state="sleeping" size="36"></aora-bot><div style="margin-top:6px">还没有会话，点上方「＋ 新会话」开始</div></div>'; return; }
+    if (!list.length) { sessBox.innerHTML = '<div class="ag-empty-side">还没有会话，点上方「＋ 新会话」开始</div>'; return; }
     list.forEach(function (s) {
       var row = document.createElement('div');
       row.className = 'ag-sess' + (s.id === (selectId || current) ? ' on' : '');

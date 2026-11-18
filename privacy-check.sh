@@ -12,7 +12,7 @@ done
 for p in .tx/probe .migrate.lock .meta.lock .apply-profiles.lock .apply-profiles.json.probe.tmp .docs-meta.json.probe.tmp; do
   git check-ignore -q "$p" || { echo "❌ 未忽略: $p（.gitignore 缺模式）"; exit 1; }
 done
-# vendored 引擎与生成 SVG 的坐标小数会误命中手机号模式（第三方/生成产物，登记非放宽）
-HITS=$(git grep --untracked -nE '1[3-9][0-9]{9}|[A-Za-z0-9._%+-]+@(qq|gmail|163|outlook)\.com|sk-[A-Za-z0-9]{16,}|"apiKey"[[:space:]]*:[[:space:]]*"[^"]{8,}' -- . ':!test.sh' ':!test-render.sh' ':!test-structure.sh' ':!test-editor.mjs' ':!config.example.json' ':!vendors/aora-bot.js' ':!assets/aora/*.svg' 2>/dev/null || true)
+# vendored 引擎的坐标小数会误命中手机号模式（第三方产物，登记非放宽）
+HITS=$(git grep --untracked -nE '1[3-9][0-9]{9}|[A-Za-z0-9._%+-]+@(qq|gmail|163|outlook)\.com|sk-[A-Za-z0-9]{16,}|"apiKey"[[:space:]]*:[[:space:]]*"[^"]{8,}' -- . ':!test.sh' ':!test-render.sh' ':!test-structure.sh' ':!test-editor.mjs' ':!config.example.json' ':!vendors/aora-bot.js' 2>/dev/null || true)
 if [ -n "$HITS" ]; then echo '❌ 已跟踪文件含疑似敏感内容（文档命中请红改后重跑）:'; echo "$HITS"; exit 1; fi
 echo '✅ 隐私检查通过'
