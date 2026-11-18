@@ -10,5 +10,8 @@
   "type": "commonjs",
   "dependencies": {
     "playwright-core": "1.60.0"
+  },
+  "devDependencies": {
+    "@aora-bot/engine": "^0.2.0"
   }
 }

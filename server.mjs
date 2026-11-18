@@ -48,6 +48,7 @@ import { followUpState, followUpDays, normalizeFollowUpDays, followUpTask, follo
 import { hideFieldsInHtml, shareExpectations, findResidues, absentKeys, addShareRecord, sharePdfPath, SHARE_ID_RE } from './share-copy.mjs';   // 分享副本（批 3 卡片 b3c5）：勾选隐藏字段 → 独立预览/PDF + 文本层无残留校验
 import { PRACTICE_CAP, PRACTICE_TTL_MS, PRACTICE_NO_MODEL_HINT, buildPracticeSession, appendPracticeSession, savePracticeAnswer, normalizeAnswerText, startPracticeFeedbackTask, cancelPracticeFeedbackTask, runPracticeFeedbackTask, failPracticeFeedbackTask, findSession, findQuestion, practiceSessions, practiceSessionView, sessionSummary, feedbackResultOf, missingMatLinkOf, linkMissingMaterial, POINT_STATE_LABEL } from './practice.mjs';   // 练习会话 API（批 4 卡片 b4c1）+ 练习 UI/缺项转待补充（批 4 卡片 b4c2）：出题复用 kind=interview 产物 + 逐题作答 + AI 对照证据表反馈（无百分位无排名）+ 历史随投递截 20
 import { ICONS } from './vendors/icons.mjs';  // Lucide 图标数据（纯数据文件，零 npm 依赖）
+import { aoraSvg, aoraEmpty, aoraFoot } from './aora.mjs';   // aora 装饰角色（空态+署名卡）
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const root = process.env.RESUME_ROOT || APP_ROOT;   // 数据根（docs/snapshots/pdfs/JSON/backups 全在此）

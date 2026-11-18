@@ -28,6 +28,15 @@ assert.equal(a.status, 200, '/aora-bot.js 应 200');
 assert.match(a.ct, /application\/javascript/, '/aora-bot.js content-type');
 assert.ok(a.body.length > 300000, 'vendored 文件体积应 >300KB');
 console.log('✅ A /aora-bot.js 路由');
-// （后续任务在此追加 B/C/D/E 段）
+// B. aora.mjs 输出形状（相对 import 同目录模块，不走 HTTP）
+const { aoraSvg, aoraEmpty, aoraFoot } = await import('./aora.mjs');
+assert.ok(aoraSvg('happy').includes('<svg'), 'happy.svg 应已生成可读');
+assert.ok(aoraEmpty('暂无投递').includes('aora-empty'), 'aoraEmpty 容器');
+assert.ok(aoraEmpty('暂无投递').includes('暂无投递'), 'aoraEmpty 文案');
+assert.ok(aoraEmpty('<x>').includes('&lt;x&gt;'), 'aoraEmpty 应 esc 文案');
+assert.ok(aoraFoot().includes('Powered by'), 'aoraFoot 署名');
+assert.ok(aoraFoot().includes('github.com/sam70361/aora-bot'), 'aoraFoot 链接');
+console.log('✅ B aora.mjs 模块');
+// （后续任务在此追加 C/D/E 段）
 console.log('✅ test-aora 全部通过');
 server.kill(); process.exit(0);
