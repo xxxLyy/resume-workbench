@@ -82,5 +82,10 @@ const iv = fs.readFileSync(path.join(APP_ROOT, 'interview-panel.js'), 'utf8');
 for (const needle of ["page: 'interview'", "fset('send')", "fset('stream')", "fset('done')", "fset('error')", "wait-user"])
   assert.ok(iv.includes(needle), 'interview-panel 缺: ' + needle);
 console.log('✅ F interview-panel 接线');
+// G. ai-helper 面板接线源级断言
+const ah = fs.readFileSync(path.join(APP_ROOT, 'ai-helper-panel.js'), 'utf8');
+for (const needle of ["page: 'ai-helper'", "fset('send')", "fset('stream')", "fset('done')", "fset('error')"])
+  assert.ok(ah.includes(needle), 'ai-helper-panel 缺: ' + needle);
+console.log('✅ G ai-helper-panel 接线');
 console.log('✅ test-aora 全部通过');
 server.kill(); process.exit(0);

@@ -12,6 +12,16 @@
 (function () {
   var mountEl = document.getElementById('ah-app');
   if (!mountEl) return;
+  // AoraFace 化身：挂 .page-head（在 #ah-app 之外，不被面板重渲染擦除）；AoraFace 未加载时全部静默跳过
+  var face = null;
+  var headEl = document.querySelector('.page-head');
+  if (window.AoraFace && headEl) {
+    var fslot = document.createElement('span');
+    fslot.style.cssText = 'display:inline-flex;margin-left:auto';
+    headEl.appendChild(fslot);
+    face = AoraFace.mount(fslot, { page: 'ai-helper', size: 96, cornerOf: '.page-head' });
+  }
+  var fset = function (v) { if (face) { if (v === 'send') AoraFace.compact(face); AoraFace.set(face, v); } };
   var $ = function (id) { return document.getElementById(id); };
   // 图标/状态行由 page() 下发（__status 在 STATUS_SCRIPT 里）；__icon 由页面 nonce 注入（ICON_SCRIPT）。
   // 没拿到时降级为空串/纯文本 —— 不炸，也不显示图标（与 ai-panel.js 同口径）。
@@ -97,23 +107,26 @@
   // 统一写请求语义（与 ai-panel.js postJson 同口径）：409 JSON=stale、409 text=拒绝（含 LLM 未配置），
   // !r.ok 或 ok!==true → error；网络异常进 catch。
   async function postJson(url, body) {
-    var r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    fset('send');
+    var r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .catch(function (e) { fset('error'); throw e; });
     if (r.status === 409) {
       var ct = (r.headers.get('content-type') || '');
       if (ct.includes('application/json')) {
         var d409 = await r.json().catch(function () { return null; });
         var e1 = new Error((d409 && d409.error) || '文档有未同步的修改');
-        e1.stale = true; throw e1;
+        e1.stale = true; fset('error'); throw e1;
       }
       var t409 = await r.text();
-      var e2 = new Error(t409 || '服务拒绝'); e2.rejected = true; throw e2;
+      var e2 = new Error(t409 || '服务拒绝'); e2.rejected = true; fset('error'); throw e2;
     }
     var data = null;
     try { data = await r.json(); } catch (e) { data = null; }
     if (!r.ok || !data || data.ok !== true) {
       var e3 = new Error((data && (data.error || data.msg)) || ('HTTP ' + r.status));
-      e3.rejected = true; throw e3;
+      e3.rejected = true; fset('error'); throw e3;
     }
+    fset('done');
     return data;
   }
 
@@ -123,6 +136,7 @@
   // onDelta 逐段回调（增量渲染）。返回 {text,done}：done=false = 连接中断（结果可能不完整）。
   // 起步错误（未配置/5xx）在响应头阶段仍是普通 JSON → 走 !r.ok 分支，不进帧解析。
   async function postStream(url, body, onDelta) {
+    fset('send');
     var r;
     try {
       r = await fetch(url, {
@@ -131,6 +145,7 @@
         body: JSON.stringify(body)
       });
     } catch (e) {
+      fset('error');
       throw new Error('网络连接失败：本地服务可能未在运行，请刷新或稍后重试');
     }
     if (r.status === 409) {
@@ -138,26 +153,27 @@
       if (ct.includes('application/json')) {
         var d409 = await r.json().catch(function () { return null; });
         var e1 = new Error((d409 && d409.error) || '文档有未同步的修改');
-        e1.stale = true; throw e1;
+        e1.stale = true; fset('error'); throw e1;
       }
       var t409 = await r.text();
-      var e2 = new Error(t409 || '服务拒绝'); e2.rejected = true; throw e2;
+      var e2 = new Error(t409 || '服务拒绝'); e2.rejected = true; fset('error'); throw e2;
     }
     if (!r.ok) {
       var data = null;
       try { data = await r.json(); } catch (e) { data = null; }
       var e3 = new Error((data && (data.error || data.msg)) || ('HTTP ' + r.status));
-      e3.rejected = true; throw e3;
+      e3.rejected = true; fset('error'); throw e3;
     }
     // 非 SSE 回包（降级/代理改写）：按普通 JSON 容错取 rewritten/reply，不炸
     if (!((r.headers.get('content-type') || '').includes('text/event-stream'))) {
       var dj = null;
       try { dj = await r.json(); } catch (e) { dj = null; }
       var whole = (dj && (dj.rewritten || dj.reply)) || '';
-      if (whole && onDelta) onDelta(whole);
+      if (whole && onDelta) { fset('stream'); onDelta(whole); }
+      if (whole) fset('done'); else fset('error');   // 坏载荷（非 JSON/无 rewritten）不把失败当成功
       return { text: whole, done: true };
     }
-    if (!r.body || !r.body.getReader) throw new Error('当前浏览器不支持流式读取，请换用新版浏览器');
+    if (!r.body || !r.body.getReader) { fset('error'); throw new Error('当前浏览器不支持流式读取，请换用新版浏览器'); }
     var reader = r.body.getReader();
     var dec = new TextDecoder();
     var buf = '', done = false, full = '';
@@ -165,7 +181,7 @@
       while (!done) {
         var chunk;
         try { chunk = await reader.read(); }
-        catch (e) { return { text: full, done: false }; }   // 断网/连接重置：保已收内容，done=false
+        catch (e) { fset('error'); return { text: full, done: false }; }   // 断网/连接重置：保已收内容，done=false
         if (chunk.done) { buf += dec.decode(); break; }
         buf += dec.decode(chunk.value, { stream: true });
         var cut;
@@ -181,16 +197,18 @@
             try { obj = JSON.parse(payload); } catch (e) { obj = { delta: payload }; }   // 纯文本帧容错
             if (obj && typeof obj.error === 'string') {
               var ee = new Error(obj.error); ee.rejected = true;
+              fset('error');
               throw ee;   // 已收部分留在输出卡（追加渲染不回滚），错误由 runAction 提示
             }
             var d = obj && typeof obj.delta === 'string' ? obj.delta : '';
-            if (d) { full += d; if (onDelta) onDelta(d); }
+            if (d) { full += d; fset('stream'); if (onDelta) onDelta(d); }
           }
         }
       }
     } finally {
       try { reader.cancel(); } catch (e) {}
     }
+    if (done) fset('done'); else fset('error');   // 未见 [DONE] 帧的半截流不算成功
     return { text: full, done: done };
   }
 
