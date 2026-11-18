@@ -18,9 +18,11 @@ import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, 
 import { applyZoneOps } from './zone-ops.mjs';   // 区域安全子集（ZONE-04）：磁盘正文 + 提交原文 + 归属 + 锁 + 事实护栏 五项齐备才应用
 import { rotateLogIfNeeded } from './logrotate.mjs';
 import { renderTemplatesPage } from './templates-page.mjs';
-import { smartCheck, improveAll, customRewrite, improveWriting } from './ai-helper.mjs';   // AI 简历助手四件套（规范 ai-helper.routes.md）
-import { init as agentInit, listSessions as agentListSessions, createSession as agentCreateSession, getSession as agentGetSession, renameSession as agentRenameSession, deleteSession as agentDeleteSession, chat as agentChat, previewContext as agentPreviewContext, AGENT_NO_LLM } from './agent.mjs';   // Agent 求职助手（规范 agent.routes.md）
-import { getConfig as getInterviewConfig, listSessions as ivListSessions, getSession as ivGetSession, createSession as ivCreateSession, deleteSession as ivDeleteSession, nextQuestion as ivNextQuestion, submitAnswer as ivSubmitAnswer, skipQuestion as ivSkipQuestion, genHint as ivGenHint, genReport as ivGenReport, NO_MODEL_HINT as IV_NO_MODEL_HINT } from './interview.mjs';   // 模拟面试文字版（规范 interview.routes.md）
+import { smartCheck, improveAll, customRewrite, improveWriting, customRewriteStream, improveWritingStream } from './ai-helper.mjs';   // AI 简历助手四件套（规范 ai-helper.routes.md）
+import { init as agentInit, listSessions as agentListSessions, createSession as agentCreateSession, getSession as agentGetSession, renameSession as agentRenameSession, deleteSession as agentDeleteSession, chat as agentChat, chatStream as agentChatStream, previewContext as agentPreviewContext, AGENT_NO_LLM } from './agent.mjs';   // Agent 求职助手（规范 agent.routes.md）
+import { getConfig as getInterviewConfig, listSessions as ivListSessions, getSession as ivGetSession, createSession as ivCreateSession, deleteSession as ivDeleteSession, nextQuestion as ivNextQuestion, submitAnswer as ivSubmitAnswer, skipQuestion as ivSkipQuestion, genHint as ivGenHint, genReport as ivGenReport, genHintStream as ivGenHintStream, genReportStream as ivGenReportStream,
+  listBanks as ivListBanks, getBank as ivGetBank,
+  NO_MODEL_HINT as IV_NO_MODEL_HINT } from './interview.mjs';   // 模拟面试文字版（规范 interview.routes.md）
 import { freezeHtml, normalizeToCurrent, splitDoc, staleInfo } from './freeze.mjs';
 import { beginTx, commitTx, dropSupersededTx, recoverPending, withDocLock, updateMeta, updateMetaAll, rootLock, atomicWrite, LockHeld } from './tx.mjs';
 import { safeUrl } from './safe-url.mjs';   // URL 协议白名单（S4B-9；escAttr 不校验协议）
@@ -9390,6 +9392,68 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
       return sendJson(200, { ok: true, ...out });
     }
+    // ===== AI 简历助手·流式端点（UPCV */stream 复刻；帧协议与断连口径 ai-helper.routes.md §5）=====
+    // pipeSSE：首段到达才 writeHead——起步错误抛回走普通 JSON 错误；首个 delta 才升级 text/event-stream。
+    // 断连：res 'close' 与 it.next() 竞速——客户端离开立即停消费（req 'close' 勿用，§5.3）。
+    const pipeSSE = async (gen) => {
+      const it = gen[Symbol.asyncIterator]();
+      const closedP = new Promise((resolve) => res.once('close', resolve));
+      res.on('error', () => {});
+      let started = false;
+      const frame = (obj) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n`); return true; } catch { return false; } };
+      try {
+        for (;;) {
+          const step = await Promise.race([it.next(), closedP]);
+          if (step === undefined) return;
+          if (step.done) break;
+          if (!started) {
+            started = true;
+            res.writeHead(200, {
+              'Content-Type': 'text/event-stream; charset=utf-8',
+              'Cache-Control': 'no-cache',
+              Connection: 'keep-alive',
+              'X-Accel-Buffering': 'no'
+            });
+            res.flushHeaders();
+          }
+          if (!frame({ delta: step.value })) return;
+        }
+        if (!started) {
+          res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+          res.flushHeaders();
+        }
+        try { res.write('data: [DONE]\n\n'); } catch {}
+        res.end();
+      } catch (e) {
+        if (!started) throw e;
+        try { frame({ error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); } catch {}
+        try { res.end(); } catch {}
+      } finally {
+        try { await it.return(); } catch {}
+      }
+    };
+    if (req.method === 'POST' && url.pathname === '/ai-helper/rewrite/stream') {
+      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');
+      const body = JSON.parse(await readBody(req));
+      const text = String(body.text || '');
+      const userRequirement = String(body.userRequirement || '').trim();
+      if (!text.trim()) return sendJson(400, { ok: false, error: 'text 必填' });
+      if (!userRequirement) return sendJson(400, { ok: false, error: 'userRequirement 必填' });
+      const prof = pickProfile(body.profile);
+      if (prof === null) return sendJson(400, { ok: false, error: '模型配置不存在或不完整' });
+      try { return await pipeSSE(customRewriteStream(text, userRequirement, { root, lease: leaseOf(req), profile: prof })); }
+      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
+    }
+    if (req.method === 'POST' && url.pathname === '/ai-helper/polish/stream') {
+      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');
+      const body = JSON.parse(await readBody(req));
+      const text = String(body.text || '');
+      if (!text.trim()) return sendJson(400, { ok: false, error: 'text 必填' });
+      const prof = pickProfile(body.profile);
+      if (prof === null) return sendJson(400, { ok: false, error: '模型配置不存在或不完整' });
+      try { return await pipeSSE(improveWritingStream(text, { root, lease: leaseOf(req), profile: prof })); }
+      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
+    }
     // ===== Agent 求职助手（编排 agent.mjs，规范 agent.routes.md）=====
     if (req.method === 'GET' && url.pathname === '/agent') {
       return send(200, page('求职助手', agentPageInner(), 'agent'));
@@ -9421,15 +9485,52 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       if (!hasLLM(root)) return send(409, AGENT_NO_LLM, 'text/plain');
       const body = JSON.parse(await readBody(req));
       if (!body.id || !body.message || typeof body.message !== 'string') return send(400, 'id 和 message 必填', 'text/plain');
-      try {
-        const r = await agentChat(String(body.id), body.message.slice(0, 8000), { lease: leaseOf(req) });
-        return sendJson(200, { ok: true, ...r });
-      } catch (e) {
+      const wantStream = !!body.stream || /text\/event-stream/.test(String(req.headers.accept || ''));
+      if (!wantStream) {
+        try {
+          const r = await agentChat(String(body.id), body.message.slice(0, 8000), { lease: leaseOf(req) });
+          return sendJson(200, { ok: true, ...r });
+        } catch (e) {
+          if (e && e.code === 'NO_SESSION') return sendJson(404, { ok: false, error: '会话不存在' });
+          if (e && e.code === 'EMPTY') return sendJson(400, { ok: false, error: e.message });
+          if (e && e.httpCode) return sendJson(e.httpCode, { ok: false, error: e.message });
+          return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) });
+        }
+      }
+      // SSE：先拉首帧再写头——校验类错误仍走 HTTP 状态码；断连 → it.return() 放槽（agent.routes.md §5）
+      const it = agentChatStream(String(body.id), body.message.slice(0, 8000), { lease: leaseOf(req) });
+      let cur;
+      try { cur = await it.next(); }
+      catch (e) {
         if (e && e.code === 'NO_SESSION') return sendJson(404, { ok: false, error: '会话不存在' });
         if (e && e.code === 'EMPTY') return sendJson(400, { ok: false, error: e.message });
         if (e && e.httpCode) return sendJson(e.httpCode, { ok: false, error: e.message });
         return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) });
       }
+      let closed = false;
+      res.on('close', () => { closed = true; });
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no'
+      });
+      const sse = (obj) => new Promise((ok) => {
+        if (closed || res.writableEnded || res.destroyed) return ok(false);
+        res.write('data: ' + JSON.stringify(obj) + '\n\n', () => ok(!closed && !res.writableEnded));
+      });
+      try {
+        while (!cur.done) {
+          if (!await sse(cur.value)) break;
+          cur = await it.next();
+        }
+      } catch (e) {
+        await sse({ type: 'error', errorText: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) });
+      } finally {
+        try { await it.return(); } catch {}
+        if (!closed && !res.writableEnded) { try { res.write('data: [DONE]\n\n'); res.end(); } catch {} }
+      }
+      return;
     }
     if (req.method === 'GET' && url.pathname === '/agent/context-preview') {
       return sendJson(200, { ok: true, ...agentPreviewContext(String(url.searchParams.get('text') || '')) });
@@ -9463,9 +9564,18 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       if (!s) return sendJson(404, { ok: false, error: '面试会话不存在' });
       return sendJson(200, { ok: true, session: s });
     }
+    if (req.method === 'GET' && url.pathname === '/interview/banks') {
+      return sendJson(200, ivListBanks({ preview: url.searchParams.get('preview'),
+        page: url.searchParams.get('page'), limit: url.searchParams.get('limit') }));
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/interview/banks/')) {
+      const r = ivGetBank(decodeURIComponent(url.pathname.slice('/interview/banks/'.length)));
+      if (!r.ok) return sendJson(r.status || 404, { ok: false, error: r.error });
+      return sendJson(200, r);
+    }
     if (req.method === 'POST' && url.pathname === '/interview/sessions') {
       const body = await readBodyAuto(req);
-      const r = ivCreateSession({ voice: body.voice, type: body.type, jobRef: body.jobRef, resumeId: body.resumeId });
+      const r = ivCreateSession({ voice: body.voice, type: body.type, jobRef: body.jobRef, resumeId: body.resumeId, bankSlug: body.bankSlug });
       if (!r.ok) return sendJson(r.status || 400, { ok: false, error: r.error });
       return sendJson(200, { ok: true, session: r.session });
     }
@@ -9499,13 +9609,55 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       if (!r.ok) return sendJson(r.status || 400, { ok: false, error: r.error });
       return sendJson(200, r);
     }
+    const ivStream = async (makeGen) => {
+      if (!hasLLM(root)) return sendJson(409, { ok: false, error: IV_NO_MODEL_HINT });
+      let lease;
+      try { lease = aiPool.borrow(); }
+      catch (e) { return sendJson((e && e.httpCode) || 429, { ok: false, error: (e && e.message) || 'AI 排队已满，请稍候' }); }
+      let it;
+      try { it = makeGen(lease); } catch (e) { try { lease.release(); } catch {} throw e; }
+      const first = await it.next();
+      if (first.done || (first.value && first.value.type === 'error')) {
+        try { await it.return(); } catch {}
+        try { lease.release(); } catch {}
+        const v = first.value;
+        return sendJson((v && v.status) || 500, { ok: false, error: (v && v.error) || '生成失败' });
+      }
+      res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+      let stopped = false;
+      res.on('close', () => { if (!stopped) { stopped = true; try { it.return(); } catch {} } });
+      const frameOf = (fr) => {
+        const { type, ...rest } = fr;
+        const d = type === 'delta' ? { text: fr.text }
+          : type === 'done' ? { ok: true, ...rest }
+          : rest;
+        return `event: ${type}\ndata: ${JSON.stringify(d)}\n\n`;
+      };
+      try {
+        res.write(frameOf(first.value));
+        for (;;) {
+          const n = await it.next();
+          if (n.done) break;
+          res.write(frameOf(n.value));
+          if (n.value.type === 'error' || n.value.type === 'done') break;
+        }
+      } catch (e) {
+        try { res.write(`event: error\ndata: ${JSON.stringify({ status: 502, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) })}\n\n`); } catch {}
+      }
+      stopped = true;
+      try { res.end(); } catch {}
+      try { await it.return(); } catch {}
+      try { lease.release(); } catch {}
+    };
     if (req.method === 'POST' && url.pathname === '/interview/hint') {
       const body = await readBodyAuto(req);
       if (!Number.isInteger(body.index) || body.index < 0) return sendJson(400, { ok: false, error: 'index 必须是非负整数' });
+      if (body.stream === true) return ivStream((lease) => ivGenHintStream(String(body.id || ''), body.index, { lease }));
       return ivCall((lease) => ivGenHint(String(body.id || ''), body.index, { lease }));
     }
     if (req.method === 'POST' && url.pathname === '/interview/report') {
       const body = await readBodyAuto(req);
+      if (body.stream === true) return ivStream((lease) => ivGenReportStream(String(body.id || ''), { lease }));
       return ivCall((lease) => ivGenReport(String(body.id || ''), { lease }));
     }
     send(404, 'not found', 'text/plain');

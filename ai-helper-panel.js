@@ -3,10 +3,11 @@
 // 端点（契约见 ai-helper.routes.md）：
 //   GET  /ai-helper/docs      文档清单（简历下拉）
 //   GET  /api/extract?id=     复用现成端点：取某份简历的正文文本（唯一文本来源，不新造）
-//   POST /ai-helper/check     {text} → {issues[] | reply}
-//   POST /ai-helper/improve-all {text,issues} → {rewritten | reply}
-//   POST /ai-helper/rewrite   {text,userRequirement} → {rewritten | reply}
-//   POST /ai-helper/polish    {text} → {rewritten | reply}
+//   POST /ai-helper/check          {text} → {issues[] | reply}（非流式）
+//   POST /ai-helper/improve-all    {text,issues} → {rewritten | reply}（非流式）
+//   POST /ai-helper/rewrite/stream {text,userRequirement} → SSE {delta} 帧流（定制改写/去修复走这条）
+//   POST /ai-helper/polish/stream  {text} → SSE {delta} 帧流
+//   （非流式 /rewrite、/polish JSON 端点保留：规范 ai-helper.routes.md §5；面板已不切回）
 // 视觉：只用 page() :root 设计 token（var(--accent)/--card/--line/--mut/--ok/--warn/--err 等），零字面色。
 (function () {
   var mountEl = document.getElementById('ah-app');
@@ -116,6 +117,83 @@
     return data;
   }
 
+  // postStream：SSE 版写请求（UPCV */stream 复刻；409/!ok 语义与 postJson 同口径）。
+  // 帧协议（ai-helper.routes.md §5）：'data: {"delta":"…"}' 逐段 / 'data: [DONE]' 收尾 /
+  // 'data: {"error":"…"}' 出错；非 JSON 帧按纯文本 delta 容错。
+  // onDelta 逐段回调（增量渲染）。返回 {text,done}：done=false = 连接中断（结果可能不完整）。
+  // 起步错误（未配置/5xx）在响应头阶段仍是普通 JSON → 走 !r.ok 分支，不进帧解析。
+  async function postStream(url, body, onDelta) {
+    var r;
+    try {
+      r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+        body: JSON.stringify(body)
+      });
+    } catch (e) {
+      throw new Error('网络连接失败：本地服务可能未在运行，请刷新或稍后重试');
+    }
+    if (r.status === 409) {
+      var ct = (r.headers.get('content-type') || '');
+      if (ct.includes('application/json')) {
+        var d409 = await r.json().catch(function () { return null; });
+        var e1 = new Error((d409 && d409.error) || '文档有未同步的修改');
+        e1.stale = true; throw e1;
+      }
+      var t409 = await r.text();
+      var e2 = new Error(t409 || '服务拒绝'); e2.rejected = true; throw e2;
+    }
+    if (!r.ok) {
+      var data = null;
+      try { data = await r.json(); } catch (e) { data = null; }
+      var e3 = new Error((data && (data.error || data.msg)) || ('HTTP ' + r.status));
+      e3.rejected = true; throw e3;
+    }
+    // 非 SSE 回包（降级/代理改写）：按普通 JSON 容错取 rewritten/reply，不炸
+    if (!((r.headers.get('content-type') || '').includes('text/event-stream'))) {
+      var dj = null;
+      try { dj = await r.json(); } catch (e) { dj = null; }
+      var whole = (dj && (dj.rewritten || dj.reply)) || '';
+      if (whole && onDelta) onDelta(whole);
+      return { text: whole, done: true };
+    }
+    if (!r.body || !r.body.getReader) throw new Error('当前浏览器不支持流式读取，请换用新版浏览器');
+    var reader = r.body.getReader();
+    var dec = new TextDecoder();
+    var buf = '', done = false, full = '';
+    try {
+      while (!done) {
+        var chunk;
+        try { chunk = await reader.read(); }
+        catch (e) { return { text: full, done: false }; }   // 断网/连接重置：保已收内容，done=false
+        if (chunk.done) { buf += dec.decode(); break; }
+        buf += dec.decode(chunk.value, { stream: true });
+        var cut;
+        while ((cut = buf.indexOf('\n\n')) >= 0) {
+          var frame = buf.slice(0, cut); buf = buf.slice(cut + 2);
+          var lines = frame.split('\n');
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            if (line.indexOf('data:') !== 0) continue;
+            var payload = line.slice(5).trim();
+            if (payload === '[DONE]') { done = true; break; }
+            var obj = null;
+            try { obj = JSON.parse(payload); } catch (e) { obj = { delta: payload }; }   // 纯文本帧容错
+            if (obj && typeof obj.error === 'string') {
+              var ee = new Error(obj.error); ee.rejected = true;
+              throw ee;   // 已收部分留在输出卡（追加渲染不回滚），错误由 runAction 提示
+            }
+            var d = obj && typeof obj.delta === 'string' ? obj.delta : '';
+            if (d) { full += d; if (onDelta) onDelta(d); }
+          }
+        }
+      }
+    } finally {
+      try { reader.cancel(); } catch (e) {}
+    }
+    return { text: full, done: done };
+  }
+
   // 「已等待 m:ss」秒表（与 ai-panel.js fmtElapsed 同口径）：等待期唯一真实进度信号是耗时，不造百分比。
   function fmtElapsed(ms) {
     var s = Math.max(0, Math.floor(ms / 1000));
@@ -166,6 +244,21 @@
     $('ah-out-text').textContent = text;
     $('ah-output-card').style.display = '';
     $('ah-output-card').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+  // 流式增量渲染：begin 清空并亮卡 → append 逐段追加【文本节点】（禁 innerHTML，
+  // 与全文 textContent 同一安全口径；.ah-out-text 的 white-space:pre-wrap 保留换行）。
+  function beginOutput(title) {
+    hideEmpty();
+    $('ah-out-title').textContent = title;
+    var out = $('ah-out-text');
+    out.textContent = '';
+    $('ah-output-card').style.display = '';
+    $('ah-output-card').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    return out;
+  }
+  function appendOutput(outEl, delta) {
+    outEl.appendChild(document.createTextNode(delta));
+    outEl.scrollTop = outEl.scrollHeight;   // 跟随最新输出（盒内滚动，不拉页面）
   }
   $('ah-copy').onclick = function () {
     var t = $('ah-out-text').textContent;
@@ -230,21 +323,24 @@
     card.style.display = '';
   }
 
-  // 去修复：单条 issue → 调定制改写（requirement=问题+建议），结果进输出卡，标「已修复」
+  // 去修复：单条 issue → 调定制改写·流式（requirement=问题+建议），结果逐段进输出卡；
+  // 只在完整收尾（done）时标「已修复」——中断的半截文本不背修复名分（诚实口径）。
   function fixOne(i, btn) {
     var it = state.issues[i];
     var text = needText();
     if (!it || !text) return;
     var req = '修复该问题——【' + (it.field || '全文') + '】' + it.description + (it.suggestion ? '；修复建议：' + it.suggestion : '');
     runAction('修复中', async function () {
-      var d = await postJson('/ai-helper/rewrite', { text: text, userRequirement: req });
-      if (d.rewritten) {
+      var out = beginOutput('修复结果 · ' + (it.field || '全文'));
+      var rs = await postStream('/ai-helper/rewrite/stream', { text: text, userRequirement: req }, function (d) { appendOutput(out, d); });
+      if (rs.done && rs.text.trim()) {
         it.fixed = true;
         renderIssues();
-        showOutput('修复结果 · ' + (it.field || '全文'), d.rewritten);
         say('ok', '已修复：' + (it.field || '全文'));
+      } else if (!rs.done) {
+        say('warn', '连接中断：上面是已收到的部分内容，结果可能不完整，请重试');
       } else {
-        showOutput('修复结果 · ' + (it.field || '全文'), d.reply || '（模型未返回改写结果）');
+        say('warn', '模型未返回改写结果，请重试');
       }
     });
   }
@@ -290,9 +386,10 @@
     var req = $('ah-req').value.trim();
     if (!req) { say('warn', '先在输入框写改写要求'); $('ah-req').focus(); return; }
     runAction('改写中', async function () {
-      var d = await postJson('/ai-helper/rewrite', { text: text, userRequirement: req });
-      if (d.rewritten) { showOutput('定制改写结果', d.rewritten); say('ok', '改写完成'); }
-      else showOutput('定制改写结果', d.reply || '（模型未返回改写结果）');
+      var out = beginOutput('定制改写结果');
+      var rs = await postStream('/ai-helper/rewrite/stream', { text: text, userRequirement: req }, function (d) { appendOutput(out, d); });
+      if (!rs.done) say('warn', '连接中断：上面是已收到的部分内容，结果可能不完整，请重试');
+      else say('ok', rs.text.trim() ? '改写完成' : '改写完成，但模型未返回内容');
     });
   };
 
@@ -300,9 +397,10 @@
     var text = needText();
     if (!text) return;
     runAction('润色中', async function () {
-      var d = await postJson('/ai-helper/polish', { text: text });
-      if (d.rewritten) { showOutput('润色结果', d.rewritten); say('ok', '润色完成'); }
-      else showOutput('润色结果', d.reply || '（模型未返回改写结果）');
+      var out = beginOutput('润色结果');
+      var rs = await postStream('/ai-helper/polish/stream', { text: text }, function (d) { appendOutput(out, d); });
+      if (!rs.done) say('warn', '连接中断：上面是已收到的部分内容，结果可能不完整，请重试');
+      else say('ok', rs.text.trim() ? '润色完成' : '润色完成，但模型未返回内容');
     });
   };
 

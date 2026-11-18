@@ -14,6 +14,8 @@
   var JOBS = Array.isArray(boot.jobs) ? boot.jobs : [];
   var RESUMES = Array.isArray(boot.resumes) ? boot.resumes : [];
   var hasLLM = !!boot.hasLLM;
+  var BANKS = [];            // 题库橱窗（GET /interview/banks 运行时拉取；端点未接时静默降级隐藏）
+  var selBank = '';          // 选中的题库 slug；'' = 不用题库（纯 AI 出题）
 
   var __status = window.__status || function (el, kind, text) { if (el) el.textContent = text; };
   var __wv = window.__wv || function (url, body, msgEl) {
@@ -60,7 +62,14 @@
     + '.iv-col h3{font-size:13px;margin:0 0 var(--space-2);display:flex;align-items:center;gap:var(--space-2)}'
     + '.iv-col ul{margin:0;padding-left:var(--space-4);font-size:13px;display:flex;flex-direction:column;gap:var(--space-1)}'
     + '.iv-report-meta{font-size:12px;color:var(--mut);margin-top:var(--space-3)}'
-    + '.iv-wait{font-size:12px;color:var(--mut)}';
+    + '.iv-wait{font-size:12px;color:var(--mut)}'
+    + '.iv-banks{display:flex;gap:var(--space-2);overflow-x:auto;padding:2px 2px 6px;scroll-snap-type:x proximity}'
+    + '.iv-bank{flex:0 0 216px;scroll-snap-align:start;position:relative;border:1px solid var(--line);border-radius:var(--radius);padding:var(--space-2);cursor:pointer;display:flex;flex-direction:column;gap:var(--space-1);font-size:12px;background:var(--bg)}'
+    + '.iv-bank.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}'
+    + '.iv-bank .iv-cover{height:44px;border-radius:6px;display:flex;align-items:flex-end;padding:4px 8px;color:#fff;font-weight:700}'
+    + '.iv-bank .iv-bq{color:var(--mut);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.6em}'
+    + '.iv-bank .iv-feat{position:absolute;top:8px;right:8px;background:var(--accent);color:#fff;border-radius:4px;padding:0 6px;font-size:11px;line-height:18px}'
+    + '.iv-stream{white-space:pre-wrap;word-break:break-word;font-family:var(--font);font-size:12px;color:var(--mut);max-height:160px;overflow:auto;margin:var(--space-1) 0 0}';
   document.head.appendChild(css);
 
   function h(tag, cls, text) {
@@ -85,6 +94,101 @@
         return d;
       });
     });
+  }
+  // ===== SSE 客户端（POST + ReadableStream 逐帧；服务端未接流式时自动回退 JSON）=====
+  // 帧协议（interview.routes.md §流式规范）：event: delta|done|error + data: JSON。
+  // ssePost 解析为 Promise<donePayload>；delta 经 onDelta 增量回调；error 帧 → reject。
+  function pumpSSE(stream, onDelta) {
+    var reader = stream.getReader();
+    var dec = new TextDecoder();
+    var buf = '', donePayload = null;
+    var handle = function (frame) {
+      var ev = 'message', data = '';
+      frame.split('\n').forEach(function (line) {
+        if (line.indexOf('event:') === 0) ev = line.slice(6).trim();
+        else if (line.indexOf('data:') === 0) data += (data ? '\n' : '') + line.slice(5).replace(/^ /, '');
+      });
+      var payload = null; try { payload = JSON.parse(data); } catch (e) { payload = data; }
+      if (ev === 'delta') { if (onDelta) onDelta((payload && typeof payload.text === 'string') ? payload.text : ''); }
+      else if (ev === 'done') { donePayload = payload; }
+      else if (ev === 'error') { throw new Error((payload && payload.error) || '生成失败'); }
+    };
+    var loop = function () {
+      return reader.read().then(function (r) {
+        buf += r.done ? dec.decode() : dec.decode(r.value, { stream: true });
+        var cut;
+        while ((cut = buf.indexOf('\n\n')) >= 0) {
+          var f = buf.slice(0, cut); buf = buf.slice(cut + 2);
+          if (f.trim()) handle(f);
+        }
+        if (r.done) return donePayload;
+        return loop();
+      });
+    };
+    return loop();
+  }
+  function ssePost(url, body, onDelta) {
+    return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) })
+      .then(function (res) {
+        var ct = res.headers.get('content-type') || '';
+        if (ct.indexOf('text/event-stream') < 0) {
+          return res.json().then(function (d) {
+            if (!res.ok || !d || d.ok === false) throw new Error((d && d.error) || ('HTTP ' + res.status));
+            return d;   // 非流式回退：整段 JSON 当 done 载荷
+          });
+        }
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return pumpSSE(res.body, onDelta).then(function (d) {
+          if (!d) throw new Error('流式生成中断：未收到完成帧');
+          return d;
+        });
+      });
+  }
+  // ===== 题库橱窗 =====
+  var bankStrip;
+  function bankHue(slug, alt) {
+    var h0 = 0;
+    for (var i = 0; i < slug.length; i++) h0 = (h0 * 31 + slug.charCodeAt(i)) >>> 0;
+    return 'hsl(' + ((h0 + alt * 40) % 360) + ',42%,42%)';
+  }
+  function renderBankStrip() {
+    if (!bankStrip) return;
+    bankStrip.textContent = '';
+    var none = h('div', 'iv-bank' + (selBank === '' ? ' sel' : ''));
+    var cv0 = h('div', 'iv-cover', 'AI');
+    cv0.style.background = 'var(--accent-soft)';
+    cv0.style.color = 'var(--mut)';
+    none.appendChild(cv0);
+    none.appendChild(h('b', null, '不用题库'));
+    none.appendChild(h('span', 'iv-bq', '全程由 AI 按你的简历与职位出题'));
+    none.addEventListener('click', function () { selBank = ''; renderBankStrip(); });
+    bankStrip.appendChild(none);
+    BANKS.forEach(function (b) {
+      var c = h('div', 'iv-bank' + (selBank === b.slug ? ' sel' : ''));
+      var cov = h('div', 'iv-cover', b.title);
+      cov.style.background = 'linear-gradient(135deg,' + bankHue(b.slug, 0) + ',' + bankHue(b.slug, 1) + ')';
+      c.appendChild(cov);
+      if (b.isFeatured) c.appendChild(h('span', 'iv-feat', '精选'));
+      var row = h('div');
+      row.style.display = 'flex'; row.style.gap = '6px'; row.style.alignItems = 'center';
+      row.appendChild(badgeEl('ai', b.category === 'TECH' ? '技术' : '通用'));
+      row.appendChild(h('span', 'iv-note', String(b.questionCount || 0) + ' 题'));
+      c.appendChild(row);
+      var pq = (Array.isArray(b.previewQuestions) ? b.previewQuestions : [])[0];
+      c.appendChild(h('span', 'iv-bq', (pq && pq.question) || b.intro || ''));
+      c.addEventListener('click', function () { selBank = (selBank === b.slug) ? '' : b.slug; renderBankStrip(); });
+      bankStrip.appendChild(c);
+    });
+    if (!BANKS.length) {
+      var tip = h('div', 'iv-note', '题库不可用：未接入题库端点或暂无题库，可仍走纯 AI 出题');
+      tip.style.alignSelf = 'center';
+      bankStrip.appendChild(tip);
+    }
+  }
+  function loadBanks() {
+    return apiGet('/interview/banks?preview=1&limit=12')
+      .then(function (d) { BANKS = Array.isArray(d.data) ? d.data : []; renderBankStrip(); })
+      .catch(function () { BANKS = []; renderBankStrip(); });
   }
   function refreshSessions() {
     return apiGet('/interview/sessions').then(function (d) { sessions = d.sessions || []; renderList(); }).catch(function () {});
@@ -148,11 +252,20 @@
     RESUMES.forEach(function (r) { var o = document.createElement('option'); o.value = r.id; o.textContent = r.title || r.id; sr.appendChild(o); });
     fResume.appendChild(sr); grid.appendChild(fResume);
 
+    var fBank = h('div', 'iv-field');
+    fBank.style.width = '100%';
+    fBank.appendChild(h('span', null, '题库（可选）'));
+    bankStrip = h('div', 'iv-banks');
+    fBank.appendChild(bankStrip);
+    fBank.appendChild(h('span', 'iv-note', '选题库：前几题出自题库（不耗模型），题用尽由 AI 续出到 ' + CAP + ' 题；不选则全程 AI 出题'));
+    grid.appendChild(fBank);
+    renderBankStrip();
+
     var btn = h('button', null, '开始面试');
     btn.disabled = busy.start || !hasLLM;
     btn.addEventListener('click', function () {
       busy.start = true; btn.disabled = true; __status(elCfgMsg, 'warn', '');
-      __wv('/interview/sessions', { type: sel.value, jobRef: sj.value, resumeId: sr.value, voice: 'zh-female' }, elCfgMsg)
+      __wv('/interview/sessions', { type: sel.value, jobRef: sj.value, resumeId: sr.value, voice: 'zh-female', bankSlug: selBank }, elCfgMsg)
         .then(function (d) { refreshSessions(); if (d.session && d.session.id) openSession(d.session.id); })
         .catch(function () {})
         .finally(function () { busy.start = false; btn.disabled = !hasLLM; });
@@ -180,7 +293,8 @@
     sessions.forEach(function (s) {
       var row = h('div', 'iv-sess');
       row.appendChild(badgeEl('', s.typeLabel || TYPE_LABELS[s.type] || s.type));
-      var title = (s.company || s.role) ? (s.company + '·' + s.role).replace(/^·|·$/g, '') : '通用面试';
+      if (s.bankTitle) row.appendChild(badgeEl('ai', '题库·' + s.bankTitle));
+      var title = (s.company || s.role) ? (s.company + '·' + s.role).replace(/^·|·$/g, '') : (s.bankTitle || '通用面试');
       row.appendChild(h('b', null, title));
       row.appendChild(h('span', 'iv-grow', '已问 ' + s.asked + '/' + s.cap + ' · 已答 ' + s.answered + (s.hasReport ? ' · 已出报告' : '')));
       if (s.finished) row.appendChild(badgeEl('ok', '已完成')); else row.appendChild(badgeEl('warn', '进行中'));
@@ -208,8 +322,8 @@
     runCard.hidden = false;
     var head = h('div', 'iv-row');
     head.style.justifyContent = 'space-between';
-    var title = (cur.company || cur.role) ? (cur.company + '·' + cur.role).replace(/^·|·$/g, '') : '通用面试';
-    head.appendChild(h('div', 'card-title', title + ' — ' + (TYPE_LABELS[cur.type] || cur.type)));
+    var title = (cur.company || cur.role) ? (cur.company + '·' + cur.role).replace(/^·|·$/g, '') : (cur.bankTitle || '通用面试');
+    head.appendChild(h('div', 'card-title', title + ' — ' + (TYPE_LABELS[cur.type] || cur.type) + (cur.bankTitle ? ' · 题库·' + cur.bankTitle : '')));
     elProg = h('span', 'iv-progress', '第 ' + Math.min((cur.questions ? cur.questions.length : 0) + (cur.pending ? 0 : 1), cur.questionCap || CAP) + '/' + (cur.questionCap || CAP) + ' 题 · 已答 ' + (cur.answeredCount || 0));
     head.appendChild(elProg);
     runCard.appendChild(head);
@@ -291,16 +405,26 @@
   function doHint() {
     if (!cur || !cur.pending || busy.hint) return;
     busy.hint = true; btnHint.disabled = true;
-    var waitEl = h('span', 'iv-wait'); elHintBox.appendChild(waitEl);
+    // 流式渲染：delta 文本逐帧落进 iv-stream；done 帧（或非流式 JSON 回退）落定后渲染要点列表。
+    var box = h('div', 'iv-hint');
+    box.appendChild(h('b', null, '答题要点'));
+    var streamEl = h('pre', 'iv-stream');
+    var waitEl = h('span', 'iv-wait');
+    box.appendChild(streamEl); box.appendChild(waitEl);
+    elHintBox.textContent = ''; elHintBox.appendChild(box);
     var tick = startTicker(function (mm) { waitEl.textContent = '生成中 · 已等待 ' + mm; });
-    __wv('/interview/hint', { id: cur.id, index: cur.pending.index }, elRunMsg)
+    var acc = '';
+    ssePost('/interview/hint', { id: cur.id, index: cur.pending.index, stream: true }, function (t) {
+      acc += t; streamEl.textContent = acc;
+    })
       .then(function (d) {
+        if (!d || d.ok === false) throw new Error((d && d.error) || '生成失败');
         if (!cur.hints) cur.hints = {};
         cur.hints[String(d.index)] = { points: d.points };
         renderHint();
       })
-      .catch(function () {})
-      .finally(function () { clearInterval(tick); busy.hint = false; if (btnHint) btnHint.disabled = !hasLLM; waitEl.remove(); });
+      .catch(function (e) { __status(elRunMsg, 'err', e.message); renderHint(); })
+      .finally(function () { clearInterval(tick); busy.hint = false; if (btnHint) btnHint.disabled = !hasLLM || !cur || !cur.pending; });
   }
 
   // ===== 卡 4：报告 =====
@@ -343,10 +467,21 @@
   function doReport() {
     if (!cur || busy.report) return;
     busy.report = true; btnReport.disabled = true;
-    var tick = startTicker(function (mm) { elRepWait.textContent = '模型调用中 · 已等待 ' + mm; });
-    __wv('/interview/report', { id: cur.id }, elRepMsg)
-      .then(function (d) { cur.report = d.report; renderReportCard(); refreshSessions(); })
-      .catch(function () {})
+    // 流式渲染：模型原文逐帧进 iv-stream（报告输出是 JSON，增量原文是诚实进度）；
+    // done 帧收到 {ok:true,report}（或非流式 JSON 回退）才解析三列结构展示。
+    var streamEl = h('pre', 'iv-stream');
+    var waitTxt = h('span', null, '');
+    elRepWait.textContent = ''; elRepWait.appendChild(waitTxt); elRepWait.appendChild(streamEl);
+    var tick = startTicker(function (mm) { waitTxt.textContent = '模型调用中 · 已等待 ' + mm; });
+    var acc = '';
+    ssePost('/interview/report', { id: cur.id, stream: true }, function (t) {
+      acc += t; streamEl.textContent = acc;
+    })
+      .then(function (d) {
+        if (!d || d.ok === false || !d.report) throw new Error((d && d.error) || '生成失败');
+        cur.report = d.report; renderReportCard(); refreshSessions();
+      })
+      .catch(function (e) { __status(elRepMsg, 'err', e.message); })
       .finally(function () { clearInterval(tick); busy.report = false; elRepWait.textContent = ''; if (btnReport) btnReport.disabled = !hasLLM || (cur.answeredCount || 0) < 1; });
   }
 
@@ -365,4 +500,5 @@
   mount.appendChild(stack);
   renderList();
   refreshSessions();
+  loadBanks();
 })();

@@ -141,3 +141,59 @@ export async function chatMsgs(root, messages, { lease, meta, profile } = {}) {
 export async function chat(root, system, user, { lease, meta, profile } = {}) {
   return chatMsgs(root, [{ role: 'system', content: system }, { role: 'user', content: user }], { lease, meta, profile });
 }
+
+// streamChatMsgs — chatMsgs 的流式变体（UPCV */stream 复刻需要）：同一份 profile/SSRF/租约/重试纪律，
+// 请求体只多 stream:true；产出 = async generator 逐段 yield choices[].delta.content 文本片段。
+// 提前中断消费（路由层断连/取消）→ generator finally 照常释放 AI 槽（与 chatMsgs 同一口径）。
+// usage：厂商若在末块给 usage 照收进 meta（缺字段记 null，与 chatMsgs 同口径）。
+export async function* streamChatMsgs(root, messages, { lease, meta, profile } = {}) {
+  const c = profile == null ? loadConfig(root) : ((loadProfiles(root).profiles || [])[profile] || null);
+  if (!c) throw new Error('LLM 未配置');
+  const base = assertSafeBaseURL(c.baseURL).toString().replace(/\/$/, '');
+  const own = lease ? null : await aiPool.acquire();
+  const held = lease ? aiPool.claim(lease) : null;
+  try {
+    const r = await fetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${c.apiKey}`, 'Content-Type': 'application/json' },
+      redirect: 'error',
+      body: JSON.stringify({ model: c.model, messages, stream: true, ...(c.reasoningEffort ? { reasoning_effort: c.reasoningEffort } : {}) }),
+      signal: AbortSignal.timeout(Number(c.timeoutMs) > 0 ? Number(c.timeoutMs) : 120000)
+    }).then(okOrThrow('LLM 请求失败'));
+    // SSE 帧解析：按 \n\n 分帧，逐行 data: 前缀；[DONE] 收尾；delta.content 原样 yield，
+    // reasoning_content 与 tool_calls 增量本期不向下游透传（各端点只消费正文文本）。
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '', done = false;
+    while (!done) {
+      const { value, done: rd } = await reader.read();
+      if (rd) { buf += dec.decode(); done = true; } else { buf += dec.decode(value, { stream: true }); }
+      let cut;
+      while ((cut = buf.indexOf('\n\n')) >= 0) {
+        const frame = buf.slice(0, cut); buf = buf.slice(cut + 2);
+        for (const line of frame.split('\n')) {
+          if (!line.startsWith('data:')) continue;
+          const payload = line.slice(5).trim();
+          if (payload === '[DONE]') { done = true; break; }
+          let obj; try { obj = JSON.parse(payload); } catch { continue; }
+          const d = obj && obj.choices && obj.choices[0] && obj.choices[0].delta;
+          if (d && typeof d.content === 'string' && d.content) yield d.content;
+          if (meta && typeof meta === 'object' && obj.usage) {
+            const u = obj.usage;
+            meta.usage = {
+              prompt: (typeof u.prompt_tokens === 'number' ? u.prompt_tokens : (typeof u.prompt === 'number' ? u.prompt : null)),
+              completion: (typeof u.completion_tokens === 'number' ? u.completion_tokens : (typeof u.completion === 'number' ? u.completion : null)),
+              total: (typeof u.total_tokens === 'number' ? u.total_tokens : (typeof u.total === 'number' ? u.total : null))
+            };
+          }
+        }
+      }
+    }
+  } finally {
+    if (held) { try { aiPool.unclaim(held); } catch {} }
+    if (own) { try { own.release(); } catch {} }
+  }
+}
+export function streamChat(root, system, user, { lease, meta, profile } = {}) {
+  return streamChatMsgs(root, [{ role: 'system', content: system }, { role: 'user', content: user }], { lease, meta, profile });
+}

@@ -1,18 +1,19 @@
 // agent.mjs — 「Agent 求职助手」会话与编排（本地版）。
 // 协议参照 docs/upcv-features-implementation.md §5（UPCV Agent）：
 //   会话管理 · [context:doc|job:<id>] 上下文注入 · toolCard/quickReplies 下发 · 泄露策略手册本地化。
+//   消息存储 = Vercel AI SDK v5 UIMessage 形状 {id,role,parts:[{type:'text'|'step-start'|'tool-<name>'}],metadata:{createdAt,tokenCount}}；
+//   chatStream() 产出 UIMessage 事件流（text-delta* → finish{message}），路由转 SSE（agent.routes.md §5）。
 // 数据根注入：server.mjs 启动时调一次 init(root)（root = RESUME_ROOT，与数据文件同口径）。
 // 读：docs-meta.json / docs/<id>.html / inbox.json / applications.json / evaluations.json（只读）。
 // 写：仅 agent-sessions.json —— 与 server.mjs 同口径（tmp+rename、0600、形状校验、损坏停写）。
-// 调用层：llm.mjs chatMsgs（profile 选择、aiPool 池化、租约都在那里）；
+// 调用层：llm.mjs streamChatMsgs（profile 选择、aiPool 池化、租约都在那里）；
 //   ai.mjs 只导出 prompt 构建/解析纯函数，本文件按同款模式把 Agent 的 prompt 与解析内聚在此处。
-// TODO(stream)：chat() 目前非流式（等整段回复）。接流式时：llm.mjs 需加 stream 透传，
-//   本层改为产出 UIMessage 事件流（text delta → done{quickReplies,toolCards}），
-//   路由改 SSE（参考 UPCV POST /api/agent-chat/chat）。
+// 兼容：旧 {role,text,quickReplies,toolCards,at} 消息读出时自动归一为 UIMessage（msgToUI）；
+//   非流式 chat() 保留：内部 drain chatStream，响应形状不变（渐进降级）。
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { chatMsgs } from './llm.mjs';
+import { streamChatMsgs } from './llm.mjs';
 import { docToText } from './extract.mjs';
 
 export const AGENT_NO_LLM = '未配置大模型：打开 /settings 完成模型配置';
@@ -78,7 +79,7 @@ const clip = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s
 const sessionView = (s) => ({
   id: s.id, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt,
   messageCount: (s.messages || []).length,
-  lastText: clip(((s.messages || [])[(s.messages || []).length - 1] || {}).text || '', 40)
+  lastText: clip(textOf((s.messages || [])[(s.messages || []).length - 1]), 40)
 });
 const findSession = (list, id) => list.find((s) => s && s.id === id) || null;
 
@@ -103,7 +104,7 @@ export function getSession(id) {
   if (!ID_RE.test(String(id || ''))) return null;
   const s = findSession(loadSessions(), String(id));
   if (!s) return null;
-  return { id: s.id, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages || [] };
+  return { id: s.id, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: (s.messages || []).map(msgToUI) };
 }
 
 export function renameSession(id, title) {
@@ -340,9 +341,132 @@ function buildToolCards(ctxResolved, toolRefs) {
   return cards;
 }
 
-// ===== chat：主入口 =====
-// ctx（可选）：{ lease, profile, meta } 原样透传 llm.mjs chatMsgs（池化/租约/档案语义不变）。
-export async function chat(id, message, ctx = {}) {
+// ===== UIMessage 形状（UPCV §5 / AI SDK v5）：{id,role,parts:[...],metadata:{createdAt,tokenCount}} =====
+// parts 顺序：step-start 开场 → text 正文 → tool-job-detail/tool-resume-card 工具卡 → tool-ui-quickReplies 选项。
+const textOf = (m) => {
+  if (!m || typeof m !== 'object') return '';
+  if (typeof m.text === 'string') return m.text;   // 老格式 {role,text}
+  const ps = Array.isArray(m.parts) ? m.parts : [];
+  return ps.filter((p) => p && p.type === 'text' && typeof p.text === 'string').map((p) => p.text).join('');
+};
+const cardPart = (c) => ({ type: 'tool-' + c.type, input: { id: (c.payload && c.payload.id) || '' }, state: 'output-available', output: c.payload });
+const qrPart = (options) => ({ type: 'tool-ui-quickReplies', input: {}, state: 'output-available', output: { options } });
+function assistantMsgOf({ reply, quickReplies, toolCards, usage, aborted }) {
+  const parts = [{ type: 'step-start' }, { type: 'text', text: String(reply || '') }];
+  for (const c of toolCards || []) { if (c && c.type && c.payload) parts.push(cardPart(c)); }
+  if (quickReplies && quickReplies.length) parts.push(qrPart(quickReplies));
+  const metadata = { createdAt: nowIso(), tokenCount: (usage && typeof usage.total === 'number') ? usage.total : null };
+  if (aborted) metadata.aborted = true;   // 断连截断的部分正文：诚实标记，不假装完整回复
+  return { id: newId('m'), role: 'assistant', parts, metadata };
+}
+const userMsgOf = (text, refs) => ({
+  id: newId('m'), role: 'user', parts: [{ type: 'text', text }],
+  metadata: { createdAt: nowIso(), ...(refs && refs.length ? { refs } : {}) }
+});
+// UIMessage → 老响应字段（chat() 非流式兼容 + 面板兜底渲染共用口径）
+const qrOfMsg = (m) => {
+  const p = (Array.isArray(m && m.parts) ? m.parts : []).find((x) => x && x.type === 'tool-ui-quickReplies');
+  return (p && p.output && Array.isArray(p.output.options)) ? p.output.options : [];
+};
+const cardsOfMsg = (m) => (Array.isArray(m && m.parts) ? m.parts : [])
+  .filter((p) => p && typeof p.type === 'string' && p.type.startsWith('tool-') && p.type !== 'tool-ui-quickReplies' && p.state === 'output-available' && p.output)
+  .map((p) => ({ type: p.type.slice(5), payload: p.output }));
+// 读出归一：老 {role,text,quickReplies?,toolCards?,refs?,at} → UIMessage；新形状补 metadata 兜底
+function msgToUI(m) {
+  if (!m || typeof m !== 'object') return m;
+  if (Array.isArray(m.parts)) {
+    return { ...m, metadata: (m.metadata && typeof m.metadata === 'object') ? m.metadata : { createdAt: m.at || null } };
+  }
+  const createdAt = (m.metadata && m.metadata.createdAt) || m.at || null;
+  if (m.role === 'assistant') {
+    const parts = [{ type: 'step-start' }];
+    if (typeof m.text === 'string' && m.text) parts.push({ type: 'text', text: m.text });
+    for (const c of (Array.isArray(m.toolCards) ? m.toolCards : [])) { if (c && c.type && c.payload) parts.push(cardPart(c)); }
+    if (Array.isArray(m.quickReplies) && m.quickReplies.length) parts.push(qrPart(m.quickReplies));
+    return { id: m.id, role: 'assistant', parts, metadata: { createdAt, tokenCount: null } };
+  }
+  return {
+    id: m.id, role: m.role || 'user', parts: [{ type: 'text', text: typeof m.text === 'string' ? m.text : '' }],
+    metadata: { createdAt, ...(Array.isArray(m.refs) && m.refs.length ? { refs: m.refs } : {}) }
+  };
+}
+// 追加写：重读列表再落盘（流式回复期间用户可能改名/删会话，不拿开流前的快照盖并发改动）
+function appendMsg(sid, msg) {
+  const list = loadSessions();
+  const s = findSession(list, sid);
+  if (!s) return false;
+  s.messages = (s.messages || []).concat([msg]).slice(-MSG_CAP);
+  s.updatedAt = nowIso();
+  saveSessions(list);
+  return true;
+}
+
+// ===== 增量 reply 提取 =====
+// 模型输出是整段 JSON（{reply,quickReplies,toolRefs}）：流式把 reply 字符串的已到达部分解成
+// 纯文本 delta；escape 序列没凑齐就等下一帧。非 JSON 输出按纯文本透传。
+// 终值一律以 parseAgentReply(全文) 为准——finish 事件的 message 对账增量显示。
+function replyExtractor() {
+  let raw = '', mode = null, shown = '', done = false;
+  // 从 {"reply":"<值>" 里把「值」已到达部分解码出来；{wait:true}=键还没到，null=不是 JSON
+  function partial() {
+    let s = raw.trimStart();
+    if (s.startsWith('```')) { const i = s.indexOf('{'); if (i < 0) return { wait: true }; s = s.slice(i); }
+    if (!s.startsWith('{')) return null;
+    const m = /[{,]\s*"reply"\s*:\s*"/.exec(s);   // 前置 { 或 , 限定键位，避开字符串值里的同名文本
+    if (!m) return { wait: true };
+    let i = m.index + m[0].length, out = '';
+    for (; i < s.length;) {
+      const c = s[i];
+      if (c === '"') return { text: out, complete: true };
+      if (c === '\\') {
+        if (i + 1 >= s.length) break;   // 半个 escape：等下一帧
+        const n = s[i + 1];
+        if (n === 'u') {
+          if (i + 5 >= s.length) break;
+          const cp = parseInt(s.slice(i + 2, i + 6), 16);
+          if (!Number.isNaN(cp)) out += String.fromCharCode(cp);
+          i += 6; continue;
+        }
+        out += ({ n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', '"': '"', '\\': '\\', '/': '/' })[n] ?? n;
+        i += 2; continue;
+      }
+      out += c; i++;
+    }
+    return { text: out, complete: false };
+  }
+  return {
+    push(chunk) {
+      raw += chunk;
+      if (done) return '';
+      if (mode == null) {
+        const t = raw.trimStart();
+        if (!t) return '';
+        mode = (t[0] === '{' || t.startsWith('```')) ? 'json' : 'plain';
+        if (mode === 'plain') { shown = raw; return raw; }
+      }
+      if (mode === 'plain') { const d = raw.slice(shown.length); shown = raw; return d; }
+      const r = partial();
+      // 防御分支（实际不可达：json 模式要求首字符 { 或 ```）：先前猜 JSON 实际不是 →
+      // 转纯文本但不再补发已解码内容，防重复；终值由 finish 对账。
+      if (!r) { mode = 'plain'; shown = raw; return ''; }
+      if (r.complete) done = true;
+      if (r.wait || r.text.length <= shown.length) return '';
+      const d = r.text.slice(shown.length); shown = r.text; return d;
+    },
+    raw: () => raw,
+    shown: () => shown
+  };
+}
+
+// ===== chatStream：流式主入口 → UIMessage 事件流 =====
+// 产出序列：{type:'text-delta',delta}* → {type:'finish',message:<完整 assistant UIMessage>}。
+// 校验/模型错误仍按 throw 抛出（路由在写 SSE 头之前先拉首帧，可回 HTTP 错误码；
+//   已进入流的错误由路由转 {type:'error',errorText} 帧）。
+// 持久化两段式：用户条先落盘（模型失败/断连也会话里留住提问），助手条在 finish 落盘。
+// 提前终止（路由断连调 it.return()）：for-await 把 return 透传给 streamChatMsgs →
+//   其 finally unclaim 租约（AI 槽按 llm.mjs 口径释放）；已显示正文按 aborted 落盘。
+// ctx（可选）：{ lease, profile, meta } 原样透传 llm.mjs（池化/租约/档案语义不变）。
+export async function* chatStream(id, message, ctx = {}) {
   const list = loadSessions();
   const s = (ID_RE.test(String(id || '')) && findSession(list, String(id))) || null;
   if (!s) { const e = new Error('会话不存在'); e.code = 'NO_SESSION'; throw e; }
@@ -355,26 +479,54 @@ export async function chat(id, message, ctx = {}) {
   const sys = AGENT_SYSTEM + '\n\n【事实】\n' + factsBlock(ctxResolved);
   const msgs = [{ role: 'system', content: sys }];
   for (const m of (s.messages || []).slice(-HIST_CAP)) {
-    if (m && (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string' && m.text) {
-      msgs.push({ role: m.role, content: m.text });
-    }
+    const t = textOf(m);
+    if (m && (m.role === 'user' || m.role === 'assistant') && t) msgs.push({ role: m.role, content: t });
   }
   msgs.push({ role: 'user', content: text });
-  const out = await chatMsgs(R(), msgs, { lease: ctx.lease, profile: ctx.profile, meta: ctx.meta });
-  const parsed = parseAgentReply(out);
-  const toolCards = buildToolCards(ctxResolved, parsed.toolRefs);
-  const quickReplies = ensureReplies(parsed.quickReplies);
-  // 持久化：用户条 + 助手条（卡片与选项随助手条落盘，刷新可回显）
+  // ① 用户条先落盘（UIMessage）；首条用户消息自动命名（默认名才覆盖）
   const at = nowIso();
-  s.messages = (s.messages || []).concat([
-    { id: newId('m'), role: 'user', text, refs, at },
-    { id: newId('m'), role: 'assistant', text: parsed.reply, quickReplies, toolCards, at }
-  ]).slice(-MSG_CAP);
-  // 首条用户消息自动命名（默认名才覆盖）：刚 concat 后 user 条恰为第一条用户消息
+  s.messages = (s.messages || []).concat([userMsgOf(text, refs)]).slice(-MSG_CAP);
   if (s.title === '新会话' && s.messages.filter((m) => m.role === 'user').length === 1) {
     s.title = clip(text, 18) || s.title;
   }
   s.updatedAt = at;
   saveSessions(list);
-  return { reply: parsed.reply, quickReplies, toolCards, sessionId: s.id };
+  // ② 流式拉取：增量提取 reply 纯文本 → text-delta；finish 携带完整 UIMessage 对账
+  const meta = (ctx.meta && typeof ctx.meta === 'object') ? ctx.meta : {};
+  const ex = replyExtractor();
+  let finished = false;
+  try {
+    for await (const chunk of streamChatMsgs(R(), msgs, { lease: ctx.lease, meta, profile: ctx.profile })) {
+      const d = ex.push(chunk);
+      if (d) yield { type: 'text-delta', delta: d };
+    }
+    const parsed = parseAgentReply(ex.raw());
+    const toolCards = buildToolCards(ctxResolved, parsed.toolRefs);
+    const quickReplies = ensureReplies(parsed.quickReplies);
+    const msg = assistantMsgOf({ reply: parsed.reply, quickReplies, toolCards, usage: meta.usage });
+    appendMsg(s.id, msg);
+    finished = true;
+    yield { type: 'finish', message: msg };
+  } finally {
+    // 断连/上游错误且已有可见正文：按 metadata.aborted 落盘（下次打开会话能对上，不假装完整）
+    if (!finished && ex.shown()) {
+      try {
+        appendMsg(s.id, assistantMsgOf({
+          reply: ex.shown(), quickReplies: [], toolCards: buildToolCards(ctxResolved, []),
+          usage: meta.usage, aborted: true
+        }));
+      } catch { /* 损坏停写/会话已删：断连清理不放大故障 */ }
+    }
+  }
+}
+
+// ===== chat：非流式兼容入口（无 stream 参数的旧路由/调用方零改动）=====
+// 内部 drain chatStream：响应形状不变 {reply,quickReplies,toolCards,sessionId}。
+export async function chat(id, message, ctx = {}) {
+  let finalMsg = null;
+  for await (const ev of chatStream(id, message, ctx)) {
+    if (ev && ev.type === 'finish' && ev.message) finalMsg = ev.message;
+  }
+  if (!finalMsg) { const e = new Error('模型调用失败：未产出完整回复'); e.code = 'NO_FINISH'; throw e; }
+  return { reply: textOf(finalMsg), quickReplies: qrOfMsg(finalMsg), toolCards: cardsOfMsg(finalMsg), sessionId: String(id) };
 }

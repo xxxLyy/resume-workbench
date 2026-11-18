@@ -2219,8 +2219,8 @@ const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/prep','/
   '/job-panel.js','/job/alt-adopt','/job/brief','/job/changes','/job/create','/job/feedback-del','/job/generate','/job/gen-cancel','/job/gen-retry','/job/gen-start','/job/new','/layout-info','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',
   '/materials','/model-picker.js','/new',
   '/agent','/agent-panel.js','/agent/chat','/agent/context-preview','/agent/sessions',
-  '/ai-helper','/ai-helper-panel.js','/ai-helper/check','/ai-helper/docs','/ai-helper/improve-all','/ai-helper/polish','/ai-helper/rewrite',
-  '/interview','/interview-panel.js','/interview/answer','/interview/config','/interview/hint','/interview/next','/interview/report','/interview/session','/interview/sessions','/interview/sessions/delete',
+  '/ai-helper','/ai-helper-panel.js','/ai-helper/check','/ai-helper/docs','/ai-helper/improve-all','/ai-helper/polish','/ai-helper/polish/stream','/ai-helper/rewrite','/ai-helper/rewrite/stream',
+  '/interview','/interview-panel.js','/interview/answer','/interview/banks','/interview/config','/interview/hint','/interview/next','/interview/report','/interview/session','/interview/sessions','/interview/sessions/delete',
   '/templates','/templates/use','/onboarding','/onboarding/guided','/onboarding/star-suggest','/onboarding/step','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings','/eval/create','/eval/promote','/evals',
   '/share/copy','/share/pdf',
   '/snapshot/baseline','/snapshot/note','/snapshot/pdf','/snapshot/view','/snapshots','/stats','/tag',
@@ -5522,7 +5522,7 @@ assert(/staleDocs\.slice\(0, 3\)/.test(srv) && /fuDueApps\.slice\(0, 3\)/.test(s
 // ② 六处「请到侧栏「设置」」死引用清零：sendJson 带 settingsPath 字段，text/plain 直接给出 /settings 路径
 assert(!srv.includes('请到侧栏'), 'server.mjs 不得再有「请到侧栏」死文案（编辑器内无侧栏可点）');
 assert(srv.includes("settingsPath: '/settings'"), '/eval/create 409 JSON 应带 settingsPath 字段（消费方按 :2210 先例渲染链接）');
-assert((srv.match(/打开 \/settings 完成模型配置/g) || []).length === 8, '八处 text/plain 409 应直接给出 /settings 路径（含 ai-helper 四端点）');
+assert((srv.match(/打开 \/settings 完成模型配置/g) || []).length === 10, '十处 text/plain 409 应直接给出 /settings 路径（含 ai-helper 六端点）');
 // ③ .ob-add/.ob-ai/.ob-del 浅底虚线化（background:var(--card)）且 .ob-add 非全宽
 for (const cls of ['ob-add', 'ob-ai', 'ob-del']) {
   const rule = srv.match(new RegExp('\\.' + cls + '\\{[^}]*\\}'));

@@ -1,6 +1,8 @@
 // agent-panel.js — 「Agent 求职助手」页面前端（classic script，仿 ai-panel.js 注入方式）。
 // 挂载点：/agent 页 inner 里的 <div id="agent-app"></div>。
-// 协议与 agent.mjs / agent.routes.md 对齐：sessions CRUD + /agent/chat {reply,quickReplies,toolCards}。
+// 协议与 agent.mjs / agent.routes.md 对齐：sessions CRUD + /agent/chat。
+// 聊天走 SSE：POST {id,message,stream:1} + Accept:text/event-stream → data: <UIMessageChunk> 帧
+// （text-delta 增量渲染 + finish 的完整 UIMessage 对账）；服务端未升级仍回整段 JSON 时自动回退。
 (function () {
   var mount = document.getElementById('agent-app');
   if (!mount) return;
@@ -141,16 +143,42 @@
     }
     return '<div class="ag-tc"><div class="tt">' + esc(tc.type || 'card') + '</div><div class="row">' + esc(JSON.stringify(p).slice(0, 200)) + '</div></div>';
   }
-  function addAi(resp) {
-    var d = document.createElement('div');
-    d.className = 'ag-m ai';
-    var html = '<div>' + esc(resp.reply || '') + '</div>';
-    (resp.toolCards || []).forEach(function (tc) { html += cardHtml(tc); });
-    d.innerHTML = html;
-    if (resp.quickReplies && resp.quickReplies.length) {
+  // ===== UIMessage 渲染：parts 归一（新形状）+ 老 {text,quickReplies,toolCards} 字段兜底 =====
+  function partsOf(m) { return (m && Array.isArray(m.parts)) ? m.parts : []; }
+  function msgText(m) {
+    if (!m) return '';
+    if (typeof m.text === 'string') return m.text;   // 老格式
+    return partsOf(m).filter(function (p) { return p && p.type === 'text' && typeof p.text === 'string'; })
+      .map(function (p) { return p.text; }).join('');
+  }
+  function msgCards(m) {
+    if (m && Array.isArray(m.toolCards)) return m.toolCards;   // 老格式/非流式回退响应
+    return partsOf(m).filter(function (p) {
+      return p && typeof p.type === 'string' && p.type.indexOf('tool-') === 0 && p.type !== 'tool-ui-quickReplies' && p.state === 'output-available' && p.output;
+    }).map(function (p) { return { type: p.type.slice(5), payload: p.output }; });
+  }
+  function msgReplies(m) {
+    if (m && Array.isArray(m.quickReplies)) return m.quickReplies;   // 老格式/非流式回退响应
+    var p = partsOf(m).filter(function (x) { return x && x.type === 'tool-ui-quickReplies'; })[0];
+    return (p && p.output && Array.isArray(p.output.options)) ? p.output.options : [];
+  }
+  // 助手气泡整体渲染：正文走 textContent（模型输出永不进 innerHTML）；
+  // 卡走 cardHtml（内部全 esc）；quickReplies 按钮 DOM 构建。
+  function renderAiInto(d, m) {
+    d.innerHTML = '';
+    var textEl = document.createElement('div');
+    textEl.textContent = msgText(m);
+    d.appendChild(textEl);
+    msgCards(m).forEach(function (tc) {
+      var w = document.createElement('div');
+      w.innerHTML = cardHtml(tc);
+      while (w.firstChild) d.appendChild(w.firstChild);
+    });
+    var opts = msgReplies(m);
+    if (opts.length) {
       var qr = document.createElement('div');
       qr.className = 'ag-qr';
-      resp.quickReplies.forEach(function (q) {
+      opts.forEach(function (q) {
         var b = document.createElement('button');
         b.type = 'button';
         b.textContent = q.label;
@@ -161,15 +189,25 @@
       });
       d.appendChild(qr);
     }
+    return textEl;
+  }
+  function addAiMsg(m) {
+    var d = document.createElement('div');
+    d.className = 'ag-m ai';
+    renderAiInto(d, m);
     log.appendChild(d); scrollEnd();
+  }
+  // 非流式回退响应 {reply,quickReplies,toolCards} → 借老字段通道进同一渲染
+  function addAi(resp) {
+    addAiMsg({ role: 'assistant', text: (resp && resp.reply) || '', quickReplies: resp && resp.quickReplies, toolCards: resp && resp.toolCards });
   }
   function renderHistory(s) {
     log.innerHTML = '';
     var msgs = (s && s.messages) || [];
     if (!msgs.length) { renderWelcome(); return; }
     msgs.forEach(function (m) {
-      if (m.role === 'user') addUser(m.text || '');
-      else if (m.role === 'assistant') addAi({ reply: m.text, quickReplies: m.quickReplies, toolCards: m.toolCards });
+      if (m.role === 'user') addUser(msgText(m));
+      else if (m.role === 'assistant') addAiMsg(m);
     });
   }
   function renderWelcome() {
@@ -253,7 +291,77 @@
     return current;
   }
 
-  // ===== 发送 =====
+  // ===== 发送（SSE 流式）=====
+  // POST /agent/chat {id,message,stream:1} + Accept:text/event-stream → data: <UIMessageChunk> 帧。
+  // text-delta 增量进当前气泡（textContent）；finish 携带完整 UIMessage 整体对账重渲；
+  // {type:'error',errorText} → 中文状态条；服务端未升级仍回整段 JSON → 自动回退原渲染。
+  async function sendStream(sid, msg, onFirst) {
+    var r = await fetch('/agent/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+      body: JSON.stringify({ id: sid, message: msg, stream: 1 })
+    });
+    var ct = r.headers.get('content-type') || '';
+    if (!(r.ok && ct.indexOf('text/event-stream') >= 0)) {
+      // 整段回退/错误：与 api() 同口径——非 ok 或 ok:false 进失败分支，中文原因
+      var data = null, txt = '';
+      if (ct.indexOf('application/json') >= 0) { try { data = await r.json(); } catch (e) { data = null; } }
+      else { txt = await r.text(); }
+      if (!r.ok || (data && data.ok === false)) {
+        var e = new Error((data && (data.error || data.msg)) || txt || ('HTTP ' + r.status));
+        e.rejected = true;
+        throw e;
+      }
+      addAi(data);
+      return;
+    }
+    var d = null, textEl = null, shown = '', ended = false, errText = '', first = true;
+    var reader = r.body.getReader();
+    var dec = new TextDecoder();
+    var buf = '';
+    for (;;) {
+      var rd = await reader.read();
+      buf += rd.done ? dec.decode() : dec.decode(rd.value, { stream: true });
+      var cut;
+      while ((cut = buf.indexOf('\n\n')) >= 0) {
+        var frame = buf.slice(0, cut); buf = buf.slice(cut + 2);
+        var lines = frame.split('\n');
+        for (var li = 0; li < lines.length; li++) {
+          var line = lines[li];
+          if (line.indexOf('data:') !== 0) continue;
+          var payload = line.slice(5);
+          if (payload.charAt(0) === ' ') payload = payload.slice(1);
+          if (payload === '[DONE]') { ended = true; break; }
+          var ev; try { ev = JSON.parse(payload); } catch (e2) { continue; }
+          if (ev.type === 'text-delta' && typeof ev.delta === 'string' && ev.delta) {
+            if (first) { first = false; onFirst(); }
+            if (!d) {
+              d = document.createElement('div'); d.className = 'ag-m ai';
+              textEl = document.createElement('div'); d.appendChild(textEl);
+              log.appendChild(d);
+            }
+            shown += ev.delta;
+            textEl.textContent = shown;   // 增量全走 textContent：模型输出永不进 innerHTML
+            scrollEnd();
+          } else if (ev.type === 'finish' && ev.message) {
+            ended = true;
+            if (first) { first = false; onFirst(); }
+            if (!d) { d = document.createElement('div'); d.className = 'ag-m ai'; log.appendChild(d); }
+            renderAiInto(d, ev.message);   // finish 的完整 UIMessage 为准（对账增量文本）
+            scrollEnd();
+          } else if (ev.type === 'error') {
+            errText = ev.errorText || '模型调用失败';
+          }
+        }
+        if (ended) break;
+      }
+      if (rd.done || ended) break;
+    }
+    try { reader.cancel(); } catch (e3) {}
+    if (errText) { addStatus(errText, 'warn'); return; }
+    if (!ended && !shown) throw new Error('未收到回复：连接已断开');
+    if (!ended) addStatus('连接已断开：回复可能不完整', 'warn');
+  }
   async function send() {
     var msg = input.value.trim();
     if (!msg || sending) return;   // 防连点/Enter 重入：并发请求会打乱消息顺序
@@ -267,17 +375,23 @@
     waitEl.className = 'ag-m ag-wait';
     var tick = startTicker(function (mm) { waitEl.textContent = '回复中 · 已等待 ' + mm; });
     log.appendChild(waitEl); scrollEnd();
+    // 首个 text-delta/finish 到达即停秒表：流式文本本身就是进度信号
+    var waited = true;
+    var stopWait = function () {
+      if (!waited) return;
+      waited = false;
+      clearInterval(tick);
+      waitEl.remove();
+    };
     try {
       var sid = await ensureSession();
-      var d = await api('POST', '/agent/chat', { id: sid, message: msg });
+      await sendStream(sid, msg, stopWait);
       input.value = ''; input.style.height = '';   // 成功后才清空：失败时用户输入保留（同 ai-panel AUD-15）
-      addAi(d);
       loadSessions(sid);   // 首条消息可能触发了自动命名，刷新列表
     } catch (e) {
       addStatus(e.message || e, 'warn');
     } finally {
-      clearInterval(tick);
-      waitEl.remove();
+      stopWait();
       sending = false;
       sendBtn.disabled = false;
       input.focus();

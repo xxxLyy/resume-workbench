@@ -6,12 +6,12 @@
 //   ③ 输出清洗沿用 ai.mjs 的围栏剥离 + 形状校验套路（坏输出返回 null，由路由走 {reply} 兜底，同 /ai/review）。
 // 维度口径对齐 buildReview 七维（结构/量化/动词/冗余/ATS/重复/一致性），但 issue 是结构化对象
 // （{type,field,description,suggestion}），与 review 的 items 字符串数组形状不同 → 不能直接复用 parseReport。
-// 待接（SSE）：UPCV 的 custom-rewrite / improve-writing 是 ReadableStream 流式；llm.mjs 的 chat()
-// 是非流式（单次 fetch + r.json()），无流式通道 → 本期四个接口全部非流式。接流式时：
-// llm.mjs 需先加 streamChat（stream:true + SSE 逐 chunk 解析），路由再改 text/event-stream 转发。
+// 流式（SSE）：UPCV 的 custom-rewrite / improve-writing 是 ReadableStream 流式 → 本文件提供
+// customRewriteStream / improveWritingStream 两个 async generator（底层=llm.mjs streamChat），
+// prompt 与非流式版逐字节一致（同一 build* 来源）；check / improve-all 按 UPCV 契约保持非流式。
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chat } from './llm.mjs';
+import { chat, streamChat } from './llm.mjs';
 import { buildRewrite } from './ai.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -93,7 +93,7 @@ export function buildImproveAll(text, issues) {
 // 请求 {text, userRequirement} → {rewritten}。
 // 复用 ai.mjs buildRewrite：其 sys 已含「保持事实不变，不编造数字和经历；保持原有换行与条目结构」，
 // 这里只在指令尾部追加【待补充】占位约束，不重写整套 prompt。
-// 待接（流式）：UPCV 原版是 ReadableStream；llm.mjs 无流式 API → 本期非流式，见文件头注释。
+// 流式版（customRewriteStream）复用本函数同一 prompt：只换传输层，不换提示词。
 export function buildCustomRewrite(text, userRequirement) {
   const req = clip(userRequirement, REQ_MAX).trim()
     + '（附加约束：只允许基于原文事实改写；需要补充但原文没有的信息用【待补充】占位。）';
@@ -101,7 +101,7 @@ export function buildCustomRewrite(text, userRequirement) {
 }
 
 // ===== ④ 润色（对应 UPCV POST /api/resume/improve-writing/stream）=====
-// 请求 {text} → {rewritten}。待接（流式）：同 ③，本期非流式。
+// 请求 {text} → {rewritten}。流式版（improveWritingStream）复用本函数同一 prompt。
 export function buildImproveWriting(text) {
   return {
     sys: '你是简历润色专家。在不改变事实与结构的前提下润色整段简历文本：动词更有力、表达更专业、去除冗余、条目更整齐。'
@@ -146,4 +146,22 @@ export async function improveWriting(text, { root = defaultRoot(), lease, profil
   const raw = await chat(root, p.sys, p.user, { lease, profile });
   const rewritten = cleanText(raw);
   return rewritten ? { rewritten } : { reply: String(raw ?? '') || '（模型未返回改写结果）' };
+}
+
+// ===== 流式编排（对应 UPCV */stream 两个端点；路由侧 SSE 管道见 ai-helper.routes.md §5）=====
+// 返回 async generator：逐段 yield 模型 delta 文本片段（底层 = llm.mjs streamChat）。
+// prompt 与非流式版逐字节一致（同一 build* 来源，含 NO_FABRICATE 约束）；不做 cleanText/兜底——
+// 流式无法事后整形，{reply} 兜底语义只存在于非流式端点。
+// 租约纪律与 chat() 同口径：透传 lease 则 claim/unclaim，缺省则底层 acquire 兜底；
+// 消费者中断（for-await break / it.return()）→ generator finally 照放槽——断连 ≠ 泄漏（RES-03 同款）。
+// meta（可选）：usage 采集透传，口径同 chat()。
+
+export function customRewriteStream(text, userRequirement, { root = defaultRoot(), lease, meta, profile } = {}) {
+  const p = buildCustomRewrite(text, userRequirement);
+  return streamChat(root, p.sys, p.user, { lease, meta, profile });
+}
+
+export function improveWritingStream(text, { root = defaultRoot(), lease, meta, profile } = {}) {
+  const p = buildImproveWriting(text);
+  return streamChat(root, p.sys, p.user, { lease, meta, profile });
 }
