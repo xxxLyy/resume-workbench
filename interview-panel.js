@@ -374,9 +374,10 @@
     }
     runCard.appendChild(elRunMsg);
     renderReportCard();
-    // DOM 稳定尾行纠偏：待答题→wait-user，活会话→idle；cur.finished 不动——留给 done 触发的 celebrate 自己 3s 回落
-    if (cur && cur.pending) fset('wait-user');
-    else if (cur && !cur.finished && !(busy.next || busy.answer || busy.hint || busy.report)) fset('idle');
+    // DOM 稳定尾行纠偏：瞬时态在播不踩（face._t），待答题→wait-user，在飞 AI 操作不动，其余→idle（含删会话 cur=null；finished 的 celebrate 播完自然落 idle）
+    if (face && face._t) { /* 瞬时态在播，跳过纠偏 */ }
+    else if (cur && cur.pending) fset('wait-user');
+    else if (!(busy.next || busy.answer || busy.hint || busy.report)) fset('idle');
   }
   function renderHint() {
     elHintBox.textContent = '';
