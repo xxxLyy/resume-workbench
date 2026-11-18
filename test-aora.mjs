@@ -57,17 +57,20 @@ for (const p of ['agent', 'interview', 'ai-helper']) assert.ok(mapBlock.includes
 console.log('✅ C 映射表合法');
 // D. 页面接线断言
 const apps = await get('/applications');
-assert.ok(apps.body.includes('aora-empty') || apps.body.includes('<svg'), '投递页空态应带 aora 装饰');
+assert.ok(apps.body.includes('aora-empty'), '投递页空态应带 aora 装饰');
 const st = await get('/stats');
-assert.ok(st.status === 200 && st.body.includes('<svg'), '复盘页应带 aora 装饰');
+assert.ok(st.body.includes('data-aora-face'), '复盘页应带 aora 装饰');
 const setp = await get('/settings');
 assert.ok(setp.body.includes('Powered by') && setp.body.includes('aora-bot'), '设置页署名卡');
 const agp = await get('/agent');
 assert.ok(agp.body.includes('/aora-bot.js') && agp.body.includes('/aora-face.js'), 'agent 页脚本注入');
+assert.ok(agp.body.includes('type="module" src="/aora-bot.js"'), 'agent 页 /aora-bot.js 应以 module 加载');
 const ivp = await get('/interview');
 assert.ok(ivp.body.includes('/aora-bot.js') && ivp.body.includes('/aora-face.js'), 'interview 页脚本注入');
+assert.ok(ivp.body.includes('type="module" src="/aora-bot.js"'), 'interview 页 /aora-bot.js 应以 module 加载');
 const ahp = await get('/ai-helper');
 assert.ok(ahp.body.includes('/aora-bot.js') && ahp.body.includes('/aora-face.js'), 'ai-helper 页脚本注入');
+assert.ok(ahp.body.includes('type="module" src="/aora-bot.js"'), 'ai-helper 页 /aora-bot.js 应以 module 加载');
 console.log('✅ D 页面接线');
 console.log('✅ test-aora 全部通过');
 server.kill(); process.exit(0);

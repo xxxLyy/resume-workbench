@@ -2191,7 +2191,7 @@ const appTabs = (on) => `<nav class="apptabs" aria-label="投递">${
 const agentPageInner = () => `
     <div class="page-head"><h1>求职助手</h1></div>
     <div id="agent-app"></div>
-    <script src="/aora-bot.js" defer></script>
+    <script type="module" src="/aora-bot.js"></script>
     <script src="/aora-face.js" defer></script>
     <script src="/agent-panel.js" defer></script>`;
 
@@ -9355,7 +9355,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const inner = `<div class="page-head"><h1>AI 简历助手</h1></div>
 <div id="ah-app"><p style="color:var(--mut)">界面加载中…</p></div>
 <script nonce="__CSP_NONCE__">${ICON_SCRIPT}</script>
-<script src="/aora-bot.js" defer></script>
+<script type="module" src="/aora-bot.js"></script>
 <script src="/aora-face.js" defer></script>
 <script src="/ai-helper-panel.js" defer></script>`;
       return send(200, page('AI 简历助手', inner, 'ai-helper'));
@@ -9581,7 +9581,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       const inner = `<div class="page-head"><h1>模拟面试</h1><span class="page-meta">文字版 · 本地会话</span></div>
         <div id="ivApp"><div class="card" style="color:var(--mut)">加载中…</div></div>
         <script nonce="__CSP_NONCE__">window.__INTERVIEW__=${jsonScript(boot)};</script>
-        <script src="/aora-bot.js"></script>
+        <script type="module" src="/aora-bot.js"></script>
         <script src="/aora-face.js"></script>
         <script src="/interview-panel.js"></script>`;
       return send(200, page('模拟面试', inner, 'interview'));

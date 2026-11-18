@@ -22,5 +22,5 @@ export function aoraEmpty(text, face = 'happy') {
   return `<div class="aora-empty" style="display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;color:var(--mut)">${aoraSvg(face)}<span>${esc(text)}</span></div>`;
 }
 export function aoraFoot() {
-  return `<div class="card" style="margin-top:var(--space-3);display:flex;align-items:center;gap:10px;color:var(--mut);font-size:12px">${aoraSvg('happy')}<span>角色形象 Powered by <a href="https://github.com/sam70361/aora-bot" rel="noopener">Aora Bot</a></span></div>`;
+  return `<div class="card" style="margin-top:var(--space-3);display:flex;align-items:center;gap:10px;color:var(--mut);font-size:12px">${aoraSvg('happy')}<span>角色形象 Powered by <a href="https://github.com/sam70361/aora-bot" target="_blank" rel="noopener">Aora Bot</a></span></div>`;
 }
