@@ -18,7 +18,8 @@ import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, 
 import { applyZoneOps } from './zone-ops.mjs';   // 区域安全子集（ZONE-04）：磁盘正文 + 提交原文 + 归属 + 锁 + 事实护栏 五项齐备才应用
 import { rotateLogIfNeeded } from './logrotate.mjs';
 import { renderTemplatesPage } from './templates-page.mjs';
-import { smartCheck, improveAll, customRewrite, improveWriting, customRewriteStream, improveWritingStream } from './ai-helper.mjs';   // AI 简历助手四件套（规范 ai-helper.routes.md）
+import { smartCheck, improveAll, customRewrite, improveWriting, customRewriteStream, improveWritingStream } from './ai-helper.mjs';
+import { dispatchUpcv, matchUpcv } from './upcv-api.mjs';   // UPCV 契约端点（规范 upcv-api.routes.md）   // AI 简历助手四件套（规范 ai-helper.routes.md）
 import { init as agentInit, listSessions as agentListSessions, createSession as agentCreateSession, getSession as agentGetSession, renameSession as agentRenameSession, deleteSession as agentDeleteSession, chat as agentChat, chatStream as agentChatStream, previewContext as agentPreviewContext, AGENT_NO_LLM } from './agent.mjs';   // Agent 求职助手（规范 agent.routes.md）
 import { getConfig as getInterviewConfig, listSessions as ivListSessions, getSession as ivGetSession, createSession as ivCreateSession, deleteSession as ivDeleteSession, nextQuestion as ivNextQuestion, submitAnswer as ivSubmitAnswer, skipQuestion as ivSkipQuestion, genHint as ivGenHint, genReport as ivGenReport, genHintStream as ivGenHintStream, genReportStream as ivGenReportStream,
   listBanks as ivListBanks, getBank as ivGetBank,
@@ -4826,6 +4827,20 @@ async function handler(req, res) {
       const includeHidden = url.searchParams.get('hidden') === '1';
       const lines = docToLines(html, { includeHidden });
       return sendJson(200, { ok: true, lines: lines.length, text: lines.join('\n'), hash: contentHash(html) });
+    }
+    // ===== UPCV 契约端点（规范 upcv-api.routes.md；编排 upcv-api.mjs）=====
+    // 只匹配 /api/resume、/api/resume/<id>、/api/application-records；未命中 fallthrough 到既有 404。
+    {
+      const hit = matchUpcv(req.method, url.pathname);
+      if (hit) {
+        let upcvBody = null;
+        if (req.method === 'PUT' || req.method === 'POST') {
+          try { upcvBody = await readBodyAuto(req); }
+          catch { return sendJson(400, { code: 400, message: '请求体解析失败' }); }
+        }
+        const r = dispatchUpcv({ method: req.method, pathname: url.pathname, root, body: upcvBody, query: url.searchParams });
+        if (r) return sendJson(r.status, r.body);
+      }
     }
     // ===== 编辑器 =====
     if (req.method === 'GET' && url.pathname === '/edit') {
