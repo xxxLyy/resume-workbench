@@ -19,7 +19,7 @@
     var fslot = document.createElement('span');
     fslot.style.cssText = 'display:inline-flex;margin-left:auto';
     headEl.appendChild(fslot);
-    face = AoraFace.mount(fslot, { page: 'ai-helper', size: 96, cornerOf: '.page-head' });
+    face = AoraFace.mount(fslot, { page: 'ai-helper', size: 96, cornerOf: '.page-head', follow: true });
   }
   var fset = function (v) { if (face) { if (v === 'send') AoraFace.compact(face); AoraFace.set(face, v); } };
   var $ = function (id) { return document.getElementById(id); };

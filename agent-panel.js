@@ -341,7 +341,7 @@
     if (window.AoraFace) {
       var slot = document.createElement('div');
       d.insertBefore(slot, d.firstElementChild);
-      if (!face) face = AoraFace.mount(slot, { page: 'agent', size: 96, cornerOf: '.ag-main' });
+      if (!face) face = AoraFace.mount(slot, { page: 'agent', size: 96, cornerOf: '.ag-main', follow: true });
       else { AoraFace.show(face, slot, 96); AoraFace.set(face, 'init'); }   // 重挂回 hello 时表情回初始态
     }
     log.appendChild(d); scrollEnd();

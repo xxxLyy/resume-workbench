@@ -74,5 +74,10 @@ const ah = fs.readFileSync(path.join(APP_ROOT, 'ai-helper-panel.js'), 'utf8');
 for (const needle of ["page: 'ai-helper'", "fset('send')", "fset('stream')", "fset('done')", "fset('error')"])
   assert.ok(ah.includes(needle), 'ai-helper-panel 缺: ' + needle);
 console.log('✅ G ai-helper-panel 接线');
+// H. 眼神追踪接线
+const af = fs.readFileSync(path.join(APP_ROOT, 'aora-face.js'), 'utf8');
+assert.ok(af.includes('followTarget'), 'aora-face 应含 followTarget 驱动');
+assert.ok(ag.includes('follow: true') && iv.includes('follow: true') && ah.includes('follow: true'), '三页 mount 应带 follow: true');
+console.log('✅ H 眼神追踪');
 console.log('✅ test-aora 全部通过');
 server.kill(); process.exit(0);

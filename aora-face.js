@@ -40,6 +40,16 @@
     host.appendChild(slot);
     var face = { el: el, slot: slot, page: opts.page || 'agent', verb: '', _t: 0, cornerOf: opts.cornerOf || host };
     set(face, 'init');
+    if (opts.follow) {
+      window.addEventListener('pointermove', function (e) {
+        var c = face.el && face.el.controller;
+        if (c) c.update({ followTarget: { x: e.clientX, y: e.clientY } });
+      });
+      document.addEventListener('pointerleave', function () {
+        var c = face.el && face.el.controller;
+        if (c) c.update({ followTarget: null });   // 指针离窗，眼神回正
+      });
+    }
     return face;
   }
   function compact(face) {
