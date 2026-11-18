@@ -338,9 +338,9 @@
       chips.appendChild(b);
     });
     hb.appendChild(chips);
-    var slot = document.createElement('div');
-    d.insertBefore(slot, d.firstChild);
     if (window.AoraFace) {
+      var slot = document.createElement('div');
+      d.insertBefore(slot, d.firstElementChild);
       if (!face) face = AoraFace.mount(slot, { page: 'agent', size: 96, cornerOf: '.ag-main' });
       else { AoraFace.show(face, slot, 96); AoraFace.set(face, 'init'); }   // 重挂回 hello 时表情回初始态
     }
@@ -489,7 +489,8 @@
     try { reader.cancel(); } catch (e3) {}
     if (errText) { addStatus(errText, 'warn'); return; }
     if (!ended && !shown) throw new Error('未收到回复：连接已断开');
-    if (!ended) addStatus('连接已断开：回复可能不完整', 'warn');
+    if (!ended) { addStatus('连接已断开：回复可能不完整', 'warn'); if (face) AoraFace.set(face, 'error'); return; }
+    if (face && face.verb !== 'done') AoraFace.set(face, 'done');   // [DONE] 无 finish 兜底：不卡在流式态
   }
   async function send() {
     var msg = input.value.trim();
