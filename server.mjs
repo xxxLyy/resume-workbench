@@ -20,6 +20,7 @@ import { rotateLogIfNeeded } from './logrotate.mjs';
 import { renderTemplatesPage } from './templates-page.mjs';
 import { dispatchUpcv, matchUpcv } from './upcv-api.mjs';   // UPCV 契约端点（规范 upcv-api.routes.md）
 import { init as agentInit, listSessions as agentListSessions, createSession as agentCreateSession, getSession as agentGetSession, renameSession as agentRenameSession, deleteSession as agentDeleteSession, chat as agentChat, chatStream as agentChatStream, previewContext as agentPreviewContext, AGENT_NO_LLM } from './agent.mjs';   // Agent 求职助手（规范 agent.routes.md）
+import { uploadAgentFile } from './agent-files.mjs';   // A5 附件上传（设计 dev-docs/2026-11-20-a5-voice-attachments-design.md）
 import { getTalentProfile, generateTalent, getPreference, validatePreference, savePreference, findMaster } from './talent.mjs';   // 求职画像 + 偏好（UPCV A1，规范 dev-docs/2026-11-19-upcv-port-talent-design.md）
 import { fetchUpcvJobs, fetchUpcvDictionaries, fetchUpcvJob, searchParamsOf } from './upcv-jobs.mjs';   // UPCV 社招上游代理（UPCV A2，规范 dev-docs/2026-11-19-upcv-port-jobs-match-design.md §1）
 import { computeMatch, recommendMatches, jobPromptText } from './match.mjs';   // 岗位匹配 + 推荐（UPCV A2，同规范 §2）
@@ -243,7 +244,7 @@ const MAX_BODY_BYTES = 10 * 1024 * 1024;
 // MB 展示口径（BL-P1-04）：超限文案统一走这里（10 不显示成 10.0）
 const mbLabel = (n) => `${Number((Number(n) / (1024 * 1024)).toFixed(1))} MB`;
 // 恢复/撤销的受管项（AUD-09）：存在性台账只覆盖这些；config.json 刻意不在其中（恢复不碰配置）。
-const RESTORE_MANAGED_DIRS = ['docs', 'snapshots', 'pdfs'];
+const RESTORE_MANAGED_DIRS = ['docs', 'snapshots', 'pdfs', 'agent-files'];   // agent-files（A5）：目录懒建，存在才进安全点
 const RESTORE_MANAGED_FILES = ['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json', 'talent.json', 'preference.json', 'resume-draft.json', 'match-cache.json'];   // talent/preference（UPCV A1）+ resume-draft（A3 快照）+ match-cache（A2 匹配缓存，对象形状）：受管 = 安全点复制 + present 台账 + replace/merge/undo 导入侧（新账本须同步扩四处：本表 / bakFiles / 恢复侧 ALLOWED 正则 / .gitignore+test.sh seed）
 // 对象账本（talent/preference）恢复导入：内容须是可解析 JSON 对象才拷（备份白名单只验文件名不验内容，
 // 坏条目跳过，不把坏数据写进数据根——CORRUPT 停写比拒恢复更烦人）。undo 段来源是自建安全点，不设防。
@@ -8646,7 +8647,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       // 清单里的 4 个 JSON 是运行时产物，首次写入前根本不存在。tar 遇到不存在的路径会整包失败
       // （Cannot stat → 非零退出 → 500），所以按存在性过滤；目录恒在（启动时 mkdir），不过滤。
       const bakFiles = ['docs', 'snapshots', 'pdfs']
-        .concat(['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json', 'talent.json', 'preference.json', 'resume-draft.json', 'match-cache.json'].filter((f) => fs.existsSync(path.join(root, f))));   // resume-draft.json（A3）与 match-cache.json（A2）与 RESTORE_MANAGED_FILES 同表同步
+        .concat(['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json', 'talent.json', 'preference.json', 'resume-draft.json', 'match-cache.json', 'agent-files'].filter((f) => fs.existsSync(path.join(root, f))));   // resume-draft.json（A3）与 match-cache.json（A2）与 RESTORE_MANAGED_FILES 同表同步；agent-files（A5）目录懒建→按存在性过滤
       const child = spawn('tar', ['czf', tmpTar, '-C', root, ...bakFiles], { stdio: ['ignore', 'ignore', 'pipe'] });
       let err = '';
       child.stderr.on('data', (c) => { err += c; });
@@ -8718,7 +8719,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
           return fail('备份包展开后 ' + Math.round(bytes / 1024 / 1024) + ' MB，超过 ' + Math.round(MAX_EXPANDED_BYTES / 1024 / 1024) + ' MB 上限，已拒绝（防压缩炸弹）', 413);
         }
       } catch (e) { return fail(e.code === 'ENOENT' ? '备份包信息读取失败' : e.message); }
-      const ALLOWED = /^(docs\/|snapshots\/|pdfs\/|docs-meta\.json$|applications\.json$|materials\.json$|evaluations\.json$|talent\.json$|preference\.json$|resume-draft\.json$|match-cache\.json$)/;   // A2：match-cache 进恢复白名单（与 RESTORE_MANAGED_FILES/⑤ 形状层/copyObjLedgerIfSound 同批五处登记）
+      const ALLOWED = /^(docs\/|snapshots\/|pdfs\/|agent-files\/|docs-meta\.json$|applications\.json$|materials\.json$|evaluations\.json$|talent\.json$|preference\.json$|resume-draft\.json$|match-cache\.json$)/;   // A2：match-cache 进恢复白名单（与 RESTORE_MANAGED_FILES/⑤ 形状层/copyObjLedgerIfSound 同批五处登记）；A5：agent-files 附件目录
       for (const e of entries) {
         const ep = e.replace(/^\.\//, '');
         if (ep === '' || ep === '.') continue;         // tar czf -C dir . 的根条目
@@ -9425,14 +9426,25 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         return agentDeleteSession(sid) ? sendJson(200, { ok: true }) : sendJson(404, { ok: false, error: '会话不存在' });
       }
     }
+    // A5 附件上传：raw body（/upload 同款惯例），sid/name 走 query；会话归属在 agent-files 文件名前缀
+    if (req.method === 'POST' && url.pathname === '/agent/files') {
+      const sid = String(url.searchParams.get('sid') || '');
+      if (!ID_RE.test(sid) || !agentGetSession(sid)) return sendJson(404, { ok: false, error: '会话不存在' });
+      let upBuf;
+      try { upBuf = await readBody(req, 'buffer', 10 * 1024 * 1024); }
+      catch { return sendJson(413, { ok: false, error: '上传失败：文件过大（上限 10MB）或传输中断' }); }
+      try { return sendJson(200, uploadAgentFile({ root, sid, name: url.searchParams.get('name') || '', buf: upBuf })); }
+      catch (e) { return sendJson(e && e.httpCode ? e.httpCode : 500, { ok: false, error: String((e && e.message) || e).slice(0, 200) }); }
+    }
     if (req.method === 'POST' && url.pathname === '/agent/chat') {
       if (!hasLLM(root)) return send(409, AGENT_NO_LLM, 'text/plain');
       const body = JSON.parse(await readBody(req));
       if (!body.id || !body.message || typeof body.message !== 'string') return send(400, 'id 和 message 必填', 'text/plain');
+      const chatCtx = { lease: leaseOf(req), fileIds: Array.isArray(body.fileIds) ? body.fileIds : [] };   // A5：可选附件 id 表
       const wantStream = !!body.stream || /text\/event-stream/.test(String(req.headers.accept || ''));
       if (!wantStream) {
         try {
-          const r = await agentChat(String(body.id), body.message.slice(0, 8000), { lease: leaseOf(req) });
+          const r = await agentChat(String(body.id), body.message.slice(0, 8000), chatCtx);
           return sendJson(200, { ok: true, ...r });
         } catch (e) {
           if (e && e.code === 'NO_SESSION') return sendJson(404, { ok: false, error: '会话不存在' });
@@ -9442,7 +9454,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
         }
       }
       // SSE：先拉首帧再写头——校验类错误仍走 HTTP 状态码；断连 → it.return() 放槽（agent.routes.md §5）
-      const it = agentChatStream(String(body.id), body.message.slice(0, 8000), { lease: leaseOf(req) });
+      const it = agentChatStream(String(body.id), body.message.slice(0, 8000), chatCtx);
       let cur;
       try { cur = await it.next(); }
       catch (e) {

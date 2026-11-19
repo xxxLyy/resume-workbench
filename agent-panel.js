@@ -54,7 +54,20 @@
     + '#agent-app .ag-qr{display:flex;gap:6px;flex-wrap:wrap;margin-top:var(--space-2)}'
     + '#agent-app .ag-qr button{border:1px solid var(--line);border-radius:999px;background:var(--panel);color:var(--ink);font-size:12px;min-height:26px;padding:3px 11px;cursor:pointer}'
     + '#agent-app .ag-qr button:hover{border-color:var(--accent);color:var(--accent)}'
-    + '#agent-app .ag-input{display:flex;align-items:flex-end;gap:var(--space-2);padding:var(--space-3);border-top:1px solid var(--line)}'
+    + '#agent-app .ag-compose{border-top:1px solid var(--line)}'
+    + '#agent-app #ag-files{display:flex;gap:6px;flex-wrap:wrap;padding:var(--space-2) var(--space-3) 0}'
+    + '#agent-app #ag-files:empty{display:none}'
+    + '#agent-app .ag-file{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line);border-radius:999px;padding:2px 10px;font-size:12px;background:var(--panel);color:var(--ink);max-width:240px}'
+    + '#agent-app .ag-file span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+    + '#agent-app .ag-file.err{border-color:var(--err);color:var(--err)}'
+    + '#agent-app .ag-file button{background:none;border:0;color:var(--mut);cursor:pointer;padding:0;font-size:12px}'
+    + '#agent-app .ag-file button:hover{color:var(--ink)}'
+    + '#agent-app .ag-icbtn{flex:none;min-width:34px;min-height:34px;padding:0;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);color:var(--mut);cursor:pointer;display:inline-flex;align-items:center;justify-content:center}'
+    + '#agent-app .ag-icbtn:hover{color:var(--ink);border-color:var(--ink)}'
+    + '#agent-app .ag-icbtn:disabled{opacity:.55;cursor:not-allowed}'
+    + '#agent-app .ag-icbtn.rec{color:var(--err);border-color:var(--err);animation:ag-rec 1.2s ease-in-out infinite}'
+    + '@keyframes ag-rec{0%,100%{opacity:1}50%{opacity:.45}}'
+    + '#agent-app .ag-input{display:flex;align-items:flex-end;gap:var(--space-2);padding:var(--space-3)}'
     + '#agent-app #ag-msg{flex:1;resize:none;border:1px solid var(--line);border-radius:var(--radius);padding:8px 10px;font:inherit;font-size:13px;background:var(--panel);color:var(--ink);max-height:160px}'
     + '#agent-app #ag-send:disabled{opacity:.55;cursor:not-allowed}'
     + '#agent-app .ag-status{margin:0 0 var(--space-3);font-size:12px}'
@@ -77,12 +90,19 @@
     '<div class="ag-wrap">'
     + '<aside class="ag-side"><div class="ag-newbox"><button id="ag-new" type="button">＋ 新会话</button></div><div id="ag-sessions" aria-label="会话列表"></div></aside>'
     + '<section class="ag-main"><div id="ag-log" aria-live="polite"></div>'
-    + '<div class="ag-input"><textarea id="ag-msg" rows="1" placeholder="输入消息（Enter 发送，Shift+Enter 换行）；可用 [context:job:岗位id] / [context:doc:简历id] 引用对象" aria-label="消息输入"></textarea><button id="ag-send" type="button">发送</button></div>'
+    + '<div class="ag-compose"><div id="ag-files"></div><div class="ag-input">'
+    + '<button id="ag-attach" type="button" class="ag-icbtn" title="添加附件（pdf/docx/图片/txt/md）" aria-label="添加附件"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>'
+    + '<input id="ag-file" type="file" accept=".pdf,.docx,.png,.jpg,.jpeg,.webp,.txt,.md" multiple style="display:none">'
+    + '<textarea id="ag-msg" rows="1" placeholder="输入消息（Enter 发送，Shift+Enter 换行）；可用 [context:job:岗位id] / [context:doc:简历id] 引用对象" aria-label="消息输入"></textarea>'
+    + '<button id="ag-mic" type="button" class="ag-icbtn" title="语音输入" aria-label="语音输入"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg></button>'
+    + '<button id="ag-send" type="button">发送</button></div></div>'
     + '</section></div>';
   document.head.appendChild(css);
 
   var $ = function (id) { return document.getElementById(id); };
   var log = $('ag-log'), sessBox = $('ag-sessions'), input = $('ag-msg'), sendBtn = $('ag-send');
+  var attachBtn = $('ag-attach'), micBtn = $('ag-mic'), fileInput = $('ag-file'), filesBox = $('ag-files');
+  var pendingFiles = [];   // [{fileId,name,error?}] 待发附件 chips（发送成功才清空）
   var current = null;   // 当前会话 id（null = 未选/未建，发送时自动建）
   var sending = false;
   var face = null;      // AoraFace 化身句柄；null = 未挂载（AoraFace 未加载时所有调用静默跳过）
@@ -126,12 +146,21 @@
 
   // ===== 渲染 =====
   function scrollEnd() { log.scrollTop = log.scrollHeight; }
-  function addUser(text) {
+  function addUser(text, files) {
     var d = document.createElement('div');
     d.className = 'ag-m user';
-    d.textContent = text;
+    if (text) { var t = document.createElement('div'); t.textContent = text; d.appendChild(t); }
+    (files || []).forEach(function (f) {
+      var b = document.createElement('span');
+      b.className = 'ag-file'; b.title = f.filename || '';
+      var ic = document.createElement('span'); ic.textContent = '📄';
+      var nm = document.createElement('span'); nm.textContent = f.filename || f.url || '附件';
+      b.appendChild(ic); b.appendChild(nm); d.appendChild(b);
+    });
+    if (!d.firstChild) d.textContent = text || '';
     log.appendChild(d); scrollEnd();
   }
+  var filePartsOf = function (m) { return partsOf(m).filter(function (p) { return p && p.type === 'file'; }); };
   function addStatus(text, kind) {
     var d = document.createElement('div');
     d.className = 'ag-m ag-status';
@@ -370,7 +399,7 @@
     var msgs = (s && s.messages) || [];
     if (!msgs.length) { renderWelcome(); return; }
     msgs.forEach(function (m) {
-      if (m.role === 'user') addUser(msgText(m));
+      if (m.role === 'user') addUser(msgText(m), filePartsOf(m));
       else if (m.role === 'assistant') addAiMsg(m);
     });
   }
@@ -462,6 +491,77 @@
     return current;
   }
 
+  // ===== A5 附件：点回形针 → ensureSession → raw body 逐文件上传 → chips；发送时带 fileIds =====
+  function renderChips() {
+    filesBox.innerHTML = '';
+    pendingFiles.forEach(function (f, ix) {
+      var c = document.createElement('span');
+      c.className = 'ag-file' + (f.error ? ' err' : '');
+      c.title = f.error || f.name;
+      var ic = document.createElement('span'); ic.textContent = '📄';
+      var nm = document.createElement('span'); nm.textContent = f.error ? (f.name + '：' + f.error) : f.name;
+      var x = document.createElement('button');
+      x.type = 'button'; x.textContent = '✕'; x.title = '移除';
+      x.onclick = function () { pendingFiles.splice(ix, 1); renderChips(); };
+      c.appendChild(ic); c.appendChild(nm); c.appendChild(x);
+      filesBox.appendChild(c);
+    });
+  }
+  attachBtn.onclick = function () {
+    if (sending) return;
+    ensureSession()
+      .then(function () { fileInput.click(); })
+      .catch(function (e) { addStatus(e.message || e, 'warn'); });
+  };
+  fileInput.onchange = function () {
+    var fl = Array.prototype.slice.call(fileInput.files || []);
+    fileInput.value = '';
+    if (!fl.length) return;
+    fl.reduce(function (p, f) {
+      return p.then(function () {
+        pendingFiles.push({ fileId: null, name: f.name, uploading: true });
+        renderChips();
+        return fetch('/agent/files?sid=' + encodeURIComponent(current) + '&name=' + encodeURIComponent(f.name), { method: 'POST', body: f })
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            var row = pendingFiles.find(function (x) { return x.uploading && x.name === f.name; });
+            if (row && d && d.ok) { row.fileId = d.fileId; row.uploading = false; if (d.warning) row.error = d.warning; }
+            else if (row) { row.error = (d && d.error) || '上传失败'; row.uploading = false; }
+            renderChips();
+          });
+      }).catch(function (e) {
+        var row = pendingFiles.find(function (x) { return x.uploading && x.name === f.name; });
+        if (row) { row.error = String(e.message || e); row.uploading = false; }
+        renderChips();
+      });
+    }, Promise.resolve());
+  };
+
+  // ===== A5 语音输入：SpeechRecognition 单路径（无可用服务端转写上游；API 不存在→按钮隐藏）=====
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var rec = null, recOn = false, voiceBase = '', ph0 = input.getAttribute('placeholder');
+  if (!SR) micBtn.style.display = 'none';
+  micBtn.onclick = function () {
+    if (!SR) return;
+    if (recOn) { try { rec.stop(); } catch (e) {} return; }
+    try { rec = new SR(); } catch (e) { addStatus('语音输入不可用', 'warn'); return; }
+    rec.lang = 'zh-CN'; rec.interimResults = true; rec.continuous = false;
+    voiceBase = input.value;
+    rec.onresult = function (ev) {
+      var s = '';
+      for (var i = 0; i < ev.results.length; i++) s += ev.results[i][0].transcript;
+      input.value = voiceBase + (voiceBase && !/[\s，。,.]$/.test(voiceBase) ? ' ' : '') + s;
+      fit();
+    };
+    rec.onend = function () { recOn = false; micBtn.classList.remove('rec'); input.placeholder = ph0; };
+    rec.onerror = function (ev) {
+      if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') addStatus('麦克风权限被拒：请在浏览器设置中允许', 'warn');
+      else if (ev.error !== 'aborted' && ev.error !== 'no-speech') addStatus('语音识别失败：' + ev.error, 'warn');
+    };
+    try { rec.start(); recOn = true; micBtn.classList.add('rec'); input.placeholder = '正在聆听…'; }
+    catch (e) { addStatus('语音输入启动失败', 'warn'); }
+  };
+
   // ===== 发送（SSE 流式）=====
   // POST /agent/chat {id,message,stream:1} + Accept:text/event-stream → data: <UIMessageChunk> 帧。
   // text-delta 增量进当前气泡（textContent）；finish 携带完整 UIMessage 整体对账重渲；
@@ -470,7 +570,7 @@
     var r = await fetch('/agent/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
-      body: JSON.stringify({ id: sid, message: msg, stream: 1 })
+      body: JSON.stringify({ id: sid, message: msg, stream: 1, fileIds: pendingFiles.filter(function (f) { return f.fileId; }).map(function (f) { return f.fileId; }) })
     });
     var ct = r.headers.get('content-type') || '';
     if (!(r.ok && ct.indexOf('text/event-stream') >= 0)) {
@@ -551,14 +651,16 @@
   }
   async function send() {
     var msg = input.value.trim();
-    if (!msg || sending) return;   // 防连点/Enter 重入：并发请求会打乱消息顺序
+    var outFiles = pendingFiles.filter(function (f) { return f.fileId; });
+    if ((!msg && !outFiles.length) || sending) return;   // 纯附件可发；防连点/Enter 重入
+    if (recOn && rec) { try { rec.stop(); } catch (e2) {} }   // 发送先停录音（onend 收尾按钮态）
     sending = true;
     sendBtn.disabled = true;
     // 清欢迎卡：首条消息发出后对话流接管
     if (face) { AoraFace.compact(face); AoraFace.set(face, 'send'); }
     var hello = log.querySelector('.ag-hello');
     if (hello) hello.remove();
-    addUser(msg);
+    addUser(msg, outFiles.map(function (f) { return { filename: f.name }; }));
     var waitEl = document.createElement('div');
     waitEl.className = 'ag-m ag-wait';
     var tick = startTicker(function (mm) { waitEl.textContent = '回复中 · 已等待 ' + mm; });
@@ -575,6 +677,7 @@
       var sid = await ensureSession();
       await sendStream(sid, msg, stopWait);
       input.value = ''; input.style.height = '';   // 成功后才清空：失败时用户输入保留（同 ai-panel AUD-15）
+      pendingFiles = []; renderChips();   // 发送成功清待发附件（失败保留 chips 可重发/移除）
       loadSessions(sid);   // 首条消息可能触发了自动命名，刷新列表
     } catch (e) {
       if (face) AoraFace.set(face, 'error');

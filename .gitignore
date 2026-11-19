@@ -24,6 +24,7 @@ match-cache.json
 docs/
 snapshots/
 pdfs/
+agent-files/
 backups/
 logs/
 photos/

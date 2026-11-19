@@ -22,6 +22,7 @@ import { streamChatMsgs } from './llm.mjs';
 import { docToText, docToLines, sectionsOf } from './extract.mjs';
 import { agentDraftTick } from './draft.mjs';   // UPCV A3：建简历草稿快照接缝（chatStream 用户条落盘后调用）
 import { smartCheck, improveAll, customRewrite, improveWriting } from './ai-helper.mjs';   // AI 四件套编排（2026-11-19 面合并：/ai-helper 页退役，能力并入工具环；规范 agent.routes.md §5.7）
+import { resolveAgentFiles, sweepAgentFiles } from './agent-files.mjs';   // A5 附件：归属解析 + 会话删除连带清理（agent-files/<sid>__<fid>.*）
 
 export const AGENT_NO_LLM = '未配置大模型：打开 /settings 完成模型配置';
 const AGENT_FILE = 'agent-sessions.json';
@@ -155,6 +156,7 @@ export function deleteSession(id) {
   const next = list.filter((s) => s && s.id !== String(id));
   if (next.length === list.length) return false;
   saveSessions(next);
+  try { sweepAgentFiles(R(), String(id)); } catch {}   // 附件目录连带清；清理失败不放大为删除故障
   return true;
 }
 
@@ -697,8 +699,10 @@ function assistantMsgOf({ parts, usage, aborted, rounds }) {
   if (aborted) metadata.aborted = true;   // 断连截断的部分正文：诚实标记，不假装完整回复
   return { id: newId('m'), role: 'assistant', parts, metadata };
 }
-const userMsgOf = (text, refs) => ({
-  id: newId('m'), role: 'user', parts: [{ type: 'text', text }],
+const userMsgOf = (text, refs, files) => ({
+  id: newId('m'), role: 'user',
+  parts: (text ? [{ type: 'text', text }] : [])
+    .concat((files || []).map((f) => ({ type: 'file', filename: f.name, url: f.fileId, mediaType: f.mime }))),   // file part 形状逐字对齐 UPCV；纯附件消息无 text part
   metadata: { createdAt: nowIso(), ...(refs && refs.length ? { refs } : {}) }
 });
 // UIMessage → 老响应字段（chat() 非流式兼容 + 面板兜底渲染共用口径）
@@ -817,7 +821,9 @@ export async function* chatStream(id, message, ctx = {}) {
   if (!s) { const e = new Error('会话不存在'); e.code = 'NO_SESSION'; throw e; }
   const raw = String(message || '');
   const text = stripContextRefs(raw) || raw.trim();
-  if (!text) { const e = new Error('消息不能为空'); e.code = 'EMPTY'; throw e; }
+  // A5 附件：fileIds 归属解析（坏 id → err.httpCode=400 路由原样回）；纯附件无文本合法
+  const files = resolveAgentFiles(R(), s.id, (ctx.fileIds || []).filter((x) => typeof x === 'string').slice(0, 8));
+  if (!text && !files.length) { const e = new Error('消息不能为空'); e.code = 'EMPTY'; throw e; }
   // 上下文注入：解析消息前缀 → 读仓内数据 → 拼进 system（不走消息体）
   const refs = parseContextRefs(raw);
   const ctxResolved = refs.map((r) => ({ ...r, data: r.type === 'job' ? resolveJob(r.id) : resolveDoc(r.id) }));
@@ -827,9 +833,26 @@ export async function* chatStream(id, message, ctx = {}) {
     const t = textOf(m);
     if (m && (m.role === 'user' || m.role === 'assistant') && t) hist.push({ role: m.role, content: t });
   }
+  // A5 模型可见文本：非图附件 → [context:file:<name>]\n<提取文本(≤8000+截断标记)> 拼在用户文本前（持久化只存原文，展示/输入分离）
+  const FILE_CTX_MAX = 8000;
+  const ctxText = files.filter((f) => !f.isImage)
+    .map((f) => `[context:file:${f.name}]\n${f.text ? (f.text.length > FILE_CTX_MAX ? f.text.slice(0, FILE_CTX_MAX) + '(截断)' : f.text) : '(无可提取文本)'}`)
+    .join('\n\n');
+  const modelText = ctxText ? ctxText + (text ? '\n\n' + text : '') : text;
+  const imgs = files.filter((f) => f.isImage);
+  let imgDegraded = false;
+  const userContent = () => {
+    if (imgs.length && !imgDegraded) {
+      return [{ type: 'text', text: modelText }].concat(imgs.map((f) => ({
+        type: 'image_url',
+        image_url: { url: `data:${f.mime};base64,${fs.readFileSync(f.storedPath).toString('base64')}` }
+      })));
+    }
+    return modelText + imgs.map((f) => `\n[context:file:${f.name}] (图片内容未能读取，请用户描述)`).join('');
+  };
   // ① 用户条先落盘（UIMessage）；首条用户消息自动命名（默认名才覆盖）
   const at = nowIso();
-  s.messages = (s.messages || []).concat([userMsgOf(text, refs)]).slice(-MSG_CAP);
+  s.messages = (s.messages || []).concat([userMsgOf(text, refs, files)]).slice(-MSG_CAP);
   if (s.title === '新会话' && s.messages.filter((m) => m.role === 'user').length === 1) {
     s.title = clip(text, 18) || s.title;
   }
@@ -852,12 +875,26 @@ export async function* chatStream(id, message, ctx = {}) {
       let sys = AGENT_SYSTEM + '\n\n【事实】\n' + factsBlock(ctxResolved);
       if (toolFacts.length) sys += '\n\n【工具结果】\n' + toolFacts.join('\n');
       if (round === TOOL_ROUND_MAX) sys += '\n\n【注意】这是本消息的最后一次作答机会：请直接输出 reply 总结已有信息，不要再发 toolCalls。';
-      const msgs = [{ role: 'system', content: sys }, ...hist, { role: 'user', content: text }];
+      const msgs = [{ role: 'system', content: sys }, ...hist, { role: 'user', content: userContent() }];
       const ex = replyExtractor();
       lastEx = ex;
-      for await (const chunk of streamChatMsgs(R(), msgs, { lease: ctx.lease, meta, profile: ctx.profile })) {
-        const d = ex.push(chunk);
-        if (d) yield { type: 'text-delta', delta: d };
+      // A5 图片降级：vision 不受理 → 零 delta 才允许重试一次（已流出文本后报错不重试，防重影）
+      let deltas = 0, triedImgRetry = false;
+      for (;;) {
+        try {
+          for await (const chunk of streamChatMsgs(R(), msgs, { lease: ctx.lease, meta, profile: ctx.profile })) {
+            const d = ex.push(chunk);
+            if (d) { deltas++; yield { type: 'text-delta', delta: d }; }
+          }
+          break;
+        } catch (e) {
+          if (imgs.length && !imgDegraded && deltas === 0 && !triedImgRetry) {
+            imgDegraded = triedImgRetry = true;
+            msgs[msgs.length - 1] = { role: 'user', content: userContent() };
+            continue;
+          }
+          throw e;
+        }
       }
       if (meta.usage) {
         usageSeen = true;

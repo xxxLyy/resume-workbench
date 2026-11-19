@@ -352,3 +352,11 @@ ctx 透传：`runTool/runToolTimed(args, ctx)` 的 `ctx={root,lease,profile,time
 **租约/断连**：同一 `lease` 逐轮 `claim → unclaim`（resource-slots 合同只拒并发占用，顺序复用合法）；路由断连 `it.return()` 经 for-await 透传 `streamChatMsgs` → finally unclaim 放槽，口径与单轮流式一致。
 
 **UIMessage 落档**：`metadata.rounds` 记实际轮数（>1 才有）；`tokenCount` 为多轮 `usage.total` 合计。
+
+## 6. A5 附件与语音（2026-11-20，设计 dev-docs/2026-11-20-a5-voice-attachments-design.md）
+
+- `POST /agent/files?sid&name`（raw body ≤10MB）：pdf/docx/png/jpg/webp/txt/md 魔数白名单 → `agent-files/<sid>__<fid>.bin/.json/.txt`；返回 `{ok,fileId,name,mime,size,textChars,warning?}`。
+- `/agent/chat` body +`fileIds`（≤8）：归属校验 400；用户条 parts 追 UPCV 逐字 `{type:"file",filename,url,mediaType}`；模型侧文本前注 `[context:file:<name>]\n<≤8000 提取文>`（持久化 text part 只存原文）；图片 → image_url 多模态，vision 不受理→零 delta 降级文本重试一次。
+- 语音输入：仅浏览器 SpeechRecognition（无服务端 /agent/voice——active 档无转写上游，API 缺失时麦克风隐藏）。
+- 会话删除连带 `sweepAgentFiles`；`agent-files/` 入 .gitignore/备份 tar/恢复 ALLOWED/RESTORE_MANAGED_DIRS。
+- 夹具：test-fixtures/reliability/test-agent-files.mjs（隔离根+SSE 桩，上传/提取/归属/chat/清扫五段）。

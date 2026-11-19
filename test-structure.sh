@@ -2219,7 +2219,7 @@ const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/prep','/
   '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf','/import/page','/inbox','/inbox/adopt','/inbox/dismiss','/inbox/draft','/inbox/eval','/inbox/status',
   '/job-panel.js','/job/alt-adopt','/job/brief','/job/changes','/job/create','/job/feedback-del','/job/generate','/job/gen-cancel','/job/gen-retry','/job/gen-start','/job/new','/layout-info','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',
   '/materials','/model-picker.js','/new',
-  '/agent','/agent-panel.js','/agent/chat','/agent/context-preview','/agent/sessions',
+  '/agent','/agent-panel.js','/agent/chat','/agent/context-preview','/agent/files','/agent/sessions',   // /agent/files（A5 附件上传，登记非放宽）
   '/talent','/talent-panel.js','/talent/generate','/talent/profile','/talent/refresh','/preference','/preference/state',   // UPCV A1：求职画像+偏好五端点+面板件（2026-11-19，登记非放宽；spec dev-docs/2026-11-19-upcv-port-talent-design.md）
   '/jobs','/jobs-panel.js','/jobs/search','/jobs/dictionaries','/jobs/apply-draft','/match/job','/match/recommend','/extension/match-score',   // UPCV A2：职位页+面板件+搜索/字典/转入适配+匹配/推荐/轻量打分（2026-11-19，登记非放宽；spec dev-docs/2026-11-19-upcv-port-jobs-match-design.md）
   '/extension/apply-record','/extension/chat-reply','/extension/greeting','/extension/resume-text','/extension/shortlist',   // UPCV A4：投递扩展五端点（2026-11-19，登记非放宽；spec dev-docs/2026-11-19-upcv-port-extension-design.md §1——match-score 已随 A2 登记）
@@ -5743,3 +5743,4 @@ EOF
 #       BAD_ARGS/NOT_FOUND/桩 LLM 形状（issues 归一截断 · rewritten 交付）/回灌投影分离（全文不进 system）/
 #       模型坏输出 ERROR/AGENT_SYSTEM 源级钉值/per-tool timeoutMs 与 TIMEOUT 路径。隔离根 + 桩 LLM，零真实模型。
 node ./test-fixtures/reliability/test-agent-resume-tools.mjs
+node ./test-fixtures/reliability/test-agent-files.mjs
