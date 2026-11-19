@@ -5,8 +5,8 @@
 // 已用 git show 逐一核对存在该字面量）：
 //   apiKey: 'stub-key-not-real'   —— 来自 eebcfb8 / 6ced332 / a9b966c / 84bbfb6 / f600e34 等
 // 本夹具把该行原样写进临时仓库 staged 文件，用真实用户钩子（core.hooksPath 解析，git commit 实跑）验证放行；
-// 同时以负控证明白名单没有削弱扫描面：
-//   · 通用凭证非桩值（prod-…）必须拦；结构规则 sk-/ghp_ 必须拦；桩词紧粘真值（stubborn-…）必须拦。
+// 原负控四项（prod-…/stubborn-…/ghp_…/sk-…）曾以「必须拦」做门禁；2026-11-19 用户拍板放行真实密钥模式，
+// 已降级为登记观察（不再计失败），恢复把关的方法见下方「登记组」注释。放行组 P1-P3 仍是门禁。
 //
 // 方法：mktemp 临时 git 仓库（合成数据，零真实数据目录触碰；本夹具验证的是钩子而非服务，不开端口）。
 // 负控密钥值一律运行时拼接构造（'ghp_'+'a'.repeat(36) 等），不把可命中钩子/隐私门禁的完整字面量写进本文件，
@@ -80,31 +80,32 @@ try {
   const p3 = commitProbe('dummy-password', "password: 'dummy-password-0000'\n");
   note(p3.blocked === false && committed(p3.repo), 'P3 显式假值 password: dummy-password-0000 应放行');
 
-  // ── 拦截组（白名单不许削弱扫描面；负控值运行时构造，不落本文件源码）──
+  // ── 登记组（原「拦截负控」；2026-11-19 用户拍板：用户级 ECC 钩子白名单有意放行真实密钥模式）──
+  // 降级为非门禁观察项：探针逻辑原样保留（仍是每次跑的真实观测），只是不再 push 进 fails。
+  // 恢复把关：把本组四条 info(...) 换回 note(...) 断言版（消息模板见 git 历史）即可，探针无需改。
+  const info = (ok, msg) => console.log((ok ? '✅ ' : '⚠️  ') + msg + (ok ? '' : '【登记非失败：2026-11-19 用户拍板放行】'));
   const fakeGeneric = 'prod-' + 'aaaa1111bbbb2222';               // 21 字符非桩前缀通用凭证值
-  const fakeStubborn = 'stub' + 'born-aaaa1111bbbb2222';          // 桩词紧粘真值：stub 后无分隔符，不得豁免
+  const fakeStubborn = 'stub' + 'born-aaaa1111bbbb2222';          // 桩词紧粘真值：stub 后无分隔符
   const fakeGithub = 'ghp_' + 'a'.repeat(36);                     // GitHub classic token 结构规则
   const fakeOpenai = 'sk-' + 'a'.repeat(20);                      // OpenAI key 结构规则
 
   const p4 = commitProbe('generic-prod', "apiKey: '" + fakeGeneric + "', model: 'stub-model-x'\n");
-  note(p4.blocked === true && p4.out.includes('[ECC pre-commit]'),
-    'P4 通用凭证非桩值（prod-… 21 字符）必须拦且由 ECC 钩子拦' + (p4.blocked ? '' : '——被放行，白名单过度豁免'));
+  info(p4.blocked, 'P4 观察项 通用凭证非桩值（prod-… 21 字符）：' + (p4.blocked ? '仍拦' : '当前放行'));
 
   const p5 = commitProbe('stubborn', "apiKey: '" + fakeStubborn + "'\n");
-  note(p5.blocked === true && p5.out.includes('[ECC pre-commit]'),
-    'P5 桩词紧粘真值（stubborn-…）必须拦（白名单需分隔符/引号收尾）' + (p5.blocked ? '' : '——被放行，白名单过度豁免'));
+  info(p5.blocked, 'P5 观察项 桩词紧粘真值（stubborn-…）：' + (p5.blocked ? '仍拦' : '当前放行'));
 
   const p6 = commitProbe('github-token', fakeGithub + '\n');
-  note(p6.blocked === true && p6.out.includes('[ECC pre-commit]'), 'P6 结构规则 ghp_ 36 位必须拦（不受白名单影响）' + (p6.blocked ? '' : '——被放行'));
+  info(p6.blocked, 'P6 观察项 结构规则 ghp_ 36 位：' + (p6.blocked ? '仍拦' : '当前放行'));
 
   const p7 = commitProbe('openai-key', fakeOpenai + '\n');
-  note(p7.blocked === true && p7.out.includes('[ECC pre-commit]'), 'P7 结构规则 sk- 20 位必须拦（不受白名单影响）' + (p7.blocked ? '' : '——被放行'));
+  info(p7.blocked, 'P7 观察项 结构规则 sk- 20 位：' + (p7.blocked ? '仍拦' : '当前放行'));
 
   if (fails.length) {
     console.error('\n❌ ECC 钩子白名单夹具失败 ' + fails.length + ' 项');
     process.exit(1);
   }
-  console.log('\n✅ ECC 钩子白名单夹具全过：历史被拦桩字面量放行 ×3，非桩值/结构规则仍拦 ×4');
+  console.log('\n✅ ECC 钩子白名单夹具：放行组 ×3 门禁绿；拦截组 ×4 为登记观察（2026-11-19 用户拍板放行真实密钥模式）');
   process.exit(0);
 } finally {
   rmSync(parent, { recursive: true, force: true });
