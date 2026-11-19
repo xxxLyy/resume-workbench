@@ -88,7 +88,7 @@ export async function listModels(baseURL, apiKey) {
 }
 
 // chatMsgs — 多消息形态；chat 是它的两消息特例
-export async function chatMsgs(root, messages, { lease, meta, profile } = {}) {
+export async function chatMsgs(root, messages, { lease, meta, profile, timeoutMs } = {}) {
   // profile（可选）：按索引指定档案（多模型对比）；null/undefined → 生效档（active），行为不变
   const c = profile == null ? loadConfig(root) : ((loadProfiles(root).profiles || [])[profile] || null);
   if (!c) throw new Error('LLM 未配置');
@@ -114,8 +114,10 @@ export async function chatMsgs(root, messages, { lease, meta, profile } = {}) {
       // 本文件已经因硬编码 temperature 让 Kimi coding 端点报过 400，同一个坑不踩第二次。
       body: JSON.stringify({ model: c.model, messages, ...(c.reasoningEffort ? { reasoning_effort: c.reasoningEffort } : {}) }),
       // 不带 temperature：Kimi coding 等端点只允许默认值，硬编码会被 400
-      // 请求级超时（S4a 设计 §6）：默认 120s，profile 的 timeoutMs 可覆盖
-      signal: AbortSignal.timeout(Number(c.timeoutMs) > 0 ? Number(c.timeoutMs) : 120000)
+      // 请求级超时（S4a 设计 §6）：优先级 per-call timeoutMs > profile.timeoutMs > 默认 120s。
+      // per-call 覆盖 2026-11-19 引入：agent 四件套是分钟级重调用，active 档常未配 timeoutMs，
+      // 120s 默认会先掐底层请求（真模型抽验实证）——调用面可自报预算，不动全局配置。
+      signal: AbortSignal.timeout(Number(timeoutMs) > 0 ? Number(timeoutMs) : (Number(c.timeoutMs) > 0 ? Number(c.timeoutMs) : 120000))
     }).then(okOrThrow('LLM 请求失败')), { idempotent: false });   // POST 一次发送：不重试未知结果
     // r.json() 与结构校验刻意放在 withRetry 外：body 解析/格式错误天然不重试
     const data = await r.json();
@@ -138,15 +140,15 @@ export async function chatMsgs(root, messages, { lease, meta, profile } = {}) {
   }
 }
 
-export async function chat(root, system, user, { lease, meta, profile } = {}) {
-  return chatMsgs(root, [{ role: 'system', content: system }, { role: 'user', content: user }], { lease, meta, profile });
+export async function chat(root, system, user, opts = {}) {
+  return chatMsgs(root, [{ role: 'system', content: system }, { role: 'user', content: user }], opts);
 }
 
 // streamChatMsgs — chatMsgs 的流式变体（UPCV */stream 复刻需要）：同一份 profile/SSRF/租约/重试纪律，
 // 请求体只多 stream:true；产出 = async generator 逐段 yield choices[].delta.content 文本片段。
 // 提前中断消费（路由层断连/取消）→ generator finally 照常释放 AI 槽（与 chatMsgs 同一口径）。
 // usage：厂商若在末块给 usage 照收进 meta（缺字段记 null，与 chatMsgs 同口径）。
-export async function* streamChatMsgs(root, messages, { lease, meta, profile } = {}) {
+export async function* streamChatMsgs(root, messages, { lease, meta, profile, timeoutMs } = {}) {
   const c = profile == null ? loadConfig(root) : ((loadProfiles(root).profiles || [])[profile] || null);
   if (!c) throw new Error('LLM 未配置');
   const base = assertSafeBaseURL(c.baseURL).toString().replace(/\/$/, '');
@@ -158,7 +160,7 @@ export async function* streamChatMsgs(root, messages, { lease, meta, profile } =
       headers: { Authorization: `Bearer ${c.apiKey}`, 'Content-Type': 'application/json' },
       redirect: 'error',
       body: JSON.stringify({ model: c.model, messages, stream: true, ...(c.reasoningEffort ? { reasoning_effort: c.reasoningEffort } : {}) }),
-      signal: AbortSignal.timeout(Number(c.timeoutMs) > 0 ? Number(c.timeoutMs) : 120000)
+      signal: AbortSignal.timeout(Number(timeoutMs) > 0 ? Number(timeoutMs) : (Number(c.timeoutMs) > 0 ? Number(c.timeoutMs) : 120000))
     }).then(okOrThrow('LLM 请求失败'));
     // SSE 帧解析：按 \n\n 分帧，逐行 data: 前缀；[DONE] 收尾；delta.content 原样 yield，
     // reasoning_content 与 tool_calls 增量本期不向下游透传（各端点只消费正文文本）。
@@ -194,6 +196,6 @@ export async function* streamChatMsgs(root, messages, { lease, meta, profile } =
     if (own) { try { own.release(); } catch {} }
   }
 }
-export function streamChat(root, system, user, { lease, meta, profile } = {}) {
-  return streamChatMsgs(root, [{ role: 'system', content: system }, { role: 'user', content: user }], { lease, meta, profile });
+export function streamChat(root, system, user, opts = {}) {
+  return streamChatMsgs(root, [{ role: 'system', content: system }, { role: 'user', content: user }], opts);
 }

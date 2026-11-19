@@ -60,7 +60,17 @@
     + '#agent-app .ag-status{margin:0 0 var(--space-3);font-size:12px}'
     + '@media (max-width:860px){#agent-app .ag-wrap{grid-template-columns:1fr;height:auto}#agent-app .ag-side{max-height:180px}#agent-app .ag-main{min-height:60vh}}'
     + '#agent-app .ag-hello{display:flex;gap:14px;align-items:flex-start}'
-    + '#agent-app .ag-hello .ag-hb{flex:1;min-width:0}';
+    + '#agent-app .ag-hello .ag-hb{flex:1;min-width:0}'
+    // 四件套交付卡（2026-11-19 面合并）：rewritten 全文 pre + issues 红黄行
+    + '#agent-app .ag-full{margin:6px 0 0;padding:8px 10px;background:var(--bg);border:1px solid var(--line);border-radius:var(--radius);font-family:var(--font-mono);font-size:11.5px;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;color:var(--ink)}'
+    + '#agent-app .ag-iss{margin-top:4px;padding:4px 8px;border-radius:6px;font-size:12px;color:var(--ink)}'
+    + '#agent-app .ag-iss.err{background:var(--err-soft)}'
+    + '#agent-app .ag-iss.warn{background:var(--warn-soft)}'
+    + '#agent-app .ag-iss.err b{color:var(--err)}'
+    + '#agent-app .ag-iss.warn b{color:var(--warn)}'
+    + '#agent-app .ag-iss .fix{display:block;color:var(--mut)}'
+    + '#agent-app .ag-copy{margin-top:6px;min-height:24px;padding:0 10px;font-size:12px;border:1px solid var(--line);border-radius:999px;background:var(--panel);color:var(--ink);cursor:pointer}'
+    + '#agent-app .ag-copy:hover{border-color:var(--accent);color:var(--accent)}';
 
   // ===== DOM =====
   mount.innerHTML =
@@ -157,7 +167,7 @@
   // toolPartHtml 画 server 侧真实执行的调用卡——多轮工具环里按 parts 时间序与过渡文本混排。
   var TOOL_SRC_LABEL = { inbox: '收件箱', app: '投递记录', eval: '评估' };
   var APP_STATUS_LB = { to_apply: '待投递', preparing: '准备中', applied: '已投递', replied: '有回复', interviewing: '面试中', offer: 'Offer', closed: '已关闭' };
-  var REAL_TOOLS = ['get_job_detail', 'query_job_progress', 'list_resumes', 'get_resume_summary'];
+  var REAL_TOOLS = ['get_job_detail', 'query_job_progress', 'list_resumes', 'get_resume_summary', 'resume_check', 'resume_improve', 'resume_polish', 'resume_tailor'];
   function toolStateBadge(st, output) {
     if (output && output.ok === false) return '<span class="ag-ts err">' + __icon('circle-alert') + '失败</span>';
     if (st === 'output-available') return '<span class="ag-ts ok">' + __icon('circle-check') + '已返回</span>';
@@ -204,14 +214,61 @@
     }
     return [JSON.stringify(o).slice(0, 160)];
   }
+  // 四件套交付渲染（2026-11-19 面合并）：rewritten → pre 全文 + 复制按钮；issues → 逐条红/黄行。esc 全程。
+  function resumeRewriteSummary(o) {
+    var L = ['「' + (o.title || o.docId) + '」改写完成，' + (o.chars || 0) + ' 字'];
+    if (o.issuesFixed) L.push('体检修复 ' + o.issuesFixed + ' 条');
+    if (o.requirement) L.push('定制要求：' + o.requirement);
+    return L.join(' · ');
+  }
+  function issuesHtml(o) {
+    var iss = o.issues || [];
+    if (!iss.length) return '<div class="row">体检通过：没有发现问题</div>';
+    var ec = iss.filter(function (i) { return i && i.type === 'error'; }).length;
+    var head = '<div class="row">「' + esc(o.title || o.docId) + '」共 ' + (o.count != null ? o.count : iss.length) + ' 个问题（严重 ' + ec + ' / 提醒 ' + (iss.length - ec) + '）</div>';
+    return head + iss.map(function (i) {
+      return '<div class="ag-iss ' + (i && i.type === 'error' ? 'err' : 'warn') + '"><b>' + esc((i && i.field) || '全文') + '</b> ' + esc((i && i.description) || '')
+        + ((i && i.suggestion) ? '<span class="fix">→ ' + esc(i.suggestion) + '</span>' : '') + '</div>';
+    }).join('');
+  }
   function toolPartHtml(p) {
     var name = String(p.type || '').slice(5);
     var inp = kvSummary(p.input);
-    return '<div class="ag-tc"><div class="tt">' + esc(name) + toolStateBadge(p.state, p.output) + '</div>'
+    var o = p.output;
+    var body;
+    if (o && typeof o === 'object' && o.ok !== false && typeof o.rewritten === 'string') {
+      body = '<div class="row">' + esc(resumeRewriteSummary(o)) + '</div>'
+        + '<pre class="ag-full">' + esc(o.rewritten) + '</pre>'
+        + '<div class="row"><button type="button" class="ag-copy" data-ag-copy="1">复制全文</button></div>';
+    } else if (o && typeof o === 'object' && o.ok !== false && Array.isArray(o.issues)) {
+      body = issuesHtml(o);
+    } else {
+      body = toolOutputLines(name, o).slice(0, 3).map(function (l) { return '<div class="row">' + esc(l) + '</div>'; }).join('');
+    }
+    return '<div class="ag-tc"><div class="tt">' + esc(name) + toolStateBadge(p.state, o) + '</div>'
       + (inp ? '<div class="row ag-tin">' + esc(inp) + '</div>' : '')
-      + toolOutputLines(name, p.output).slice(0, 3).map(function (l) { return '<div class="row">' + esc(l) + '</div>'; }).join('')
-      + '</div>';
+      + body + '</div>';
   }
+  // 复制全文：事件委托挂在 log 上（实况 upsert / finish 重渲 / 历史渲染三条注入路径零重复绑定）；
+  // navigator.clipboard 优先，兜底 textarea 选中（execCommand）。
+  function fallbackCopy(pre) {
+    var ta = document.createElement('textarea');
+    ta.value = pre.textContent;
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+  log.addEventListener('click', function (ev) {
+    var b = ev.target && ev.target.closest ? ev.target.closest('[data-ag-copy]') : null;
+    if (!b) return;
+    var card = b.closest('.ag-tc');
+    var pre = card && card.querySelector('.ag-full');
+    if (!pre) return;
+    var done = function () { var t = b.textContent; b.textContent = '已复制'; setTimeout(function () { b.textContent = t; }, 1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(pre.textContent).then(done, function () { fallbackCopy(pre); done(); });
+    } else { fallbackCopy(pre); done(); }
+  });
   // 实况帧渲染：toolCallId 复用同一 wrapper（call → output-available 就地更新，多轮步序不乱）
   function upsertToolCard(bubble, part, liveMap) {
     var id = part.toolCallId || ('auto-' + Object.keys(liveMap).length);

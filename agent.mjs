@@ -3,7 +3,9 @@
 //   会话管理 · [context:doc|job:<id>] 上下文注入 · toolCard/quickReplies 下发 · 泄露策略手册本地化。
 //   消息存储 = Vercel AI SDK v5 UIMessage 形状 {id,role,parts:[{type:'text'|'step-start'|'tool-<name>'}],metadata:{createdAt,tokenCount}}；
 //   chatStream() = 多轮工具环：模型每轮给 {"toolCalls":[…]} 或 {"reply":…}（契约见 AGENT_SYSTEM），
-//   server 侧真实执行工具（get_job_detail / query_job_progress / list_resumes / get_resume_summary，全只读），
+//   server 侧真实执行工具（get_job_detail / query_job_progress / list_resumes / get_resume_summary 四只读
+//   + resume_check / resume_improve / resume_polish / resume_tailor 四件套 AI 工具，编排 ai-helper.mjs；
+//   2026-11-19 面合并：/ai-helper 独立页退役，四件套并入工具环），
 //   结果回灌下一轮 system【工具结果】区，轮数封顶 3；产出 UIMessage 事件流
 //   （tool-part{call→output-available}* → text-delta* → finish{message}），路由转 SSE（agent.routes.md §5）。
 // 数据根注入：server.mjs 启动时调一次 init(root)（root = RESUME_ROOT，与数据文件同口径）。
@@ -19,6 +21,7 @@ import path from 'node:path';
 import { streamChatMsgs } from './llm.mjs';
 import { docToText, docToLines, sectionsOf } from './extract.mjs';
 import { agentDraftTick } from './draft.mjs';   // UPCV A3：建简历草稿快照接缝（chatStream 用户条落盘后调用）
+import { smartCheck, improveAll, customRewrite, improveWriting } from './ai-helper.mjs';   // AI 四件套编排（2026-11-19 面合并：/ai-helper 页退役，能力并入工具环；规范 agent.routes.md §5.7）
 
 export const AGENT_NO_LLM = '未配置大模型：打开 /settings 完成模型配置';
 const AGENT_FILE = 'agent-sessions.json';
@@ -449,25 +452,99 @@ function toolGetResumeSummary(args) {
     lineCount: lines.length, preview: lines.slice(0, 8).map((l) => clip(l, 80))
   };
 }
-const TOOL_DEFS = {
+// ===== AI 四件套工具（2026-11-19 面合并：/ai-helper 页退役，能力并入工具环）=====
+// 复用 ai-helper.mjs 编排（prompt / REQ_MAX / NO_FABRICATE 零改动）；ctx={root,lease,profile} 由 chatStream
+// 轮内透传——工具执行发生在两轮模型调用之间，agent 自身租约此时已 unclaim，工具内部复用同 lease 不会死锁。
+// 回灌与交付分离（设计 §2.4 核心）：rewritten 全文只进 tool part output（面板渲染 + 会话落盘），
+// system【工具结果】只回灌压缩摘要（def.fact 投影剔掉 rewritten）——全文不过模型第二道手，零漂移零重复计费。
+// resume_check 的 issues 是模型要转述的内容，按 factClip=4000 全量回灌。
+// 「只读」口径：四件套只输出文本、零落盘（文本变换不算写）；交付后指导用户复制全文到编辑器应用。
+// 底层调用预算（2026-11-19 真模型抽验修正）：active 档未配 timeoutMs 时 llm.mjs 落 120s 默认，
+// 分钟级体检被底层先掐（真会话抽验实证 toolErr ERROR 'aborted due to timeout'）。per-call 540s
+// < 工具竞速 600s：底层永远先结束，竞速只兜真卡死，超时语义不混层。
+const RESUME_LLM_TIMEOUT_MS = 540000;
+const ctxOf = (ctx) => ({ root: (ctx && ctx.root) || R(), lease: ctx && ctx.lease, profile: ctx && ctx.profile, timeoutMs: RESUME_LLM_TIMEOUT_MS });
+// 公共前置：args 白名单校验 + 读文档 → {ok:false} 错误 或 {docId,title,text}（text 口径同 get_resume_summary）
+function resumeArgsOf(name, args, allowed, required) {
+  const bad = argCheck(name, args, allowed, required);
+  if (bad) return bad;
+  const id = String(args.docId);
+  if (!TOOL_ARG_ID.test(id)) return toolErr('BAD_ARGS', '参数错误：docId 格式非法');
+  const html = readDoc(id);
+  if (html == null) return toolErr('NOT_FOUND', `没有 id=${id} 的简历文档（用 list_resumes 拿真实 id）`);
+  return { docId: id, title: docTitleOf(html, id), text: docToLines(html, { includeHidden: false }).join('\n') };
+}
+const rewriteErr = (label, out) => toolErr('ERROR', `${label}失败：模型未返回改写结果（原始输出：${clip(String((out && out.reply) || ''), 120)}）`);
+async function toolResumeCheck(args, ctx) {
+  const t = resumeArgsOf('resume_check', args, ['docId'], ['docId']);
+  if (t.ok === false) return t;
+  let out;
+  try { out = await smartCheck(t.text, ctxOf(ctx)); }
+  catch (e) { return toolErr('ERROR', '智能检查失败：' + clip(String((e && e.message) || e), 120)); }
+  if (!Array.isArray(out.issues)) return toolErr('ERROR', '智能检查失败：模型输出无法解析为问题清单（原始输出：' + clip(String(out.reply || ''), 120) + '）');
+  return { ok: true, docId: t.docId, title: t.title, count: out.issues.length, issues: out.issues };
+}
+async function toolResumeImprove(args, ctx) {
+  const t = resumeArgsOf('resume_improve', args, ['docId'], ['docId']);
+  if (t.ok === false) return t;
+  // 一呼完成「检查+修复」：先体检拿 issues（模型输出坏形状 → 空清单走保守优化；chat 抛错如实报错）
+  let issues = [];
+  try {
+    const chk = await smartCheck(t.text, ctxOf(ctx));
+    if (Array.isArray(chk.issues)) issues = chk.issues;
+  } catch (e) { return toolErr('ERROR', '体检步骤失败：' + clip(String((e && e.message) || e), 120)); }
+  let out;
+  try { out = await improveAll(t.text, issues, ctxOf(ctx)); }
+  catch (e) { return toolErr('ERROR', '一键优化失败：' + clip(String((e && e.message) || e), 120)); }
+  if (typeof out.rewritten !== 'string') return rewriteErr('一键优化', out);
+  return { ok: true, docId: t.docId, title: t.title, chars: out.rewritten.length, issuesFixed: issues.length, preview: clip(out.rewritten, 300), rewritten: out.rewritten };
+}
+async function toolResumePolish(args, ctx) {
+  const t = resumeArgsOf('resume_polish', args, ['docId'], ['docId']);
+  if (t.ok === false) return t;
+  let out;
+  try { out = await improveWriting(t.text, ctxOf(ctx)); }
+  catch (e) { return toolErr('ERROR', '润色失败：' + clip(String((e && e.message) || e), 120)); }
+  if (typeof out.rewritten !== 'string') return rewriteErr('润色', out);
+  return { ok: true, docId: t.docId, title: t.title, chars: out.rewritten.length, preview: clip(out.rewritten, 300), rewritten: out.rewritten };
+}
+async function toolResumeTailor(args, ctx) {
+  const t = resumeArgsOf('resume_tailor', args, ['docId', 'requirement'], ['docId', 'requirement']);
+  if (t.ok === false) return t;
+  const req = String(args.requirement || '').trim();
+  // REQ_MAX=200 截断在 ai-helper.mjs buildCustomRewrite 内（零改动复用）；这里只回显 ≤80 字
+  let out;
+  try { out = await customRewrite(t.text, req, ctxOf(ctx)); }
+  catch (e) { return toolErr('ERROR', '定制改写失败：' + clip(String((e && e.message) || e), 120)); }
+  if (typeof out.rewritten !== 'string') return rewriteErr('定制改写', out);
+  return { ok: true, docId: t.docId, title: t.title, chars: out.rewritten.length, requirement: clip(req, 80), preview: clip(out.rewritten, 300), rewritten: out.rewritten };
+}
+// def.fact：回灌 system 的投影（缺省=原样全量 clip）；四件套真模型分钟级 → per-call 540s（RESUME_LLM_TIMEOUT_MS）+ 工具竞速 600s
+const rewriteFact = (o) => (o && o.ok ? { ok: o.ok, docId: o.docId, title: o.title, chars: o.chars, issuesFixed: o.issuesFixed, requirement: o.requirement, preview: o.preview } : o);
+export const TOOL_DEFS = {
   get_job_detail: { run: toolGetJobDetail },
   query_job_progress: { run: toolQueryJobProgress },
   list_resumes: { run: toolListResumes },
-  get_resume_summary: { run: toolGetResumeSummary }
+  get_resume_summary: { run: toolGetResumeSummary },
+  resume_check: { run: toolResumeCheck, timeoutMs: 600000, factClip: 4000, fact: (o) => o },
+  resume_improve: { run: toolResumeImprove, timeoutMs: 600000, fact: rewriteFact },
+  resume_polish: { run: toolResumePolish, timeoutMs: 600000, fact: rewriteFact },
+  resume_tailor: { run: toolResumeTailor, timeoutMs: 600000, fact: rewriteFact }
 };
-function runTool(name, args) {
+export function runTool(name, args, ctx) {
   const def = TOOL_DEFS[name];
   if (!def) return toolErr('BAD_ARGS', `未知工具：${clip(String(name), 40)}（可用：${Object.keys(TOOL_DEFS).join('、')}）`);
-  try { return def.run(args); } catch (e) { return toolErr('ERROR', '工具执行失败：' + clip(String((e && e.message) || e), 120)); }
+  try { return def.run(args, ctx); } catch (e) { return toolErr('ERROR', '工具执行失败：' + clip(String((e && e.message) || e), 120)); }
 }
-// 30s 超时兜底：现工具全是同步读盘（远快于上限），race 主要为契约与未来异步工具预留
-function runToolTimed(name, args) {
+// 超时兜底：同步读盘工具走默认 30s（race 为契约预留）；四件套等真模型工具读 def.timeoutMs（600s，底层 540s 先结束）
+export function runToolTimed(name, args, ctx) {
+  const ms = (TOOL_DEFS[name] && TOOL_DEFS[name].timeoutMs) || TOOL_TIMEOUT_MS;
   let t;
   const timeout = new Promise((res) => {
-    t = setTimeout(() => res(toolErr('TIMEOUT', `工具 ${name} 执行超时（${TOOL_TIMEOUT_MS / 1000} 秒）`)), TOOL_TIMEOUT_MS);
+    t = setTimeout(() => res(toolErr('TIMEOUT', `工具 ${name} 执行超时（${ms / 1000} 秒）`)), ms);
     if (t && typeof t.unref === 'function') t.unref();
   });
-  return Promise.race([Promise.resolve().then(() => runTool(name, args)), timeout])
+  return Promise.race([Promise.resolve().then(() => runTool(name, args, ctx)), timeout])
     .then((r) => { clearTimeout(t); return r; });
 }
 
@@ -487,6 +564,11 @@ B. 直接回复 → {"reply":"正文：先给判断+动作，再给依据；中�
 - query_job_progress {"status":"可选"}：投递进度汇总——六态聚合计数 + 近 7 日到期列表；status 可填 to_apply/preparing/applied/replied/interviewing/offer/closed 或中文标签。问「投递进度/哪些快截止/某状态有哪些」时用。
 - list_resumes {"archived":可选}：列简历文档（id/标题/主题/类型）；archived 缺省=只列在用的，true=只列已归档，"all"=全部。问「我有哪些简历」时用。
 - get_resume_summary {"docId":"…"}：读一份简历的结构——标题/章节清单/行数/开头预览。问「某份简历内容/结构」时用。
+- resume_check {"docId":"…"}：智能体检一份简历——问题清单（error 事实性 / warning 表达性，≤20 条）。用户说「检查/体检这份简历」时用。
+- resume_improve {"docId":"…"}：一键优化——先体检再逐条修复，交付改写后全文。用户说「一键优化/修一下」时用。
+- resume_polish {"docId":"…"}：润色全文（不改事实与结构）。用户说「润色」时用。
+- resume_tailor {"docId":"…","requirement":"…"}：按 JD 定制改写；requirement 把 JD 关键要求浓缩成 ≤200 字填入。用户说「按 JD 定制/针对性改写」时用。
+四件套（resume_*）输出不自动写回文档：改写全文只出现在工具卡里，指导用户复制全文到编辑器应用（「只读」指零落盘，文本变换不算写）。
 
 策略（必须遵守）：
 1. 投递前必须有简历。【事实】显示没有任何简历时：先引导用户去首页新建简历或导入 PDF，不讨论投递细节（硬阻塞）。
@@ -494,7 +576,8 @@ B. 直接回复 → {"reply":"正文：先给判断+动作，再给依据；中�
 3. 本平台不代投：你只给网申链接与材料清单，由用户自己去网站提交。
 4. 用户明确说「帮我记一笔投递/我已投递」才引导他去「投递」页登记；你不替他写任何投递记录。
 5. 不夸大、不承诺结果；简历里没有的事实让用户先补充再写。
-6. 工具回 {"ok":false} 时，把 error 如实转告用户（如「投递记录里没有这个 id」），不要编造结果或换个 id 重试超过一次。`;
+6. 工具回 {"ok":false} 时，把 error 如实转告用户（如「投递记录里没有这个 id」），不要编造结果或换个 id 重试超过一次。
+7. 改写类工具（resume_improve / resume_polish / resume_tailor）交付后，必须原样转告「全文见上方工具卡」，不得在 reply 里复述全文或再加工。`;
 
 // ===== 回复解析（坏输出降级为纯文本回复）=====
 function parseAgentReply(raw) {
@@ -790,13 +873,18 @@ export async function* chatStream(id, message, ctx = {}) {
         for (const call of turn.toolCalls) {
           const p0 = { type: 'tool-' + clip(String(call.name || '?'), 40), toolCallId: newId('tc'), state: 'call', input: call.args };
           yield { type: 'tool-part', part: p0 };
-          const output = await runToolTimed(call.name, call.args);
+          const output = await runToolTimed(call.name, call.args, { root: R(), lease: ctx.lease, profile: ctx.profile });
           const p1 = { ...p0, state: 'output-available', output };
           parts.push(p1);
           yield { type: 'tool-part', part: p1 };
           results.push({ name: p0.type.slice(5), args: call.args, output });
         }
-        for (const r of results) toolFacts.push(`- ${r.name}(${JSON.stringify(r.args)}) → ${clip(JSON.stringify(r.output), TOOL_FACT_CLIP)}`);
+        // 回灌走 def.fact 投影 + def.factClip：四件套 rewritten 全文不进 system（回灌与交付分离，设计 §2.4）
+        for (const r of results) {
+          const def = TOOL_DEFS[r.name];
+          const fact = def && def.fact ? def.fact(r.output) : r.output;
+          toolFacts.push(`- ${r.name}(${JSON.stringify(r.args)}) → ${clip(JSON.stringify(fact), (def && def.factClip) || TOOL_FACT_CLIP)}`);
+        }
         if (turn.dropped) toolFacts.push(`（另有 ${turn.dropped} 条 toolCalls 超单轮上限 ${TOOL_CALL_CAP} 未执行）`);
         if (round < TOOL_ROUND_MAX) continue;   // 下一轮：system 带上【工具结果】重问
         // 封顶轮仍只要工具：调用已执行入档但模型没给答复 → 系统兜底句（诚实标注，不冒充模型输出）

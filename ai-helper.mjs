@@ -1,4 +1,7 @@
 // ai-helper.mjs — 「AI 简历助手」页的后端编排（UPCV AI 四件套本地版；契约见 ai-helper.routes.md）
+// 【退役说明 2026-11-19】/ai-helper 独立页已退役（面合并方案 2）：本文件保留为 agent.mjs 工具环的库——
+//   smartCheck / improveAll / customRewrite / improveWriting 由 agent.mjs 的 resume_check/improve/polish/tailor
+//   四工具调用（规范 agent.routes.md §5.7）；customRewriteStream / improveWritingStream 已无调用方，保留仅为契约形状参考。
 // 分层与 ai.mjs 同口径：build* 造 prompt（纯函数，无网络依赖）→ llm.mjs chat() 调模型 → parse* 校验输出。
 // 复用点（不重造）：
 //   ① LLM 调用层 = llm.mjs 的 chat()（含 AI 槽池租约透传 lease、profile 档案索引、超时/单次 POST 语义）；
@@ -117,33 +120,33 @@ function cleanText(raw) {
   return s || null;
 }
 
-// ===== 编排函数（路由层调这四个；ctx={root,lease,profile} 全可选）=====
+// ===== 编排函数（面合并后由 agent.mjs 四件套工具调用；ctx={root,lease,profile,timeoutMs} 全可选）=====
 // 返回形状与既有 /ai/* 端点同口径：成功 {issues|rewritten}，模型输出异常时 {reply:raw} 兜底（不抛 502）。
 // chat() 抛错（网络/5xx/超时/槽忙）原样上抛，由路由统一 502。
 
-export async function smartCheck(text, { root = defaultRoot(), lease, profile } = {}) {
+export async function smartCheck(text, { root = defaultRoot(), lease, profile, timeoutMs } = {}) {
   const p = buildSmartCheck(text);
-  const raw = await chat(root, p.sys, p.user, { lease, profile });
+  const raw = await chat(root, p.sys, p.user, { lease, profile, timeoutMs });
   return parseIssues(raw) || { reply: String(raw ?? '') };
 }
 
-export async function improveAll(text, issues, { root = defaultRoot(), lease, profile } = {}) {
+export async function improveAll(text, issues, { root = defaultRoot(), lease, profile, timeoutMs } = {}) {
   const p = buildImproveAll(text, issues);
-  const raw = await chat(root, p.sys, p.user, { lease, profile });
+  const raw = await chat(root, p.sys, p.user, { lease, profile, timeoutMs });
   const rewritten = cleanText(raw);
   return rewritten ? { rewritten } : { reply: String(raw ?? '') || '（模型未返回改写结果）' };
 }
 
-export async function customRewrite(text, userRequirement, { root = defaultRoot(), lease, profile } = {}) {
+export async function customRewrite(text, userRequirement, { root = defaultRoot(), lease, profile, timeoutMs } = {}) {
   const p = buildCustomRewrite(text, userRequirement);
-  const raw = await chat(root, p.sys, p.user, { lease, profile });
+  const raw = await chat(root, p.sys, p.user, { lease, profile, timeoutMs });
   const rewritten = cleanText(raw);
   return rewritten ? { rewritten } : { reply: String(raw ?? '') || '（模型未返回改写结果）' };
 }
 
-export async function improveWriting(text, { root = defaultRoot(), lease, profile } = {}) {
+export async function improveWriting(text, { root = defaultRoot(), lease, profile, timeoutMs } = {}) {
   const p = buildImproveWriting(text);
-  const raw = await chat(root, p.sys, p.user, { lease, profile });
+  const raw = await chat(root, p.sys, p.user, { lease, profile, timeoutMs });
   const rewritten = cleanText(raw);
   return rewritten ? { rewritten } : { reply: String(raw ?? '') || '（模型未返回改写结果）' };
 }
@@ -156,12 +159,12 @@ export async function improveWriting(text, { root = defaultRoot(), lease, profil
 // 消费者中断（for-await break / it.return()）→ generator finally 照放槽——断连 ≠ 泄漏（RES-03 同款）。
 // meta（可选）：usage 采集透传，口径同 chat()。
 
-export function customRewriteStream(text, userRequirement, { root = defaultRoot(), lease, meta, profile } = {}) {
+export function customRewriteStream(text, userRequirement, { root = defaultRoot(), lease, meta, profile, timeoutMs } = {}) {
   const p = buildCustomRewrite(text, userRequirement);
-  return streamChat(root, p.sys, p.user, { lease, meta, profile });
+  return streamChat(root, p.sys, p.user, { lease, meta, profile, timeoutMs });
 }
 
-export function improveWritingStream(text, { root = defaultRoot(), lease, meta, profile } = {}) {
+export function improveWritingStream(text, { root = defaultRoot(), lease, meta, profile, timeoutMs } = {}) {
   const p = buildImproveWriting(text);
-  return streamChat(root, p.sys, p.user, { lease, meta, profile });
+  return streamChat(root, p.sys, p.user, { lease, meta, profile, timeoutMs });
 }

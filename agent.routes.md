@@ -192,7 +192,7 @@ const agentPageInner = () => `
   - 引用展示卡 `type:'job-detail'|'resume-card'`（流式在 parts 里作 `tool-job-detail`/`tool-resume-card`）：
     - job-detail payload：`{ref:'job', id, source:'inbox'|'app'|'eval', title, company, role, salary, url, status, score?, verdict?, dueDate?, nextStep?}`
     - resume-card payload：`{ref:'doc', id, title, kind:'master'|'job', company, role, tag, archived}`
-  - 真实工具执行结果 `type:'get_job_detail'|'query_job_progress'|'list_resumes'|'get_resume_summary'`，payload = 工具 output（§5.7 工具表）
+  - 真实工具执行结果 `type:'get_job_detail'|'query_job_progress'|'list_resumes'|'get_resume_summary'|'resume_check'|'resume_improve'|'resume_polish'|'resume_tailor'`，payload = 工具 output（§5.7 工具表；四件套含 `rewritten` 全文卡 / `issues` 红黄行渲染，见「四件套三口径」）
 - 上下文注入：消息内 `[context:doc:<id>]` / `[context:job:<id>]`（可带 `:<title>` 尾段），最多解析 4 个；解析结果拼进 system【事实】区，user 文本剥前缀。
 - 错误：全部中文原因。`409` 纯文本=未配置大模型；`404/400` JSON `{ok:false,error}`；`502` `{ok:false,error:'模型调用失败：…'}`；`500 CORRUPT`=agent-sessions.json 损坏停写。
 
@@ -325,6 +325,18 @@ data: [DONE]
 | `query_job_progress` | `status?`（六态枚举或中文标签） | applications.json | `{total, byStatus{六态+closed 计数}, byStatusLabel, dueSoonDays:7, dueSoon:[{…brief, overdue}]（dueDate≤今天+7d 含逾期、升序、≤20 条）, status?, statusLabel?, items?[≤30 条 brief]}` |
 | `list_resumes` | `archived?`：`true`/`false`/`"all"`，缺省只列在用 | docs/ 目录（VALID_ID 同口径）× docs-meta.json | `{total, archived, items:[{id,title,theme,kind,company,role,tag,archived,updatedAt}]（mtime 降序 ≤50）}` |
 | `get_resume_summary` | `docId`（必填） | docs/<id>.html | `{id,title,kind,theme,company,role,tag,archived,sectionCount,sections:[{title,hidden}]（extract.mjs sectionsOf 口径）,headings?（无 section 时退 h2/h3）,lineCount,preview[≤8 行]}` |
+| `resume_check` | `docId`（必填） | docs/<id>.html + ai-helper.mjs smartCheck | `{ok,docId,title,count,issues:[{type:'error'\|'warning',field,description,suggestion,fixed:false}]≤20}` |
+| `resume_improve` | `docId`（必填） | smartCheck → improveAll（一呼完成检查+修复） | `{ok,docId,title,chars,issuesFixed,preview[≤300字],rewritten}` |
+| `resume_polish` | `docId`（必填） | ai-helper.mjs improveWriting | `{ok,docId,title,chars,preview[≤300字],rewritten}` |
+| `resume_tailor` | `docId`、`requirement`（均必填；≤200 字由 buildCustomRewrite 内截断） | ai-helper.mjs customRewrite | `{ok,docId,title,chars,requirement[≤80字回显],preview[≤300字],rewritten}` |
+
+**四件套三口径**（2026-11-19 面合并，设计 dev-docs/2026-11-19-ai-surface-merge-design.md §2）：
+
+1. **timeoutMs**：四件套为真模型调用，工具竞速 per-tool `600000`（10 分钟，兜真卡死），底层 LLM 调用 per-call `540000`（`RESUME_LLM_TIMEOUT_MS`；2026-11-19 真模型抽验修正：active 档未配 timeoutMs 时 llm.mjs 120s 默认先掐分钟级请求，故调用面自报预算，优先级 per-call > profile > 120s）；其余只读工具默认 30s 不变（`runToolTimed` 读 `def.timeoutMs ?? TOOL_TIMEOUT_MS`）。
+2. **回灌摘要**：改写全文不回灌模型——`def.fact` 投影剔掉 `rewritten`，system【工具结果】只收 `{ok,docId,title,chars,issuesFixed?,requirement?,preview}`；`resume_check` 的 issues 是模型要转述的内容，`factClip=4000` 全量回灌。
+3. **交付卡**：`rewritten` 全文只进 tool part output（面板 pre 全文卡 + 「复制全文」按钮；`issues` 渲染红/黄逐条行），会话落盘同形状；不自动写回文档，用户复制到编辑器应用（工具环「只读」= 零落盘）。
+
+ctx 透传：`runTool/runToolTimed(args, ctx)` 的 `ctx={root,lease,profile,timeoutMs}` 由 `chatStream` 轮内透传（`root=R()`、`lease`/`profile` 沿用 agent 自身 ctx；`timeoutMs=RESUME_LLM_TIMEOUT_MS=540000` 为四件套底层调用预算）；工具执行发生在两轮模型调用之间，agent 租约已 unclaim，工具内部复用同 lease 顺序 claim 不死锁（resource-slots 合同③）。
 
 **错误对象**（概念 400/404 不进 HTTP 层——调用发生在流内，原样回灌模型如实转告）：
 
@@ -332,10 +344,10 @@ data: [DONE]
 |---|---|
 | `BAD_ARGS` | args 非对象 / 未知字段 / 缺必填 / 枚举值非法 / 未知工具名 |
 | `NOT_FOUND` | 指定来源/文档里无该 id |
-| `TIMEOUT` | 单调用执行 >30s |
+| `TIMEOUT` | 单调用执行超过 def 超时（默认 30s；`resume_*` 四件套 600s 竞速兜底） |
 | `ERROR` | 执行抛异常（message 截断 120 字） |
 
-**超时口径**：单工具调用 30s（`Promise.race` 兜底；现工具全是同步读盘，远快于上限——race 主要为契约与未来异步工具预留）。模型请求超时走 profile `timeoutMs`（llm.mjs 原口径，默认 120s），不在本层另设。
+**超时口径**：单工具调用 `Promise.race` 兜底，读 `def.timeoutMs ?? TOOL_TIMEOUT_MS`（默认 30s；四件套真模型 600s 竞速，见「四件套三口径」）。模型请求级超时走 llm.mjs per-call 覆盖优先级 per-call `timeoutMs` > profile `timeoutMs` > 默认 120s（四件套 per-call 540s，永远先于竞速结束，超时语义不混层）。
 
 **租约/断连**：同一 `lease` 逐轮 `claim → unclaim`（resource-slots 合同只拒并发占用，顺序复用合法）；路由断连 `it.return()` 经 for-await 透传 `streamChatMsgs` → finally unclaim 放槽，口径与单轮流式一致。
 

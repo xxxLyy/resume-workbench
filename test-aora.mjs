@@ -44,7 +44,7 @@ const mapBlock = src.slice(src.indexOf('var MAP = {'), src.indexOf('};', src.ind
 const vals = [...mapBlock.matchAll(/:\s*'([a-z-]+)'/g)].map((m) => m[1]);
 assert.ok(vals.length >= 15, '映射表应覆盖三页动词');
 for (const v of vals) assert.ok(CHARACTER_STATES.includes(v), '非法状态名: ' + v);
-for (const p of ['agent', 'interview', 'ai-helper']) assert.ok(mapBlock.includes("'" + p + "'"), '缺页: ' + p);
+for (const p of ['agent', 'interview']) assert.ok(mapBlock.includes("'" + p + "'"), '缺页: ' + p);
 console.log('✅ C 映射表合法');
 // D. 页面接线断言
 const setp = await get('/settings');
@@ -55,9 +55,6 @@ assert.ok(agp.body.includes('type="module" src="/aora-bot.js"'), 'agent 页 /aor
 const ivp = await get('/interview');
 assert.ok(ivp.body.includes('/aora-bot.js') && ivp.body.includes('/aora-face.js'), 'interview 页脚本注入');
 assert.ok(ivp.body.includes('type="module" src="/aora-bot.js"'), 'interview 页 /aora-bot.js 应以 module 加载');
-const ahp = await get('/ai-helper');
-assert.ok(ahp.body.includes('/aora-bot.js') && ahp.body.includes('/aora-face.js'), 'ai-helper 页脚本注入');
-assert.ok(ahp.body.includes('type="module" src="/aora-bot.js"'), 'ai-helper 页 /aora-bot.js 应以 module 加载');
 console.log('✅ D 页面接线');
 // E. 面板接线源级断言
 const ag = fs.readFileSync(path.join(APP_ROOT, 'agent-panel.js'), 'utf8');
@@ -69,15 +66,10 @@ const iv = fs.readFileSync(path.join(APP_ROOT, 'interview-panel.js'), 'utf8');
 for (const needle of ["page: 'interview'", "fset('send')", "fset('stream')", "fset('done')", "fset('error')", "wait-user"])
   assert.ok(iv.includes(needle), 'interview-panel 缺: ' + needle);
 console.log('✅ F interview-panel 接线');
-// G. ai-helper 面板接线源级断言
-const ah = fs.readFileSync(path.join(APP_ROOT, 'ai-helper-panel.js'), 'utf8');
-for (const needle of ["page: 'ai-helper'", "fset('send')", "fset('stream')", "fset('done')", "fset('error')"])
-  assert.ok(ah.includes(needle), 'ai-helper-panel 缺: ' + needle);
-console.log('✅ G ai-helper-panel 接线');
-// H. 眼神追踪接线
+// H. 眼神追踪接线（2026-11-19 面合并：ai-helper 页退役，aora 面缩为 agent/interview 两页）
 const af = fs.readFileSync(path.join(APP_ROOT, 'aora-face.js'), 'utf8');
 assert.ok(af.includes('followTarget'), 'aora-face 应含 followTarget 驱动');
-assert.ok(ag.includes('follow: true') && iv.includes('follow: true') && ah.includes('follow: true'), '三页 mount 应带 follow: true');
+assert.ok(ag.includes('follow: true') && iv.includes('follow: true'), '两页 mount 应带 follow: true');
 console.log('✅ H 眼神追踪');
 console.log('✅ test-aora 全部通过');
 server.kill(); process.exit(0);

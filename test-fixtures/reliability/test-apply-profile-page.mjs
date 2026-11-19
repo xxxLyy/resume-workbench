@@ -138,8 +138,8 @@ try {
     assert.equal((html.match(/<h1[\s>]/g) || []).length, 1, '/apply-profile 应只有一个 h1（页题档两档制）');
     // 渐进呈现 T2：topnav 收敛为 brand + 3 项（7 → 4）；「网申包」入口迁入投递系页签条 .apptabs（入口移位，非功能删除）
     const nav = (html.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
-    assert.equal((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length, 10,
-      'topnav 链接数应为 10（brand + 9 项，2026-11-17 v3 模块导航 + UPCV A1 求职画像 + A2 职位）');
+    assert.equal((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length, 9,
+      'topnav 链接数应为 9（brand + 8 项，2026-11-19 面合并 AI助手退役后：简历/投递/职位/求职画像/求职助手/模拟面试/模板库/设置）');
     assert.ok(!nav.includes('href="/apply-profile"'), 'topnav 不应再含「网申包」入口（已迁至投递系页签条）');
     assert.ok(/<a href="\/applications" class="on">/.test(nav), 'topnav「投递」项应高亮（active=apps，网申包归属投递系）');
     const tabs = (html.match(/<nav class="apptabs"[\s\S]*?<\/nav>/) || [''])[0];
@@ -149,7 +149,7 @@ try {
     // 其它页面的导航同样 4 项（导航全站一致）
     const home = await get('/');
     const homeNav = (home.text.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
-    assert.equal((homeNav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length, 10, '首页 topnav 链接数应同为 10');
+    assert.equal((homeNav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length, 9, '首页 topnav 链接数应同为 9（brand + 8 项，2026-11-19 面合并后全站一致）');
   }
 
   // ===== ② 通用信息表：字段目录齐全 + 三态 UI 骨架 =====

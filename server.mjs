@@ -18,8 +18,7 @@ import { normalizeZids, zoneSync, guessZone, ZONE_KEYS, ZONE_LABELS, zoneParas, 
 import { applyZoneOps } from './zone-ops.mjs';   // 区域安全子集（ZONE-04）：磁盘正文 + 提交原文 + 归属 + 锁 + 事实护栏 五项齐备才应用
 import { rotateLogIfNeeded } from './logrotate.mjs';
 import { renderTemplatesPage } from './templates-page.mjs';
-import { smartCheck, improveAll, customRewrite, improveWriting, customRewriteStream, improveWritingStream } from './ai-helper.mjs';
-import { dispatchUpcv, matchUpcv } from './upcv-api.mjs';   // UPCV 契约端点（规范 upcv-api.routes.md）   // AI 简历助手四件套（规范 ai-helper.routes.md）
+import { dispatchUpcv, matchUpcv } from './upcv-api.mjs';   // UPCV 契约端点（规范 upcv-api.routes.md）
 import { init as agentInit, listSessions as agentListSessions, createSession as agentCreateSession, getSession as agentGetSession, renameSession as agentRenameSession, deleteSession as agentDeleteSession, chat as agentChat, chatStream as agentChatStream, previewContext as agentPreviewContext, AGENT_NO_LLM } from './agent.mjs';   // Agent 求职助手（规范 agent.routes.md）
 import { getTalentProfile, generateTalent, getPreference, validatePreference, savePreference, findMaster } from './talent.mjs';   // 求职画像 + 偏好（UPCV A1，规范 dev-docs/2026-11-19-upcv-port-talent-design.md）
 import { fetchUpcvJobs, fetchUpcvDictionaries, fetchUpcvJob, searchParamsOf } from './upcv-jobs.mjs';   // UPCV 社招上游代理（UPCV A2，规范 dev-docs/2026-11-19-upcv-port-jobs-match-design.md §1）
@@ -774,7 +773,7 @@ function gatePool(method, pathname) {
   // （/jobs/search、/jobs/dictionaries 纯上游代理不调 LLM，零改动；/jobs/apply-draft 走 createJobDraft 也不调 LLM）
   // UPCV A4：/extension/greeting、/extension/chat-reply 直连 chat → 同款精确匹配（勿用 /extension/ 前缀——
   // 免得 apply-record/shortlist 这类不调模型的端点误占 AI 槽）
-  if (method === 'POST' && (/^\/ai\//.test(pathname) || /^\/ai-helper\//.test(pathname) || /^\/talent\//.test(pathname) || pathname === '/agent/chat' || pathname === '/eval/create' || pathname === '/restructure' || pathname === '/onboarding/star-suggest' || pathname === '/match/job' || pathname === '/match/recommend' || pathname === '/extension/match-score' || pathname === '/extension/greeting' || pathname === '/extension/chat-reply')
+  if (method === 'POST' && (/^\/ai\//.test(pathname) || /^\/talent\//.test(pathname) || pathname === '/agent/chat' || pathname === '/eval/create' || pathname === '/restructure' || pathname === '/onboarding/star-suggest' || pathname === '/match/job' || pathname === '/match/recommend' || pathname === '/extension/match-score' || pathname === '/extension/greeting' || pathname === '/extension/chat-reply')
     && !AI_EXEMPT.has(pathname)) {
     return { pool: aiPool, label: 'AI' };
   }
@@ -2195,7 +2194,7 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .foot-links a,.foot-links summary{color:var(--mut);font-size:13px}
 </style></head><body${wide ? ' class="wide"' : ''}>
 <script nonce="__CSP_NONCE__">${STATUS_SCRIPT}${ACT_DISPATCH_JS}</script>
-<nav class="topnav"><div><button type="button" class="navtoggle" data-navtoggle title="收起侧栏">${icon('panel-left', 15)}</button><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><div class="links">${nav('docs', '/', '简历', 'file-text')}${nav('apps', '/applications', '投递', 'columns-3')}${nav('jobs', '/jobs', '职位', 'box')}${nav('talent', '/talent', '求职画像', 'compass')}${nav('ai-helper', '/ai-helper', 'AI 助手', 'bot')}${nav('agent', '/agent', '求职助手', 'message-square')}${nav('interview', '/interview', '模拟面试', 'stethoscope')}${nav('templates', '/templates', '模板库', 'palette')}${nav('settings', '/settings', '设置', 'settings')}</div></div><div class="navfoot">本地优先 · 数据在 ~/resume</div></nav><button type="button" class="navtoggle navtoggle-reopen" data-navtoggle title="展开侧栏">${icon('panel-left', 15)}</button>
+<nav class="topnav"><div><button type="button" class="navtoggle" data-navtoggle title="收起侧栏">${icon('panel-left', 15)}</button><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><div class="links">${nav('docs', '/', '简历', 'file-text')}${nav('apps', '/applications', '投递', 'columns-3')}${nav('jobs', '/jobs', '职位', 'box')}${nav('talent', '/talent', '求职画像', 'compass')}${nav('agent', '/agent', '求职助手', 'message-square')}${nav('interview', '/interview', '模拟面试', 'stethoscope')}${nav('templates', '/templates', '模板库', 'palette')}${nav('settings', '/settings', '设置', 'settings')}</div></div><div class="navfoot">本地优先 · 数据在 ~/resume</div></nav><button type="button" class="navtoggle navtoggle-reopen" data-navtoggle title="展开侧栏">${icon('panel-left', 15)}</button>
 <div class="home"><div class="mainarea">${inner}</div></div>
 <footer>简历工作台 · 本地优先 · 数据在 ${path.basename(root) === 'resume' ? '~/resume' : 'RESUME_ROOT'}</footer>
 ${WRITE_HELPER_JS}</body></html>`;
@@ -4843,9 +4842,6 @@ async function handler(req, res) {
     }
     if (req.method === 'GET' && url.pathname === '/model-picker.js') {
       return send(200, fs.readFileSync(path.join(APP_ROOT, 'model-picker.js'), 'utf8'), 'application/javascript; charset=utf-8');
-    }
-    if (req.method === 'GET' && url.pathname === '/ai-helper-panel.js') {
-      return send(200, fs.readFileSync(path.join(APP_ROOT, 'ai-helper-panel.js'), 'utf8'), 'application/javascript; charset=utf-8');
     }
     if (req.method === 'GET' && url.pathname === '/agent-panel.js') {
       return send(200, fs.readFileSync(path.join(APP_ROOT, 'agent-panel.js'), 'utf8'), 'application/javascript; charset=utf-8');
@@ -9400,141 +9396,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       __acts.click.rerender = function (el) { return rerender(); };
     </script>`, 'docs'));
     }
-    // ===== AI 简历助手（UPCV 四件套本地版；编排 ai-helper.mjs，规范 ai-helper.routes.md）=====
-    if (req.method === 'GET' && url.pathname === '/ai-helper') {
-      const inner = `<div class="page-head"><h1>AI 简历助手</h1></div>
-<div id="ah-app"><p style="color:var(--mut)">界面加载中…</p></div>
-<script nonce="__CSP_NONCE__">${ICON_SCRIPT}</script>
-<script type="module" src="/aora-bot.js"></script>
-<script src="/aora-face.js" defer></script>
-<script src="/ai-helper-panel.js" defer></script>`;
-      return send(200, page('AI 简历助手', inner, 'ai-helper'));
-    }
-    // 简历下拉清单：标题取 <h1> 正则；JSON 输出不 escHtml（前端 textContent 渲染）
-    if (req.method === 'GET' && url.pathname === '/ai-helper/docs') {
-      const meta = loadMeta();
-      const docs = docIdsOnDisk()
-        .filter((did) => !((meta[did] || {}).archivedAt))
-        .map((did) => {
-          let title = did;
-          try { title = (fs.readFileSync(docPath(did), 'utf8').match(/<h1[^>]*>([^<]+)<\/h1>/) || [])[1] || did; } catch {}
-          return { id: did, title };
-        });
-      return sendJson(200, { ok: true, docs });
-    }
-    if (req.method === 'POST' && url.pathname === '/ai-helper/check') {
-      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');
-      const body = JSON.parse(await readBody(req));
-      const text = String(body.text || '');
-      if (!text.trim()) return sendJson(400, { ok: false, error: 'text 必填' });
-      const prof = pickProfile(body.profile);
-      if (prof === null) return sendJson(400, { ok: false, error: '模型配置不存在或不完整' });
-      let out;
-      try { out = await smartCheck(text, { root, lease: leaseOf(req), profile: prof }); }
-      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
-      return sendJson(200, { ok: true, ...out });
-    }
-    if (req.method === 'POST' && url.pathname === '/ai-helper/improve-all') {
-      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');
-      const body = JSON.parse(await readBody(req));
-      const text = String(body.text || '');
-      if (!text.trim()) return sendJson(400, { ok: false, error: 'text 必填' });
-      if (body.issues !== undefined && !Array.isArray(body.issues)) return sendJson(400, { ok: false, error: 'issues 必须是数组' });
-      const prof = pickProfile(body.profile);
-      if (prof === null) return sendJson(400, { ok: false, error: '模型配置不存在或不完整' });
-      let out;
-      try { out = await improveAll(text, body.issues || [], { root, lease: leaseOf(req), profile: prof }); }
-      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
-      return sendJson(200, { ok: true, ...out });
-    }
-    if (req.method === 'POST' && url.pathname === '/ai-helper/rewrite') {
-      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');
-      const body = JSON.parse(await readBody(req));
-      const text = String(body.text || '');
-      const userRequirement = String(body.userRequirement || '').trim();
-      if (!text.trim()) return sendJson(400, { ok: false, error: 'text 必填' });
-      if (!userRequirement) return sendJson(400, { ok: false, error: 'userRequirement 必填' });
-      const prof = pickProfile(body.profile);
-      if (prof === null) return sendJson(400, { ok: false, error: '模型配置不存在或不完整' });
-      let out;
-      try { out = await customRewrite(text, userRequirement, { root, lease: leaseOf(req), profile: prof }); }
-      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
-      return sendJson(200, { ok: true, ...out });
-    }
-    if (req.method === 'POST' && url.pathname === '/ai-helper/polish') {
-      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');
-      const body = JSON.parse(await readBody(req));
-      const text = String(body.text || '');
-      if (!text.trim()) return sendJson(400, { ok: false, error: 'text 必填' });
-      const prof = pickProfile(body.profile);
-      if (prof === null) return sendJson(400, { ok: false, error: '模型配置不存在或不完整' });
-      let out;
-      try { out = await improveWriting(text, { root, lease: leaseOf(req), profile: prof }); }
-      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
-      return sendJson(200, { ok: true, ...out });
-    }
-    // ===== AI 简历助手·流式端点（UPCV */stream 复刻；帧协议与断连口径 ai-helper.routes.md §5）=====
-    // pipeSSE：首段到达才 writeHead——起步错误抛回走普通 JSON 错误；首个 delta 才升级 text/event-stream。
-    // 断连：res 'close' 与 it.next() 竞速——客户端离开立即停消费（req 'close' 勿用，§5.3）。
-    const pipeSSE = async (gen) => {
-      const it = gen[Symbol.asyncIterator]();
-      const closedP = new Promise((resolve) => res.once('close', resolve));
-      res.on('error', () => {});
-      let started = false;
-      const frame = (obj) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n`); return true; } catch { return false; } };
-      try {
-        for (;;) {
-          const step = await Promise.race([it.next(), closedP]);
-          if (step === undefined) return;
-          if (step.done) break;
-          if (!started) {
-            started = true;
-            res.writeHead(200, {
-              'Content-Type': 'text/event-stream; charset=utf-8',
-              'Cache-Control': 'no-cache',
-              Connection: 'keep-alive',
-              'X-Accel-Buffering': 'no'
-            });
-            res.flushHeaders();
-          }
-          if (!frame({ delta: step.value })) return;
-        }
-        if (!started) {
-          res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
-          res.flushHeaders();
-        }
-        try { res.write('data: [DONE]\n\n'); } catch {}
-        res.end();
-      } catch (e) {
-        if (!started) throw e;
-        try { frame({ error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); } catch {}
-        try { res.end(); } catch {}
-      } finally {
-        try { await it.return(); } catch {}
-      }
-    };
-    if (req.method === 'POST' && url.pathname === '/ai-helper/rewrite/stream') {
-      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');
-      const body = JSON.parse(await readBody(req));
-      const text = String(body.text || '');
-      const userRequirement = String(body.userRequirement || '').trim();
-      if (!text.trim()) return sendJson(400, { ok: false, error: 'text 必填' });
-      if (!userRequirement) return sendJson(400, { ok: false, error: 'userRequirement 必填' });
-      const prof = pickProfile(body.profile);
-      if (prof === null) return sendJson(400, { ok: false, error: '模型配置不存在或不完整' });
-      try { return await pipeSSE(customRewriteStream(text, userRequirement, { root, lease: leaseOf(req), profile: prof })); }
-      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
-    }
-    if (req.method === 'POST' && url.pathname === '/ai-helper/polish/stream') {
-      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');
-      const body = JSON.parse(await readBody(req));
-      const text = String(body.text || '');
-      if (!text.trim()) return sendJson(400, { ok: false, error: 'text 必填' });
-      const prof = pickProfile(body.profile);
-      if (prof === null) return sendJson(400, { ok: false, error: '模型配置不存在或不完整' });
-      try { return await pipeSSE(improveWritingStream(text, { root, lease: leaseOf(req), profile: prof })); }
-      catch (e) { return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) }); }
-    }
+    // ===== AI 简历助手页已退役（2026-11-19 面合并）：四件套并入 /agent 工具环（agent.mjs resume_*），
+    //   本块页面/docs/check/improve-all/rewrite/polish + 2 stream + pipeSSE 整体移除；契约正文见 ai-helper.routes.md（历史参考）。=====
     // ===== Agent 求职助手（编排 agent.mjs，规范 agent.routes.md）=====
     if (req.method === 'GET' && url.pathname === '/agent') {
       return send(200, page('求职助手', agentPageInner(), 'agent'));
@@ -9617,7 +9480,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       return sendJson(200, { ok: true, ...agentPreviewContext(String(url.searchParams.get('text') || '')) });
     }
     // ===== 求职画像 + 求职偏好（UPCV A1；规范 dev-docs/2026-11-19-upcv-port-talent-design.md）=====
-    // /talent/ POST 进 AI 闸门（gatePool）；/preference 不调 LLM 零闸门。错误口径同 ai-helper：409 纯文本 / 400·500 JSON / 502 模型失败。
+    // /talent/ POST 进 AI 闸门（gatePool）；/preference 不调 LLM 零闸门。错误口径同 /ai/*：409 纯文本 / 400·500 JSON / 502 模型失败。
     if (req.method === 'GET' && url.pathname === '/talent') {
       const inner = `<div class="page-head"><h1>求职画像</h1><span class="page-meta">AI 参考评分 · 数据在本地</span></div>
 <div id="talent-app"><p style="color:var(--mut)">界面加载中…</p></div>

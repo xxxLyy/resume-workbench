@@ -1,5 +1,11 @@
 # ai-helper 路由规范 —— 「AI 简历助手」页（UPCV AI 四件套本地版）
 
+> **【退役注记 2026-11-19】** 本页与全部 HTTP 端点已退役（面合并方案 2，设计 dev-docs/2026-11-19-ai-surface-merge-design.md）：
+> 四件套能力（智能检查 / 一键优化 / 润色 / 定制改写）并入 `/agent` 工具环，工具名 `resume_check` / `resume_improve` / `resume_polish` / `resume_tailor`（规范见 agent.routes.md §5.7）；
+> server.mjs 中 `/ai-helper` 页面、`/ai-helper-panel.js` 静态端点、4 个 JSON POST、2 个 SSE stream 与 pipeSSE 已删除；
+> `ai-helper-panel.js` 文件已删除；`ai-helper.mjs` 保留为 agent.mjs 的编排库（prompt / REQ_MAX / NO_FABRICATE 零改动）。
+> 下文契约正文保留作历史参考，不再反映现行路由。
+
 > 对应契约：`upcv-features-implementation.md` §2（AI 简历四件套）。
 > 本文件给出 server.mjs 需要的全部接线：import、静态件路由、页面组装、6 个 POST 端点（4 JSON + 2 SSE）、闸门与导航登记。
 > 新文件：`ai-helper.mjs`（编排）、`ai-helper-panel.js`（页面前端）。现有文件零改动之外只加不删。
