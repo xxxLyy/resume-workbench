@@ -537,6 +537,43 @@
   var fit = function () { input.style.height = 'auto'; input.style.height = input.scrollHeight + 'px'; };
   input.addEventListener('input', fit);
 
+  // ===== A3 草稿恢复横幅（UPCV #2）：挂载时查 latest，未完成现场 → 输入框上方提示（零 innerHTML，样式 var(--*)）=====
+  function draftBanner(snap) {
+    var sd = (snap.snapshotData && typeof snap.snapshotData === 'object') ? snap.snapshotData : {};
+    var rounds = (typeof sd.rounds === 'number' && sd.rounds > 0) ? sd.rounds : 1;
+    var bar = document.createElement('div');
+    bar.className = 'ag-draft';
+    bar.style.cssText = 'display:flex;align-items:center;gap:var(--space-2);margin:var(--space-2) var(--space-3);padding:var(--space-2) var(--space-3);border:1px solid var(--accent);border-radius:var(--radius);background:var(--accent-soft);font-size:12px;color:var(--ink)';
+    var txt = document.createElement('span');
+    txt.style.flex = '1';
+    txt.textContent = '检测到未完成的建简历现场（' + rounds + ' 轮）';
+    var go = document.createElement('button');
+    go.type = 'button';
+    go.textContent = '继续';
+    go.onclick = function () {
+      openSession(snap.sessionId);   // 带会话：切到草稿所在会话（已删则 openSession 内部如实提示）
+      var mods = (sd.collected && typeof sd.collected === 'object') ? Object.keys(sd.collected) : [];
+      input.value = '继续建简历：已收集 ' + (mods.length ? mods.join('、') : '（暂无模块）')
+        + (sd.lastQuestion ? '；上次问题：' + sd.lastQuestion : '') + '。请接着引导我补全剩余模块。';
+      input.focus();
+      fit();
+      bar.remove();
+    };
+    var skip = document.createElement('button');
+    skip.type = 'button'; skip.className = 'secondary'; skip.textContent = '忽略';
+    skip.onclick = function () { bar.remove(); };
+    bar.appendChild(txt); bar.appendChild(go); bar.appendChild(skip);
+    var main = document.querySelector('#agent-app .ag-main');
+    if (main) main.insertBefore(bar, main.querySelector('.ag-input'));   // 输入框上方
+  }
+  fetch('/api/resume-creation/snapshots/latest?schemaVersion=2')
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      var snap = d && d.data && d.data.snapshot;
+      if (snap && snap.sessionId) draftBanner(snap);   // completed 的行 latest 不回 → 无横幅
+    })
+    .catch(function () { /* 读失败不挡输入 */ });
+
   // ===== 启动 =====
   $('ag-new').onclick = function () {
     if (sending) return;

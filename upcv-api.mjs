@@ -22,6 +22,7 @@ import { listThemes, themeRegistration } from './template.mjs';
 import { THEMES } from './templates-page.mjs';
 import { docToText } from './extract.mjs';
 import { SECTION_TITLES } from './apply-profile.mjs';
+import { latestDraft, upsertDraft, completeDraft, deleteDraft } from './draft.mjs';   // UPCV A3：建简历快照四端点（规范 upcv-api.routes.md §4-6）
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 // 与 server.mjs/ai-helper.mjs 同口径：RESUME_ROOT 优先，缺省=脚本目录；ctx.root 可显式覆盖（测试隔离）。
@@ -379,6 +380,14 @@ export function matchUpcv(method, pathname) {
   }
   if (method === 'GET' && pathname === '/api/application-records') return { op: 'records.list' };
   if (method === 'GET' && pathname === '/api/showcases') return { op: 'showcases.list' };
+  // ===== UPCV A3：建简历快照四端点（/api/resume-creation/snapshots…；编排 draft.mjs）=====
+  // 固定路径先于 :id 通配：latest 不许被 ([^/]+) 吞成 id='latest'
+  if (method === 'GET' && pathname === '/api/resume-creation/snapshots/latest') return { op: 'draft.latest' };
+  if (method === 'POST' && pathname === '/api/resume-creation/snapshots') return { op: 'draft.create' };
+  const dcm = /^\/api\/resume-creation\/snapshots\/([^/]+)\/complete$/.exec(pathname);
+  if (dcm && method === 'PATCH') return { op: 'draft.complete', id: decodeURIComponent(dcm[1]) };
+  const dm = /^\/api\/resume-creation\/snapshots\/([^/]+)$/.exec(pathname);
+  if (dm && method === 'DELETE') return { op: 'draft.delete', id: decodeURIComponent(dm[1]) };
   return null;
 }
 
@@ -401,6 +410,22 @@ export function dispatchUpcv(ctx) {
       case 'records.list': r = applicationRecords({ root: ctx.root, query: q }); break;
       case 'resume.parse': r = parseResume({ body: ctx.body }); break;
       case 'showcases.list': r = showcases({ query: q }); break;
+      // UPCV A3 快照四端点：{code,data} 包壳同全层；draft.mjs 抛 httpCode 400/404 → catch 统一包壳
+      case 'draft.latest': r = ok({ snapshot: latestDraft(ctx.root) }); break;
+      case 'draft.create': {
+        const b = ctx.body;
+        if (!b || typeof b !== 'object' || Array.isArray(b)) throw err(400, '请求体必须是对象');
+        r = ok(upsertDraft(ctx.root, b.sessionId, b.snapshotData));
+        break;
+      }
+      case 'draft.complete': {
+        const b = ctx.body;
+        if (!b || typeof b !== 'object' || Array.isArray(b)) throw err(400, '请求体必须是对象');
+        completeDraft(ctx.root, hit.id, b.completedResumeId);
+        r = ok({ ok: true });
+        break;
+      }
+      case 'draft.delete': deleteDraft(ctx.root, hit.id); r = ok({ ok: true }); break;
       default: return null;
     }
     return { status: 200, body: r };

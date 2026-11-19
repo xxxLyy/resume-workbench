@@ -9,6 +9,18 @@ interviews.json
 agent-sessions.json
 docs-meta.json
 apply-profiles.json
+talent.json
+preference.json
+.talent.json.lock
+.preference.json.lock
+.talent.json.*.tmp
+.preference.json.*.tmp
+resume-draft.json
+.resume-draft.json.lock
+.resume-draft.json.*.tmp
+match-cache.json
+.match-cache.json.lock
+.match-cache.json.*.tmp
 docs/
 snapshots/
 pdfs/
@@ -33,3 +45,5 @@ audio/
 
 # Stitch 设计稿产物（生成 HTML/PNG，含模拟敏感串；DESIGN*.md 与 metadata.json 仍跟踪）
 .stitch/designs/
+# UPCV A4 投递扩展构建产物（tools/extension 源码跟踪，dist 由 esbuild 生成可重建）
+tools/extension/dist/

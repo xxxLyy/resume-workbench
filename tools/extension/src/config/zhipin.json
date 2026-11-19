@@ -1,0 +1,35 @@
+{
+  "site": "zhipin",
+  "listPage": {
+    "urlPattern": "zhipin\\.com/(web/geek/(job|joblist|recommend)|job_detail|wapi/zpgeek/search)",
+    "itemSelector": ".job-card-wrapper, .job-card-box, li.job-card-wrapper",
+    "fields": {
+      "title": ".job-name, .job-title-text",
+      "company": ".company-name, .boss-company-name",
+      "salary": ".salary, .job-salary",
+      "city": ".job-area, .city-district",
+      "link": "a.job-card-left, a[href*='/job_detail/'], a",
+      "extra": ".tag-list, .company-tag-list"
+    },
+    "paginate": "scroll"
+  },
+  "chatPage": {
+    "urlPattern": "zhipin\\.com/web/geek/(chat|new-chat)",
+    "messageSelector": ".message-item .message-text, .chat-message .text, .im-message .message-content, .friendmessage .text",
+    "inputSelector": ".chat-input textarea, .chat-editor [contenteditable='true'], #chat-input, .input-area [contenteditable='true']",
+    "sendSelector": ".btn-send, .send-btn, button.btn-sendmsg, .chat-submit"
+  },
+  "applyPage": {
+    "urlPattern": "zhipin\\.com/.*(apply|form|deliver)",
+    "formSelector": "form, .apply-form, .resume-form"
+  },
+  "greet": {
+    "openChatSelector": ".btn.btn-startchat, .btn-startchat, .job-btn .btn-container a, .op-btn-chat, [class*='startchat']",
+    "detailTitleSelector": ".job-banner .job-title, .job-primary .name, h1"
+  },
+  "riskText": {
+    "captcha": ["验证一下，防止恶意访问", "拖动滑块完成拼图", "安全认证"],
+    "rateLimit": ["操作过于频繁", "您的操作太频繁", "code=37"],
+    "auth": ["登录后继续", "请登录后使用", "登录/注册"]
+  }
+}

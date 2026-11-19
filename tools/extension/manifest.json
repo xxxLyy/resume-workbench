@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "简历工作台求职助手",
+  "version": "0.1.0",
+  "description": "简历工作台的自动化投递扩展：三站岗位采集筛选、招呼语、聊天草稿、网申代填。填入不发送为默认，发送类动作必须确认。",
+  "permissions": ["storage", "scripting", "sidePanel", "activeTab", "tabs"],
+  "host_permissions": [
+    "https://www.zhipin.com/*",
+    "https://www.liepin.com/*",
+    "https://www.zhaopin.com/*",
+    "http://127.0.0.1:*/*",
+    "http://localhost:*/*"
+  ],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "action": { "default_title": "简历工作台求职助手" },
+  "content_scripts": [
+    {
+      "matches": ["https://www.zhipin.com/*"],
+      "js": ["adapters/zhipin.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.liepin.com/*"],
+      "js": ["adapters/liepin.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.zhaopin.com/*"],
+      "js": ["adapters/zhaopin.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["config/*.json"],
+      "matches": [
+        "https://www.zhipin.com/*",
+        "https://www.liepin.com/*",
+        "https://www.zhaopin.com/*"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "site": "liepin",
+  "listPage": {
+    "urlPattern": "liepin\\.com/(zhaopin|job|search|a/)",
+    "itemSelector": ".job-card, .job-card-pc-container, .list-item, [data-nick='job-card']",
+    "fields": {
+      "title": ".job-title-box .job-title, .job-title, .title-box a",
+      "company": ".company-name, .job-company-name, .comp-name",
+      "salary": ".job-salary, .salary",
+      "city": ".job-dq, .job-city, .city",
+      "link": "a[href*='/job/'], a",
+      "extra": ".job-labels-box, .job-tag"
+    },
+    "paginate": "scroll"
+  },
+  "chatPage": {
+    "urlPattern": "liepin\\.com/(im|chat|message)",
+    "messageSelector": ".im-chat-item, .message-item, .chat-item .content",
+    "inputSelector": ".chat-input textarea, .im-input [contenteditable='true'], textarea",
+    "sendSelector": ".send-btn, .im-send, button[type='submit']"
+  },
+  "applyPage": {
+    "urlPattern": "liepin\\.com/.*(apply|deliver|form)",
+    "formSelector": "form"
+  },
+  "greet": {
+    "openChatSelector": ".btn-chat, .im-chat-btn, [class*='chat']",
+    "detailTitleSelector": ".job-title, h1, .name-box"
+  },
+  "riskText": {
+    "captcha": ["安全验证", "滑动验证"],
+    "rateLimit": ["操作频繁", "访问过于频繁"],
+    "auth": ["请先登录", "登录后查看"]
+  }
+}

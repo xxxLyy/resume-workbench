@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>简历工作台求职助手</title>
+<link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <header>
+    <h1>求职助手</h1>
+    <span id="connDot" class="dot" title="未检测"></span>
+  </header>
+
+  <!-- 通知条：info 蓝 / warn 黄 / error 红 -->
+  <div id="notice" class="notice hidden"></div>
+
+  <!-- 登录区 -->
+  <section class="card" id="loginCard">
+    <div class="row">
+      <label>简历工作台</label>
+      <input id="wbUrl" type="text" placeholder="http://127.0.0.1:7766" />
+    </div>
+    <div class="row">
+      <label>Token</label>
+      <input id="wbToken" type="password" placeholder="X-Resume-Token（与 JD 书签同源，书签在「为岗位定制简历」页）" />
+    </div>
+    <div class="row">
+      <button id="btnPing" class="btn">连通检测</button>
+      <span id="pingResult" class="muted"></span>
+    </div>
+    <div class="row">
+      <label>默认简历</label>
+      <select id="resumeSel"><option value="">（未加载）</option></select>
+    </div>
+    <div class="row">
+      <button id="btnSaveLogin" class="btn primary">保存设置</button>
+    </div>
+  </section>
+
+  <!-- 模式 + 阈值 -->
+  <section class="card">
+    <div class="mode">
+      <label class="mode-opt"><input type="radio" name="mode" value="A" /> A 逐岗确认</label>
+      <label class="mode-opt"><input type="radio" name="mode" value="B" /> B 全自动</label>
+      <label class="mode-opt"><input type="radio" name="mode" value="C" /> C 无需确认<span class="muted">（只填入不发送）</span></label>
+    </div>
+    <div class="row">
+      <label>匹配阈值 <b id="thresholdVal">60</b></label>
+      <input id="threshold" type="range" min="0" max="100" value="60" />
+    </div>
+    <div class="row">
+      <label class="chk"><input id="autoDraft" type="checkbox" /> 新会话自动生成回复草稿（填入不发送）</label>
+    </div>
+  </section>
+
+  <!-- 批次控制 -->
+  <section class="card">
+    <div class="row btns">
+      <button id="btnBatchStart" class="btn primary">开始批次</button>
+      <button id="btnBatchPause" class="btn" disabled>暂停</button>
+      <button id="btnBatchResume" class="btn" disabled>恢复</button>
+      <button id="btnBatchStop" class="btn danger" disabled>结束</button>
+    </div>
+    <div id="batchBar" class="batch-bar">空闲</div>
+  </section>
+
+  <!-- 确认卡（模式 A/B 外发动作前） -->
+  <section id="confirmCard" class="card confirm hidden">
+    <div id="confirmText">确认发送？</div>
+    <div class="row btns">
+      <button id="btnConfirmSend" class="btn primary">发送</button>
+      <button id="btnConfirmSkip" class="btn">跳过</button>
+      <button id="btnConfirmStop" class="btn danger">停止批次</button>
+    </div>
+  </section>
+
+  <!-- 本页动作 -->
+  <section class="card">
+    <div class="row btns">
+      <button id="btnCollect" class="btn">采集本页岗位</button>
+      <button id="btnDraft" class="btn">帮我回复</button>
+      <button id="btnApplyFill" class="btn">填写本页表单</button>
+    </div>
+  </section>
+
+  <!-- 草稿区（帮我回复/自动草稿） -->
+  <section id="draftCard" class="card hidden">
+    <h2>回复草稿</h2>
+    <textarea id="draftText" rows="3"></textarea>
+    <div class="row btns">
+      <button id="btnDraftFill" class="btn">填入页面</button>
+      <button id="btnDraftRegen" class="btn">重新生成</button>
+    </div>
+  </section>
+
+  <!-- 候选清单 -->
+  <section class="card">
+    <h2>候选清单 <span id="candCount" class="muted"></span></h2>
+    <div id="candList" class="list"><div class="empty muted">在岗位列表页点「采集本页岗位」</div></div>
+  </section>
+
+  <!-- 待投清单 -->
+  <section class="card">
+    <h2>待投清单 <button id="btnShortlistRefresh" class="btn mini">刷新</button></h2>
+    <div id="shortList" class="list"><div class="empty muted">暂无待投岗位</div></div>
+  </section>
+
+  <footer>
+    <a id="openWb" href="#" target="_blank">打开简历工作台</a>
+    <span class="muted">填入不发送 · 发送需确认</span>
+  </footer>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

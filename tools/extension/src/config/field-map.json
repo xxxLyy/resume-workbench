@@ -1,0 +1,13 @@
+{
+  "姓名|真实姓名|name": "name",
+  "手机|电话|联系方式|phone|mobile|tel": "phone",
+  "邮箱|email|mail": "email",
+  "学校|院校|毕业院校|school|university|college": "school",
+  "专业|major": "major",
+  "学历|education|degree": "degree",
+  "自我评价|个人介绍|自我介绍|个人简介|summary|about": "summary",
+  "期望薪资|薪资期望|期望月薪|salary": "expectSalary",
+  "城市|所在地|现居|工作地|location|city": "city",
+  "工作年限|工作经验|经验|years|experience": "years",
+  "求职意向|期望职位|intention|objective": "intention"
+}

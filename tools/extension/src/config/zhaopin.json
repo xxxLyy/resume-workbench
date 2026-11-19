@@ -1,0 +1,35 @@
+{
+  "site": "zhaopin",
+  "listPage": {
+    "urlPattern": "zhaopin\\.com/(sou|jobdetail|job|search)",
+    "itemSelector": ".joblist-box__item, .positionlist .joblist-box__item, .job-card, [class*='joblist-box__item']",
+    "fields": {
+      "title": ".jobinfo__name, .job-title, .iteminfo__line1__jobname",
+      "company": ".cominfo__name, .company-name, .iteminfo__line1__compname",
+      "salary": ".jobinfo__salary, .salary, .iteminfo__line2__jobdesc",
+      "city": ".jobinfo__other-info-item, .city, .work-city",
+      "link": "a[href*='jobdetail'], a[href*='/job/'], a",
+      "extra": ".jobinfo__tag, .cominfo__tag"
+    },
+    "paginate": "scroll"
+  },
+  "chatPage": {
+    "urlPattern": "zhaopin\\.com/(im|chat|message|rd5)",
+    "messageSelector": ".message-item, .chat-msg, .im-msg-item",
+    "inputSelector": ".chat-input textarea, .im-input, textarea, [contenteditable='true']",
+    "sendSelector": ".send-btn, .im-send"
+  },
+  "applyPage": {
+    "urlPattern": "zhaopin\\.com/.*(apply|deliver|form)",
+    "formSelector": "form"
+  },
+  "greet": {
+    "openChatSelector": ".a-like-btn, [class*='chat'], .chat-btn",
+    "detailTitleSelector": ".summary-plane__title, .job-title, h1"
+  },
+  "riskText": {
+    "captcha": ["安全验证", "滑动验证"],
+    "rateLimit": ["操作频繁", "访问过于频繁"],
+    "auth": ["请先登录", "登录后查看"]
+  }
+}

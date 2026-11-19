@@ -279,6 +279,7 @@ data: [DONE]
 
 1. 先校验会话/消息（`NO_SESSION`/`EMPTY`/`CORRUPT` 仍抛错——路由在写 SSE 头前拉首帧，校验错误回 HTTP 状态码）。
 2. 用户条先落盘（UIMessage），再开流：模型失败/断连也会话里留住提问。
+   A3 快照接缝：用户条落盘后调 `draft.mjs agentDraftTick`——建简历意图（或已有未完成草稿）→ UPSERT 服务端快照（resume-draft.json，一会话一行）；草稿在场且已建出真文档（新增未归档 master）→ 置完成。普通会话零写入（设计 dev-docs/2026-11-19-upcv-port-snapshot-status-design.md §1）。
 3. **工具环**（≤3 轮，§5.7）：每轮 `streamChatMsgs` 拉一轮输出 → `parseAgentTurn` 判定 `toolCalls`/`reply`。
    - `toolCalls`：逐调用发 `tool-part` 实况帧（call → output-available）→ 执行结果回灌下一轮 system【工具结果】区。
    - `reply`：增量 `text-delta` 已在流中下发 → 组 assistant UIMessage 落盘 → `finish`。

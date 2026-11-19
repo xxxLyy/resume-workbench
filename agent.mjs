@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { streamChatMsgs } from './llm.mjs';
 import { docToText, docToLines, sectionsOf } from './extract.mjs';
+import { agentDraftTick } from './draft.mjs';   // UPCV A3：建简历草稿快照接缝（chatStream 用户条落盘后调用）
 
 export const AGENT_NO_LLM = '未配置大模型：打开 /settings 完成模型配置';
 const AGENT_FILE = 'agent-sessions.json';
@@ -241,14 +242,21 @@ function todayStr() {
   const d = new Date(), p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
+// 求职画像/偏好标签（UPCV A1）：值域与 talent.mjs 同源照抄（本文件不 import talent.mjs，量小照抄同 APP_STATUS 三张表纪律）
+const PREF_JOB_TYPE_LABEL = Object.assign(Object.create(null), { SOCIAL: '社招', INTERNSHIP: '实习' });
+const PREF_STATUS_LABEL = Object.assign(Object.create(null), { actively_looking: '在看机会', open_to_offers: '机会合适会考虑', not_looking: '暂不看机会' });
+const PREF_COMPANY_LABEL = Object.assign(Object.create(null), {
+  CENTRAL_SOE: '央企', STATE_OWNED: '国企', PUBLIC_INSTITUTION: '事业单位', LISTED: '上市公司',
+  FOREIGN: '外企', JV: '合资', PRIVATE: '民企', STARTUP: '创业公司'
+});
 function factsBlock(ctxResolved) {
   const resumes = listResumes();
   const inbox = loadInbox().filter((x) => x && x.status !== 'dismissed');
   const fresh = inbox.filter((x) => x.status === 'new');
   const apps = loadApps();
   const now = Date.now();
-  // 临近截止口径同投递页：dueDate 距今 <48h（含已逾期 24h 内）
-  const due = apps.filter((a) => a && a.dueDate && (new Date(a.dueDate).getTime() - now) < 48 * 3600 * 1000);
+  // 临近截止口径同投递页 DUE_SOON_MS（server.mjs:146，7d；UPCV A3 收尾对齐——原 48h 与投递页 7d 两档漂移已并）
+  const due = apps.filter((a) => a && a.dueDate && (new Date(a.dueDate).getTime() - now) < 7 * 24 * 3600 * 1000);
   // 状态计数走六态归一（老数据 '已投递' 与新枚举 'applied' 合并成同一桶，不进人语两个名）
   const byStatus = {};
   for (const a of apps) { if (a) { const k = appStatusLabel(appStatusEnum(a.status)); byStatus[k] = (byStatus[k] || 0) + 1; } }
@@ -265,6 +273,40 @@ function factsBlock(ctxResolved) {
   L.push(`【投递记录】共 ${apps.length} 条${Object.keys(byStatus).length ? '（' + Object.entries(byStatus).map(([k, v]) => `${k}×${v}`).join('、') + '）' : ''}`);
   for (const a of due.slice(0, 8)) {
     L.push(`- 临近截止 id=${a.id}「${a.company || ''}·${a.role || ''}」截止=${a.dueDate} 状态=${appStatusLabel(appStatusEnum(a.status))}${a.nextStep ? ` 下一步=${a.nextStep}` : ''}`);
+  }
+  // 求职画像/偏好（UPCV A1）：药丸自动携带的背景事实，非查询对象；有则注入无则静默。
+  // 读取容忍损坏（readJson 回退 null）：facts 是装饰性注入，不因坏账本炸对话；坏账本由 /talent 主路径 500 停写兜底。
+  const talLed = readJson(path.join(R(), 'talent.json'), null, isObj);
+  const prof = (talLed && isObj(talLed.profile)) ? talLed.profile : null;
+  if (prof) {
+    const dirs = (Array.isArray(prof.directions) ? prof.directions : [])
+      .filter((d) => d && typeof d.name === 'string' && d.name.trim())
+      .map((d) => `${d.name}(${typeof d.confidence === 'number' && Number.isFinite(d.confidence) ? d.confidence : '?'})`)
+      .slice(0, 3);
+    const comp = isObj(prof.competitiveness) ? prof.competitiveness : null;
+    L.push(`【求职画像】${typeof prof.headline === 'string' && prof.headline.trim() ? prof.headline : '（无一句话定位）'}`
+      + `${dirs.length ? '；方向：' + dirs.join('、') : ''}`
+      + `${comp && Number.isInteger(comp.level) ? `；竞争力 ${comp.level}/5${typeof comp.label === 'string' && comp.label.trim() ? ' ' + comp.label : ''}` : ''}`);
+  }
+  const preLed = readJson(path.join(R(), 'preference.json'), null, isObj);
+  const pref = (preLed && isObj(preLed.preference)) ? preLed.preference : null;
+  if (pref) {
+    const p = [];
+    const jts = (Array.isArray(pref.jobTypes) ? pref.jobTypes : []).map((t) => PREF_JOB_TYPE_LABEL[t] || String(t)).filter(Boolean);
+    if (jts.length) p.push(`求职类型：${jts.join('、')}`);
+    if (pref.status) p.push(`状态：${PREF_STATUS_LABEL[pref.status] || String(pref.status)}`);
+    if (isObj(pref.salary) && (pref.salary.min != null || pref.salary.max != null)) {
+      p.push(`期望 ${pref.salary.min != null ? pref.salary.min : '?'}-${pref.salary.max != null ? pref.salary.max : '?'}K`);
+    }
+    // 城市/行业/职能是数字 id（A2 字典未落地）：如实注 id，不编造可读地名；A2 接字典后此处升级
+    for (const [k, name] of [['cityIds', '城市'], ['industryIds', '行业'], ['functionIds', '职能']]) {
+      const ids = Array.isArray(pref[k]) ? pref[k].filter((v) => Number.isFinite(v)) : [];
+      if (ids.length) p.push(`意向${name} id：${ids.slice(0, 6).join('、')}${ids.length > 6 ? '…' : ''}`);
+    }
+    const cts = (Array.isArray(pref.companyTypes) ? pref.companyTypes : []).map((t) => PREF_COMPANY_LABEL[t] || String(t)).filter(Boolean);
+    if (cts.length) p.push(`公司类型：${cts.join('、')}`);
+    if (typeof pref.availability === 'string' && pref.availability) p.push(`到岗：${pref.availability}`);
+    if (p.length) L.push(`【求职偏好】` + p.join('；'));
   }
   if (ctxResolved.length) {
     L.push('【本条消息引用的上下文】');
@@ -710,6 +752,9 @@ export async function* chatStream(id, message, ctx = {}) {
   }
   s.updatedAt = at;
   saveSessions(list);
+  // A3 快照接缝（UPCV #2）：建简历意图（或已有未完成草稿）→ 服务端草稿现场 UPSERT；普通会话零写入（draft.mjs 内判定）。
+  // 账本损坏时吞错：对话主流程不因快照账本炸断，坏账本由 /api/resume-creation/* 读侧如实报 CORRUPT。
+  try { agentDraftTick(R(), s.id, text, hist); } catch { /* 快照现场失败不放大为对话故障 */ }
   // ② 工具环主循环
   const meta = (ctx.meta && typeof ctx.meta === 'object') ? ctx.meta : {};
   const parts = [{ type: 'step-start' }];

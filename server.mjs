@@ -21,6 +21,10 @@ import { renderTemplatesPage } from './templates-page.mjs';
 import { smartCheck, improveAll, customRewrite, improveWriting, customRewriteStream, improveWritingStream } from './ai-helper.mjs';
 import { dispatchUpcv, matchUpcv } from './upcv-api.mjs';   // UPCV 契约端点（规范 upcv-api.routes.md）   // AI 简历助手四件套（规范 ai-helper.routes.md）
 import { init as agentInit, listSessions as agentListSessions, createSession as agentCreateSession, getSession as agentGetSession, renameSession as agentRenameSession, deleteSession as agentDeleteSession, chat as agentChat, chatStream as agentChatStream, previewContext as agentPreviewContext, AGENT_NO_LLM } from './agent.mjs';   // Agent 求职助手（规范 agent.routes.md）
+import { getTalentProfile, generateTalent, getPreference, validatePreference, savePreference, findMaster } from './talent.mjs';   // 求职画像 + 偏好（UPCV A1，规范 dev-docs/2026-11-19-upcv-port-talent-design.md）
+import { fetchUpcvJobs, fetchUpcvDictionaries, fetchUpcvJob, searchParamsOf } from './upcv-jobs.mjs';   // UPCV 社招上游代理（UPCV A2，规范 dev-docs/2026-11-19-upcv-port-jobs-match-design.md §1）
+import { computeMatch, recommendMatches, jobPromptText } from './match.mjs';   // 岗位匹配 + 推荐（UPCV A2，同规范 §2）
+import { extensionShortlist, extensionApplyRecord, extensionResumeText, extensionGreeting, extensionChatReply } from './extension.mjs';   // 投递扩展五端点核心（UPCV A4，规范 dev-docs/2026-11-19-upcv-port-extension-design.md §1）
 import { getConfig as getInterviewConfig, listSessions as ivListSessions, getSession as ivGetSession, createSession as ivCreateSession, deleteSession as ivDeleteSession, nextQuestion as ivNextQuestion, submitAnswer as ivSubmitAnswer, skipQuestion as ivSkipQuestion, genHint as ivGenHint, genReport as ivGenReport, genHintStream as ivGenHintStream, genReportStream as ivGenReportStream,
   listBanks as ivListBanks, getBank as ivGetBank,
   NO_MODEL_HINT as IV_NO_MODEL_HINT } from './interview.mjs';   // 模拟面试文字版（规范 interview.routes.md）
@@ -140,6 +144,9 @@ const statusLabel = (s) => APP_STATUS_LABEL[s] || String(s == null ? '' : s);
 // dueDate 校验（/app/add、/app/update 共用）：YYYY-MM-DD 或空串；真实日期才收（2026-02-30 这类拒）
 const APP_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const appDateOk = (s) => { if (!APP_DATE_RE.test(s)) return false; const d = new Date(s + 'T00:00:00Z'); return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s; };
+// 临近截止催办窗口（UPCV A3 六态收尾）：dueDate ≤ 今+7d（含逾期），与 agent.mjs query_job_progress 的 dueSoonDays=7 同口径。
+// 注意区分首页「近期日程」的 48h 窗口——那是日程规划语义，不是投递截止催办，两者并存不同档。
+const DUE_SOON_MS = 7 * 24 * 3600 * 1000;
 // 界面时间一律人话格式（DESIGN.md §10）：ISO 串（含 datetime-local 的 T 分隔）不出现在页面上；非法值如实原样返回
 const fmtWhen = (raw) => {
   if (!raw) return '';
@@ -238,7 +245,19 @@ const MAX_BODY_BYTES = 10 * 1024 * 1024;
 const mbLabel = (n) => `${Number((Number(n) / (1024 * 1024)).toFixed(1))} MB`;
 // 恢复/撤销的受管项（AUD-09）：存在性台账只覆盖这些；config.json 刻意不在其中（恢复不碰配置）。
 const RESTORE_MANAGED_DIRS = ['docs', 'snapshots', 'pdfs'];
-const RESTORE_MANAGED_FILES = ['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json'];
+const RESTORE_MANAGED_FILES = ['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json', 'talent.json', 'preference.json', 'resume-draft.json', 'match-cache.json'];   // talent/preference（UPCV A1）+ resume-draft（A3 快照）+ match-cache（A2 匹配缓存，对象形状）：受管 = 安全点复制 + present 台账 + replace/merge/undo 导入侧（新账本须同步扩四处：本表 / bakFiles / 恢复侧 ALLOWED 正则 / .gitignore+test.sh seed）
+// 对象账本（talent/preference）恢复导入：内容须是可解析 JSON 对象才拷（备份白名单只验文件名不验内容，
+// 坏条目跳过，不把坏数据写进数据根——CORRUPT 停写比拒恢复更烦人）。undo 段来源是自建安全点，不设防。
+function copyObjLedgerIfSound(fromDir, file) {
+  const src = path.join(fromDir, file);
+  if (!fs.existsSync(src)) return false;
+  try {
+    const d = JSON.parse(fs.readFileSync(src, 'utf8'));
+    if (!d || typeof d !== 'object' || Array.isArray(d)) return false;
+  } catch { return false; }
+  fs.copyFileSync(src, path.join(root, file));
+  return true;
+}
 // htmlToText：剥 script/style/标签为纯文本（原 fetchPageText 内联链，抽出与 extractJd 共用——
 // 剥离规则逐字节不变；截断口径各自定：fetchPageText 4000、extractJd body 兜底 8000）。
 function htmlToText(html) {
@@ -751,7 +770,11 @@ function gatePool(method, pathname) {
   }
   // /eval/create、/restructure 也直连 LLM → 一并进闸门（实测 4 并发全放行、0×429）
   // /onboarding/star-suggest（S5F）：向导 STAR AI 整理同样直连 chat → 同闸门
-  if (method === 'POST' && (/^\/ai\//.test(pathname) || /^\/ai-helper\//.test(pathname) || pathname === '/agent/chat' || pathname === '/eval/create' || pathname === '/restructure' || pathname === '/onboarding/star-suggest')
+  // UPCV A2：/match/job、/match/recommend、/extension/match-score 直连 chat → 精确匹配进 AI 池
+  // （/jobs/search、/jobs/dictionaries 纯上游代理不调 LLM，零改动；/jobs/apply-draft 走 createJobDraft 也不调 LLM）
+  // UPCV A4：/extension/greeting、/extension/chat-reply 直连 chat → 同款精确匹配（勿用 /extension/ 前缀——
+  // 免得 apply-record/shortlist 这类不调模型的端点误占 AI 槽）
+  if (method === 'POST' && (/^\/ai\//.test(pathname) || /^\/ai-helper\//.test(pathname) || /^\/talent\//.test(pathname) || pathname === '/agent/chat' || pathname === '/eval/create' || pathname === '/restructure' || pathname === '/onboarding/star-suggest' || pathname === '/match/job' || pathname === '/match/recommend' || pathname === '/extension/match-score' || pathname === '/extension/greeting' || pathname === '/extension/chat-reply')
     && !AI_EXEMPT.has(pathname)) {
     return { pool: aiPool, label: 'AI' };
   }
@@ -2172,7 +2195,7 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .foot-links a,.foot-links summary{color:var(--mut);font-size:13px}
 </style></head><body${wide ? ' class="wide"' : ''}>
 <script nonce="__CSP_NONCE__">${STATUS_SCRIPT}${ACT_DISPATCH_JS}</script>
-<nav class="topnav"><div><button type="button" class="navtoggle" data-navtoggle title="收起侧栏">${icon('panel-left', 15)}</button><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><div class="links">${nav('docs', '/', '简历', 'file-text')}${nav('apps', '/applications', '投递', 'columns-3')}${nav('ai-helper', '/ai-helper', 'AI 助手', 'bot')}${nav('agent', '/agent', '求职助手', 'message-square')}${nav('interview', '/interview', '模拟面试', 'stethoscope')}${nav('templates', '/templates', '模板库', 'palette')}${nav('settings', '/settings', '设置', 'settings')}</div></div><div class="navfoot">本地优先 · 数据在 ~/resume</div></nav><button type="button" class="navtoggle navtoggle-reopen" data-navtoggle title="展开侧栏">${icon('panel-left', 15)}</button>
+<nav class="topnav"><div><button type="button" class="navtoggle" data-navtoggle title="收起侧栏">${icon('panel-left', 15)}</button><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><div class="links">${nav('docs', '/', '简历', 'file-text')}${nav('apps', '/applications', '投递', 'columns-3')}${nav('jobs', '/jobs', '职位', 'box')}${nav('talent', '/talent', '求职画像', 'compass')}${nav('ai-helper', '/ai-helper', 'AI 助手', 'bot')}${nav('agent', '/agent', '求职助手', 'message-square')}${nav('interview', '/interview', '模拟面试', 'stethoscope')}${nav('templates', '/templates', '模板库', 'palette')}${nav('settings', '/settings', '设置', 'settings')}</div></div><div class="navfoot">本地优先 · 数据在 ~/resume</div></nav><button type="button" class="navtoggle navtoggle-reopen" data-navtoggle title="展开侧栏">${icon('panel-left', 15)}</button>
 <div class="home"><div class="mainarea">${inner}</div></div>
 <footer>简历工作台 · 本地优先 · 数据在 ${path.basename(root) === 'resume' ? '~/resume' : 'RESUME_ROOT'}</footer>
 ${WRITE_HELPER_JS}</body></html>`;
@@ -2193,6 +2216,12 @@ const agentPageInner = () => `
     <script type="module" src="/aora-bot.js"></script>
     <script src="/aora-face.js" defer></script>
     <script src="/agent-panel.js" defer></script>`;
+
+// 求职画像页骨架：画像区 + 偏好表单由 talent-panel.js 在 #talent-app 内构建（全 DOM API，零属性模板注入面）
+const talentPageInner = () => `
+    <div class="page-head"><h1>求职画像</h1><span class="page-meta">AI 参考评分 · 数据在本地</span></div>
+    <div id="talent-app"><p style="color:var(--mut)">界面加载中…</p></div>
+    <script src="/talent-panel.js" defer></script>`;
 
 // 徽章：底色 + 语义色 + 小图标 + 文字。类名沿用既有的 .badge ok/.warn/.err/.ai（既有 43 处在用），
 // 只新增 .mute —— 不另起 badge--ok 体系。ic 省略时按 cls 取默认图标；cls 为空（纯标签徽章）默认无图标。
@@ -4767,8 +4796,12 @@ async function handler(req, res) {
   // /import/page 除外：书签跨站递交的只读预览（零写盘零副作用，spec §10.20）——不算写请求：
   // 迁移锁不拦它；下方 CSRF 跨源检查也对它豁免（表单导航的 Origin 必为招聘站域，不豁免则轨 A 整路死）。
   // 2026-11-13 起带口令时会写 inbox.json：写授权由口令承担，迁移锁在处理函数内显式检查。
+  // /extension/* 同款豁免（UPCV A4）：扩展 SW 的 Origin=chrome-extension://…，同源检查必拦（不豁免则扩展整路死）；
+  // 写类（POST）端点改由路由层 X-Resume-Token 口令把关（importToken 书签同源）；apply-record 真写盘，
+  // 迁移锁在路由内显式检查（/import/page 收件箱分支同款）。
   const mutating = ((req.method !== 'GET' && req.method !== 'HEAD') || (req.method === 'GET' && WRITE_ON_GET.has(url.pathname)))
-    && url.pathname !== '/import/page';
+    && url.pathname !== '/import/page'
+    && !url.pathname.startsWith('/extension/');
   if (mutating && rootLock.isHeld(root)) {
     return send(503, '迁移/维护进行中（.migrate.lock 被持有），写请求与渲染类 GET（/pdf、/export）暂不可用，请稍后重试', 'text/plain');
   }
@@ -4817,6 +4850,9 @@ async function handler(req, res) {
     if (req.method === 'GET' && url.pathname === '/agent-panel.js') {
       return send(200, fs.readFileSync(path.join(APP_ROOT, 'agent-panel.js'), 'utf8'), 'application/javascript; charset=utf-8');
     }
+    if (req.method === 'GET' && url.pathname === '/talent-panel.js') {
+      return send(200, fs.readFileSync(path.join(APP_ROOT, 'talent-panel.js'), 'utf8'), 'application/javascript; charset=utf-8');
+    }
     // aora 角色引擎 vendored 运行件 + 状态助手（登记非放宽）
     // existsSync 守卫：文件缺失→404 而非 ENOENT 500 泄绝对路径（照 /api/extract 先例）
     if (req.method === 'GET' && url.pathname === '/aora-bot.js') {
@@ -4846,7 +4882,7 @@ async function handler(req, res) {
       const hit = matchUpcv(req.method, url.pathname);
       if (hit) {
         let upcvBody = null;
-        if (req.method === 'PUT' || req.method === 'POST') {
+        if (req.method === 'PUT' || req.method === 'POST' || req.method === 'PATCH') {   // PATCH（A3 快照 complete）与 PUT/POST 同读体
           try { upcvBody = await readBodyAuto(req); }
           catch { return sendJson(400, { code: 400, message: '请求体解析失败' }); }
         }
@@ -6395,6 +6431,9 @@ async function handler(req, res) {
       // 六态枚举（UPCV §1）：只收新枚举，老枚举值先经读侧归一才会出现——客户端不会也不该回传
       if (body.status !== undefined && !APP_STATUS_ALL.includes(body.status)) return send(400, '非法 status（允许值：' + APP_STATUS_ALL.join(' / ') + '）', 'text/plain');
       if (body.dueDate !== undefined && body.dueDate !== '' && !appDateOk(String(body.dueDate))) return send(400, 'dueDate 格式非法（应为 YYYY-MM-DD 或留空）', 'text/plain');
+      // jobId（UPCV A3 可选字段，A4 幂等键铺垫）：指向收件箱/评估里的岗位 id；白名单同 agent.mjs TOOL_ARG_ID 口径。
+      // 缺省不落键（零迁移：老数据无此键，读侧 loadApps 原样保留未知键）。
+      if (typeof body.jobId === 'string' && body.jobId.trim() && !/^[A-Za-z0-9_-]{1,90}$/.test(body.jobId.trim())) return send(400, '非法 jobId（应为岗位 id）', 'text/plain');
       const exportId = (typeof body.exportId === 'string' && body.exportId.trim()) ? body.exportId.trim() : '';
       const now = timestamp();
       let snapTs, frozenFile;
@@ -6429,6 +6468,7 @@ async function handler(req, res) {
         nextStep: typeof body.nextStep === 'string' ? body.nextStep.trim() : '',
         dueDate: typeof body.dueDate === 'string' ? body.dueDate : '',
         snapTs, exportId: exportId || null, contentHash: hash, status: APP_STATUS_ALL.includes(body.status) ? body.status : 'applied', createdAt: now, updatedAt: now,
+        ...(typeof body.jobId === 'string' && body.jobId.trim() ? { jobId: body.jobId.trim() } : {}),   // A3：缺省不落键
         archive: archiveOk && fs.existsSync(out)
           ? { status: 'ok', generatedAt: now, hash }
           : { status: 'failed', hash, error: '渲染失败，未生成存档 PDF' }
@@ -6453,6 +6493,12 @@ async function handler(req, res) {
         app[k] = k === 'link' ? safeUrl(body[k]) : body[k];
       }
       if (body.status !== undefined) app.status = body.status;
+      // jobId（UPCV A3）：给了就透传（空串=显式清空），缺省不动原键；形状校验同 /app/add。
+      if (typeof body.jobId === 'string') {
+        const jv = body.jobId.trim();
+        if (jv && !/^[A-Za-z0-9_-]{1,90}$/.test(jv)) return send(400, '非法 jobId（应为岗位 id）', 'text/plain');
+        app.jobId = jv;
+      }
       app.updatedAt = timestamp();
       saveApps(apps);
       return sendJson(200, { ok: true });
@@ -7180,8 +7226,8 @@ async function handler(req, res) {
       const apps = loadApps();
       const docIds = docIdsOnDisk();
       const nowMs = Date.now();
-      // 到期提醒三档（表格/看板/详情共用同一口径）：今日到期=warn 醒目徽章；已逾期=err；48h 内=临近截止图标徽章。
-      // 终态（offer/closed）不出徽标：流程已收口，截止日只剩信息价值没有催促价值。
+      // 到期提醒三档（表格/看板/详情共用同一口径）：今日到期=warn 醒目徽章；已逾期=err；7 日内=临近截止图标徽章
+      // （A3 对齐 agent 工具 dueSoon 的 7 天窗口；终态 offer/closed 不出徽标：截止日只剩信息价值没有催促价值）。
       const p2d = (n) => String(n).padStart(2, '0');
       const now0 = new Date(nowMs);
       const todayStr = now0.getFullYear() + '-' + p2d(now0.getMonth() + 1) + '-' + p2d(now0.getDate());
@@ -7190,7 +7236,7 @@ async function handler(req, res) {
         if (!d || APP_TERMINAL.includes(a.status)) return '';
         if (d === todayStr) return badge('warn', '今日到期');
         if (d < todayStr) return badge('err', '已逾期');
-        return (new Date(d + 'T00:00:00Z').getTime() - nowMs) < 48 * 3600 * 1000
+        return (new Date(d + 'T00:00:00Z').getTime() - nowMs) < DUE_SOON_MS
           ? '<span class="badge warn" role="img" aria-label="临近截止" title="临近截止">' + icon('circle-alert', 11) + '</span>' : '';
       };
       if (url.searchParams.get('view') === 'table') {
@@ -7529,7 +7575,7 @@ async function handler(req, res) {
       // 只呈现 text 为字符串的条目，模型输出与历史数据均不可信，渲染一律 escHtml。
       const preps = Array.isArray(app.preps) ? app.preps.filter((p) => p && typeof p.text === 'string') : [];
       const now = Date.now();
-      // 到期徽标与看板同一三档口径：今日到期=warn / 已逾期=err / 48h 内=到期；终态（offer/closed）不出徽标
+      // 到期徽标与看板同一三档口径：今日到期=warn / 已逾期=err / 7 日内=到期（A3 对齐 DUE_SOON_MS）；终态（offer/closed）不出徽标
       const dueBadge = (() => {
         const d = String(app.dueDate || '').slice(0, 10);
         if (!d || APP_TERMINAL.includes(app.status)) return '';
@@ -7537,7 +7583,7 @@ async function handler(req, res) {
         const today = n0.getFullYear() + '-' + String(n0.getMonth() + 1).padStart(2, '0') + '-' + String(n0.getDate()).padStart(2, '0');
         if (d === today) return badge('warn', '今日到期');
         if (d < today) return badge('err', '已逾期');
-        return (new Date(d + 'T00:00:00Z').getTime() - now) < 48 * 3600 * 1000 ? badge('warn', '到期') : '';
+        return (new Date(d + 'T00:00:00Z').getTime() - now) < DUE_SOON_MS ? badge('warn', '到期') : '';
       })();
       const archiveMissing = !app.archive || app.archive.status !== 'ok';
       const archiveLine = archiveMissing
@@ -8604,7 +8650,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       // 清单里的 4 个 JSON 是运行时产物，首次写入前根本不存在。tar 遇到不存在的路径会整包失败
       // （Cannot stat → 非零退出 → 500），所以按存在性过滤；目录恒在（启动时 mkdir），不过滤。
       const bakFiles = ['docs', 'snapshots', 'pdfs']
-        .concat(['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json'].filter((f) => fs.existsSync(path.join(root, f))));
+        .concat(['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json', 'talent.json', 'preference.json', 'resume-draft.json', 'match-cache.json'].filter((f) => fs.existsSync(path.join(root, f))));   // resume-draft.json（A3）与 match-cache.json（A2）与 RESTORE_MANAGED_FILES 同表同步
       const child = spawn('tar', ['czf', tmpTar, '-C', root, ...bakFiles], { stdio: ['ignore', 'ignore', 'pipe'] });
       let err = '';
       child.stderr.on('data', (c) => { err += c; });
@@ -8676,7 +8722,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
           return fail('备份包展开后 ' + Math.round(bytes / 1024 / 1024) + ' MB，超过 ' + Math.round(MAX_EXPANDED_BYTES / 1024 / 1024) + ' MB 上限，已拒绝（防压缩炸弹）', 413);
         }
       } catch (e) { return fail(e.code === 'ENOENT' ? '备份包信息读取失败' : e.message); }
-      const ALLOWED = /^(docs\/|snapshots\/|pdfs\/|docs-meta\.json$|applications\.json$|materials\.json$|evaluations\.json$)/;
+      const ALLOWED = /^(docs\/|snapshots\/|pdfs\/|docs-meta\.json$|applications\.json$|materials\.json$|evaluations\.json$|talent\.json$|preference\.json$|resume-draft\.json$|match-cache\.json$)/;   // A2：match-cache 进恢复白名单（与 RESTORE_MANAGED_FILES/⑤ 形状层/copyObjLedgerIfSound 同批五处登记）
       for (const e of entries) {
         const ep = e.replace(/^\.\//, '');
         if (ep === '' || ep === '.') continue;         // tar czf -C dir . 的根条目
@@ -8742,8 +8788,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
           if (!VALID_ID.test(mHist[1])) return fail('备份包含非法导出历史标识：' + mHist[1].slice(0, 40));
           continue;
         }
-        // ⑤ 四个 JSON（运行时产物，可能不存在）
-        if (/^(docs-meta|applications|materials|evaluations)\.json$/.test(p)) continue;
+        // ⑤ 八个 JSON（运行时产物，可能不存在；talent/preference/resume-draft/match-cache 为对象账本——A1/A3/A2 落账本时同步扩此行，否则自产备份恢复被「条目形状」拒）
+        if (/^(docs-meta|applications|materials|evaluations|talent|preference|resume-draft|match-cache)\.json$/.test(p)) continue;
         // ⑥ 其余形状分两类：
         //    a) 已知内容目录（docs / pdfs / snapshots/<合法id>）直属的未知形状文件 → 多为渲染
         //       发布链/重构/快照元数据的临时残留（BL-P1-03，B 线批 2）→ 跳过不恢复并逐条上报，
@@ -8870,7 +8916,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       fs.mkdirSync(path.join(safety, 'data'), { recursive: true });
       for (const d of ['docs', 'snapshots', 'pdfs']) if (fs.existsSync(path.join(root, d))) fs.cpSync(path.join(root, d), path.join(safety, 'data', d), { recursive: true });
       try { hardenDataPerms(root); } catch {}   // cpSync 不经 atomicWrite → 权限随源文件，恢复后统一收紧
-      for (const f of ['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json']) if (fs.existsSync(path.join(root, f))) fs.copyFileSync(path.join(root, f), path.join(safety, 'data', f));
+      for (const f of RESTORE_MANAGED_FILES) if (fs.existsSync(path.join(root, f))) fs.copyFileSync(path.join(root, f), path.join(safety, 'data', f));   // 受管 JSON 统一走 RESTORE_MANAGED_FILES（undo 侧同表，两处不再各自硬编码漂移）
       // 存在性台账（AUD-09）：安全点只复制「存在的」文件 → 「原本不存在」这一事实丢失，
       // 撤销时无法把恢复引入的文件删回去（实测：原本没有 evaluations.json，恢复后撤销，文件仍在）。
       // present 记录恢复前每个受管项是否存在；config.json 不在受管范围（恢复不碰它）。
@@ -8889,6 +8935,9 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
             try { hardenDataPerms(root); } catch {}   // cpSync 不经 atomicWrite → 权限随源文件，恢复后统一收紧
           }
           for (const f of ['applications.json', 'materials.json', 'evaluations.json']) if (fs.existsSync(path.join(stage, f))) fs.copyFileSync(path.join(stage, f), path.join(root, f));
+          // 对象账本（talent/preference（A1）+ resume-draft（A3）：内容须是可解析 JSON 对象才拷——
+          // 备份包白名单只验文件名不验内容，坏条目跳过不把坏数据写进数据根（CORRUPT 停写比拒恢复更烦人）
+          for (const f of ['talent.json', 'preference.json', 'resume-draft.json', 'match-cache.json']) copyObjLedgerIfSound(stage, f);
           // copyFileSync 保留源文件权限 → 备份里的 0644 会让本地 JSON 变同机可读（2026-10-22 审查 [中]）
           try { hardenDataPerms(root); } catch {}
           // docs-meta 成对替换：经 updateMeta 逐文档写（唯一写入者），不裸 copyFileSync 覆盖共享文件；损坏 → 抛 CORRUPT（500），绝不当成 {}
@@ -8925,6 +8974,8 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
           mergeById('applications.json', loadApps, saveApps);
           mergeById('materials.json', loadMats, saveMats);
           mergeById('evaluations.json', loadEvals, saveEvals);
+          // 对象账本（talent/preference（A1）+ resume-draft（A3））：单对象无 id 可并 → 备份有则以备份为准覆盖，无则保留本地；坏条目跳过（防护同 replace 段）
+          for (const f of ['talent.json', 'preference.json', 'resume-draft.json', 'match-cache.json']) copyObjLedgerIfSound(stage, f);
           const metaStage = path.join(stage, 'docs-meta.json');
           const bakMeta = readMetaSnapshotAt(metaStage);      // 损坏 → 抛 CORRUPT（500），绝不静默跳过或当成 {}
           if (bakMeta) {
@@ -8982,7 +9033,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
           fs.cpSync(src, path.join(root, d), { recursive: true });
           try { hardenDataPerms(root); } catch {}   // cpSync 不经 atomicWrite → 权限随源文件，恢复后统一收紧
         }
-        for (const f of ['applications.json', 'materials.json', 'evaluations.json']) {
+        for (const f of ['applications.json', 'materials.json', 'evaluations.json', 'talent.json', 'preference.json']) {
           // 恢复前不存在 → 撤销时删掉恢复导入的（否则导入的评估文件留在原地）
           if (present && present[f] === false) {
             try { fs.rmSync(path.join(root, f), { force: true }); } catch {}
@@ -9564,6 +9615,160 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     }
     if (req.method === 'GET' && url.pathname === '/agent/context-preview') {
       return sendJson(200, { ok: true, ...agentPreviewContext(String(url.searchParams.get('text') || '')) });
+    }
+    // ===== 求职画像 + 求职偏好（UPCV A1；规范 dev-docs/2026-11-19-upcv-port-talent-design.md）=====
+    // /talent/ POST 进 AI 闸门（gatePool）；/preference 不调 LLM 零闸门。错误口径同 ai-helper：409 纯文本 / 400·500 JSON / 502 模型失败。
+    if (req.method === 'GET' && url.pathname === '/talent') {
+      const inner = `<div class="page-head"><h1>求职画像</h1><span class="page-meta">AI 参考评分 · 数据在本地</span></div>
+<div id="talent-app"><p style="color:var(--mut)">界面加载中…</p></div>
+<script nonce="__CSP_NONCE__">window.__TALENT__=${jsonScript({ hasLLM: hasLLM(root) })};</script>
+<script src="/talent-panel.js" defer></script>`;
+      return send(200, page('求职画像', inner, 'apps'));
+    }
+    if (req.method === 'GET' && url.pathname === '/talent/profile') {
+      try { return sendJson(200, { ok: true, profile: getTalentProfile(root) }); }
+      catch (e) { return sendJson((e && e.httpCode) || 500, { ok: false, error: e.message }); }   // CORRUPT 停写
+    }
+    // generate 与 refresh 同一实现（UPCV 语义区分，行为一致）：重算并覆盖 talent.json
+    if (req.method === 'POST' && (url.pathname === '/talent/generate' || url.pathname === '/talent/refresh')) {
+      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');
+      try {
+        return sendJson(200, { ok: true, profile: await generateTalent({ root, lease: leaseOf(req) }) });
+      } catch (e) {
+        if (e && e.httpCode) return sendJson(e.httpCode, { ok: false, error: e.message });   // NO_MASTER 400 / CORRUPT 500 / BAD_TALENT 502
+        return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) });
+      }
+    }
+    if (req.method === 'GET' && url.pathname === '/preference/state') {
+      try { return sendJson(200, { ok: true, preference: getPreference(root) }); }
+      catch (e) { return sendJson((e && e.httpCode) || 500, { ok: false, error: e.message }); }
+    }
+    if (req.method === 'PUT' && url.pathname === '/preference') {
+      const body = await readBodyAuto(req);
+      const { pref, error } = validatePreference(body);
+      if (error) return sendJson(400, { ok: false, error });
+      try { return sendJson(200, { ok: true, preference: savePreference(pref, root) }); }
+      catch (e) { return sendJson((e && e.httpCode) || 500, { ok: false, error: e.message }); }   // CORRUPT 停写
+    }
+    // ===== 社招职位 + 岗位匹配 + 岗位推荐（UPCV A2 · #10/#11；规范 dev-docs/2026-11-19-upcv-port-jobs-match-design.md）=====
+    // 错误口径同 talent：409 纯文本（无 LLM）/ 400·404·500 JSON / 502 上游或模型失败。
+    // GET /jobs* 纯上游代理不写盘不调 LLM（字典 10 分钟进程内缓存不落盘）→ 零闸门零 WRITE_ON_GET。
+    if (req.method === 'GET' && url.pathname === '/jobs') {
+      let master = null;
+      try { master = findMaster(root); } catch { master = null; }   // boot 数据尽力而为：meta 损坏不挡页面，面板按无母版降级
+      const appJobIds = loadApps().map((a) => (a && typeof a.jobId === 'string' ? a.jobId : '')).filter(Boolean);
+      let hasPreference = false;
+      try { hasPreference = !!getPreference(root); } catch {}
+      const inner = `<div class="page-head"><h1>社招职位</h1><span class="page-meta">UPCV 职位库 · AI 匹配参考</span></div>
+<div id="jobs-app"><p style="color:var(--mut)">界面加载中…</p></div>
+<script nonce="__CSP_NONCE__">window.__JOBS__=${jsonScript({ hasLLM: hasLLM(root), master: master ? { id: master.id, title: master.title } : null, appJobIds, hasPreference })};</script>
+<script src="/jobs-panel.js" defer></script>`;
+      return send(200, page('社招职位', inner, 'jobs'));
+    }
+    if (req.method === 'GET' && url.pathname === '/jobs-panel.js') {
+      return send(200, fs.readFileSync(path.join(APP_ROOT, 'jobs-panel.js'), 'utf8'), 'application/javascript; charset=utf-8');
+    }
+    if (req.method === 'GET' && url.pathname === '/jobs/search') {
+      const params = searchParamsOf(url.searchParams);
+      if (!params.has('jobType')) params.set('jobType', 'SOCIAL');   // 默认社招（本页主场景）
+      // limit 封顶 20（设计 §2：防上游/页面失控）；page 下限 1
+      const limit = Math.min(20, Math.max(1, Math.floor(Number(params.get('limit')) || 20)));
+      params.set('limit', String(limit));
+      params.set('page', String(Math.max(1, Math.floor(Number(params.get('page')) || 1))));
+      let r;
+      try { r = await fetchUpcvJobs(params); }
+      catch (e) { return sendJson(502, { ok: false, error: '职位搜索失败：' + String((e && e.message) || e) }); }
+      const items = (r && typeof r === 'object' && !Array.isArray(r) && Array.isArray(r.data)) ? r.data : [];
+      const total = (r && typeof r === 'object' && typeof r.total === 'number') ? r.total : items.length;
+      const page = Math.max(1, Math.floor(Number(params.get('page')) || 1));
+      return sendJson(200, { ok: true, items, page, limit, total, hasMore: page * limit < total });
+    }
+    if (req.method === 'GET' && url.pathname === '/jobs/dictionaries') {
+      try { return sendJson(200, { ok: true, ...await fetchUpcvDictionaries() }); }
+      catch (e) { return sendJson(502, { ok: false, error: '字典加载失败：' + String((e && e.message) || e) }); }
+    }
+    // 「转入适配」：上游详情 → 裁剪 JD 文本 → 复用 createJobDraft（同一套去重/冻结/截断/指纹；jdSource 记 upcv 来源）
+    // 不调 LLM → 不进 AI 闸门；写盘走 createJobDraft 既有原语，无新增写路径。
+    if (req.method === 'POST' && url.pathname === '/jobs/apply-draft') {
+      const body = await readBodyAuto(req);
+      const from = String(body.from || '');
+      if (!VALID_ID.test(from)) return sendJson(400, { ok: false, error: 'invalid from' });
+      if (!fs.existsSync(docPath(from))) return sendJson(404, { ok: false, error: '母版文档不存在' });
+      const jobId = String(body.jobId || '').trim();
+      if (!/^[A-Za-z0-9_-]{1,90}$/.test(jobId)) return sendJson(400, { ok: false, error: '非法 jobId' });
+      let detail;
+      try { detail = await fetchUpcvJob(jobId); }
+      catch (e) { return sendJson(502, { ok: false, error: '职位详情失败：' + String((e && e.message) || e) }); }
+      const j = (detail && typeof detail === 'object' && detail.job) || {};
+      const r = await createJobDraft(root, {
+        from,
+        company: String(j.companyName || (detail && detail.company && detail.company.name) || '').trim(),
+        role: String(j.title || '').trim(),
+        jd: jobPromptText(detail),
+        jdSource: 'upcv:' + jobId,
+      });
+      if (!r.ok) return sendJson(r.status, r.body);   // 409 携带 existing（同岗位草稿已存在），面板跳既有草稿
+      return sendJson(200, { ok: true, id: r.id });
+    }
+    // ===== 投递扩展口令闸（UPCV A4；/extension/* 已从 CSRF/迁移锁豁免，POST 一律验口令）=====
+    // 书签同源口令（importToken）：扩展 SW/页面不带本站 Origin 同源豁免，任意网页都能盲 POST 到这些端点，
+    // 其中 greeting/chat-reply/match-score 烧模型钱、apply-record 写投递账本——口令是唯一防线，不符 401。
+    // GET（shortlist/resume-text）不设口令：与 GET /api/extract 同信任档（服务只绑 127.0.0.1、响应无 CORS 头，跨站脚本读不出）。
+    if (req.method !== 'GET' && req.method !== 'HEAD' && url.pathname.startsWith('/extension/')
+      && !importTokenOk(req.headers['x-resume-token'])) {
+      return sendJson(401, { ok: false, error: 'X-Resume-Token 不符（与 JD 书签同源口令，书签在「为岗位定制简历」页，或读数据根 .import-token）' });
+    }
+    // /match/* 与 /extension/match-score 调 LLM → gatePool AI 池（前缀已登记）；无 LLM 配置 409 同 talent 口径。
+    if (req.method === 'POST' && (url.pathname === '/match/job' || url.pathname === '/match/recommend' || url.pathname === '/extension/match-score')) {
+      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');
+      const body = await readBodyAuto(req);
+      try {
+        if (url.pathname === '/match/job') {
+          const r = await computeMatch({ root, docId: body.docId, jobId: body.jobId, jdText: body.jdText, refresh: body.refresh === true, lease: leaseOf(req) });
+          return sendJson(200, { ok: true, cached: r.cached, match: r.match });
+        }
+        if (url.pathname === '/extension/match-score') {
+          // A4 修正：扩展采集的站点 jobId（site-…）不是上游 id——computeMatch 的 jobId 优先走上游、
+          // 对这类 id 恒 502。带 jdText（采集卡字段拼的）时改走 jdText 路径（指纹缓存键），无 jdText 保持 A2 原语义。
+          const jd = typeof body.jdText === 'string' ? body.jdText : '';
+          const r = await computeMatch({ root, docId: body.docId, jobId: jd.trim() ? undefined : body.jobId, jdText: body.jdText, lease: leaseOf(req) });
+          return sendJson(200, { ok: true, matchScore: r.match.matchScore, matchLevel: r.match.matchLevel });
+        }
+        const r = await recommendMatches({ root, docId: body.docId, jobType: body.jobType, limit: body.limit, refresh: body.refresh === true, lease: leaseOf(req) });
+        return sendJson(200, { ok: true, ...r });
+      } catch (e) {
+        if (e && e.httpCode) return sendJson(e.httpCode, { ok: false, error: e.message });   // 400/404/CORRUPT 500/BAD_MATCH 502
+        return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) });
+      }
+    }
+    // ===== 投递扩展五端点（UPCV A4；核心 extension.mjs，此处只做路由接线；match-score 在上方 A2 区）=====
+    // 错误口径同 talent/match：409 纯文本（无 LLM）/ 400·404·500 JSON / 502 模型或上游失败。
+    // GET 零写盘零模型 → 零闸门零 WRITE_ON_GET；apply-record 写账本但不调模型 → 只进上方口令闸、不进 AI 池。
+    if (req.method === 'GET' && url.pathname === '/extension/shortlist') {
+      try { return sendJson(200, extensionShortlist(root)); }
+      catch (e) { return sendJson((e && e.httpCode) || 500, { ok: false, error: e.message }); }
+    }
+    if (req.method === 'POST' && url.pathname === '/extension/apply-record') {
+      const body = await readBodyAuto(req);
+      // mutating 豁免（同 /import/page 先例）→ 迁移锁在路由内显式检查：真写盘端点迁移期间照旧 503。
+      if (rootLock.isHeld(root)) return sendJson(503, { ok: false, error: '迁移/维护进行中（.migrate.lock 被持有），请稍候重试' });
+      try { return sendJson(200, extensionApplyRecord(root, body)); }
+      catch (e) { return sendJson((e && e.httpCode) || 500, { ok: false, error: e.message }); }
+    }
+    if (req.method === 'GET' && url.pathname === '/extension/resume-text') {
+      try { return sendJson(200, extensionResumeText(root, url.searchParams.get('docId'))); }
+      catch (e) { return sendJson((e && e.httpCode) || 500, { ok: false, error: e.message }); }
+    }
+    if (req.method === 'POST' && (url.pathname === '/extension/greeting' || url.pathname === '/extension/chat-reply')) {
+      if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');
+      const body = await readBodyAuto(req);
+      try {
+        if (url.pathname === '/extension/greeting') return sendJson(200, await extensionGreeting({ root, body, lease: leaseOf(req) }));
+        return sendJson(200, await extensionChatReply({ root, body, lease: leaseOf(req) }));
+      } catch (e) {
+        if (e && e.httpCode) return sendJson(e.httpCode, { ok: false, error: e.message });   // 400/404/CORRUPT 500/模型输出 502
+        return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) });
+      }
     }
     // ===== 模拟面试（文字版，UPCV §6 形状复刻；规范 interview.routes.md）=====
     if (req.method === 'GET' && url.pathname === '/interview') {

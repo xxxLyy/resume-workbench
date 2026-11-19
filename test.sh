@@ -159,6 +159,13 @@ REAL_BEFORE=$(real_fp)
 echo '[]' > "$RESUME_ROOT/applications.json"
 echo '[]' > "$RESUME_ROOT/materials.json"
 echo '{}' > "$RESUME_ROOT/docs-meta.json"
+# UPCV A1 账本 seed（对象形状 initial；缺文件时读路径容忍 → seed 只为让写路径走「已存在」分支）
+echo '{"profile":null}' > "$RESUME_ROOT/talent.json"
+echo '{"preference":null}' > "$RESUME_ROOT/preference.json"
+# UPCV A3 快照账本 seed（对象形状 initial；同上款）
+echo '{"drafts":{}}' > "$RESUME_ROOT/resume-draft.json"
+# UPCV A2 匹配缓存账本 seed（对象形状 initial；同上款——自产备份往返会打包并恢复它）
+echo '{}' > "$RESUME_ROOT/match-cache.json"
 cat > "$RESUME_ROOT/config.json" << EOF
 {"active":0,"profiles":[{"name":"stub","baseURL":"http://127.0.0.1:$LLM_PORT/v1","apiKey":"test-key","model":"stub-model"}]}
 EOF

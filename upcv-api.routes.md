@@ -145,7 +145,10 @@ import { dispatchUpcv, matchUpcv } from './upcv-api.mjs';   // UPCV 契约端点
 4. **`POST /api/resume` 的 id 语义**：UPCV 用服务端分配 id，本仓用 slug 冲突回避；`_meta.docId` 回写新 id。
 5. **AI 四件套/模板库**：`smart-check` 等端点已由 ai-helper.mjs 按 `/ai-helper/*` 命名落地（见 ai-helper.routes.md）；
    如需 `/api/resume/smart-check` 字面别名，在此层加一个转发分支即可。
-6. **`/api/resume-creation/snapshots/latest`**：UPCV 契约返回 `{snapshot:null}` 即可，本层未实现（低频端点）。
+6. ~~**`/api/resume-creation/snapshots/latest`**：UPCV 契约返回 `{snapshot:null}` 即可，本层未实现（低频端点）~~
+   ✅ A3 已落（2026-11-19，规范 dev-docs/2026-11-19-upcv-port-snapshot-status-design.md §1）：`/api/resume-creation/snapshots` 四端点
+   （GET `latest?schemaVersion=2` / POST UPSERT / PATCH `:id/complete` / DELETE `:id`），编排 `draft.mjs`（账本 resume-draft.json、
+   tx.mjs updateJsonLedger），`{code,data}` 包壳同全层；恢复侧白名单（ALLOWED/条目形状/对象账本拷贝）与备份清单已同步扩。
 7. **parse 真文件上传**：UPCV 是 multipart 上传（PDF/DOCX），本期只接 `{html|text}` 文本体；
    要接文件需在注册块前加 multipart 解析（readBodyAuto 只认 JSON/表单）+ 文档转 HTML 前置，管线仍归 `docToResumeData`。
 8. **`PARSE_TITLE_SET` 漂移**：text→doc 的标题别名表是 rr-export `TITLE_ALIASES` 的同尺副本（那边未导出）；
