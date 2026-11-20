@@ -224,6 +224,9 @@ function bind(): void {
   ($("autoDraft") as HTMLInputElement).onchange = (e) => {
     void save({ autoDraft: (e.target as HTMLInputElement).checked });
   };
+  ($("autoCollect") as HTMLInputElement).onchange = (e) => {
+    void save({ autoCollect: (e.target as HTMLInputElement).checked });
+  };
   ($("resumeSel") as HTMLSelectElement).onchange = (e) => {
     void save({ docId: (e.target as HTMLSelectElement).value });
   };
@@ -338,6 +341,7 @@ async function init(): Promise<void> {
   ($("threshold") as HTMLInputElement).value = String(settings.threshold);
   $("thresholdVal").textContent = String(settings.threshold);
   ($("autoDraft") as HTMLInputElement).checked = settings.autoDraft;
+  ($("autoCollect") as HTMLInputElement).checked = settings.autoCollect;
   $("openWb").setAttribute("href", settings.workbenchUrl);
   const st = await req<{ state?: BatchState }>({ kind: "batch:state" });
   if (st.state) { batchState = st.state; renderBatch(); }

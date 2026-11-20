@@ -110,6 +110,8 @@ export interface Settings {
   threshold: number;
   /** 新会话聊天页自动生成草稿（填入不发送） */
   autoDraft: boolean;
+  /** 打开职位列表页自动采集（逐卡打分走 LLM，默认关：用户主动开） */
+  autoCollect: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -119,6 +121,7 @@ export const DEFAULT_SETTINGS: Settings = {
   mode: "A", // §6：sidepanel 单选默认「逐岗确认」
   threshold: 60,
   autoDraft: true,
+  autoCollect: false,
 };
 
 // ---------- 消息协议 ----------

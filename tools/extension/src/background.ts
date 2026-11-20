@@ -332,6 +332,19 @@ async function handleCollected(jobs: RawJob[]): Promise<void> {
 // （只作草稿上下文键，不落任何幂等账本）。
 const chatJobIdOf = (url: string): string =>
   `site-chat-${url.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 60)}`;
+// ---------- 自动采集（残余 #4：开列表页即采——同 URL 60s 节流、批量投递在跑不插队） ----------
+const lastCollect = new Map<string, number>();
+let autoCollectBusy = false;
+async function autoCollect(tabId: number, url: string): Promise<void> {
+  if (!settings.autoCollect || autoCollectBusy) return;
+  if (Date.now() - (lastCollect.get(url) ?? 0) < 60_000) return;
+  if (batch.state.status === "RUNNING") return;
+  autoCollectBusy = true;
+  lastCollect.set(url, Date.now());
+  try { await sendCmd(tabId, { kind: "cmd:collect" }); } catch { /* 页未注入/改版静默 */ }
+  finally { autoCollectBusy = false; }
+}
+
 let autoDraftBusy = false;
 async function autoDraft(tabId: number): Promise<void> {
   if (!settings.autoDraft || autoDraftBusy) return;
@@ -499,6 +512,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else if (m.kind === "rep:page") {
       const p = rep as { page: string; url: string };
       if (p.page === "chat" && sender.tab?.id) void autoDraft(sender.tab.id);
+      else if (p.page === "list" && sender.tab?.id) void autoCollect(sender.tab.id, p.url);
     } else if (m.kind === "evt:missing") {
       toPanel(rep as unknown as EngineEvent);
     }
