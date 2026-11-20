@@ -2219,13 +2219,14 @@ const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/prep','/
   '/archive','/archive-pdf','/backup','/delete','/diff','/duplicate','/edit','/editor-shell.js','/export','/history-pdf','/import/page','/inbox','/inbox/adopt','/inbox/dismiss','/inbox/draft','/inbox/eval','/inbox/status',
   '/job-panel.js','/job/alt-adopt','/job/brief','/job/changes','/job/create','/job/feedback-del','/job/generate','/job/gen-cancel','/job/gen-retry','/job/gen-start','/job/new','/layout-info','/link','/mat/add','/mat/confirm','/mat/del','/mat/update','/export/layout-apply','/favicon.ico',
   '/materials','/model-picker.js','/new',
-  '/agent','/agent-panel.js','/agent/chat','/agent/context-preview','/agent/files','/agent/sessions',   // /agent/files（A5 附件上传，登记非放宽）
+  '/agent','/agent-panel.js','/agent/chat','/agent/context-preview','/agent/files','/agent/prefs','/agent/sessions',   // /agent/files（A5 附件上传）+/agent/prefs（UPCV 残余 #1 记忆开关，登记非放宽）
   '/talent','/talent-panel.js','/talent/generate','/talent/profile','/talent/refresh','/preference','/preference/state',   // UPCV A1：求职画像+偏好五端点+面板件（2026-11-19，登记非放宽；spec dev-docs/2026-11-19-upcv-port-talent-design.md）
   '/jobs','/jobs-panel.js','/jobs/search','/jobs/dictionaries','/jobs/apply-draft','/match/job','/match/recommend','/extension/match-score',   // UPCV A2：职位页+面板件+搜索/字典/转入适配+匹配/推荐/轻量打分（2026-11-19，登记非放宽；spec dev-docs/2026-11-19-upcv-port-jobs-match-design.md）
   '/extension/apply-record','/extension/chat-reply','/extension/greeting','/extension/resume-text','/extension/shortlist',   // UPCV A4：投递扩展五端点（2026-11-19，登记非放宽；spec dev-docs/2026-11-19-upcv-port-extension-design.md §1——match-score 已随 A2 登记）
   '/interview','/interview-panel.js','/interview/answer','/interview/banks','/interview/config','/interview/hint','/interview/next','/interview/report','/interview/session','/interview/sessions','/interview/sessions/delete',
   '/templates','/templates/use','/onboarding','/onboarding/guided','/onboarding/star-suggest','/onboarding/step','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings','/eval/create','/eval/promote','/evals',
   '/share/copy','/share/pdf',
+  '/site','/site/file','/site/generate',   // UPCV 残余 #2 个人求职主页（登记非放宽）
   '/snapshot/baseline','/snapshot/note','/snapshot/pdf','/snapshot/view','/snapshots','/stats','/tag',
   '/theme-preview','/theme/apply',
   '/zones','/zones/init','/zone-panel.js','/upload'].sort();   // 2026-10-28 AUD-12：接回首页一直在调用却缺失的 PDF 上传入口（登记非放宽）；S6-A2：模板预览（只读）与主题选择两路由（登记非放宽）
@@ -4361,9 +4362,9 @@ try {
   assert(evh.includes('data-eval-hist="report"') && evh.includes('data-eval-hist="promote"'),
     '/evals 应保留「查看报告」/「转入适配」按钮');
   assert(evh.includes('EVAL_RECORDS'), '/evals 应保留评估记录内联载荷（客户端渲染报告）');
-  // 导航：topnav 9 个链接（brand + 8 项，2026-11-19 面合并 AI助手退役后：简历/投递/职位/求职画像/求职助手/模拟面试/模板库/设置）；导航唯一（sidenav 已移除，不回归）
+  // 导航：topnav 10 个链接（brand + 9 项，2026-11-20 UPCV #2 求职主页入列：简历/投递/职位/求职画像/求职助手/求职主页/模拟面试/模板库/设置）；导航唯一（sidenav 已移除，不回归）
   const nav = (evh.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
-  assert((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length === 9, '/evals 的 topnav 链接数应为 9（brand + 8 项，2026-11-19 面合并 AI助手退役后：简历/投递/职位/求职画像/求职助手/模拟面试/模板库/设置）');
+  assert((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length === 10, '/evals 的 topnav 链接数应为 10（brand + 9 项，2026-11-20 UPCV #2 求职主页入列后：简历/投递/职位/求职画像/求职助手/求职主页/模拟面试/模板库/设置）');
   assert(!evh.includes('class="sidenav"'), '导航唯一：/evals 不应再有 .sidenav（用户裁决 2026-11-03）');
   assert(/<a href="\/" class="on">/.test(nav), '/evals topnav「简历」应高亮（active=docs）');
   // 渐进呈现 T2：投递系页签条——/applications 页应渲染 .apptabs，含「网申包」「复盘」互链（入口移位，非功能删除）
@@ -4611,11 +4612,11 @@ assert(hits.length === 0, '导航条仍含 emoji: ' + hits.join(' '));
 // 渲染结果必须含内联 SVG
 assert(/<svg/.test(navHtml), '导航应含内联 SVG');
 
-// brand + 8 个导航项（2026-11-19 面合并 AI助手退役：简历/投递/职位/求职画像/求职助手/模拟面试/模板库/设置）：每项都必须「图标 + 文字」同现（WCAG nav-label-icon）
+// brand + 9 个导航项（2026-11-20 UPCV #2 求职主页入列：简历/投递/职位/求职画像/求职助手/求职主页/模拟面试/模板库/设置）：每项都必须「图标 + 文字」同现（WCAG nav-label-icon）
 const links = (navHtml.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []);
-assert(links.length === 9, '导航应有 9 个链接（brand + 8 项），实际 ' + links.length);
+assert(links.length === 10, '导航应有 10 个链接（brand + 9 项），实际 ' + links.length);
 assert(links[0].includes(icon('file-text', 17)) && links[0].includes('简历工作台'), 'brand 应为图标 + 文字');
-const NAV = [['file-text','简历'],['columns-3','投递'],['box','职位'],['compass','求职画像'],['message-square','求职助手'],['stethoscope','模拟面试'],['palette','模板库'],['settings','设置']];
+const NAV = [['file-text','简历'],['columns-3','投递'],['box','职位'],['compass','求职画像'],['message-square','求职助手'],['link','求职主页'],['stethoscope','模拟面试'],['palette','模板库'],['settings','设置']];
 NAV.forEach(([ic, label], idx) => {
   const a = links[idx + 1] || '';
   assert(a.includes('>' + label + '<'), '导航项应有文字: ' + label);
@@ -5744,3 +5745,4 @@ EOF
 #       模型坏输出 ERROR/AGENT_SYSTEM 源级钉值/per-tool timeoutMs 与 TIMEOUT 路径。隔离根 + 桩 LLM，零真实模型。
 node ./test-fixtures/reliability/test-agent-resume-tools.mjs
 node ./test-fixtures/reliability/test-agent-files.mjs
+node ./test-fixtures/reliability/test-upcv-residual.mjs

@@ -18,6 +18,8 @@
     + '#agent-app .ag-side{display:flex;flex-direction:column;min-height:0;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-lg)}'
     + '#agent-app .ag-side .ag-newbox{padding:var(--space-2);border-bottom:1px solid var(--line)}'
     + '#agent-app #ag-new{width:100%}'
+    + '#agent-app .ag-mem{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:var(--mut);cursor:pointer;user-select:none}'
+    + '#agent-app .ag-mem input{margin:0}'
     + '#agent-app #ag-sessions{flex:1;overflow:auto;padding:var(--space-2)}'
     + '#agent-app .ag-sess{padding:7px 8px;border-radius:var(--radius);cursor:pointer;display:flex;align-items:center;gap:6px;font-size:13px}'
     + '#agent-app .ag-sess:hover{background:var(--bg)}'
@@ -88,7 +90,9 @@
   // ===== DOM =====
   mount.innerHTML =
     '<div class="ag-wrap">'
-    + '<aside class="ag-side"><div class="ag-newbox"><button id="ag-new" type="button">＋ 新会话</button></div><div id="ag-sessions" aria-label="会话列表"></div></aside>'
+    + '<aside class="ag-side"><div class="ag-newbox"><button id="ag-new" type="button">＋ 新会话</button>'
+    + '<label class="ag-mem" title="关掉后每句独立作答：历史消息不再发给模型（本地会话照常落盘）"><input type="checkbox" id="ag-mem" checked> 记住上下文</label></div>'
+    + '<div id="ag-sessions" aria-label="会话列表"></div></aside>'
     + '<section class="ag-main"><div id="ag-log" aria-live="polite"></div>'
     + '<div class="ag-compose"><div id="ag-files"></div><div class="ag-input">'
     + '<button id="ag-attach" type="button" class="ag-icbtn" title="添加附件（pdf/docx/图片/txt/md）" aria-label="添加附件"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>'
@@ -103,6 +107,14 @@
   var log = $('ag-log'), sessBox = $('ag-sessions'), input = $('ag-msg'), sendBtn = $('ag-send');
   var attachBtn = $('ag-attach'), micBtn = $('ag-mic'), fileInput = $('ag-file'), filesBox = $('ag-files');
   var pendingFiles = [];   // [{fileId,name,error?}] 待发附件 chips（发送成功才清空）
+  // UPCV 残余 #1 记忆开关：agent-prefs.memory 全局闸门（关=历史不发模型，会话照常落盘）
+  var memBox = $('ag-mem');
+  api('GET', '/agent/prefs').then(function (d) { if (d && d.prefs) memBox.checked = d.prefs.memory !== false; }).catch(function () {});
+  memBox.onchange = function () {
+    var v = memBox.checked;
+    api('POST', '/agent/prefs', { memory: v })
+      .catch(function (e) { memBox.checked = !v; addStatus(e.message || e, 'warn'); });
+  };
   var current = null;   // 当前会话 id（null = 未选/未建，发送时自动建）
   var sending = false;
   var face = null;      // AoraFace 化身句柄；null = 未挂载（AoraFace 未加载时所有调用静默跳过）
@@ -196,7 +208,7 @@
   // toolPartHtml 画 server 侧真实执行的调用卡——多轮工具环里按 parts 时间序与过渡文本混排。
   var TOOL_SRC_LABEL = { inbox: '收件箱', app: '投递记录', eval: '评估' };
   var APP_STATUS_LB = { to_apply: '待投递', preparing: '准备中', applied: '已投递', replied: '有回复', interviewing: '面试中', offer: 'Offer', closed: '已关闭' };
-  var REAL_TOOLS = ['get_job_detail', 'query_job_progress', 'list_resumes', 'get_resume_summary', 'resume_check', 'resume_improve', 'resume_polish', 'resume_tailor'];
+  var REAL_TOOLS = ['get_job_detail', 'query_job_progress', 'list_resumes', 'get_resume_summary', 'resume_check', 'resume_improve', 'resume_polish', 'resume_tailor', 'job_monitor'];
   function toolStateBadge(st, output) {
     if (output && output.ok === false) return '<span class="ag-ts err">' + __icon('circle-alert') + '失败</span>';
     if (st === 'output-available') return '<span class="ag-ts ok">' + __icon('circle-check') + '已返回</span>';
@@ -234,6 +246,11 @@
     if (name === 'list_resumes') {
       var items = o.items || [];
       return ['共 ' + (o.total != null ? o.total : items.length) + ' 份' + (items.length ? '：' + items.slice(0, 5).map(function (d) { return d.title || d.id; }).join('、') + (items.length > 5 ? ' 等' : '') : '')];
+    }
+    if (name === 'job_monitor') {
+      var its = o.items || [];
+      return ['新职位 ' + (o.newCount != null ? o.newCount : its.length) + ' 个（本页共 ' + (o.total || 0) + ' 个）'
+        + (its.length ? '：' + its.slice(0, 4).map(function (j) { return ((j.company || '') + ' ' + (j.title || '')).trim(); }).join('、') + (its.length > 4 ? ' 等' : '') : '')];
     }
     if (name === 'get_resume_summary') {
       var secs = (o.sections || []).map(function (s) { return s.title; }).filter(Boolean);

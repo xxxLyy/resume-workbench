@@ -360,3 +360,11 @@ ctx 透传：`runTool/runToolTimed(args, ctx)` 的 `ctx={root,lease,profile,time
 - 语音输入：仅浏览器 SpeechRecognition（无服务端 /agent/voice——active 档无转写上游，API 缺失时麦克风隐藏）。
 - 会话删除连带 `sweepAgentFiles`；`agent-files/` 入 .gitignore/备份 tar/恢复 ALLOWED/RESTORE_MANAGED_DIRS。
 - 夹具：test-fixtures/reliability/test-agent-files.mjs（隔离根+SSE 桩，上传/提取/归属/chat/清扫五段）。
+
+## 7. UPCV 残余（2026-11-20 收口）
+
+- `GET/POST /agent/prefs`：`agent-prefs.json` 全局偏好——`memory`（默认 true）= #1 记忆开关，关时 chatStream 不带历史上模型（本地落盘照常）；`monitor={seenIds≤500,lastRun}` = #3 职位监控现场。
+- `job_monitor` 工具：上游 /campus/jobs 首页与 seenIds 比对出新岗（竞速 45s，非 LLM）；AGENT_SYSTEM 工具表第 9 行。
+- `/site` + `POST /site/generate` + `GET /site/file`（#2 个人主页）：母版 → site/index.html 自包含页（0600，可再生生成物，只进 .gitignore）。
+- 扩展 autoCollect（#4）：打开职位列表页自动采集（同 URL 60s 节流、批次在跑不插队）；默认关，逐卡打分烧 token 由用户主动开。
+- 夹具：test-upcv-residual.mjs（stub 上游 + 合成母版）。

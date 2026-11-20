@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { init, createSession, getSession, deleteSession, chatStream } from '../../agent.mjs';
+import { init, createSession, getSession, deleteSession, chatStream, setAgentPrefs } from '../../agent.mjs';
 import { uploadAgentFile, resolveAgentFiles, sweepAgentFiles, docxText } from '../../agent-files.mjs';
 
 const fail = (m) => { console.error('❌ ' + m); process.exit(1); };
@@ -131,6 +131,21 @@ const SID = createSession({}).id;
   console.log('✅ ⑤ 会话删除连带清扫');
 }
 
+// ⑥ 记忆开关（UPCV 残余 #1）：memory=false → 模型侧零历史（仅 system+当前条）；true → 历史回灌
+{
+  setAgentPrefs({ memory: false });
+  const s3 = createSession({}).id;
+  for await (const ev of chatStream(s3, '第一句', { profile: 0 })) {}
+  for await (const ev of chatStream(s3, '第二句', { profile: 0 })) {}
+  const n = lastBody.messages.filter((m) => m.role !== 'system').length;
+  assert.equal(n, 1, '记忆关时模型应只见当前条: ' + JSON.stringify(lastBody.messages.map((m) => m.role)));
+  setAgentPrefs({ memory: true });
+  for await (const ev of chatStream(s3, '第三句', { profile: 0 })) {}
+  const n2 = lastBody.messages.filter((m) => m.role !== 'system').length;
+  assert.ok(n2 >= 3, '记忆开时历史应回灌: ' + n2);
+  console.log('✅ ⑥ 记忆开关（关=每句独立 / 开=历史回灌）');
+}
+
 stub.close();
-console.log('✅ 全绿：A5 附件链（上传/提取/归属/chat/清扫）');
+console.log('✅ 全绿：A5 附件链（上传/提取/归属/chat/清扫）+ 记忆开关');
 process.exit(0);

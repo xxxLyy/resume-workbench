@@ -19,8 +19,9 @@ import { applyZoneOps } from './zone-ops.mjs';   // 区域安全子集（ZONE-04
 import { rotateLogIfNeeded } from './logrotate.mjs';
 import { renderTemplatesPage } from './templates-page.mjs';
 import { dispatchUpcv, matchUpcv } from './upcv-api.mjs';   // UPCV 契约端点（规范 upcv-api.routes.md）
-import { init as agentInit, listSessions as agentListSessions, createSession as agentCreateSession, getSession as agentGetSession, renameSession as agentRenameSession, deleteSession as agentDeleteSession, chat as agentChat, chatStream as agentChatStream, previewContext as agentPreviewContext, AGENT_NO_LLM } from './agent.mjs';   // Agent 求职助手（规范 agent.routes.md）
+import { init as agentInit, listSessions as agentListSessions, createSession as agentCreateSession, getSession as agentGetSession, renameSession as agentRenameSession, deleteSession as agentDeleteSession, chat as agentChat, chatStream as agentChatStream, previewContext as agentPreviewContext, getAgentPrefs as agentGetPrefs, setAgentPrefs as agentSetPrefs, AGENT_NO_LLM } from './agent.mjs';   // Agent 求职助手（规范 agent.routes.md）
 import { uploadAgentFile } from './agent-files.mjs';   // A5 附件上传（设计 dev-docs/2026-11-20-a5-voice-attachments-design.md）
+import { generateSite } from './site.mjs';   // UPCV 残余 #2 个人求职主页（site/index.html 生成物）
 import { getTalentProfile, generateTalent, getPreference, validatePreference, savePreference, findMaster } from './talent.mjs';   // 求职画像 + 偏好（UPCV A1，规范 dev-docs/2026-11-19-upcv-port-talent-design.md）
 import { fetchUpcvJobs, fetchUpcvDictionaries, fetchUpcvJob, searchParamsOf } from './upcv-jobs.mjs';   // UPCV 社招上游代理（UPCV A2，规范 dev-docs/2026-11-19-upcv-port-jobs-match-design.md §1）
 import { computeMatch, recommendMatches, jobPromptText } from './match.mjs';   // 岗位匹配 + 推荐（UPCV A2，同规范 §2）
@@ -245,7 +246,7 @@ const MAX_BODY_BYTES = 10 * 1024 * 1024;
 const mbLabel = (n) => `${Number((Number(n) / (1024 * 1024)).toFixed(1))} MB`;
 // 恢复/撤销的受管项（AUD-09）：存在性台账只覆盖这些；config.json 刻意不在其中（恢复不碰配置）。
 const RESTORE_MANAGED_DIRS = ['docs', 'snapshots', 'pdfs', 'agent-files'];   // agent-files（A5）：目录懒建，存在才进安全点
-const RESTORE_MANAGED_FILES = ['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json', 'talent.json', 'preference.json', 'resume-draft.json', 'match-cache.json'];   // talent/preference（UPCV A1）+ resume-draft（A3 快照）+ match-cache（A2 匹配缓存，对象形状）：受管 = 安全点复制 + present 台账 + replace/merge/undo 导入侧（新账本须同步扩四处：本表 / bakFiles / 恢复侧 ALLOWED 正则 / .gitignore+test.sh seed）
+const RESTORE_MANAGED_FILES = ['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json', 'talent.json', 'preference.json', 'resume-draft.json', 'match-cache.json', 'agent-prefs.json'];   // talent/preference（UPCV A1）+ resume-draft（A3 快照）+ match-cache（A2 匹配缓存，对象形状）+ agent-prefs（UPCV 残余 #1/#3）：受管 = 安全点复制 + present 台账 + replace/merge/undo 导入侧（新账本须同步扩四处：本表 / bakFiles / 恢复侧 ALLOWED 正则 / .gitignore+test.sh seed）
 // 对象账本（talent/preference）恢复导入：内容须是可解析 JSON 对象才拷（备份白名单只验文件名不验内容，
 // 坏条目跳过，不把坏数据写进数据根——CORRUPT 停写比拒恢复更烦人）。undo 段来源是自建安全点，不设防。
 function copyObjLedgerIfSound(fromDir, file) {
@@ -2195,7 +2196,7 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .foot-links a,.foot-links summary{color:var(--mut);font-size:13px}
 </style></head><body${wide ? ' class="wide"' : ''}>
 <script nonce="__CSP_NONCE__">${STATUS_SCRIPT}${ACT_DISPATCH_JS}</script>
-<nav class="topnav"><div><button type="button" class="navtoggle" data-navtoggle title="收起侧栏">${icon('panel-left', 15)}</button><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><div class="links">${nav('docs', '/', '简历', 'file-text')}${nav('apps', '/applications', '投递', 'columns-3')}${nav('jobs', '/jobs', '职位', 'box')}${nav('talent', '/talent', '求职画像', 'compass')}${nav('agent', '/agent', '求职助手', 'message-square')}${nav('interview', '/interview', '模拟面试', 'stethoscope')}${nav('templates', '/templates', '模板库', 'palette')}${nav('settings', '/settings', '设置', 'settings')}</div></div><div class="navfoot">本地优先 · 数据在 ~/resume</div></nav><button type="button" class="navtoggle navtoggle-reopen" data-navtoggle title="展开侧栏">${icon('panel-left', 15)}</button>
+<nav class="topnav"><div><button type="button" class="navtoggle" data-navtoggle title="收起侧栏">${icon('panel-left', 15)}</button><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><div class="links">${nav('docs', '/', '简历', 'file-text')}${nav('apps', '/applications', '投递', 'columns-3')}${nav('jobs', '/jobs', '职位', 'box')}${nav('talent', '/talent', '求职画像', 'compass')}${nav('agent', '/agent', '求职助手', 'message-square')}${nav('site', '/site', '求职主页', 'link')}${nav('interview', '/interview', '模拟面试', 'stethoscope')}${nav('templates', '/templates', '模板库', 'palette')}${nav('settings', '/settings', '设置', 'settings')}</div></div><div class="navfoot">本地优先 · 数据在 ~/resume</div></nav><button type="button" class="navtoggle navtoggle-reopen" data-navtoggle title="展开侧栏">${icon('panel-left', 15)}</button>
 <div class="home"><div class="mainarea">${inner}</div></div>
 <footer>简历工作台 · 本地优先 · 数据在 ${path.basename(root) === 'resume' ? '~/resume' : 'RESUME_ROOT'}</footer>
 ${WRITE_HELPER_JS}</body></html>`;
@@ -8647,7 +8648,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       // 清单里的 4 个 JSON 是运行时产物，首次写入前根本不存在。tar 遇到不存在的路径会整包失败
       // （Cannot stat → 非零退出 → 500），所以按存在性过滤；目录恒在（启动时 mkdir），不过滤。
       const bakFiles = ['docs', 'snapshots', 'pdfs']
-        .concat(['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json', 'talent.json', 'preference.json', 'resume-draft.json', 'match-cache.json', 'agent-files'].filter((f) => fs.existsSync(path.join(root, f))));   // resume-draft.json（A3）与 match-cache.json（A2）与 RESTORE_MANAGED_FILES 同表同步；agent-files（A5）目录懒建→按存在性过滤
+        .concat(['docs-meta.json', 'applications.json', 'materials.json', 'evaluations.json', 'talent.json', 'preference.json', 'resume-draft.json', 'match-cache.json', 'agent-prefs.json', 'agent-files'].filter((f) => fs.existsSync(path.join(root, f))));   // resume-draft.json（A3）与 match-cache.json（A2）与 RESTORE_MANAGED_FILES 同表同步；agent-prefs（残余 #1/#3）+ agent-files（A5）目录懒建→按存在性过滤
       const child = spawn('tar', ['czf', tmpTar, '-C', root, ...bakFiles], { stdio: ['ignore', 'ignore', 'pipe'] });
       let err = '';
       child.stderr.on('data', (c) => { err += c; });
@@ -8719,7 +8720,7 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
           return fail('备份包展开后 ' + Math.round(bytes / 1024 / 1024) + ' MB，超过 ' + Math.round(MAX_EXPANDED_BYTES / 1024 / 1024) + ' MB 上限，已拒绝（防压缩炸弹）', 413);
         }
       } catch (e) { return fail(e.code === 'ENOENT' ? '备份包信息读取失败' : e.message); }
-      const ALLOWED = /^(docs\/|snapshots\/|pdfs\/|agent-files\/|docs-meta\.json$|applications\.json$|materials\.json$|evaluations\.json$|talent\.json$|preference\.json$|resume-draft\.json$|match-cache\.json$)/;   // A2：match-cache 进恢复白名单（与 RESTORE_MANAGED_FILES/⑤ 形状层/copyObjLedgerIfSound 同批五处登记）；A5：agent-files 附件目录
+      const ALLOWED = /^(docs\/|snapshots\/|pdfs\/|agent-files\/|docs-meta\.json$|applications\.json$|materials\.json$|evaluations\.json$|talent\.json$|preference\.json$|resume-draft\.json$|match-cache\.json$|agent-prefs\.json$)/;   // A2：match-cache 进恢复白名单（与 RESTORE_MANAGED_FILES/⑤ 形状层/copyObjLedgerIfSound 同批五处登记）；A5：agent-files 附件目录；残余 #1/#3：agent-prefs
       for (const e of entries) {
         const ep = e.replace(/^\.\//, '');
         if (ep === '' || ep === '.') continue;         // tar czf -C dir . 的根条目
@@ -9403,6 +9404,33 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
     if (req.method === 'GET' && url.pathname === '/agent') {
       return send(200, page('求职助手', agentPageInner(), 'agent'));
     }
+    // ===== 个人求职主页（UPCV 残余 #2；规范 site.mjs：生成物交用户自行托管）=====
+    if (req.method === 'GET' && url.pathname === '/site') {
+      const siteFile = path.join(root, 'site', 'index.html');
+      const has = fs.existsSync(siteFile);
+      const inner = `<div class="page-head"><h1>个人求职主页</h1><span class="page-meta">母版简历 → 独立网页文件（交你自行托管）</span></div>
+<div class="panel" style="padding:var(--space-4);max-width:820px">
+  <p style="margin:0 0 var(--space-3);color:var(--mut);font-size:13px">把母版简历导出成一页可托管的个人主页（site/index.html）。内容是简历原文，不编造头衔与数字。</p>
+  <div style="display:flex;gap:var(--space-2);margin-bottom:var(--space-3)">
+    <button id="site-gen" type="button">生成 / 重新生成</button>
+    ${has ? '<a href="/site/file" target="_blank" rel="noopener">新窗口打开 →</a>' : ''}
+  </div>
+  <div id="site-status" class="status" style="margin-bottom:var(--space-3)">${has ? '已生成：site/index.html' : '尚未生成'}</div>
+  ${has ? '<iframe src="/site/file" style="width:100%;height:480px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel)" title="主页预览"></iframe>' : ''}
+</div>
+<script nonce="__CSP_NONCE__">document.getElementById('site-gen').onclick=function(){var st=document.getElementById('site-status');st.textContent='生成中…';fetch('/site/generate',{method:'POST'}).then(function(r){return r.json()}).then(function(d){if(d&&d.ok){location.reload()}else{st.textContent=(d&&d.error)||'生成失败'}}).catch(function(e){st.textContent=String(e)})};</script>`;
+      return send(200, page('个人求职主页', inner, 'site'));
+    }
+    if (req.method === 'POST' && url.pathname === '/site/generate') {
+      try { return sendJson(200, generateSite(root)); }
+      catch (e) { return sendJson(500, { ok: false, error: String((e && e.message) || e).slice(0, 200) }); }
+    }
+    if (req.method === 'GET' && url.pathname === '/site/file') {
+      const fp = path.join(root, 'site', 'index.html');
+      if (!fs.existsSync(fp)) return send(404, '尚未生成主页：先到 /site 点「生成」', 'text/plain');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Disposition': 'inline; filename="index.html"' });
+      return res.end(fs.readFileSync(fp));
+    }
     if (req.method === 'GET' && url.pathname === '/agent/sessions') {
       return sendJson(200, { ok: true, sessions: agentListSessions() });
     }
@@ -9425,6 +9453,16 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       if (req.method === 'DELETE') {
         return agentDeleteSession(sid) ? sendJson(200, { ok: true }) : sendJson(404, { ok: false, error: '会话不存在' });
       }
+    }
+    // UPCV 残余 #1：全局偏好（记忆开关等）。GET 读 / POST 整组写。
+    if (req.method === 'GET' && url.pathname === '/agent/prefs') {
+      return sendJson(200, { ok: true, prefs: agentGetPrefs() });
+    }
+    if (req.method === 'POST' && url.pathname === '/agent/prefs') {
+      const body = await readBodyAuto(req);
+      const patch = {};
+      if (typeof body.memory === 'boolean') patch.memory = body.memory;
+      return sendJson(200, { ok: true, prefs: agentSetPrefs(patch) });
     }
     // A5 附件上传：raw body（/upload 同款惯例），sid/name 走 query；会话归属在 agent-files 文件名前缀
     if (req.method === 'POST' && url.pathname === '/agent/files') {
