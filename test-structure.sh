@@ -2221,7 +2221,7 @@ const ROUTES_FROZEN = ['/','/ai-panel.js','/ai/chat','/ai/jd-text','/ai/prep','/
   '/materials','/model-picker.js','/new',
   '/agent','/agent-panel.js','/agent/chat','/agent/context-preview','/agent/files','/agent/prefs','/agent/sessions',   // /agent/files（A5 附件上传）+/agent/prefs（UPCV 残余 #1 记忆开关，登记非放宽）
   '/talent','/talent-panel.js','/talent/generate','/talent/profile','/talent/refresh','/preference','/preference/state',   // UPCV A1：求职画像+偏好五端点+面板件（2026-11-19，登记非放宽；spec dev-docs/2026-11-19-upcv-port-talent-design.md）
-  '/jobs','/jobs-panel.js','/jobs/search','/jobs/dictionaries','/jobs/apply-draft','/match/job','/match/recommend','/extension/match-score',   // UPCV A2：职位页+面板件+搜索/字典/转入适配+匹配/推荐/轻量打分（2026-11-19，登记非放宽；spec dev-docs/2026-11-19-upcv-port-jobs-match-design.md）
+  '/extension/match-score',   // UPCV A2 职位库 2026-11-20 退役（/jobs*、/match/* 随删）；match-score 保留服务扩展 jdText 打分
   '/extension/apply-record','/extension/chat-reply','/extension/greeting','/extension/resume-text','/extension/shortlist',   // UPCV A4：投递扩展五端点（2026-11-19，登记非放宽；spec dev-docs/2026-11-19-upcv-port-extension-design.md §1——match-score 已随 A2 登记）
   '/interview','/interview-panel.js','/interview/answer','/interview/banks','/interview/config','/interview/hint','/interview/next','/interview/report','/interview/session','/interview/sessions','/interview/sessions/delete',
   '/templates','/templates/use','/onboarding','/onboarding/guided','/onboarding/star-suggest','/onboarding/step','/pdf','/render','/restore','/restore/undo','/restructure','/rollback','/save','/settings','/eval/create','/eval/promote','/evals',
@@ -4362,9 +4362,9 @@ try {
   assert(evh.includes('data-eval-hist="report"') && evh.includes('data-eval-hist="promote"'),
     '/evals 应保留「查看报告」/「转入适配」按钮');
   assert(evh.includes('EVAL_RECORDS'), '/evals 应保留评估记录内联载荷（客户端渲染报告）');
-  // 导航：topnav 10 个链接（brand + 9 项，2026-11-20 UPCV #2 求职主页入列：简历/投递/职位/求职画像/求职助手/求职主页/模拟面试/模板库/设置）；导航唯一（sidenav 已移除，不回归）
+  // 导航：topnav 9 个链接（brand + 8 项，2026-11-20 UPCV 职位库退役：简历/投递/求职画像/求职助手/求职主页/模拟面试/模板库/设置）；导航唯一（sidenav 已移除，不回归）
   const nav = (evh.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
-  assert((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length === 10, '/evals 的 topnav 链接数应为 10（brand + 9 项，2026-11-20 UPCV #2 求职主页入列后：简历/投递/职位/求职画像/求职助手/求职主页/模拟面试/模板库/设置）');
+  assert((nav.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []).length === 9, '/evals 的 topnav 链接数应为 9（brand + 8 项，2026-11-20 UPCV 职位库退役后：简历/投递/求职画像/求职助手/求职主页/模拟面试/模板库/设置）');
   assert(!evh.includes('class="sidenav"'), '导航唯一：/evals 不应再有 .sidenav（用户裁决 2026-11-03）');
   assert(/<a href="\/" class="on">/.test(nav), '/evals topnav「简历」应高亮（active=docs）');
   // 渐进呈现 T2：投递系页签条——/applications 页应渲染 .apptabs，含「网申包」「复盘」互链（入口移位，非功能删除）
@@ -4612,11 +4612,11 @@ assert(hits.length === 0, '导航条仍含 emoji: ' + hits.join(' '));
 // 渲染结果必须含内联 SVG
 assert(/<svg/.test(navHtml), '导航应含内联 SVG');
 
-// brand + 9 个导航项（2026-11-20 UPCV #2 求职主页入列：简历/投递/职位/求职画像/求职助手/求职主页/模拟面试/模板库/设置）：每项都必须「图标 + 文字」同现（WCAG nav-label-icon）
+// brand + 8 个导航项（2026-11-20 UPCV 职位库退役：简历/投递/求职画像/求职助手/求职主页/模拟面试/模板库/设置）：每项都必须「图标 + 文字」同现（WCAG nav-label-icon）
 const links = (navHtml.match(/<a [^>]*>[\s\S]*?<\/a>/g) || []);
-assert(links.length === 10, '导航应有 10 个链接（brand + 9 项），实际 ' + links.length);
+assert(links.length === 9, '导航应有 9 个链接（brand + 8 项），实际 ' + links.length);
 assert(links[0].includes(icon('file-text', 17)) && links[0].includes('简历工作台'), 'brand 应为图标 + 文字');
-const NAV = [['file-text','简历'],['columns-3','投递'],['box','职位'],['compass','求职画像'],['message-square','求职助手'],['link','求职主页'],['stethoscope','模拟面试'],['palette','模板库'],['settings','设置']];
+const NAV = [['file-text','简历'],['columns-3','投递'],['compass','求职画像'],['message-square','求职助手'],['link','求职主页'],['stethoscope','模拟面试'],['palette','模板库'],['settings','设置']];
 NAV.forEach(([ic, label], idx) => {
   const a = links[idx + 1] || '';
   assert(a.includes('>' + label + '<'), '导航项应有文字: ' + label);
@@ -4636,9 +4636,9 @@ const srv = readFileSync('./server.mjs', 'utf8');
 assert(!/class="sidenav"/.test(srv), '导航唯一：不应再有 .sidenav（topnav 是唯一页头，用户裁决 2026-11-03）');
 assert(/<nav class="topnav">/.test(srv), '应有唯一页头 .topnav');
 assert(/class="mainarea"/.test(srv), '应有内容区 .mainarea');
-// topnav 含核心导航入口（简历/投递/设置在列；另含求职助手/模拟面试/模板库）
+// topnav 含核心导航入口（2026-11-20：职位退役/求职主页入列）
 const navblk = (srv.match(/<nav class="topnav">[\s\S]*?<\/nav>/) || [''])[0];
-for (const t of ['简历', '投递', '职位', '求职画像', '求职助手', '模拟面试', '模板库', '设置']) {
+for (const t of ['简历', '投递', '求职画像', '求职助手', '求职主页', '模拟面试', '模板库', '设置']) {
   assert(navblk.includes(t), 'topnav 应含入口: ' + t);
 }
 // 渐进呈现 T2 负向断言（入口移位非功能删除）：素材库/复盘/网申包 不再占 topnav 位——

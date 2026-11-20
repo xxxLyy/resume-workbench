@@ -363,8 +363,8 @@ ctx 透传：`runTool/runToolTimed(args, ctx)` 的 `ctx={root,lease,profile,time
 
 ## 7. UPCV 残余（2026-11-20 收口）
 
-- `GET/POST /agent/prefs`：`agent-prefs.json` 全局偏好——`memory`（默认 true）= #1 记忆开关，关时 chatStream 不带历史上模型（本地落盘照常）；`monitor={seenIds≤500,lastRun}` = #3 职位监控现场。
-- `job_monitor` 工具：上游 /campus/jobs 首页与 seenIds 比对出新岗（竞速 45s，非 LLM）；AGENT_SYSTEM 工具表第 9 行。
+- `GET/POST /agent/prefs`：`agent-prefs.json` 全局偏好——`memory`（默认 true）= #1 记忆开关，关时 chatStream 不带历史上模型（本地落盘照常）。
 - `/site` + `POST /site/generate` + `GET /site/file`（#2 个人主页）：母版 → site/index.html 自包含页（0600，可再生生成物，只进 .gitignore）。
 - 扩展 autoCollect（#4）：打开职位列表页自动采集（同 URL 60s 节流、批次在跑不插队）；默认关，逐卡打分烧 token 由用户主动开。
-- 夹具：test-upcv-residual.mjs（stub 上游 + 合成母版）。
+- 夹具：test-upcv-residual.mjs（合成母版 → site）。
+- **UPCV 职位库已于 2026-11-20 同日退役**（用户裁决）：/jobs 页、/jobs/* 四路由、/match/job、/match/recommend、job_monitor 工具、upcv-jobs.mjs、jobs-panel.js、test-jobs-match.mjs 全删。match.mjs 保留 computeMatch（jdText 路径）服务 /extension/match-score；agent-prefs.monitor 字段成为历史键（无害留存）。

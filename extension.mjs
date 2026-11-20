@@ -14,8 +14,7 @@ import { chat } from './llm.mjs';
 import { docToText } from './extract.mjs';
 import { findMaster } from './talent.mjs';
 import { safeUrl } from './safe-url.mjs';
-import { fetchUpcvJob } from './upcv-jobs.mjs';
-import { jobPromptText } from './match.mjs';
+
 import { atomicWrite } from './tx.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -186,8 +185,8 @@ function cleanProse(raw, max) {
 }
 
 // ===== POST /extension/greeting =====
-// 岗位文本三来源：jdText 直用 > jobId 命中投递行（role/company + 行 jd）> jobId 走上游详情（A2 jobPromptText）。
-// 站点采集岗必有投递行（加入待投即建行），上游路径只服务本仓 /jobs 页那类真上游 id。
+// 岗位文本两来源：jdText 直用 > jobId 命中投递行（role/company + 行 jd）。
+// 站点采集岗必有投递行（加入待投即建行）；UPCV 上游已退役（2026-11-20），jobId 不再能换详情。
 export async function extensionGreeting({ root = defaultRoot(), body, lease } = {}) {
   const b = isObj(body) ? body : {};
   const doc = docTextOf(root, b.docId);
@@ -205,8 +204,7 @@ export async function extensionGreeting({ root = defaultRoot(), body, lease } = 
         String(row.jd || '').trim() ? `\n【职位描述】\n${CLIP(row.jd, JD_FIELD_MAX)}` : '',
       ].filter(Boolean).join('\n');
     } else {
-      try { jobText = jobPromptText(await fetchUpcvJob(jid)); }
-      catch (e) { const x = err(502, '职位详情失败：' + String((e && e.message) || e)); x.cause = e; throw x; }
+      throw err(400, '缺少职位文本 jdText（jobId 未命中投递行）');
     }
   }
 

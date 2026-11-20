@@ -208,7 +208,7 @@
   // toolPartHtml 画 server 侧真实执行的调用卡——多轮工具环里按 parts 时间序与过渡文本混排。
   var TOOL_SRC_LABEL = { inbox: '收件箱', app: '投递记录', eval: '评估' };
   var APP_STATUS_LB = { to_apply: '待投递', preparing: '准备中', applied: '已投递', replied: '有回复', interviewing: '面试中', offer: 'Offer', closed: '已关闭' };
-  var REAL_TOOLS = ['get_job_detail', 'query_job_progress', 'list_resumes', 'get_resume_summary', 'resume_check', 'resume_improve', 'resume_polish', 'resume_tailor', 'job_monitor'];
+  var REAL_TOOLS = ['get_job_detail', 'query_job_progress', 'list_resumes', 'get_resume_summary', 'resume_check', 'resume_improve', 'resume_polish', 'resume_tailor'];
   function toolStateBadge(st, output) {
     if (output && output.ok === false) return '<span class="ag-ts err">' + __icon('circle-alert') + '失败</span>';
     if (st === 'output-available') return '<span class="ag-ts ok">' + __icon('circle-check') + '已返回</span>';
@@ -246,11 +246,6 @@
     if (name === 'list_resumes') {
       var items = o.items || [];
       return ['共 ' + (o.total != null ? o.total : items.length) + ' 份' + (items.length ? '：' + items.slice(0, 5).map(function (d) { return d.title || d.id; }).join('、') + (items.length > 5 ? ' 等' : '') : '')];
-    }
-    if (name === 'job_monitor') {
-      var its = o.items || [];
-      return ['新职位 ' + (o.newCount != null ? o.newCount : its.length) + ' 个（本页共 ' + (o.total || 0) + ' 个）'
-        + (its.length ? '：' + its.slice(0, 4).map(function (j) { return ((j.company || '') + ' ' + (j.title || '')).trim(); }).join('、') + (its.length > 4 ? ' 等' : '') : '')];
     }
     if (name === 'get_resume_summary') {
       var secs = (o.sections || []).map(function (s) { return s.title; }).filter(Boolean);

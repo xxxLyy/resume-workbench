@@ -23,8 +23,7 @@ import { init as agentInit, listSessions as agentListSessions, createSession as 
 import { uploadAgentFile } from './agent-files.mjs';   // A5 附件上传（设计 dev-docs/2026-11-20-a5-voice-attachments-design.md）
 import { generateSite } from './site.mjs';   // UPCV 残余 #2 个人求职主页（site/index.html 生成物）
 import { getTalentProfile, generateTalent, getPreference, validatePreference, savePreference, findMaster } from './talent.mjs';   // 求职画像 + 偏好（UPCV A1，规范 dev-docs/2026-11-19-upcv-port-talent-design.md）
-import { fetchUpcvJobs, fetchUpcvDictionaries, fetchUpcvJob, searchParamsOf } from './upcv-jobs.mjs';   // UPCV 社招上游代理（UPCV A2，规范 dev-docs/2026-11-19-upcv-port-jobs-match-design.md §1）
-import { computeMatch, recommendMatches, jobPromptText } from './match.mjs';   // 岗位匹配 + 推荐（UPCV A2，同规范 §2）
+import { computeMatch } from './match.mjs';   // 岗位匹配（jdText 路径，扩展 match-score 用；UPCV 职位库 2026-11-20 退役）
 import { extensionShortlist, extensionApplyRecord, extensionResumeText, extensionGreeting, extensionChatReply } from './extension.mjs';   // 投递扩展五端点核心（UPCV A4，规范 dev-docs/2026-11-19-upcv-port-extension-design.md §1）
 import { getConfig as getInterviewConfig, listSessions as ivListSessions, getSession as ivGetSession, createSession as ivCreateSession, deleteSession as ivDeleteSession, nextQuestion as ivNextQuestion, submitAnswer as ivSubmitAnswer, skipQuestion as ivSkipQuestion, genHint as ivGenHint, genReport as ivGenReport, genHintStream as ivGenHintStream, genReportStream as ivGenReportStream,
   listBanks as ivListBanks, getBank as ivGetBank,
@@ -771,11 +770,10 @@ function gatePool(method, pathname) {
   }
   // /eval/create、/restructure 也直连 LLM → 一并进闸门（实测 4 并发全放行、0×429）
   // /onboarding/star-suggest（S5F）：向导 STAR AI 整理同样直连 chat → 同闸门
-  // UPCV A2：/match/job、/match/recommend、/extension/match-score 直连 chat → 精确匹配进 AI 池
-  // （/jobs/search、/jobs/dictionaries 纯上游代理不调 LLM，零改动；/jobs/apply-draft 走 createJobDraft 也不调 LLM）
+  // /extension/match-score 直连 chat → 精确匹配进 AI 池（UPCV 职位库已退役，/match/* 随删）
   // UPCV A4：/extension/greeting、/extension/chat-reply 直连 chat → 同款精确匹配（勿用 /extension/ 前缀——
   // 免得 apply-record/shortlist 这类不调模型的端点误占 AI 槽）
-  if (method === 'POST' && (/^\/ai\//.test(pathname) || /^\/talent\//.test(pathname) || pathname === '/agent/chat' || pathname === '/eval/create' || pathname === '/restructure' || pathname === '/onboarding/star-suggest' || pathname === '/match/job' || pathname === '/match/recommend' || pathname === '/extension/match-score' || pathname === '/extension/greeting' || pathname === '/extension/chat-reply')
+  if (method === 'POST' && (/^\/ai\//.test(pathname) || /^\/talent\//.test(pathname) || pathname === '/agent/chat' || pathname === '/eval/create' || pathname === '/restructure' || pathname === '/onboarding/star-suggest' || pathname === '/extension/match-score' || pathname === '/extension/greeting' || pathname === '/extension/chat-reply')
     && !AI_EXEMPT.has(pathname)) {
     return { pool: aiPool, label: 'AI' };
   }
@@ -2196,7 +2194,7 @@ footer{margin-top:36px;text-align:center;color:var(--mut);font-size:12px}
 .foot-links a,.foot-links summary{color:var(--mut);font-size:13px}
 </style></head><body${wide ? ' class="wide"' : ''}>
 <script nonce="__CSP_NONCE__">${STATUS_SCRIPT}${ACT_DISPATCH_JS}</script>
-<nav class="topnav"><div><button type="button" class="navtoggle" data-navtoggle title="收起侧栏">${icon('panel-left', 15)}</button><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><div class="links">${nav('docs', '/', '简历', 'file-text')}${nav('apps', '/applications', '投递', 'columns-3')}${nav('jobs', '/jobs', '职位', 'box')}${nav('talent', '/talent', '求职画像', 'compass')}${nav('agent', '/agent', '求职助手', 'message-square')}${nav('site', '/site', '求职主页', 'link')}${nav('interview', '/interview', '模拟面试', 'stethoscope')}${nav('templates', '/templates', '模板库', 'palette')}${nav('settings', '/settings', '设置', 'settings')}</div></div><div class="navfoot">本地优先 · 数据在 ~/resume</div></nav><button type="button" class="navtoggle navtoggle-reopen" data-navtoggle title="展开侧栏">${icon('panel-left', 15)}</button>
+<nav class="topnav"><div><button type="button" class="navtoggle" data-navtoggle title="收起侧栏">${icon('panel-left', 15)}</button><a class="brand" href="/">${icon('file-text', 17)} 简历工作台</a><div class="links">${nav('docs', '/', '简历', 'file-text')}${nav('apps', '/applications', '投递', 'columns-3')}${nav('talent', '/talent', '求职画像', 'compass')}${nav('agent', '/agent', '求职助手', 'message-square')}${nav('site', '/site', '求职主页', 'link')}${nav('interview', '/interview', '模拟面试', 'stethoscope')}${nav('templates', '/templates', '模板库', 'palette')}${nav('settings', '/settings', '设置', 'settings')}</div></div><div class="navfoot">本地优先 · 数据在 ~/resume</div></nav><button type="button" class="navtoggle navtoggle-reopen" data-navtoggle title="展开侧栏">${icon('panel-left', 15)}</button>
 <div class="home"><div class="mainarea">${inner}</div></div>
 <footer>简历工作台 · 本地优先 · 数据在 ${path.basename(root) === 'resume' ? '~/resume' : 'RESUME_ROOT'}</footer>
 ${WRITE_HELPER_JS}</body></html>`;
@@ -9563,66 +9561,6 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       try { return sendJson(200, { ok: true, preference: savePreference(pref, root) }); }
       catch (e) { return sendJson((e && e.httpCode) || 500, { ok: false, error: e.message }); }   // CORRUPT 停写
     }
-    // ===== 社招职位 + 岗位匹配 + 岗位推荐（UPCV A2 · #10/#11；规范 dev-docs/2026-11-19-upcv-port-jobs-match-design.md）=====
-    // 错误口径同 talent：409 纯文本（无 LLM）/ 400·404·500 JSON / 502 上游或模型失败。
-    // GET /jobs* 纯上游代理不写盘不调 LLM（字典 10 分钟进程内缓存不落盘）→ 零闸门零 WRITE_ON_GET。
-    if (req.method === 'GET' && url.pathname === '/jobs') {
-      let master = null;
-      try { master = findMaster(root); } catch { master = null; }   // boot 数据尽力而为：meta 损坏不挡页面，面板按无母版降级
-      const appJobIds = loadApps().map((a) => (a && typeof a.jobId === 'string' ? a.jobId : '')).filter(Boolean);
-      let hasPreference = false;
-      try { hasPreference = !!getPreference(root); } catch {}
-      const inner = `<div class="page-head"><h1>社招职位</h1><span class="page-meta">UPCV 职位库 · AI 匹配参考</span></div>
-<div id="jobs-app"><p style="color:var(--mut)">界面加载中…</p></div>
-<script nonce="__CSP_NONCE__">window.__JOBS__=${jsonScript({ hasLLM: hasLLM(root), master: master ? { id: master.id, title: master.title } : null, appJobIds, hasPreference })};</script>
-<script src="/jobs-panel.js" defer></script>`;
-      return send(200, page('社招职位', inner, 'jobs'));
-    }
-    if (req.method === 'GET' && url.pathname === '/jobs-panel.js') {
-      return send(200, fs.readFileSync(path.join(APP_ROOT, 'jobs-panel.js'), 'utf8'), 'application/javascript; charset=utf-8');
-    }
-    if (req.method === 'GET' && url.pathname === '/jobs/search') {
-      const params = searchParamsOf(url.searchParams);
-      if (!params.has('jobType')) params.set('jobType', 'SOCIAL');   // 默认社招（本页主场景）
-      // limit 封顶 20（设计 §2：防上游/页面失控）；page 下限 1
-      const limit = Math.min(20, Math.max(1, Math.floor(Number(params.get('limit')) || 20)));
-      params.set('limit', String(limit));
-      params.set('page', String(Math.max(1, Math.floor(Number(params.get('page')) || 1))));
-      let r;
-      try { r = await fetchUpcvJobs(params); }
-      catch (e) { return sendJson(502, { ok: false, error: '职位搜索失败：' + String((e && e.message) || e) }); }
-      const items = (r && typeof r === 'object' && !Array.isArray(r) && Array.isArray(r.data)) ? r.data : [];
-      const total = (r && typeof r === 'object' && typeof r.total === 'number') ? r.total : items.length;
-      const page = Math.max(1, Math.floor(Number(params.get('page')) || 1));
-      return sendJson(200, { ok: true, items, page, limit, total, hasMore: page * limit < total });
-    }
-    if (req.method === 'GET' && url.pathname === '/jobs/dictionaries') {
-      try { return sendJson(200, { ok: true, ...await fetchUpcvDictionaries() }); }
-      catch (e) { return sendJson(502, { ok: false, error: '字典加载失败：' + String((e && e.message) || e) }); }
-    }
-    // 「转入适配」：上游详情 → 裁剪 JD 文本 → 复用 createJobDraft（同一套去重/冻结/截断/指纹；jdSource 记 upcv 来源）
-    // 不调 LLM → 不进 AI 闸门；写盘走 createJobDraft 既有原语，无新增写路径。
-    if (req.method === 'POST' && url.pathname === '/jobs/apply-draft') {
-      const body = await readBodyAuto(req);
-      const from = String(body.from || '');
-      if (!VALID_ID.test(from)) return sendJson(400, { ok: false, error: 'invalid from' });
-      if (!fs.existsSync(docPath(from))) return sendJson(404, { ok: false, error: '母版文档不存在' });
-      const jobId = String(body.jobId || '').trim();
-      if (!/^[A-Za-z0-9_-]{1,90}$/.test(jobId)) return sendJson(400, { ok: false, error: '非法 jobId' });
-      let detail;
-      try { detail = await fetchUpcvJob(jobId); }
-      catch (e) { return sendJson(502, { ok: false, error: '职位详情失败：' + String((e && e.message) || e) }); }
-      const j = (detail && typeof detail === 'object' && detail.job) || {};
-      const r = await createJobDraft(root, {
-        from,
-        company: String(j.companyName || (detail && detail.company && detail.company.name) || '').trim(),
-        role: String(j.title || '').trim(),
-        jd: jobPromptText(detail),
-        jdSource: 'upcv:' + jobId,
-      });
-      if (!r.ok) return sendJson(r.status, r.body);   // 409 携带 existing（同岗位草稿已存在），面板跳既有草稿
-      return sendJson(200, { ok: true, id: r.id });
-    }
     // ===== 投递扩展口令闸（UPCV A4；/extension/* 已从 CSRF/迁移锁豁免，POST 一律验口令）=====
     // 书签同源口令（importToken）：扩展 SW/页面不带本站 Origin 同源豁免，任意网页都能盲 POST 到这些端点，
     // 其中 greeting/chat-reply/match-score 烧模型钱、apply-record 写投递账本——口令是唯一防线，不符 401。
@@ -9631,24 +9569,14 @@ if (req.method === 'GET' && url.pathname === '/app/ics') {
       && !importTokenOk(req.headers['x-resume-token'])) {
       return sendJson(401, { ok: false, error: 'X-Resume-Token 不符（与 JD 书签同源口令，书签在「为岗位定制简历」页，或读数据根 .import-token）' });
     }
-    // /match/* 与 /extension/match-score 调 LLM → gatePool AI 池（前缀已登记）；无 LLM 配置 409 同 talent 口径。
-    if (req.method === 'POST' && (url.pathname === '/match/job' || url.pathname === '/match/recommend' || url.pathname === '/extension/match-score')) {
+    // /extension/match-score 调 LLM → gatePool AI 池（前缀已登记）；无 LLM 配置 409 同 talent 口径。
+    if (req.method === 'POST' && url.pathname === '/extension/match-score') {
       if (!hasLLM(root)) return send(409, '未配置大模型：打开 /settings 完成模型配置', 'text/plain');
       const body = await readBodyAuto(req);
       try {
-        if (url.pathname === '/match/job') {
-          const r = await computeMatch({ root, docId: body.docId, jobId: body.jobId, jdText: body.jdText, refresh: body.refresh === true, lease: leaseOf(req) });
-          return sendJson(200, { ok: true, cached: r.cached, match: r.match });
-        }
-        if (url.pathname === '/extension/match-score') {
-          // A4 修正：扩展采集的站点 jobId（site-…）不是上游 id——computeMatch 的 jobId 优先走上游、
-          // 对这类 id 恒 502。带 jdText（采集卡字段拼的）时改走 jdText 路径（指纹缓存键），无 jdText 保持 A2 原语义。
-          const jd = typeof body.jdText === 'string' ? body.jdText : '';
-          const r = await computeMatch({ root, docId: body.docId, jobId: jd.trim() ? undefined : body.jobId, jdText: body.jdText, lease: leaseOf(req) });
-          return sendJson(200, { ok: true, matchScore: r.match.matchScore, matchLevel: r.match.matchLevel });
-        }
-        const r = await recommendMatches({ root, docId: body.docId, jobType: body.jobType, limit: body.limit, refresh: body.refresh === true, lease: leaseOf(req) });
-        return sendJson(200, { ok: true, ...r });
+        // 扩展采集的站点 jobId（site-…）只是幂等缓存键；匹配上下文用采集卡拼的 jdText（指纹缓存键）。
+        const r = await computeMatch({ root, docId: body.docId, jobId: body.jobId, jdText: body.jdText, lease: leaseOf(req) });
+        return sendJson(200, { ok: true, matchScore: r.match.matchScore, matchLevel: r.match.matchLevel });
       } catch (e) {
         if (e && e.httpCode) return sendJson(e.httpCode, { ok: false, error: e.message });   // 400/404/CORRUPT 500/BAD_MATCH 502
         return sendJson(502, { ok: false, error: '模型调用失败：' + String((e && e.message) || e).slice(0, 200) });

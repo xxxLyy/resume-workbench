@@ -23,7 +23,6 @@ import { docToText, docToLines, sectionsOf } from './extract.mjs';
 import { agentDraftTick } from './draft.mjs';   // UPCV A3：建简历草稿快照接缝（chatStream 用户条落盘后调用）
 import { smartCheck, improveAll, customRewrite, improveWriting } from './ai-helper.mjs';   // AI 四件套编排（2026-11-19 面合并：/ai-helper 页退役，能力并入工具环；规范 agent.routes.md §5.7）
 import { resolveAgentFiles, sweepAgentFiles } from './agent-files.mjs';   // A5 附件：归属解析 + 会话删除连带清理（agent-files/<sid>__<fid>.*）
-import { fetchUpcvJobs } from './upcv-jobs.mjs';   // UPCV 残余 #3 职位监控：拉上游社招库比对 seenIds
 
 export const AGENT_NO_LLM = '未配置大模型：打开 /settings 完成模型配置';
 const AGENT_FILE = 'agent-sessions.json';
@@ -546,27 +545,6 @@ async function toolResumeTailor(args, ctx) {
 }
 // def.fact：回灌 system 的投影（缺省=原样全量 clip）；四件套真模型分钟级 → per-call 540s（RESUME_LLM_TIMEOUT_MS）+ 工具竞速 600s
 const rewriteFact = (o) => (o && o.ok ? { ok: o.ok, docId: o.docId, title: o.title, chars: o.chars, issuesFixed: o.issuesFixed, requirement: o.requirement, preview: o.preview } : o);
-// UPCV 残余 #3 职位监控：拉上游社招首页 → 与 agent-prefs.monitor.seenIds 比对出新岗 → 现场回写
-// （seenIds 取并集封顶 500：只认「从未见过」，翻页轮换不误报新；不调 LLM，竞速 45s 兜上游抖动）
-async function toolJobMonitor() {
-  const q = new URLSearchParams({ jobType: 'SOCIAL', page: '1', limit: '20' });
-  const r = await fetchUpcvJobs(q);
-  const items = (r && typeof r === 'object' && Array.isArray(r.data)) ? r.data : [];
-  const jobs = items.map((j) => (j && typeof j === 'object') ? {
-    id: String(j.jobId || j.id || j.encJobId || ''),
-    title: String(j.jobName || j.title || ''),
-    company: String(j.brandName || j.companyName || ''),
-    salary: String(j.salaryDesc || j.salary || ''),
-    city: String(j.cityName || j.city || j.location || '')
-  } : null).filter((j) => j && j.id);
-  const prev = getAgentPrefs().monitor;
-  const seen = new Set(prev.seenIds);
-  const fresh = jobs.filter((j) => !seen.has(j.id));
-  const union = Array.from(new Set(prev.seenIds.concat(jobs.map((j) => j.id)))).slice(-500);
-  setAgentPrefs({ monitor: { seenIds: union, lastRun: new Date().toISOString() } });
-  return { ok: true, total: jobs.length, newCount: fresh.length, items: fresh.slice(0, 20), checkedAt: new Date().toISOString(), lastRun: prev.lastRun };
-}
-
 export const TOOL_DEFS = {
   get_job_detail: { run: toolGetJobDetail },
   query_job_progress: { run: toolQueryJobProgress },
@@ -575,8 +553,7 @@ export const TOOL_DEFS = {
   resume_check: { run: toolResumeCheck, timeoutMs: 600000, factClip: 4000, fact: (o) => o },
   resume_improve: { run: toolResumeImprove, timeoutMs: 600000, fact: rewriteFact },
   resume_polish: { run: toolResumePolish, timeoutMs: 600000, fact: rewriteFact },
-  resume_tailor: { run: toolResumeTailor, timeoutMs: 600000, fact: rewriteFact },
-  job_monitor: { run: toolJobMonitor, timeoutMs: 45000 }   // 残余 #3：上游拉取，非 LLM 调用
+  resume_tailor: { run: toolResumeTailor, timeoutMs: 600000, fact: rewriteFact }
 };
 export function runTool(name, args, ctx) {
   const def = TOOL_DEFS[name];
@@ -615,7 +592,6 @@ B. 直接回复 → {"reply":"正文：先给判断+动作，再给依据；中�
 - resume_improve {"docId":"…"}：一键优化——先体检再逐条修复，交付改写后全文。用户说「一键优化/修一下」时用。
 - resume_polish {"docId":"…"}：润色全文（不改事实与结构）。用户说「润色」时用。
 - resume_tailor {"docId":"…","requirement":"…"}：按 JD 定制改写；requirement 把 JD 关键要求浓缩成 ≤200 字填入。用户说「按 JD 定制/针对性改写」时用。
-- job_monitor {}：职位监控——拉上游社招职位库首页，与上次记录比对给出新出现的岗位（公司/岗位/薪资/城市）。用户说「看看有没有新职位/帮我盯职位」时用。
 四件套（resume_*）输出不自动写回文档：改写全文只出现在工具卡里，指导用户复制全文到编辑器应用（「只读」指零落盘，文本变换不算写）。
 
 策略（必须遵守）：

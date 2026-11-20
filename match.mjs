@@ -12,8 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { chat } from './llm.mjs';
 import { updateJsonLedger } from './tx.mjs';
 import { docToText, contentHash } from './extract.mjs';
-import { fetchUpcvJob, fetchUpcvJobs, UPCV_SEARCH_PARAMS } from './upcv-jobs.mjs';
-import { getPreference, findMaster } from './talent.mjs';
+
 import { fingerprintText } from './vendors/jd-fingerprint/fingerprint-core.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -30,7 +29,6 @@ const DOC_TEXT_MAX = 20000;      // 简历正文截断（护 token，同 talent.
 const HEADLINE_MAX = 80;         // UPCV 契约：headline ≤80 字
 const ITEM_MAX = 60;             // 三数组每条 ≤60 字
 const LIST_CAP = 3;              // UPCV 契约：三数组各 ≤3 条
-const RECOMMEND_LIMIT_MAX = 12;  // 设计 §2：推荐只自动算首页 ≤12 条（token 上限）
 const EVIDENCE_MIN = 6;          // evidence normSpace 后 <6 码元等于没锚（同 eval.mjs 口径）
 
 const isObj = (x) => !!x && typeof x === 'object' && !Array.isArray(x);
@@ -83,22 +81,6 @@ function writeCachedMatch(root, key, match) {
 const MATCH_LEVELS = new Set(['weak', 'medium', 'strong', 'excellent']);
 /** matchLevel 非法值时的推导档：按分数落档，不让非法值穿过契约（efc match.ts 同款） */
 const levelOfScore = (score) => (score >= 85 ? 'excellent' : score >= 70 ? 'strong' : score >= 50 ? 'medium' : 'weak');
-
-// ===== 职位详情 → 喂 LLM 的裁剪文本（efc jobPromptText 同款口径；server /jobs/apply-draft 复用）=====
-export function jobPromptText(detail) {
-  const d = isObj(detail) ? detail : {};
-  const j = isObj(d.job) ? d.job : {};
-  const clipJd = (s) => clip(s, JD_FIELD_MAX);
-  return [
-    `职位：${str(j.title) || '?'}（${str(j.companyName) || str(isObj(d.company) ? d.company.name : '') || '?'}）`,
-    str(j.locationDetail) ? `地点：${str(j.locationDetail)}` : '',
-    isObj(j.minEducation) && str(j.minEducation.label) ? `学历要求：${str(j.minEducation.label)}` : '',
-    str(j.salaryDisplay) ? `薪资：${str(j.salaryDisplay)}` : '',
-    Array.isArray(j.preferredSkills) && j.preferredSkills.length ? `技能标签：${j.preferredSkills.map(str).filter(Boolean).join('、')}` : '',
-    str(j.description) ? `\n【职位描述】\n${clipJd(j.description)}` : '',
-    str(j.requirements) ? `\n【任职要求】\n${clipJd(j.requirements)}` : '',
-  ].filter(Boolean).join('\n');
-}
 
 // ===== prompt（纯函数）：strengths 必须附 evidence（解析侧逐字子串验证，编造即剔除）=====
 export function buildMatchPrompt({ docText, jdText }) {
@@ -201,14 +183,9 @@ export async function computeMatch({ root = defaultRoot(), docId, jobId, jdText,
     if (cached) return { ok: true, cached: true, match: cached };
   }
 
-  // 职位文本：jobId → 上游详情裁剪；jdText → 截 64KB 终值
-  let jobText;
-  if (jid) {
-    try { jobText = jobPromptText(await fetchUpcvJob(jid)); }
-    catch (e) { const err = new Error('职位详情失败：' + String((e && e.message) || e)); err.httpCode = 502; err.cause = e; throw err; }
-  } else {
-    jobText = jd.trim();
-  }
+  // 职位文本：jdText 截 64KB 终值（UPCV 上游已退役——jobId 只作幂等缓存键，不再有详情源）
+  const jobText = jd.trim();
+  if (!jobText) { const e = new Error('缺少职位文本 jdText'); e.httpCode = 400; throw e; }
 
   const p = buildMatchPrompt({ docText, jdText: jobText });
   let parsed = null, lastReason = '';
@@ -226,83 +203,3 @@ export async function computeMatch({ root = defaultRoot(), docId, jobId, jdText,
   return { ok: true, cached: false, match: parsed };
 }
 
-// ===== 推荐核心（/match/recommend；偏好映射 → feed 首页逐岗匹配 → matchScore 降序）=====
-// 返回 {ok:true, items, page, limit, total, hasMore}；无母版 → 400（同 talent NO_MASTER 中文口径）。
-// 上游条目无 id → 无法匹配，pending 标记；单岗失败 → 该岗 matchError 并停止补算
-// （LLM 未配置/解析失败对后续条目大概率同样失败，不再烧 token；efc 同款 break）。
-export async function recommendMatches({ root = defaultRoot(), docId, jobType, limit, refresh = false, lease, profile } = {}) {
-  let master = null;
-  const did = String(docId || '');
-  if (did) {
-    if (!VALID_ID.test(did)) { const e = new Error('非法 docId'); e.httpCode = 400; throw e; }
-    const f = path.join(root, 'docs', did + '.html');
-    if (!fs.existsSync(f)) { const e = new Error('简历文档不存在'); e.httpCode = 404; throw e; }
-    master = { id: did };
-  } else {
-    master = findMaster(root);   // docs-meta 损坏 → CORRUPT（talent.mjs 口径，原样上抛）
-    if (!master) {
-      const e = new Error('先创建或导入一份母版简历，匹配与推荐都基于母版');
-      e.httpCode = 400; e.code = 'NO_MASTER';
-      throw e;
-    }
-  }
-
-  // 偏好映射（设计 §2）：salary → search 关键词（启发式：上游 search 是全文检索，薪资区间作关键词）
-  // cityIds/functionIds 逗号透传（白名单内）；industryIds 上游搜索无对应参数（不在白名单）→ 如实忽略。
-  // jobTypes → jobType（校招位 A1 已剔除，只收 SOCIAL|INTERNSHIP）；无偏好 → 裸 SOCIAL feed。
-  const pref = getPreference(root);   // preference.json 损坏 → CORRUPT 原样上抛
-  const params = new URLSearchParams();
-  const jt = (pref && Array.isArray(pref.jobTypes) ? pref.jobTypes : []).find((t) => t === 'SOCIAL' || t === 'INTERNSHIP');
-  params.set('jobType', String(jobType || jt || 'SOCIAL'));
-  if (pref && isObj(pref.salary)) {
-    const mn = Number(pref.salary.min), mx = Number(pref.salary.max);
-    if (Number.isFinite(mn) && Number.isFinite(mx)) params.set('search', `${mn}-${mx}K`);
-  }
-  if (pref) {
-    for (const k of ['cityIds', 'functionIds']) {
-      const ids = Array.isArray(pref[k]) ? pref[k].join(',') : '';
-      if (ids) params.set(k, ids);
-    }
-  }
-  const lim = Math.min(RECOMMEND_LIMIT_MAX, Math.max(1, Math.floor(Number(limit) || RECOMMEND_LIMIT_MAX) || RECOMMEND_LIMIT_MAX));
-  params.set('page', '1');
-  params.set('limit', String(lim));
-
-  let search;
-  try { search = await fetchUpcvJobs(params); }
-  catch (e) { const err = new Error('职位搜索失败：' + String((e && e.message) || e)); err.httpCode = 502; err.cause = e; throw err; }
-  const jobs = isObj(search) && Array.isArray(search.data) ? search.data : [];
-  const total = isObj(search) && typeof search.total === 'number' ? search.total : jobs.length;
-
-  const items = jobs.map((j) => ({ ...(isObj(j) ? j : {}), matchScore: null, matchLevel: null }));
-  const needCompute = [];
-  items.forEach((it, i) => {
-    const jid = String(it.id ?? '');
-    if (!jid || !VALID_JOB_ID.test(jid)) { it.pending = true; return; }   // 上游条目无合法 id，无法匹配
-    const cached = readCachedMatch(root, master.id + '|' + jid);
-    if (cached && !refresh) {
-      it.matchScore = cached.matchScore;
-      it.matchLevel = cached.matchLevel;
-    } else {
-      needCompute.push(i);
-    }
-  });
-  for (const [n, i] of needCompute.entries()) {
-    if (n > 0) await sleep(matchIntervalMs());
-    try {
-      const r = await computeMatch({ root, docId: master.id, jobId: String(items[i].id), refresh, lease, profile });
-      items[i].matchScore = r.match.matchScore;
-      items[i].matchLevel = r.match.matchLevel;
-    } catch (e) {
-      // 单岗失败即停：缺 LLM 配置/解析失败对后续岗大概率同样失败，不再烧 token（efc 同款）
-      items[i].pending = true;
-      items[i].matchError = String((e && e.message) || e);
-      break;
-    }
-  }
-  for (const it of items) {
-    if (it.matchScore === null && it.pending === undefined) it.pending = true;   // 排序后的缺口如实标记
-  }
-  items.sort((a, b) => (b.matchScore ?? -1) - (a.matchScore ?? -1));
-  return { ok: true, items, page: 1, limit: lim, total, hasMore: 1 * lim < total };
-}
